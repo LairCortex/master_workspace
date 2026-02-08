@@ -1,13 +1,10 @@
 name: Build & Release
 
 on:
-  # Build on every push to main (artifacts only)
   push:
     branches: [main]
-  # Build + GitHub Release when a version tag is pushed
-  tags:
-    - "v*"
-  # Allow manual trigger
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
