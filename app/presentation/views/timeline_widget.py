@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtCore import QDate, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QDateEdit, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QDateEdit, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -78,16 +79,25 @@ class TimelineWidget(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setStyleSheet(
+            "QListWidget { font-size: 13px; }"
+            "QListWidget::item { border-bottom: 1px solid palette(mid); padding: 4px 6px; }"
+            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"
+        )
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self.list_widget, 1)
 
     def update_events(self, events: Sequence[Any]) -> None:
         self.list_widget.clear()
-        for event in events:
-            text = f"{event.start_date} — {event.end_date}\n{event.name}"
+        for i, event in enumerate(events):
+            start = event.start_date.strftime("%d.%m.%Y") if event.start_date else "?"
+            end = event.end_date.strftime("%d.%m.%Y") if event.end_date else "?"
+            text = f"{start} — {end}\n{event.name}"
             item = QListWidgetItem(text)
             item.setData(256, event)  # Qt.UserRole = 256
+            item.setSizeHint(QSize(0, 52))
             self.list_widget.addItem(item)
 
     def _on_row_changed(self, row: int) -> None:

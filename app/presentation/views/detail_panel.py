@@ -150,17 +150,25 @@ class DetailPanel(QWidget):
         layout = QVBoxLayout(self)
 
         self.title_label = QLabel("")
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 16px;")
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(self.title_label)
 
         self.date_label = QLabel("")
         layout.addWidget(self.date_label)
 
+        _list_style = (
+            "QListWidget { font-size: 13px; }"
+            "QListWidget::item { border-bottom: 1px solid palette(mid); }"
+        )
         self.tabs = QTabWidget()
         self.org_list = QListWidget()
+        self.org_list.setStyleSheet(_list_style)
         self.char_list = QListWidget()
+        self.char_list.setStyleSheet(_list_style)
         self.item_list = QListWidget()
+        self.item_list.setStyleSheet(_list_style)
         self.loc_list = QListWidget()
+        self.loc_list.setStyleSheet(_list_style)
 
         self.tabs.addTab(self.org_list, "Организации")
         self.tabs.addTab(self.char_list, "Персонажи")
@@ -177,7 +185,9 @@ class DetailPanel(QWidget):
     def show_event(self, event: Any) -> None:
         self._current_event_id = getattr(event, "id", None)
         self.title_label.setText(event.name)
-        self.date_label.setText(f"{event.start_date} — {event.end_date}")
+        sd = event.start_date.strftime("%d.%m.%Y") if event.start_date else "?"
+        ed = event.end_date.strftime("%d.%m.%Y") if event.end_date else "?"
+        self.date_label.setText(f"{sd} — {ed}")
         self._fill_list(self.org_list, event.organizations, "organization")
         self._fill_list(self.char_list, event.characters, "character")
         self._fill_list(self.item_list, event.items, "item")

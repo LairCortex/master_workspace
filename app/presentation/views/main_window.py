@@ -112,17 +112,30 @@ class MainWindow(QMainWindow):
         self.search_bar = SearchBar(search_vm)
         main_layout.addWidget(self.search_bar)
 
-        splitter = QSplitter()
+        self._splitter = QSplitter()
+        self._splitter.setHandleWidth(2)
+        self._splitter.setChildrenCollapsible(False)
         self.timeline_widget = TimelineWidget(timeline_vm)
         self.detail_panel = DetailPanel(detail_vm)
         self.world_snapshot = WorldSnapshotWidget()
-        splitter.addWidget(self.timeline_widget)
-        splitter.addWidget(self.detail_panel)
-        splitter.addWidget(self.world_snapshot)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 2)
-        main_layout.addWidget(splitter, 1)
+        self.timeline_widget.setMinimumWidth(220)
+        self.detail_panel.setMinimumWidth(280)
+        self.world_snapshot.setMinimumWidth(280)
+        self._splitter.addWidget(self.timeline_widget)
+        self._splitter.addWidget(self.detail_panel)
+        self._splitter.addWidget(self.world_snapshot)
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setStretchFactor(2, 1)
+        main_layout.addWidget(self._splitter, 1)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # Force equal column widths after layout is computed
+        w = self._splitter.width()
+        if w > 0:
+            third = w // 3
+            self._splitter.setSizes([third, third, third])
 
     def set_game_name(self, name: str) -> None:
         if name:

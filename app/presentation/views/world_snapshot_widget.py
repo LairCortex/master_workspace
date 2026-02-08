@@ -6,7 +6,7 @@ from typing import Any, Sequence
 from PySide6.QtCore import QDate, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QDateEdit, QFrame, QHBoxLayout, QLabel, QPushButton,
+    QDateEdit, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -73,13 +73,14 @@ class WorldSnapshotWidget(QWidget):
         self._init_ui()
 
     def _init_ui(self) -> None:
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
         # ── Title ──
-        title = QLabel("🌍  Обзор мира")
-        title.setStyleSheet("font-weight: bold; font-size: 15px;")
+        title = QLabel("Обзор мира")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(title)
 
         # ── Date picker bar ──
@@ -110,12 +111,6 @@ class WorldSnapshotWidget(QWidget):
 
         layout.addLayout(date_bar)
 
-        # ── Separator ──
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(sep)
-
         # ── Tree ──
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
@@ -126,12 +121,14 @@ class WorldSnapshotWidget(QWidget):
             "QTreeWidget { font-size: 13px; }"
             "QTreeWidget::item { padding: 3px 0px; }"
         )
+        self.tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.tree, 1)
 
         # ── Stats bar ──
         self.stats_label = QLabel("")
         self.stats_label.setStyleSheet("font-size: 11px; color: #999;")
+        self.stats_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.stats_label)
 
         # ── Empty state ──
@@ -171,7 +168,9 @@ class WorldSnapshotWidget(QWidget):
         events_node.setExpanded(False)
         for ev in events:
             ev_item = QTreeWidgetItem(events_node)
-            ev_item.setText(0, f"{ev.start_date} — {ev.end_date}  |  {ev.name}")
+            sd = ev.start_date.strftime("%d.%m.%Y") if ev.start_date else "?"
+            ed = ev.end_date.strftime("%d.%m.%Y") if ev.end_date else "?"
+            ev_item.setText(0, f"{sd} — {ed}  |  {ev.name}")
             ev_item.setIcon(0, _icon("event"))
             ev_item.setData(0, Qt.ItemDataRole.UserRole, ("event", ev.id))
 
@@ -258,7 +257,7 @@ class WorldSnapshotWidget(QWidget):
         # ── Stats ──
         target = self.date_edit.date().toPython()
         self.stats_label.setText(
-            f"Дата: {target}  |  "
+            f"Дата: {target.strftime('%d.%m.%Y')}  |  "
             f"Событий: {len(events)}  |  "
             f"Персонажей: {len(characters)}  |  "
             f"Организаций: {len(organizations)}  |  "
