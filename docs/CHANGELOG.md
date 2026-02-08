@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.9.1] — 2026-02-08
+
+### Hotfix: Миграция end_date NOT NULL → nullable, защита сессии от залипания
+
+#### Исправления
+- **Критический баг**: сохранение события/сущности с «Бессрочно» вызывало `IntegrityError: NOT NULL constraint failed: events.end_date` — столбец `end_date` в SQLite оставался `NOT NULL` в существующих БД
+- Добавлена миграция `_migrate_nullable_end_dates`: пересоздание таблиц (events, organizations, characters, items, locations, ratings) без `NOT NULL` на `end_date` при старте приложения
+- После `IntegrityError` сессия SQLAlchemy переходила в `PendingRollbackError` — все последующие операции с БД падали. Добавлены `try/except` с `await session.rollback()` во всех async-обработчиках сохранения (`on_saved`, `on_event_updated`, `on_entity_saved`, `on_edit_event`, `on_entity_click`)
+
+#### UX
+- Чекбокс «Бессрочно» теперь скрывает (`setVisible`) поле даты вместо отключения (`setEnabled`) — поле полностью исчезает при выборе бессрочности
+
+---
+
 ## [0.9.0] — 2026-02-08
 
 ### Итерация 9: Поиск без учёта регистра, изображения для организаций, необязательная дата конца

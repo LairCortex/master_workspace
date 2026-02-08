@@ -63,7 +63,7 @@ class _EntityTabWidget(QWidget):
         self.end_date_input.setDate(QDate.currentDate())
         end_row.addWidget(self.end_date_input, 1)
         self.no_end_date_cb = QCheckBox("Бессрочно")
-        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setEnabled(not checked))
+        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setVisible(not checked))
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
 
@@ -241,8 +241,10 @@ class EventDialog(QDialog):
         self.end_date_input.dateChanged.connect(self._update_validity)
         end_row.addWidget(self.end_date_input, 1)
         self.no_end_date_cb = QCheckBox("Бессрочно")
-        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setEnabled(not checked))
-        self.no_end_date_cb.toggled.connect(lambda: self._update_validity())
+        def _on_no_end_toggled(checked):
+            self.end_date_input.setVisible(not checked)
+            self._update_validity()
+        self.no_end_date_cb.toggled.connect(_on_no_end_toggled)
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
 

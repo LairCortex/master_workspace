@@ -43,6 +43,45 @@ _ATTR_TO_ENTITY_TYPE = {
 }
 
 
+async def _migrate_nullable_end_dates(conn):
+    """Make end_date columns nullable in existing databases (SQLite table rebuild)."""
+    import re
+    tables = ["events", "organizations", "characters", "items", "locations", "ratings"]
+    for table in tables:
+        try:
+            rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+        except Exception:
+            continue
+        for row in rows:
+            # row: (cid, name, type, notnull, dflt_value, pk)
+            if row[1] == "end_date" and row[3] == 1:  # notnull == 1 → needs fix
+                sql_result = (await conn.exec_driver_sql(
+                    f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'"
+                )).scalar()
+                if not sql_result:
+                    break
+                new_sql = re.sub(
+                    r'(end_date\s+\w+)\s+NOT\s+NULL',
+                    r'\1',
+                    sql_result,
+                    flags=re.IGNORECASE,
+                )
+                tmp = f"__{table}_tmp"
+                new_sql = new_sql.replace(f'"{table}"', f'"{tmp}"', 1).replace(f" {table} ", f" {tmp} ", 1).replace(f" {table}(", f" {tmp}(", 1)
+                if tmp not in new_sql:
+                    new_sql = new_sql.replace(table, tmp, 1)
+                col_names = ", ".join(r[1] for r in rows)
+                await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                await conn.exec_driver_sql(new_sql)
+                await conn.exec_driver_sql(
+                    f"INSERT INTO {tmp} ({col_names}) SELECT {col_names} FROM {table}"
+                )
+                await conn.exec_driver_sql(f"DROP TABLE {table}")
+                await conn.exec_driver_sql(f"ALTER TABLE {tmp} RENAME TO {table}")
+                await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+                break
+
+
 async def init_db(engine):
     """Create tables if they don't exist, and migrate missing columns."""
     async with engine.begin() as conn:
@@ -64,6 +103,10 @@ async def init_db(engine):
                 )
             except Exception:
                 pass  # column already exists
+
+    # Migrate end_date NOT NULL → nullable
+    async with engine.begin() as conn:
+        await _migrate_nullable_end_dates(conn)
 
 
 class Application:
@@ -244,22 +287,25 @@ class Application:
             asyncio.ensure_future(_load_available_into_dialog(dialog))
 
             async def on_saved(data):
-                org_items = data.pop("organizations", [])
-                char_items = data.pop("characters", [])
-                item_items = data.pop("items", [])
-                loc_items = data.pop("locations", [])
+                try:
+                    org_items = data.pop("organizations", [])
+                    char_items = data.pop("characters", [])
+                    item_items = data.pop("items", [])
+                    loc_items = data.pop("locations", [])
 
-                event = await event_service.create_event(**data)
-                await self._session.refresh(event, attribute_names=["organizations", "characters", "items", "locations"])
+                    event = await event_service.create_event(**data)
+                    await self._session.refresh(event, attribute_names=["organizations", "characters", "items", "locations"])
 
-                await _process_entity_items(org_items, OrganizationRepository, event.organizations)
-                await _process_entity_items(char_items, CharacterRepository, event.characters)
-                await _process_entity_items(item_items, ItemRepository, event.items)
-                await _process_entity_items(loc_items, LocationRepository, event.locations)
+                    await _process_entity_items(org_items, OrganizationRepository, event.organizations)
+                    await _process_entity_items(char_items, CharacterRepository, event.characters)
+                    await _process_entity_items(item_items, ItemRepository, event.items)
+                    await _process_entity_items(loc_items, LocationRepository, event.locations)
 
-                await self._session.commit()
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
+                    await self._session.commit()
+                    await timeline_vm.load_events()
+                    window.timeline_widget.update_events(timeline_vm.events)
+                except Exception:
+                    await self._session.rollback()
 
             dialog.saved.connect(lambda data: asyncio.ensure_future(on_saved(data)))
             dialog.open()
@@ -268,52 +314,58 @@ class Application:
 
         # Edit event (double-click on timeline)
         async def on_edit_event(event_id):
-            event = await event_service.get_event(event_id)
-            if not event:
-                return
-            dialog = EventDialog(event_dialog_vm, parent=window)
-            await _load_available_into_dialog(dialog)
-            dialog.populate(event)
+            try:
+                event = await event_service.get_event(event_id)
+                if not event:
+                    return
+                dialog = EventDialog(event_dialog_vm, parent=window)
+                await _load_available_into_dialog(dialog)
+                dialog.populate(event)
 
-            async def on_event_updated(data):
-                eid = data.pop("event_id", None)
-                chars_text = data.pop("characteristics", "")
-                backstory_text = data.pop("backstory", "")
-                org_items = data.pop("organizations", [])
-                char_items = data.pop("characters", [])
-                item_items = data.pop("items", [])
-                loc_items = data.pop("locations", [])
+                async def on_event_updated(data):
+                    try:
+                        eid = data.pop("event_id", None)
+                        chars_text = data.pop("characteristics", "")
+                        backstory_text = data.pop("backstory", "")
+                        org_items = data.pop("organizations", [])
+                        char_items = data.pop("characters", [])
+                        item_items = data.pop("items", [])
+                        loc_items = data.pop("locations", [])
 
-                await event_service.update_event(
-                    event_id,
-                    name=data["name"],
-                    start_date=data["start_date"],
-                    end_date=data["end_date"],
-                )
+                        await event_service.update_event(
+                            event_id,
+                            name=data["name"],
+                            start_date=data["start_date"],
+                            end_date=data["end_date"],
+                        )
 
-                # Update description
-                updated_event = await event_service.get_event(event_id)
-                if updated_event and updated_event.description:
-                    updated_event.description.characteristics = chars_text
-                    updated_event.description.backstory = backstory_text
+                        # Update description
+                        updated_event = await event_service.get_event(event_id)
+                        if updated_event and updated_event.description:
+                            updated_event.description.characteristics = chars_text
+                            updated_event.description.backstory = backstory_text
 
-                # Sync M2M relationships
-                await self._session.refresh(updated_event, attribute_names=["organizations", "characters", "items", "locations"])
-                await _process_entity_items(org_items, OrganizationRepository, updated_event.organizations)
-                await _process_entity_items(char_items, CharacterRepository, updated_event.characters)
-                await _process_entity_items(item_items, ItemRepository, updated_event.items)
-                await _process_entity_items(loc_items, LocationRepository, updated_event.locations)
+                        # Sync M2M relationships
+                        await self._session.refresh(updated_event, attribute_names=["organizations", "characters", "items", "locations"])
+                        await _process_entity_items(org_items, OrganizationRepository, updated_event.organizations)
+                        await _process_entity_items(char_items, CharacterRepository, updated_event.characters)
+                        await _process_entity_items(item_items, ItemRepository, updated_event.items)
+                        await _process_entity_items(loc_items, LocationRepository, updated_event.locations)
 
-                await self._session.commit()
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
+                        await self._session.commit()
+                        await timeline_vm.load_events()
+                        window.timeline_widget.update_events(timeline_vm.events)
 
-                # Refresh detail panel
-                await detail_vm.load_details(event_id)
-                window.detail_panel.show_event(detail_vm.event)
+                        # Refresh detail panel
+                        await detail_vm.load_details(event_id)
+                        window.detail_panel.show_event(detail_vm.event)
+                    except Exception:
+                        await self._session.rollback()
 
-            dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
-            dialog.open()
+                dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
+                dialog.open()
+            except Exception:
+                await self._session.rollback()
 
         window.timeline_widget.event_double_clicked.connect(
             lambda eid: asyncio.ensure_future(on_edit_event(eid))
@@ -344,103 +396,109 @@ class Application:
 
         # Entity card double-click
         async def on_entity_click(entity_type, entity_id):
-            entity_service = self._get_entity_service(entity_type)
-            if not entity_service:
-                return
-            entity = await entity_service.get_entity(entity_id)
-            if not entity:
-                return
+            try:
+                entity_service = self._get_entity_service(entity_type)
+                if not entity_service:
+                    return
+                entity = await entity_service.get_entity(entity_id)
+                if not entity:
+                    return
 
-            dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
-            dialog.populate(entity)
+                dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
+                dialog.populate(entity)
 
-            # Load available related entities for linking
-            from app.presentation.views.entity_card_dialog import _RELATED_CONFIG
-            related_configs = _RELATED_CONFIG.get(entity_type, [])
-            for cfg in related_configs:
-                rel_svc = self._get_entity_service(cfg["entity_type"])
-                if rel_svc:
-                    available = await rel_svc.get_all()
-                    dialog.set_available_entities(cfg["attr"], list(available))
+                # Load available related entities for linking
+                from app.presentation.views.entity_card_dialog import _RELATED_CONFIG
+                related_configs = _RELATED_CONFIG.get(entity_type, [])
+                for cfg in related_configs:
+                    rel_svc = self._get_entity_service(cfg["entity_type"])
+                    if rel_svc:
+                        available = await rel_svc.get_all()
+                        dialog.set_available_entities(cfg["attr"], list(available))
 
-            # Handle save (update entity fields + sync relationships)
-            async def on_entity_saved(data):
-                related_changes = data.pop("related_changes", {})
-                chars_text = data.pop("characteristics", "")
-                backstory_text = data.pop("backstory", "")
+                # Handle save (update entity fields + sync relationships)
+                async def on_entity_saved(data):
+                    try:
+                        related_changes = data.pop("related_changes", {})
+                        chars_text = data.pop("characteristics", "")
+                        backstory_text = data.pop("backstory", "")
 
-                # Update basic entity fields
-                field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
-                await entity_service.update_entity(entity_id, **field_data)
+                        # Update basic entity fields
+                        field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
+                        await entity_service.update_entity(entity_id, **field_data)
 
-                # Update description
-                refreshed = await entity_service.get_entity(entity_id)
-                if refreshed and refreshed.description:
-                    refreshed.description.characteristics = chars_text
-                    refreshed.description.backstory = backstory_text
+                        # Update description
+                        refreshed = await entity_service.get_entity(entity_id)
+                        if refreshed and refreshed.description:
+                            refreshed.description.characteristics = chars_text
+                            refreshed.description.backstory = backstory_text
 
-                # Sync M2M relationships
-                for attr_name, change_data in related_changes.items():
-                    desired_ids = set(change_data.get("current_ids", []))
-                    rel_type = _ATTR_TO_ENTITY_TYPE.get(attr_name)
-                    if not rel_type:
-                        continue
-                    rel_svc = self._get_entity_service(rel_type)
-                    if not rel_svc:
-                        continue
+                        # Sync M2M relationships
+                        for attr_name, change_data in related_changes.items():
+                            desired_ids = set(change_data.get("current_ids", []))
+                            rel_type = _ATTR_TO_ENTITY_TYPE.get(attr_name)
+                            if not rel_type:
+                                continue
+                            rel_svc = self._get_entity_service(rel_type)
+                            if not rel_svc:
+                                continue
 
-                    ent = await entity_service.get_entity(entity_id)
-                    await self._session.refresh(ent, attribute_names=[attr_name])
-                    current_collection = getattr(ent, attr_name)
-                    current_ids = {e.id for e in current_collection}
+                            ent = await entity_service.get_entity(entity_id)
+                            await self._session.refresh(ent, attribute_names=[attr_name])
+                            current_collection = getattr(ent, attr_name)
+                            current_ids = {e.id for e in current_collection}
 
-                    # Add missing
-                    for aid in desired_ids - current_ids:
-                        rel_entity = await rel_svc.get_entity(aid)
-                        if rel_entity:
-                            current_collection.append(rel_entity)
+                            # Add missing
+                            for aid in desired_ids - current_ids:
+                                rel_entity = await rel_svc.get_entity(aid)
+                                if rel_entity:
+                                    current_collection.append(rel_entity)
 
-                    # Remove extras
-                    to_remove = [e for e in current_collection if e.id in (current_ids - desired_ids)]
-                    for e in to_remove:
-                        current_collection.remove(e)
+                            # Remove extras
+                            to_remove = [e for e in current_collection if e.id in (current_ids - desired_ids)]
+                            for e in to_remove:
+                                current_collection.remove(e)
 
-                await self._session.commit()
+                        await self._session.commit()
 
-                # Refresh detail panel if an event is selected
-                if detail_vm.event:
-                    await detail_vm.load_details(detail_vm.event.id)
-                    window.detail_panel.show_event(detail_vm.event)
+                        # Refresh detail panel if an event is selected
+                        if detail_vm.event:
+                            await detail_vm.load_details(detail_vm.event.id)
+                            window.detail_panel.show_event(detail_vm.event)
+                    except Exception:
+                        await self._session.rollback()
 
-            dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
+                dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
 
-            # Handle create new related entity
-            async def on_create_related(attr_name, related_entity_type):
-                sub_dialog = EntityCardDialog(None, entity_type=related_entity_type, parent=dialog)
+                # Handle create new related entity
+                async def on_create_related(attr_name, related_entity_type):
+                    sub_dialog = EntityCardDialog(None, entity_type=related_entity_type, parent=dialog)
 
-                async def on_sub_saved(sub_data):
-                    sub_data.pop("related_changes", None)
-                    sub_svc = self._get_entity_service(related_entity_type)
-                    if not sub_svc:
-                        return
-                    chars_text = sub_data.pop("characteristics", "")
-                    backstory_text = sub_data.pop("backstory", "")
-                    new_entity = await sub_svc.create_entity(
-                        characteristics=chars_text,
-                        backstory=backstory_text,
-                        **sub_data,
-                    )
-                    await self._session.flush()
-                    dialog.add_related_entity(attr_name, new_entity)
+                    async def on_sub_saved(sub_data):
+                        sub_data.pop("related_changes", None)
+                        sub_svc = self._get_entity_service(related_entity_type)
+                        if not sub_svc:
+                            return
+                        chars_text = sub_data.pop("characteristics", "")
+                        backstory_text = sub_data.pop("backstory", "")
+                        new_entity = await sub_svc.create_entity(
+                            characteristics=chars_text,
+                            backstory=backstory_text,
+                            **sub_data,
+                        )
+                        await self._session.flush()
+                        dialog.add_related_entity(attr_name, new_entity)
 
-                sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
-                sub_dialog.open()
+                    sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
+                    sub_dialog.open()
 
-            dialog.create_related_requested.connect(
-                lambda a, t: asyncio.ensure_future(on_create_related(a, t))
-            )
+                dialog.create_related_requested.connect(
+                    lambda a, t: asyncio.ensure_future(on_create_related(a, t))
+                )
 
-            dialog.open()
+                dialog.open()
+            except Exception:
+                await self._session.rollback()
 
         window.detail_panel.entity_clicked.connect(
             lambda t, i: asyncio.ensure_future(on_entity_click(t, i))

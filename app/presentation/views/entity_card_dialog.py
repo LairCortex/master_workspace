@@ -226,7 +226,7 @@ class EntityCardDialog(QDialog):
         self.end_date_input.setDate(QDate.currentDate())
         end_row.addWidget(self.end_date_input, 1)
         self.no_end_date_cb = QCheckBox("Бессрочно")
-        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setEnabled(not checked))
+        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setVisible(not checked))
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
 
