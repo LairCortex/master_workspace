@@ -1,0 +1,183 @@
+# Changelog
+
+## [0.5.0] — 2026-02-07
+
+### Итерация 5: Рейтинг, сборка, UX
+
+#### Система рейтинга
+- Поле `rating` (1-20) в таблицах `organizations`, `characters`, `items`, `locations`
+- `QSpinBox` (1-20) в карточке создания/редактирования сущности
+- Цветовое обозначение в списке сущностей: серый (1) → красный (20)
+- Рендеринг через `paintEvent` с `QPainter.drawRoundedRect` — гарантированная отрисовка внутри `QListWidget`
+- Автоматическая миграция `ALTER TABLE ADD COLUMN rating` для существующих БД
+
+#### Смена игры
+- Меню **Файл → Сменить игру** — неблокирующий async-диалог (`dialog.open()` вместо `exec()`)
+- Меню **О приложении** — README и Changelog приложения
+
+#### Сборка приложения
+- PyInstaller spec-файл `nri_manager.spec` для кросс-платформенной сборки
+- Скрипт `build_app.py` — автоматическая сборка с очисткой
+- macOS: `.app` bundle, Windows: `.exe`, Linux: бинарник
+- `games/` создаётся рядом с исполняемым файлом при первом запуске
+- Зависимость `pyinstaller` в `[build]` optional-dependencies
+
+#### Тесты
+- Тесты `TestRatingColor` — корректность палитры (grey/red dominant, alpha, mid-range)
+- Тесты `TestEntityCardDialogRating` — QSpinBox min/max, get_data, populate
+
+---
+
+## [0.4.0] — 2026-02-07
+
+### Итерация 4: Изображения (base64 в БД)
+
+#### Хранение изображений
+- Изображения хранятся как base64 PNG в колонке `image` (Text) таблиц `characters` и `locations`
+- При загрузке файл ресайзится до 1000×1000 (с сохранением пропорций) для экономии места в БД
+- Модуль `app/presentation/utils/image_utils.py`: `load_and_encode`, `base64_to_pixmap`, `base64_to_thumbnail`
+
+#### Карточка сущности — превью изображения
+- Для персонажей и локаций: слева панель 280×280 с превью загруженного изображения
+- Кнопка "Выбрать файл" — открывает `QFileDialog` (PNG, JPG, BMP, GIF, WebP)
+- Кнопка "Убрать" — очищает изображение
+- При `populate()` существующее изображение из БД декодируется и отображается
+
+#### Список сущностей — thumbnail
+- В DetailPanel сущности с изображением показывают thumbnail 100×100 слева от текста
+- Высота строки автоматически увеличивается для элементов с thumbnail
+
+#### Тесты
+- 192 теста (+20), все проходят
+- Новые тесты: `test_image_utils.py` — fit, encode/decode roundtrip, load from file, resize, thumbnail
+- Новые тесты: `TestEntityCardDialogImage` — наличие панели, populate с base64, clear, get_data
+
+---
+
+## [0.3.0] — 2026-02-07
+
+### Итерация 3: Мульти-игра, полные связи между сущностями, сводка в списке
+
+#### Мульти-игра (несколько кампаний)
+- Каждая игра хранится в отдельном SQLite-файле в папке `games/`
+- `GameManager` (`app/infrastructure/db/game_manager.py`): `list_games`, `create_game`, `delete_game`, `get_db_url`
+- `GameLauncherDialog` — диалог выбора/создания/удаления игры при запуске
+- Меню **Файл → Сменить игру** — переключение между играми без перезапуска
+- Имя текущей игры отображается в заголовке окна
+- `database.py` — убран дефолтный путь, `url` обязательный параметр
+- `Application.start(db_path)` / `shutdown()` — полный lifecycle с пересозданием engine/session
+
+#### Полные M2M связи
+- Все связи из схемы БД теперь доступны в карточках:
+  - **Организация** → Персонажи, Предметы, Локации
+  - **Персонаж** → Предметы, Локации, Организации
+  - **Предмет** → Локации, Персонажи, Организации
+  - **Локация** → Персонажи, Организации, Предметы
+
+#### Сводная информация в списке сущностей
+- В табах DetailPanel каждая сущность показывает: характеристики, предысторию, личность (персонажи), задачи, количество связей
+- Текст обрезается до 120 символов с "…"
+
+#### Тесты
+- 172 теста (+27), все проходят
+- Новые тесты: GameManager (14 тестов), GameLauncherDialog (5), MainWindow menu/title (5)
+
+---
+
+## [0.2.0] — 2026-02-07
+
+### Итерация 2: Поиск, редактирование, связи между сущностями
+
+#### Глобальный поиск
+- Live-поиск с debounce 300мс, срабатывает от 2 символов
+- Поиск по имени + характеристикам + предыстории (JOIN с `descriptions`)
+- Выпадающий список результатов с группировкой по типам (События, Организации, Персонажи, Предметы, Локации)
+- Клик по результату: событие выделяется на таймлайне, остальные сущности открываются в карточке
+- Дедупликация результатов при совпадении в нескольких полях (`.unique()`)
+
+#### Редактирование события
+- Кнопка "Редактировать событие" в панели деталей
+- `EventDialog` поддерживает edit mode: предзаполнение полей, обновление через `update_event`
+- Обновление description (characteristics, backstory) при редактировании
+- Автоматическое обновление таймлайна и панели деталей после сохранения
+
+#### Связи между сущностями
+- Карточка организации: вкладка "Персонажи" — просмотр, привязка существующих из БД, создание новых
+- Карточка персонажа: вкладка "Предметы" — просмотр, привязка существующих из БД, создание новых
+- "Привязать существующего" — диалог мультивыбора из всех доступных сущностей
+- "Создать нового" — открытие вложенной карточки, автоматическое добавление после сохранения
+- "Отвязать" — удаление связи без удаления самой сущности
+- Синхронизация M2M-связей при сохранении карточки
+
+#### UI улучшения
+- Скроллируемый таймлайн: явные scroll-политики и stretch factor
+- Поля предыстории, характеристик, задач: убран `maxHeight`, заменён на `minHeight` — растягиваются с диалогом
+
+#### Исправления
+- Fix: `MissingGreenlet` при добавлении связанных сущностей к событию — добавлен `session.refresh()` для eager-загрузки M2M коллекций перед `append`
+- Fix: `dialog.exec()` → `dialog.open()` для предотвращения блокировки asyncio event loop
+
+#### Тесты
+- 145 тестов (+32), все проходят
+- Новые тесты: поиск по description content, partial match от 2 символов, дедупликация
+- Новые тесты: SearchBar (debounce, результаты, клик, заголовки секций)
+- Новые тесты: DetailPanel edit button, EventDialog edit mode, EntityCardDialog related entities
+
+---
+
+## [0.1.0] — 2026-02-07
+
+### Итерация 1: Фундамент приложения
+
+#### Инфраструктура проекта
+- Инициализация проекта: `pyproject.toml`, venv (Python 3.12), структура директорий по MVVM
+- Настроен Alembic для миграций БД (async SQLite через aiosqlite)
+- Сгенерирована initial migration для всех 20 таблиц
+
+#### Domain Layer
+- Реализованы domain entities (dataclasses): `Description`, `Event`, `Organization`, `Character`, `Item`, `Location`, `Rating`
+- Enum `EntityType` для типизации сущностей
+- Валидация обязательных полей (name, description, start_date, end_date) в `__post_init__`
+- Проверка: end_date не раньше start_date
+
+#### Infrastructure Layer
+- SQLAlchemy 2.0 ORM-модели: 7 основных таблиц + 13 association tables (M2M)
+- Таблицы: `descriptions`, `events`, `organizations`, `characters`, `items`, `locations`, `ratings`
+- M2M-связи между всеми сущностями через промежуточные таблицы
+- `BaseRepository` — generic CRUD: `get_by_id`, `get_all`, `create`, `update`, `delete`
+- Per-entity репозитории с методом `search` (ILIKE по имени)
+- `EventRepository.get_all_ordered` — сортировка по start_date для таймлайна
+- Async engine + session factory для SQLite
+
+#### Application Layer
+- `EventService` — создание события с автоматическим созданием Description
+- `SearchService` — глобальный поиск по всем типам сущностей
+- `EntityService` — универсальный CRUD для любого типа сущности
+
+#### Presentation Layer (MVVM)
+- **ViewModels:**
+  - `TimelineViewModel` — загрузка и выбор событий
+  - `DetailViewModel` — загрузка связанных сущностей выбранного события
+  - `SearchViewModel` — глобальный поиск с фильтрацией пустых запросов
+  - `EventDialogViewModel` — валидация полей и сохранение нового события
+  - `EntityViewModel` — generic CRUD для карточки сущности
+- **Views:**
+  - `MainWindow` — QMainWindow с search bar сверху, QSplitter (timeline | detail panel)
+  - `TimelineWidget` — список событий с кнопкой "+" для добавления
+  - `DetailPanel` — табы (Организации, Персонажи, Предметы, Локации), двойной клик открывает карточку
+  - `SearchBar` — поле ввода + кнопка, сигнал `search_requested`
+- **Dialogs:**
+  - `EventDialog` — модальное окно создания события, обязательные поля отмечены *, кнопка "Сохранить" неактивна пока форма невалидна
+  - `EntityCardDialog` — просмотр/редактирование любой сущности, дополнительные поля по типу (personality для персонажа, image для локации, tasks)
+- `AppState` — shared state с Qt-сигналами
+
+#### Entry Point
+- `app/main.py` — DI (repositories → services → viewmodels → views), qasync event loop, wiring сигналов между компонентами
+
+#### Тесты (TDD)
+- 113 тестов, все проходят
+- Domain: 24 теста (валидация, создание)
+- Infrastructure: 32 теста (ORM-маппинг, CRUD, search, M2M)
+- Application: 12 тестов (сервисы с моками)
+- Presentation: 40 тестов (viewmodels с моками, views с pytest-qt, dialogs)
+- Integration: 5 тестов (E2E через in-memory SQLite)

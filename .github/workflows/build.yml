@@ -1,0 +1,118 @@
+name: Build & Release
+
+on:
+  # Build on every push to main (artifacts only)
+  push:
+    branches: [main]
+  # Build + GitHub Release when a version tag is pushed
+  tags:
+    - "v*"
+  # Allow manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed for creating releases
+
+jobs:
+  # ── Run tests first ──────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon0 libdbus-1-3
+          pip install -e ".[dev]"
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -v
+
+  # ── Build on 3 platforms ─────────────────────────────────────────────────
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: nri-macos
+            asset_name: nri-scenario-manager-macos.zip
+          - os: windows-latest
+            artifact_name: nri-windows
+            asset_name: nri-scenario-manager-windows.zip
+          - os: ubuntu-latest
+            artifact_name: nri-linux
+            asset_name: nri-scenario-manager-linux.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Linux: install system libs required by PySide6
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon0 libdbus-1-3
+
+      - name: Install Python dependencies
+        run: pip install -e ".[build]"
+
+      - name: Build application
+        run: python build_app.py --clean
+
+      # ── Package artifacts ──
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        working-directory: dist
+        run: zip -r9 ../${{ matrix.asset_name }} .
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath ${{ matrix.asset_name }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: tar -czf ${{ matrix.asset_name }} -C dist .
+
+      # ── Upload build artifact (always) ──
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.asset_name }}
+          retention-days: 14
+
+  # ── Create GitHub Release on tag push ────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/nri-macos/*
+            artifacts/nri-windows/*
+            artifacts/nri-linux/*

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Virtual environment
+.venv/
+
+# Build artifacts
+build/
+dist/
+
+# IDE
+.cursor/
+.idea/
+.vscode/
+
+# Database files
+*.db
+
+# Games directory
+games/
+
+# OS
+.DS_Store
+Thumbs.db
