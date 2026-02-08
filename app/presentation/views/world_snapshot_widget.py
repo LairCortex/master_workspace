@@ -161,98 +161,50 @@ class WorldSnapshotWidget(QWidget):
             for it in getattr(ev, "items", []):
                 items[it.id] = it
 
+        # ── Helper: build a collapsible section ──
+        def _section(label: str, icon_key: str, count: int) -> QTreeWidgetItem:
+            node = QTreeWidgetItem(self.tree)
+            node.setText(0, f"{label} ({count})")
+            node.setFont(0, QFont("", -1, QFont.Weight.Bold))
+            node.setIcon(0, _icon(icon_key))
+            node.setExpanded(True)
+            return node
+
         # ── Events section ──
-        events_node = QTreeWidgetItem(self.tree)
-        events_node.setText(0, f"📅  Активные события ({len(events)})")
-        events_node.setFont(0, QFont("", -1, QFont.Weight.Bold))
-        events_node.setExpanded(False)
-        for ev in events:
-            ev_item = QTreeWidgetItem(events_node)
-            sd = ev.start_date.strftime("%d.%m.%Y") if ev.start_date else "?"
-            ed = ev.end_date.strftime("%d.%m.%Y") if ev.end_date else "?"
-            ev_item.setText(0, f"{sd} — {ed}  |  {ev.name}")
-            ev_item.setIcon(0, _icon("event"))
-            ev_item.setData(0, Qt.ItemDataRole.UserRole, ("event", ev.id))
+        if events:
+            ev_section = _section("📅  Активные события", "event", len(events))
+            ev_section.setExpanded(False)
+            for ev in events:
+                ev_item = QTreeWidgetItem(ev_section)
+                sd = ev.start_date.strftime("%d.%m.%Y") if ev.start_date else "?"
+                ed = ev.end_date.strftime("%d.%m.%Y") if ev.end_date else "?"
+                ev_item.setText(0, f"{sd} — {ed}  |  {ev.name}")
+                ev_item.setIcon(0, _icon("event"))
+                ev_item.setData(0, Qt.ItemDataRole.UserRole, ("event", ev.id))
 
-        # ── Build location → org → character → items hierarchy ──
-        # Figure out which characters belong to which location/org
-        char_locs: dict[int, list[int]] = {}  # char_id → [loc_ids]
-        char_orgs: dict[int, list[int]] = {}  # char_id → [org_ids]
-        char_items_map: dict[int, list[int]] = {}  # char_id → [item_ids]
+        # ── Locations section ──
+        if locations:
+            loc_section = _section("📍  Локации", "location", len(locations))
+            for loc in sorted(locations.values(), key=lambda x: x.name):
+                self._make_entity_node(loc_section, loc, "location", "📍")
 
-        for ch_id, ch in characters.items():
-            char_locs[ch_id] = [
-                loc.id for loc in getattr(ch, "locations", []) if loc.id in locations
-            ]
-            char_orgs[ch_id] = [
-                org.id for org in getattr(ch, "organizations", []) if org.id in organizations
-            ]
-            char_items_map[ch_id] = [
-                it.id for it in getattr(ch, "items", []) if it.id in items
-            ]
+        # ── Organizations section ──
+        if organizations:
+            org_section = _section("👥  Организации", "organization", len(organizations))
+            for org in sorted(organizations.values(), key=lambda x: x.name):
+                self._make_entity_node(org_section, org, "organization", "👥")
 
-        # Characters placed into locations
-        placed_char_ids: set[int] = set()
+        # ── Characters section ──
+        if characters:
+            char_section = _section("🧑  Персонажи", "character", len(characters))
+            for ch in sorted(characters.values(), key=lambda x: -getattr(x, "rating", 1)):
+                self._make_entity_node(char_section, ch, "character", "🧑")
 
-        for loc_id, loc in sorted(locations.items(), key=lambda x: x[1].name):
-            loc_node = self._make_entity_node(self.tree, loc, "location", "📍")
-            loc_node.setExpanded(True)
-
-            # Find orgs tied to this location
-            loc_org_ids = {
-                org.id for org in getattr(loc, "organizations", []) if org.id in organizations
-            }
-
-            # Characters grouped by org within this location
-            chars_in_loc = [
-                ch_id for ch_id, locs_list in char_locs.items() if loc_id in locs_list
-            ]
-
-            # Group by org
-            org_chars: dict[int, list[int]] = {}  # org_id → [char_ids]
-            no_org_chars: list[int] = []
-
-            for ch_id in chars_in_loc:
-                placed_char_ids.add(ch_id)
-                ch_org_ids = [oid for oid in char_orgs.get(ch_id, []) if oid in loc_org_ids or True]
-                if ch_org_ids:
-                    for oid in ch_org_ids:
-                        org_chars.setdefault(oid, []).append(ch_id)
-                else:
-                    no_org_chars.append(ch_id)
-
-            # Render org groups
-            for org_id, ch_ids in sorted(org_chars.items(), key=lambda x: organizations[x[0]].name):
-                org = organizations[org_id]
-                org_node = self._make_entity_node(loc_node, org, "organization", "👥")
-                org_node.setExpanded(True)
-                for ch_id in sorted(ch_ids, key=lambda x: -getattr(characters[x], "rating", 1)):
-                    self._add_character_branch(org_node, characters[ch_id], items, char_items_map)
-
-            # Render characters without org
-            for ch_id in sorted(no_org_chars, key=lambda x: -getattr(characters[x], "rating", 1)):
-                self._add_character_branch(loc_node, characters[ch_id], items, char_items_map)
-
-            # Items at location but not held by any character
-            loc_item_ids = {it.id for it in getattr(loc, "items", []) if it.id in items}
-            held_items = set()
-            for ch_id in chars_in_loc:
-                held_items.update(char_items_map.get(ch_id, []))
-            loose_items = loc_item_ids - held_items
-            for it_id in sorted(loose_items):
-                self._make_entity_node(loc_node, items[it_id], "item", "🗡")
-
-        # ── Characters without a known location ──
-        unplaced = set(characters.keys()) - placed_char_ids
-        if unplaced:
-            no_loc_node = QTreeWidgetItem(self.tree)
-            no_loc_node.setText(0, "🌐  Без локации")
-            no_loc_node.setFont(0, QFont("", -1, QFont.Weight.Bold))
-            no_loc_node.setIcon(0, _icon("no_location"))
-            no_loc_node.setExpanded(True)
-
-            for ch_id in sorted(unplaced, key=lambda x: -getattr(characters[x], "rating", 1)):
-                self._add_character_branch(no_loc_node, characters[ch_id], items, char_items_map)
+        # ── Items section ──
+        if items:
+            item_section = _section("🗡  Предметы", "item", len(items))
+            for it in sorted(items.values(), key=lambda x: -getattr(x, "rating", 1)):
+                self._make_entity_node(item_section, it, "item", "🗡")
 
         # ── Stats ──
         target = self.date_edit.date().toPython()
@@ -318,22 +270,6 @@ class WorldSnapshotWidget(QWidget):
         node.setToolTip(0, "<br>".join(tooltip_parts))
 
         return node
-
-    def _add_character_branch(
-        self,
-        parent: QTreeWidgetItem,
-        char: Any,
-        all_items: dict[int, Any],
-        char_items_map: dict[int, list[int]],
-    ) -> None:
-        """Add a character node with its items as children."""
-        ch_node = self._make_entity_node(parent, char, "character", "👤")
-        ch_node.setExpanded(True)
-
-        item_ids = char_items_map.get(char.id, [])
-        for it_id in sorted(item_ids):
-            if it_id in all_items:
-                self._make_entity_node(ch_node, all_items[it_id], "item", "🗡")
 
     # ── Slots ──
 

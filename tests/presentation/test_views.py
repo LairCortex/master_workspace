@@ -906,13 +906,19 @@ class TestWorldSnapshotWidget:
         received = []
         w.entity_clicked.connect(lambda t, i: received.append((t, i)))
 
-        # Find the location node and double-click it
-        # Top-level: events_node, then location node
+        # Find the location node inside the "Локации" section and double-click it
+        def _find_node(parent_item, target_data):
+            for ci in range(parent_item.childCount()):
+                child = parent_item.child(ci)
+                if child.data(0, Qt.ItemDataRole.UserRole) == target_data:
+                    return child
+            return None
+
         for i in range(w.tree.topLevelItemCount()):
-            item = w.tree.topLevelItem(i)
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            if data and data == ("location", 1):
-                w.tree.itemDoubleClicked.emit(item, 0)
+            section = w.tree.topLevelItem(i)
+            node = _find_node(section, ("location", 1))
+            if node:
+                w.tree.itemDoubleClicked.emit(node, 0)
                 break
 
         assert len(received) == 1
