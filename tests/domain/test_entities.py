@@ -74,14 +74,15 @@ class TestEvent:
                 end_date=date(1200, 12, 31),
             )
 
-    def test_event_requires_end_date(self):
-        with pytest.raises(ValueError, match="end_date"):
-            Event(
-                name="Test",
-                description=Description(characteristics="x", backstory="y"),
-                start_date=date(1200, 1, 1),
-                end_date=None,
-            )
+    def test_event_allows_no_end_date(self):
+        """end_date is optional — None means ongoing/infinite."""
+        ev = Event(
+            name="Test",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 1, 1),
+            end_date=None,
+        )
+        assert ev.end_date is None
 
     def test_event_end_date_not_before_start(self):
         with pytest.raises(ValueError, match="end_date.*start_date"):

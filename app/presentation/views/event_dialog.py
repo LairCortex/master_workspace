@@ -7,7 +7,7 @@ from typing import Any
 
 from PySide6.QtCore import QDate, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDateEdit, QDialog, QFileDialog, QFormLayout,
+    QAbstractItemView, QCheckBox, QDateEdit, QDialog, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QScrollArea, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -55,12 +55,17 @@ class _EntityTabWidget(QWidget):
         self.start_date_input.setDate(QDate.currentDate())
         form.addRow("Дата начала:", self.start_date_input)
 
+        end_row = QHBoxLayout()
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setMinimumDate(QDate(100, 1, 1))
         self.end_date_input.setMaximumDate(QDate(9999, 12, 31))
         self.end_date_input.setDate(QDate.currentDate())
-        form.addRow("Дата конца:", self.end_date_input)
+        end_row.addWidget(self.end_date_input, 1)
+        self.no_end_date_cb = QCheckBox("Бессрочно")
+        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setEnabled(not checked))
+        end_row.addWidget(self.no_end_date_cb)
+        form.addRow("Дата конца:", end_row)
 
         self._extra_inputs: dict[str, QLineEdit | QTextEdit] = {}
         self._image_b64: str = ""
@@ -124,7 +129,7 @@ class _EntityTabWidget(QWidget):
             "characteristics": self.chars_input.text().strip(),
             "backstory": self.backstory_input.text().strip(),
             "start_date": self.start_date_input.date().toPython(),
-            "end_date": self.end_date_input.date().toPython(),
+            "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
         }
         for field, inp in self._extra_inputs.items():
             item[field] = inp.text().strip() if isinstance(inp, QLineEdit) else ""
@@ -227,13 +232,19 @@ class EventDialog(QDialog):
         self.start_date_input.dateChanged.connect(self._update_validity)
         form.addRow("Дата начала *:", self.start_date_input)
 
+        end_row = QHBoxLayout()
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setMinimumDate(QDate(100, 1, 1))
         self.end_date_input.setMaximumDate(QDate(9999, 12, 31))
         self.end_date_input.setDate(QDate.currentDate())
         self.end_date_input.dateChanged.connect(self._update_validity)
-        form.addRow("Дата конца *:", self.end_date_input)
+        end_row.addWidget(self.end_date_input, 1)
+        self.no_end_date_cb = QCheckBox("Бессрочно")
+        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setEnabled(not checked))
+        self.no_end_date_cb.toggled.connect(lambda: self._update_validity())
+        end_row.addWidget(self.no_end_date_cb)
+        form.addRow("Дата конца:", end_row)
 
         lbl = QLabel("Описание (обязательные поля)")
         lbl.setStyleSheet("font-weight: bold; margin-top: 10px;")
@@ -255,7 +266,7 @@ class EventDialog(QDialog):
 
         # Entity tabs with inline add forms
         self.tabs = QTabWidget()
-        self.org_tab = _EntityTabWidget("организацию", extra_fields=["tasks"])
+        self.org_tab = _EntityTabWidget("организацию", extra_fields=["image", "tasks"])
         self.char_tab = _EntityTabWidget("персонажа", extra_fields=["personality", "image", "tasks"])
         self.item_tab = _EntityTabWidget("предмет")
         self.loc_tab = _EntityTabWidget("локацию", extra_fields=["image", "tasks"])
@@ -287,10 +298,14 @@ class EventDialog(QDialog):
             self.start_date_input.setDate(
                 QDate(event.start_date.year, event.start_date.month, event.start_date.day)
             )
-        if hasattr(event, "end_date") and event.end_date:
-            self.end_date_input.setDate(
-                QDate(event.end_date.year, event.end_date.month, event.end_date.day)
-            )
+        if hasattr(event, "end_date"):
+            if event.end_date:
+                self.end_date_input.setDate(
+                    QDate(event.end_date.year, event.end_date.month, event.end_date.day)
+                )
+                self.no_end_date_cb.setChecked(False)
+            else:
+                self.no_end_date_cb.setChecked(True)
 
         desc = getattr(event, "description", None)
         if desc:
@@ -312,10 +327,12 @@ class EventDialog(QDialog):
         name = self.name_input.text().strip()
         chars = self.characteristics_input.toPlainText().strip()
         back = self.backstory_input.toPlainText().strip()
-        start = self.start_date_input.date().toPython()
-        end = self.end_date_input.date().toPython()
 
-        valid = bool(name) and bool(chars or back) and end >= start
+        valid = bool(name) and bool(chars or back)
+        if not self.no_end_date_cb.isChecked():
+            start = self.start_date_input.date().toPython()
+            end = self.end_date_input.date().toPython()
+            valid = valid and end >= start
         self.save_button.setEnabled(valid)
 
     def get_data(self) -> dict:
@@ -324,7 +341,7 @@ class EventDialog(QDialog):
             "characteristics": self.characteristics_input.toPlainText().strip(),
             "backstory": self.backstory_input.toPlainText().strip(),
             "start_date": self.start_date_input.date().toPython(),
-            "end_date": self.end_date_input.date().toPython(),
+            "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
         }
         if self._event_id is not None:
             data["event_id"] = self._event_id

@@ -648,11 +648,10 @@ class TestEntityCardDialogImage:
         assert w._has_image_field
         assert hasattr(w, "image_label")
 
-    def test_organization_has_no_image_panel(self, qtbot):
+    def test_organization_has_image_panel(self, qtbot):
         w = EntityCardDialog(None, entity_type="organization")
         qtbot.addWidget(w)
-        assert not w._has_image_field
-        assert not hasattr(w, "image_label")
+        assert w._has_image_field
 
     def test_item_has_no_image_panel(self, qtbot):
         w = EntityCardDialog(None, entity_type="item")

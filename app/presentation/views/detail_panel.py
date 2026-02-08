@@ -186,7 +186,7 @@ class DetailPanel(QWidget):
         self._current_event_id = getattr(event, "id", None)
         self.title_label.setText(event.name)
         sd = event.start_date.strftime("%d.%m.%Y") if event.start_date else "?"
-        ed = event.end_date.strftime("%d.%m.%Y") if event.end_date else "?"
+        ed = event.end_date.strftime("%d.%m.%Y") if event.end_date else "∞"
         self.date_label.setText(f"{sd} — {ed}")
         self._fill_list(self.org_list, event.organizations, "organization")
         self._fill_list(self.char_list, event.characters, "character")

@@ -30,7 +30,7 @@ class TimelineViewModel(QObject):
         else:
             self.events = [
                 e for e in self._all_events
-                if e.start_date >= start and e.end_date <= end
+                if e.start_date >= start and (e.end_date is None or e.end_date <= end)
             ]
         self.events_changed.emit()
 

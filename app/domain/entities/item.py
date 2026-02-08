@@ -17,7 +17,7 @@ class Item:
     name: str
     description: Description
     start_date: date
-    end_date: date
+    end_date: date | None = None
     id: int | None = None
     locations: list[Location] = field(default_factory=list)
     ratings: list[Rating] = field(default_factory=list)

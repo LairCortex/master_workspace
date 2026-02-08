@@ -7,7 +7,7 @@ from typing import Any
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QDateEdit, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QCheckBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QSpinBox, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -17,7 +17,7 @@ from app.presentation.utils.image_utils import base64_to_pixmap, load_and_encode
 # Fields that only appear for certain entity types
 _EXTRA_FIELDS = {
     "character": ["personality", "image", "tasks"],
-    "organization": ["tasks"],
+    "organization": ["image", "tasks"],
     "location": ["image", "tasks"],
     "item": [],
     "rating": [],
@@ -218,12 +218,17 @@ class EntityCardDialog(QDialog):
         self.start_date_input.setDate(QDate.currentDate())
         form.addRow("Дата начала:", self.start_date_input)
 
+        end_row = QHBoxLayout()
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setMinimumDate(QDate(100, 1, 1))
         self.end_date_input.setMaximumDate(QDate(9999, 12, 31))
         self.end_date_input.setDate(QDate.currentDate())
-        form.addRow("Дата конца:", self.end_date_input)
+        end_row.addWidget(self.end_date_input, 1)
+        self.no_end_date_cb = QCheckBox("Бессрочно")
+        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setEnabled(not checked))
+        end_row.addWidget(self.no_end_date_cb)
+        form.addRow("Дата конца:", end_row)
 
         self.characteristics_input = QTextEdit()
         self.characteristics_input.setMinimumHeight(60)
@@ -315,8 +320,12 @@ class EntityCardDialog(QDialog):
             self.rating_input.setValue(max(1, min(20, rating_val)))
         if hasattr(entity, "start_date") and entity.start_date:
             self.start_date_input.setDate(QDate(entity.start_date.year, entity.start_date.month, entity.start_date.day))
-        if hasattr(entity, "end_date") and entity.end_date:
-            self.end_date_input.setDate(QDate(entity.end_date.year, entity.end_date.month, entity.end_date.day))
+        if hasattr(entity, "end_date"):
+            if entity.end_date:
+                self.end_date_input.setDate(QDate(entity.end_date.year, entity.end_date.month, entity.end_date.day))
+                self.no_end_date_cb.setChecked(False)
+            else:
+                self.no_end_date_cb.setChecked(True)
 
         desc = getattr(entity, "description", None)
         if desc:
@@ -352,7 +361,7 @@ class EntityCardDialog(QDialog):
             "name": self.name_input.text().strip(),
             "rating": self.rating_input.value(),
             "start_date": self.start_date_input.date().toPython(),
-            "end_date": self.end_date_input.date().toPython(),
+            "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
             "characteristics": self.characteristics_input.toPlainText().strip(),
             "backstory": self.backstory_input.toPlainText().strip(),
         }

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from app.infrastructure.db.models import DescriptionModel, ItemModel
 from app.infrastructure.repositories.base_repository import BaseRepository
@@ -19,9 +19,9 @@ class ItemRepository(BaseRepository[ItemModel]):
             .outerjoin(DescriptionModel, self._model.description_id == DescriptionModel.id)
             .where(
                 or_(
-                    self._model.name.ilike(f"%{query}%"),
-                    DescriptionModel.characteristics.ilike(f"%{query}%"),
-                    DescriptionModel.backstory.ilike(f"%{query}%"),
+                    func.lower(self._model.name).contains(query.lower()),
+                    func.lower(DescriptionModel.characteristics).contains(query.lower()),
+                    func.lower(DescriptionModel.backstory).contains(query.lower()),
                 )
             )
         )

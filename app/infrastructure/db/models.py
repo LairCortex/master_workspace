@@ -109,7 +109,7 @@ class EventModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
     organizations: Mapped[list[OrganizationModel]] = relationship(
@@ -133,8 +133,9 @@ class OrganizationModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
+    image: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
@@ -159,7 +160,7 @@ class CharacterModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     personality: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)
@@ -190,7 +191,7 @@ class ItemModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
@@ -218,7 +219,7 @@ class LocationModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
@@ -247,7 +248,7 @@ class RatingModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
-    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     level: Mapped[int] = mapped_column(Integer, nullable=False)
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")

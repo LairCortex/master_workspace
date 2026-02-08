@@ -93,7 +93,7 @@ class TimelineWidget(QWidget):
         self.list_widget.clear()
         for i, event in enumerate(events):
             start = event.start_date.strftime("%d.%m.%Y") if event.start_date else "?"
-            end = event.end_date.strftime("%d.%m.%Y") if event.end_date else "?"
+            end = event.end_date.strftime("%d.%m.%Y") if event.end_date else "∞"
             text = f"{start} — {end}\n{event.name}"
             item = QListWidgetItem(text)
             item.setData(256, event)  # Qt.UserRole = 256

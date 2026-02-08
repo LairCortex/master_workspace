@@ -54,6 +54,7 @@ async def init_db(engine):
         ("characters", "rating", "INTEGER DEFAULT 1"),
         ("items", "rating", "INTEGER DEFAULT 1"),
         ("locations", "rating", "INTEGER DEFAULT 1"),
+        ("organizations", "image", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, col_type in _MIGRATIONS:

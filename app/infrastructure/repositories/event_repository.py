@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, and_
 
 from app.infrastructure.db.models import DescriptionModel, EventModel
 from app.infrastructure.repositories.base_repository import BaseRepository
@@ -19,9 +19,9 @@ class EventRepository(BaseRepository[EventModel]):
             .outerjoin(DescriptionModel, self._model.description_id == DescriptionModel.id)
             .where(
                 or_(
-                    self._model.name.ilike(f"%{query}%"),
-                    DescriptionModel.characteristics.ilike(f"%{query}%"),
-                    DescriptionModel.backstory.ilike(f"%{query}%"),
+                    func.lower(self._model.name).contains(query.lower()),
+                    func.lower(DescriptionModel.characteristics).contains(query.lower()),
+                    func.lower(DescriptionModel.backstory).contains(query.lower()),
                 )
             )
         )
@@ -34,11 +34,19 @@ class EventRepository(BaseRepository[EventModel]):
         return result.scalars().all()
 
     async def get_events_at_date(self, target_date) -> Sequence[EventModel]:
-        """Return events whose date range covers the target date."""
+        """Return events whose date range covers the target date.
+
+        Events with NULL end_date are treated as ongoing (infinite).
+        """
         stmt = (
             select(self._model)
             .where(self._model.start_date <= target_date)
-            .where(self._model.end_date >= target_date)
+            .where(
+                or_(
+                    self._model.end_date.is_(None),
+                    self._model.end_date >= target_date,
+                )
+            )
             .order_by(self._model.start_date)
         )
         result = await self._session.execute(stmt)

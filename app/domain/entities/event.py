@@ -20,9 +20,7 @@ def _validate_base(name: str, description: Description | None, start_date: date 
         raise ValueError("description is required")
     if start_date is None:
         raise ValueError("start_date is required")
-    if end_date is None:
-        raise ValueError("end_date is required")
-    if end_date < start_date:
+    if end_date is not None and end_date < start_date:
         raise ValueError("end_date must not be before start_date")
 
 
@@ -31,7 +29,7 @@ class Event:
     name: str
     description: Description
     start_date: date
-    end_date: date
+    end_date: date | None = None
     id: int | None = None
     organizations: list[Organization] = field(default_factory=list)
     characters: list[Character] = field(default_factory=list)

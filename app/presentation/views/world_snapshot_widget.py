@@ -177,7 +177,7 @@ class WorldSnapshotWidget(QWidget):
             for ev in events:
                 ev_item = QTreeWidgetItem(ev_section)
                 sd = ev.start_date.strftime("%d.%m.%Y") if ev.start_date else "?"
-                ed = ev.end_date.strftime("%d.%m.%Y") if ev.end_date else "?"
+                ed = ev.end_date.strftime("%d.%m.%Y") if ev.end_date else "∞"
                 ev_item.setText(0, f"{sd} — {ed}  |  {ev.name}")
                 ev_item.setIcon(0, _icon("event"))
                 ev_item.setData(0, Qt.ItemDataRole.UserRole, ("event", ev.id))

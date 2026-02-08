@@ -18,7 +18,7 @@ class Location:
     name: str
     description: Description
     start_date: date
-    end_date: date
+    end_date: date | None = None
     id: int | None = None
     tasks: str | None = None
     image: str | None = None
