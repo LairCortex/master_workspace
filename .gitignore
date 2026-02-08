@@ -2,23 +2,42 @@
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 *.egg-info/
+*.egg
 .eggs/
+*.whl
+pip-log.txt
 
 # Virtual environment
 .venv/
+venv/
+env/
+ENV/
 
 # Build artifacts
 build/
 dist/
+*.spec.bak
+*.manifest
+*.nri
+
+# PyInstaller
+*.log
 
 # IDE
 .cursor/
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 
 # Database files
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Games directory
 games/
@@ -26,3 +45,14 @@ games/
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# mypy / type checkers
+.mypy_cache/
+.pytype/

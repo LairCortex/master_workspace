@@ -198,40 +198,63 @@ class Application:
 
         window.timeline_widget.filter_changed.connect(on_filter_changed)
 
+        # ── Helper: load available entities and set them on dialog tabs ──
+        async def _load_available_into_dialog(dialog):
+            """Load all entities from DB and set them as available for linking."""
+            desc_repo = BaseRepository(self._session, DescriptionModel)
+            org_svc = EntityService(repo=OrganizationRepository(self._session), description_repo=desc_repo)
+            char_svc = EntityService(repo=CharacterRepository(self._session), description_repo=desc_repo)
+            item_svc = EntityService(repo=ItemRepository(self._session), description_repo=desc_repo)
+            loc_svc = EntityService(repo=LocationRepository(self._session), description_repo=desc_repo)
+            dialog.org_tab.set_available_entities(list(await org_svc.get_all()))
+            dialog.char_tab.set_available_entities(list(await char_svc.get_all()))
+            dialog.item_tab.set_available_entities(list(await item_svc.get_all()))
+            dialog.loc_tab.set_available_entities(list(await loc_svc.get_all()))
+
+        # ── Helper: process entity items (existing → link, new → create) ──
+        async def _process_entity_items(items, repo_cls, event_collection):
+            desc_repo = BaseRepository(self._session, DescriptionModel)
+            existing_ids = {obj.id for obj in event_collection}
+            new_ids = set()
+
+            for ent in items:
+                eid = ent.get("_existing_id")
+                if eid:
+                    new_ids.add(eid)
+                    if eid not in existing_ids:
+                        svc = EntityService(repo=repo_cls(self._session), description_repo=desc_repo)
+                        obj = await svc.get_entity(eid)
+                        if obj:
+                            event_collection.append(obj)
+                else:
+                    svc = EntityService(repo=repo_cls(self._session), description_repo=desc_repo)
+                    obj = await svc.create_entity(**ent)
+                    event_collection.append(obj)
+                    new_ids.add(obj.id)
+
+            # Remove unlinked entities (were in event before but not in new list)
+            to_remove = [obj for obj in event_collection if obj.id not in new_ids]
+            for obj in to_remove:
+                event_collection.remove(obj)
+
         # Add event button
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window)
+            asyncio.ensure_future(_load_available_into_dialog(dialog))
 
             async def on_saved(data):
-                # Extract related entity lists from data
                 org_items = data.pop("organizations", [])
                 char_items = data.pop("characters", [])
                 item_items = data.pop("items", [])
                 loc_items = data.pop("locations", [])
 
                 event = await event_service.create_event(**data)
-
-                # Eagerly load M2M collections to avoid MissingGreenlet on append
                 await self._session.refresh(event, attribute_names=["organizations", "characters", "items", "locations"])
 
-                # Create related entities and link to event
-                desc_repo = BaseRepository(self._session, DescriptionModel)
-                for ent in org_items:
-                    svc = EntityService(repo=OrganizationRepository(self._session), description_repo=desc_repo)
-                    obj = await svc.create_entity(**ent)
-                    event.organizations.append(obj)
-                for ent in char_items:
-                    svc = EntityService(repo=CharacterRepository(self._session), description_repo=desc_repo)
-                    obj = await svc.create_entity(**ent)
-                    event.characters.append(obj)
-                for ent in item_items:
-                    svc = EntityService(repo=ItemRepository(self._session), description_repo=desc_repo)
-                    obj = await svc.create_entity(**ent)
-                    event.items.append(obj)
-                for ent in loc_items:
-                    svc = EntityService(repo=LocationRepository(self._session), description_repo=desc_repo)
-                    obj = await svc.create_entity(**ent)
-                    event.locations.append(obj)
+                await _process_entity_items(org_items, OrganizationRepository, event.organizations)
+                await _process_entity_items(char_items, CharacterRepository, event.characters)
+                await _process_entity_items(item_items, ItemRepository, event.items)
+                await _process_entity_items(loc_items, LocationRepository, event.locations)
 
                 await self._session.commit()
                 await timeline_vm.load_events()
@@ -242,18 +265,23 @@ class Application:
 
         window.timeline_widget.add_event_requested.connect(on_add_event)
 
-        # Edit event button
+        # Edit event (double-click on timeline)
         async def on_edit_event(event_id):
             event = await event_service.get_event(event_id)
             if not event:
                 return
             dialog = EventDialog(event_dialog_vm, parent=window)
+            await _load_available_into_dialog(dialog)
             dialog.populate(event)
 
             async def on_event_updated(data):
                 eid = data.pop("event_id", None)
                 chars_text = data.pop("characteristics", "")
                 backstory_text = data.pop("backstory", "")
+                org_items = data.pop("organizations", [])
+                char_items = data.pop("characters", [])
+                item_items = data.pop("items", [])
+                loc_items = data.pop("locations", [])
 
                 await event_service.update_event(
                     event_id,
@@ -268,6 +296,13 @@ class Application:
                     updated_event.description.characteristics = chars_text
                     updated_event.description.backstory = backstory_text
 
+                # Sync M2M relationships
+                await self._session.refresh(updated_event, attribute_names=["organizations", "characters", "items", "locations"])
+                await _process_entity_items(org_items, OrganizationRepository, updated_event.organizations)
+                await _process_entity_items(char_items, CharacterRepository, updated_event.characters)
+                await _process_entity_items(item_items, ItemRepository, updated_event.items)
+                await _process_entity_items(loc_items, LocationRepository, updated_event.locations)
+
                 await self._session.commit()
                 await timeline_vm.load_events()
                 window.timeline_widget.update_events(timeline_vm.events)
@@ -279,7 +314,7 @@ class Application:
             dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
             dialog.open()
 
-        window.detail_panel.edit_event_requested.connect(
+        window.timeline_widget.event_double_clicked.connect(
             lambda eid: asyncio.ensure_future(on_edit_event(eid))
         )
 

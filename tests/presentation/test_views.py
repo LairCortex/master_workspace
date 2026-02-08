@@ -449,104 +449,90 @@ class TestSearchBar:
         assert emitted == []
 
 
-# ── DetailPanel edit button ──────────────────────────────────────────────
+# ── Timeline double-click ─────────────────────────────────────────────────
 
-class TestDetailPanelEdit:
-    def test_edit_button_disabled_by_default(self, qtbot):
+class TestTimelineDoubleClick:
+    def test_double_click_signal_exists(self, qtbot):
         vm = MagicMock()
-        w = DetailPanel(vm)
+        vm.events = []
+        w = TimelineWidget(vm)
         qtbot.addWidget(w)
-        assert not w.edit_button.isEnabled()
+        assert hasattr(w, "event_double_clicked")
 
-    def test_edit_button_enabled_after_show_event(self, qtbot):
+    def test_double_click_emits_event_id(self, qtbot):
         vm = MagicMock()
-        w = DetailPanel(vm)
+        vm.events = []
+        w = TimelineWidget(vm)
         qtbot.addWidget(w)
         event = MagicMock()
-        event.id = 5
+        event.id = 42
         event.name = "Battle"
         event.start_date = date(1200, 1, 1)
         event.end_date = date(1200, 12, 31)
-        event.organizations = []
-        event.characters = []
-        event.items = []
-        event.locations = []
-        w.show_event(event)
-        assert w.edit_button.isEnabled()
+        w.update_events([event])
+        received = []
+        w.event_double_clicked.connect(lambda eid: received.append(eid))
+        item = w.list_widget.item(0)
+        w.list_widget.itemDoubleClicked.emit(item)
+        assert received == [42]
 
-    def test_edit_button_emits_signal(self, qtbot):
+    def test_detail_panel_no_edit_button(self, qtbot):
         vm = MagicMock()
         w = DetailPanel(vm)
         qtbot.addWidget(w)
-        event = MagicMock()
-        event.id = 7
-        event.name = "Siege"
-        event.start_date = date(1200, 1, 1)
-        event.end_date = date(1200, 12, 31)
-        event.organizations = []
-        event.characters = []
-        event.items = []
-        event.locations = []
-        w.show_event(event)
-        with qtbot.waitSignal(w.edit_event_requested, timeout=1000) as blocker:
-            w.edit_button.click()
-        assert blocker.args == [7]
-
-    def test_edit_button_disabled_after_clear(self, qtbot):
-        vm = MagicMock()
-        w = DetailPanel(vm)
-        qtbot.addWidget(w)
-        event = MagicMock()
-        event.id = 1
-        event.name = "X"
-        event.start_date = date(1200, 1, 1)
-        event.end_date = date(1200, 12, 31)
-        event.organizations = []
-        event.characters = []
-        event.items = []
-        event.locations = []
-        w.show_event(event)
-        w.clear()
-        assert not w.edit_button.isEnabled()
+        assert not hasattr(w, "edit_button")
 
 
 # ── EventDialog edit mode ────────────────────────────────────────────────
 
 class TestEventDialogEditMode:
+    def _make_event(self, id_=10):
+        event = MagicMock()
+        event.id = id_
+        event.name = "Battle"
+        event.start_date = date(1200, 3, 15)
+        event.end_date = date(1200, 9, 1)
+        event.description = MagicMock(characteristics="Big fight", backstory="Ancient war")
+        event.organizations = []
+        event.characters = []
+        event.items = []
+        event.locations = []
+        return event
+
     def test_populate_sets_fields(self, qtbot):
         vm = MagicMock()
         w = EventDialog(vm)
         qtbot.addWidget(w)
-        event = MagicMock()
-        event.id = 10
-        event.name = "Battle"
-        event.start_date = date(1200, 3, 15)
-        event.end_date = date(1200, 9, 1)
-        desc = MagicMock()
-        desc.characteristics = "Big fight"
-        desc.backstory = "Ancient war"
-        event.description = desc
+        event = self._make_event()
         w.populate(event)
         assert w.name_input.text() == "Battle"
         assert w.event_id == 10
         assert w.characteristics_input.toPlainText() == "Big fight"
         assert w.backstory_input.toPlainText() == "Ancient war"
-        assert w.tabs.isHidden()
+        assert not w.tabs.isHidden()  # tabs visible in edit mode
 
-    def test_get_data_edit_mode_has_event_id(self, qtbot):
+    def test_populate_pre_fills_existing_entities(self, qtbot):
         vm = MagicMock()
         w = EventDialog(vm)
         qtbot.addWidget(w)
-        event = MagicMock()
-        event.id = 10
-        event.name = "Battle"
-        event.start_date = date(1200, 3, 15)
-        event.end_date = date(1200, 9, 1)
-        event.description = MagicMock(characteristics="x", backstory="y")
+        org = MagicMock()
+        org.id = 1
+        org.name = "Guild"
+        event = self._make_event()
+        event.organizations = [org]
+        w.populate(event)
+        assert w.org_tab.list_widget.count() == 1
+        assert w.org_tab.get_items()[0]["_existing_id"] == 1
+
+    def test_get_data_edit_mode_has_event_id_and_entities(self, qtbot):
+        vm = MagicMock()
+        w = EventDialog(vm)
+        qtbot.addWidget(w)
+        event = self._make_event()
         w.populate(event)
         data = w.get_data()
         assert data["event_id"] == 10
-        assert "organizations" not in data
+        assert "organizations" in data
 
     def test_get_data_create_mode_no_event_id(self, qtbot):
         vm = MagicMock()
@@ -799,6 +785,50 @@ def _mock_entity(id_, name, entity_type, rating=1, **extra):
     for attr in ("characters", "organizations", "items", "locations", "events"):
         setattr(e, attr, extra.get(attr, []))
     return e
+
+
+class TestEntityTabWidgetLinking:
+    def test_has_link_button(self, qtbot):
+        from app.presentation.views.event_dialog import _EntityTabWidget
+        w = _EntityTabWidget("персонажа")
+        qtbot.addWidget(w)
+        assert hasattr(w, "link_button")
+        assert "Привязать" in w.link_button.text()
+
+    def test_set_available_entities(self, qtbot):
+        from app.presentation.views.event_dialog import _EntityTabWidget
+        w = _EntityTabWidget("организацию")
+        qtbot.addWidget(w)
+        ent = MagicMock()
+        ent.id = 1
+        ent.name = "Guild"
+        w.set_available_entities([ent])
+        assert len(w._available_entities) == 1
+
+    def test_populate_existing(self, qtbot):
+        from app.presentation.views.event_dialog import _EntityTabWidget
+        w = _EntityTabWidget("предмет")
+        qtbot.addWidget(w)
+        ent = MagicMock()
+        ent.id = 5
+        ent.name = "Sword"
+        w.populate_existing([ent])
+        assert w.list_widget.count() == 1
+        items = w.get_items()
+        assert items[0]["_existing_id"] == 5
+        assert items[0]["name"] == "Sword"
+
+    def test_add_new_entity_no_existing_id(self, qtbot):
+        from app.presentation.views.event_dialog import _EntityTabWidget
+        w = _EntityTabWidget("предмет")
+        qtbot.addWidget(w)
+        w.name_input.setText("New Item")
+        w.chars_input.setText("Sharp")
+        w._on_add()
+        items = w.get_items()
+        assert len(items) == 1
+        assert "_existing_id" not in items[0]
+        assert items[0]["name"] == "New Item"
 
 
 class TestWorldSnapshotWidget:

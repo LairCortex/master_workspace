@@ -7,9 +7,9 @@ from typing import Any
 
 from PySide6.QtCore import QDate, Signal
 from PySide6.QtWidgets import (
-    QDateEdit, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QPushButton, QScrollArea, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QDateEdit, QDialog, QFileDialog, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QPushButton, QScrollArea, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from app.presentation.utils.image_utils import load_and_encode
@@ -22,7 +22,8 @@ class _EntityTabWidget(QWidget):
         super().__init__(parent)
         self._entity_label = entity_label
         self._extra_fields = extra_fields or []
-        self._items: list[dict] = []
+        self._items: list[dict] = []  # each dict has optional "_existing_id"
+        self._available_entities: list = []  # entities from DB for linking
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -87,10 +88,13 @@ class _EntityTabWidget(QWidget):
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
+        self.link_button = QPushButton(f"Привязать существующего")
+        self.link_button.clicked.connect(self._on_link_existing)
+        btn_row.addWidget(self.link_button)
         btn_row.addStretch()
         self.add_button = QPushButton(f"Добавить {self._entity_label}")
         self.add_button.clicked.connect(self._on_add)
-        self.remove_button = QPushButton("Удалить выбранное")
+        self.remove_button = QPushButton("Удалить")
         self.remove_button.clicked.connect(self._on_remove)
         btn_row.addWidget(self.add_button)
         btn_row.addWidget(self.remove_button)
@@ -147,6 +151,48 @@ class _EntityTabWidget(QWidget):
         if 0 <= row < len(self._items):
             self._items.pop(row)
             self.list_widget.takeItem(row)
+
+    def set_available_entities(self, entities: list) -> None:
+        """Set the list of existing entities available for linking."""
+        self._available_entities = entities
+
+    def populate_existing(self, entities: list) -> None:
+        """Pre-fill the tab with entities already linked to the event."""
+        for ent in entities:
+            entry = {"_existing_id": ent.id, "name": getattr(ent, "name", str(ent))}
+            self._items.append(entry)
+            self.list_widget.addItem(f"🔗 {entry['name']}")
+
+    def _on_link_existing(self) -> None:
+        """Show a dialog to pick from existing entities in the DB."""
+        # Exclude already-added IDs
+        added_ids = {it.get("_existing_id") for it in self._items if it.get("_existing_id")}
+        available = [e for e in self._available_entities if e.id not in added_ids]
+        if not available:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Привязать {self._entity_label}")
+        dlg.setMinimumSize(360, 320)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Выберите из списка (множественный выбор):"))
+        pick_list = QListWidget()
+        pick_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for ent in available:
+            item = QListWidgetItem(getattr(ent, "name", str(ent)))
+            item.setData(256, ent)
+            pick_list.addItem(item)
+        lay.addWidget(pick_list, 1)
+        btn = QPushButton("Привязать")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            for item in pick_list.selectedItems():
+                ent = item.data(256)
+                entry = {"_existing_id": ent.id, "name": getattr(ent, "name", str(ent))}
+                self._items.append(entry)
+                self.list_widget.addItem(f"🔗 {entry['name']}")
 
     def get_items(self) -> list[dict]:
         return list(self._items)
@@ -251,8 +297,11 @@ class EventDialog(QDialog):
             self.characteristics_input.setPlainText(getattr(desc, "characteristics", "") or "")
             self.backstory_input.setPlainText(getattr(desc, "backstory", "") or "")
 
-        # Hide entity tabs in edit mode (entities managed via detail panel)
-        self.tabs.setVisible(False)
+        # Pre-fill entity tabs with currently linked entities
+        self.org_tab.populate_existing(getattr(event, "organizations", []))
+        self.char_tab.populate_existing(getattr(event, "characters", []))
+        self.item_tab.populate_existing(getattr(event, "items", []))
+        self.loc_tab.populate_existing(getattr(event, "locations", []))
         self._update_validity()
 
     @property
@@ -279,11 +328,10 @@ class EventDialog(QDialog):
         }
         if self._event_id is not None:
             data["event_id"] = self._event_id
-        else:
-            data["organizations"] = self.org_tab.get_items()
-            data["characters"] = self.char_tab.get_items()
-            data["items"] = self.item_tab.get_items()
-            data["locations"] = self.loc_tab.get_items()
+        data["organizations"] = self.org_tab.get_items()
+        data["characters"] = self.char_tab.get_items()
+        data["items"] = self.item_tab.get_items()
+        data["locations"] = self.loc_tab.get_items()
         return data
 
     def _on_save(self) -> None:

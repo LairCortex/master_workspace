@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 class TimelineWidget(QWidget):
     event_selected = Signal(int)
+    event_double_clicked = Signal(int)  # event_id
     add_event_requested = Signal()
     filter_changed = Signal(object, object)  # (start_date | None, end_date | None)
 
@@ -78,6 +79,7 @@ class TimelineWidget(QWidget):
         self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
+        self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self.list_widget, 1)
 
     def update_events(self, events: Sequence[Any]) -> None:
@@ -90,6 +92,11 @@ class TimelineWidget(QWidget):
 
     def _on_row_changed(self, row: int) -> None:
         self.event_selected.emit(row)
+
+    def _on_double_click(self, item: QListWidgetItem) -> None:
+        event = item.data(256)
+        if event and hasattr(event, "id"):
+            self.event_double_clicked.emit(event.id)
 
     def _on_apply_filter(self) -> None:
         start = self.filter_start.date().toPython()

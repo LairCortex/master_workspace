@@ -20,15 +20,19 @@ from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 def _docs_dir() -> Path:
     """Return path to docs/ directory (works in dev and frozen builds)."""
     if getattr(sys, "frozen", False):
-        # PyInstaller 6.x: datas go into _internal/ next to the executable
-        base = Path(sys.executable).resolve().parent
-        for candidate in [
-            base / "_internal" / "docs",
-            base / "docs",
-        ]:
+        exe = Path(sys.executable).resolve()
+        # Candidates: next to exe, _internal/ next to exe,
+        # macOS .app bundle: Contents/Resources/, Contents/Frameworks/
+        candidates = [
+            exe.parent / "_internal" / "docs",
+            exe.parent / "docs",
+            exe.parent.parent / "Resources" / "docs",
+            exe.parent.parent / "Frameworks" / "docs",
+        ]
+        for candidate in candidates:
             if candidate.is_dir():
                 return candidate
-        return base / "_internal" / "docs"  # fallback
+        return exe.parent / "_internal" / "docs"  # fallback
     return Path(__file__).resolve().parent.parent.parent.parent / "docs"
 
 

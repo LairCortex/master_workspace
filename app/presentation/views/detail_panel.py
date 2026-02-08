@@ -139,7 +139,6 @@ class _EntityItemWidget(QWidget):
 
 class DetailPanel(QWidget):
     entity_clicked = Signal(str, int)  # entity_type, entity_id
-    edit_event_requested = Signal(int)  # event_id
 
     def __init__(self, detail_vm, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -156,15 +155,6 @@ class DetailPanel(QWidget):
 
         self.date_label = QLabel("")
         layout.addWidget(self.date_label)
-
-        # Edit button row
-        btn_row = QHBoxLayout()
-        self.edit_button = QPushButton("Редактировать событие")
-        self.edit_button.setEnabled(False)
-        self.edit_button.clicked.connect(self._on_edit)
-        btn_row.addWidget(self.edit_button)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
 
         self.tabs = QTabWidget()
         self.org_list = QListWidget()
@@ -186,7 +176,6 @@ class DetailPanel(QWidget):
 
     def show_event(self, event: Any) -> None:
         self._current_event_id = getattr(event, "id", None)
-        self.edit_button.setEnabled(True)
         self.title_label.setText(event.name)
         self.date_label.setText(f"{event.start_date} — {event.end_date}")
         self._fill_list(self.org_list, event.organizations, "organization")
@@ -196,7 +185,6 @@ class DetailPanel(QWidget):
 
     def clear(self) -> None:
         self._current_event_id = None
-        self.edit_button.setEnabled(False)
         self.title_label.setText("")
         self.date_label.setText("")
         self.org_list.clear()
@@ -237,7 +225,3 @@ class DetailPanel(QWidget):
         data = item.data(256)
         if data and data.get("id"):
             self.entity_clicked.emit(entity_type, data["id"])
-
-    def _on_edit(self) -> None:
-        if self._current_event_id is not None:
-            self.edit_event_requested.emit(self._current_event_id)
