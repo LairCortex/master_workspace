@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.image_utils import load_and_encode
+from app.presentation.views.mention_text_edit import MentionTextEdit
 
 
 class _EntityTabWidget(QWidget):
@@ -40,12 +41,16 @@ class _EntityTabWidget(QWidget):
         self.name_input.setPlaceholderText(f"Название {self._entity_label}")
         form.addRow("Название:", self.name_input)
 
-        self.chars_input = QLineEdit()
+        self.chars_input = QTextEdit()
         self.chars_input.setPlaceholderText("Характеристики")
+        self.chars_input.setMinimumHeight(50)
+        self.chars_input.setMaximumHeight(80)
         form.addRow("Характеристики:", self.chars_input)
 
-        self.backstory_input = QLineEdit()
+        self.backstory_input = QTextEdit()
         self.backstory_input.setPlaceholderText("Предыстория")
+        self.backstory_input.setMinimumHeight(50)
+        self.backstory_input.setMaximumHeight(80)
         form.addRow("Предыстория:", self.backstory_input)
 
         self.start_date_input = QDateEdit()
@@ -85,8 +90,10 @@ class _EntityTabWidget(QWidget):
                 img_row.addWidget(img_btn)
                 form.addRow(f"{field_labels['image']}:", img_row)
             else:
-                inp = QLineEdit()
+                inp = QTextEdit()
                 inp.setPlaceholderText(field_labels.get(field, field))
+                inp.setMinimumHeight(40)
+                inp.setMaximumHeight(70)
                 form.addRow(f"{field_labels.get(field, field)}:", inp)
                 self._extra_inputs[field] = inp
 
@@ -126,13 +133,13 @@ class _EntityTabWidget(QWidget):
             return
         item = {
             "name": name,
-            "characteristics": self.chars_input.text().strip(),
-            "backstory": self.backstory_input.text().strip(),
+            "characteristics": self.chars_input.toPlainText().strip(),
+            "backstory": self.backstory_input.toPlainText().strip(),
             "start_date": self.start_date_input.date().toPython(),
             "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
         }
         for field, inp in self._extra_inputs.items():
-            item[field] = inp.text().strip() if isinstance(inp, QLineEdit) else ""
+            item[field] = inp.toPlainText().strip() if isinstance(inp, QTextEdit) else inp.text().strip()
         # Image field — store base64
         if "image" in self._extra_fields:
             item["image"] = self._image_b64 if self._image_b64 else None
@@ -143,8 +150,7 @@ class _EntityTabWidget(QWidget):
         self.chars_input.clear()
         self.backstory_input.clear()
         for inp in self._extra_inputs.values():
-            if isinstance(inp, QLineEdit):
-                inp.clear()
+            inp.clear()
         # Clear image selection
         self._image_b64 = ""
         if hasattr(self, "_image_label"):
@@ -205,6 +211,7 @@ class _EntityTabWidget(QWidget):
 
 class EventDialog(QDialog):
     saved = Signal(dict)
+    mention_clicked = Signal(str, int)  # (entity_type, entity_id)
 
     def __init__(self, event_dialog_vm, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -213,6 +220,9 @@ class EventDialog(QDialog):
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
+        # Wire mention clicks from all MentionTextEdits
+        self.characteristics_input.mention_clicked.connect(self.mention_clicked)
+        self.backstory_input.mention_clicked.connect(self.mention_clicked)
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -252,13 +262,13 @@ class EventDialog(QDialog):
         lbl.setStyleSheet("font-weight: bold; margin-top: 10px;")
         form.addRow(lbl)
 
-        self.characteristics_input = QTextEdit()
+        self.characteristics_input = MentionTextEdit()
         self.characteristics_input.setPlaceholderText("Характеристики *")
         self.characteristics_input.setMinimumHeight(60)
         self.characteristics_input.textChanged.connect(self._update_validity)
         form.addRow("Характеристики *:", self.characteristics_input)
 
-        self.backstory_input = QTextEdit()
+        self.backstory_input = MentionTextEdit()
         self.backstory_input.setPlaceholderText("Предыстория *")
         self.backstory_input.setMinimumHeight(60)
         self.backstory_input.textChanged.connect(self._update_validity)
@@ -311,8 +321,8 @@ class EventDialog(QDialog):
 
         desc = getattr(event, "description", None)
         if desc:
-            self.characteristics_input.setPlainText(getattr(desc, "characteristics", "") or "")
-            self.backstory_input.setPlainText(getattr(desc, "backstory", "") or "")
+            self.characteristics_input.setContent(getattr(desc, "characteristics", "") or "")
+            self.backstory_input.setContent(getattr(desc, "backstory", "") or "")
 
         # Pre-fill entity tabs with currently linked entities
         self.org_tab.populate_existing(getattr(event, "organizations", []))
@@ -340,8 +350,8 @@ class EventDialog(QDialog):
     def get_data(self) -> dict:
         data = {
             "name": self.name_input.text().strip(),
-            "characteristics": self.characteristics_input.toPlainText().strip(),
-            "backstory": self.backstory_input.toPlainText().strip(),
+            "characteristics": self.characteristics_input.getContent().strip(),
+            "backstory": self.backstory_input.getContent().strip(),
             "start_date": self.start_date_input.date().toPython(),
             "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
         }
@@ -352,6 +362,10 @@ class EventDialog(QDialog):
         data["items"] = self.item_tab.get_items()
         data["locations"] = self.loc_tab.get_items()
         return data
+
+    def get_mention_edits(self) -> list[MentionTextEdit]:
+        """Return all MentionTextEdit instances for wiring search."""
+        return [self.characteristics_input, self.backstory_input]
 
     def _on_save(self) -> None:
         self.saved.emit(self.get_data())

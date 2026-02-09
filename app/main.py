@@ -164,6 +164,8 @@ class Application:
             game_name=game_name,
         )
 
+        self._search_service = search_service
+
         # Wire signals
         self._wire_signals(window, timeline_vm, detail_vm, search_vm, event_dialog_vm, event_service)
 
@@ -285,6 +287,7 @@ class Application:
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window)
             asyncio.ensure_future(_load_available_into_dialog(dialog))
+            self._wire_mentions_for_dialog(dialog, on_entity_click)
 
             async def on_saved(data):
                 try:
@@ -321,6 +324,7 @@ class Application:
                 dialog = EventDialog(event_dialog_vm, parent=window)
                 await _load_available_into_dialog(dialog)
                 dialog.populate(event)
+                self._wire_mentions_for_dialog(dialog, on_entity_click)
 
                 async def on_event_updated(data):
                     try:
@@ -406,6 +410,7 @@ class Application:
 
                 dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
                 dialog.populate(entity)
+                self._wire_mentions_for_dialog(dialog, on_entity_click)
 
                 # Load available related entities for linking
                 from app.presentation.views.entity_card_dialog import _RELATED_CONFIG
@@ -473,6 +478,7 @@ class Application:
                 # Handle create new related entity
                 async def on_create_related(attr_name, related_entity_type):
                     sub_dialog = EntityCardDialog(None, entity_type=related_entity_type, parent=dialog)
+                    self._wire_mentions_for_dialog(sub_dialog, on_entity_click)
 
                     async def on_sub_saved(sub_data):
                         sub_data.pop("related_changes", None)
@@ -516,6 +522,24 @@ class Application:
         # World snapshot — entity double-click (reuse on_entity_click)
         window.world_snapshot.entity_clicked.connect(
             lambda t, i: asyncio.ensure_future(on_entity_click(t, i))
+        )
+
+    def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
+        """Connect mention search and click signals for a dialog's MentionTextEdits."""
+        for edit in dialog.get_mention_edits():
+            async def _do_search(query, _edit=edit):
+                try:
+                    results = await self._search_service.search_names(query)
+                    _edit.show_mention_results(results)
+                except Exception:
+                    pass
+
+            edit.mention_search_requested.connect(
+                lambda q, _fn=_do_search: asyncio.ensure_future(_fn(q))
+            )
+
+        dialog.mention_clicked.connect(
+            lambda t, i: asyncio.ensure_future(on_entity_click_fn(t, i))
         )
 
     def _get_entity_service(self, entity_type: str) -> EntityService | None:

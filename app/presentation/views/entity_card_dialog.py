@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.image_utils import base64_to_pixmap, load_and_encode
+from app.presentation.views.mention_text_edit import MentionTextEdit
 
 # Fields that only appear for certain entity types
 _EXTRA_FIELDS = {
@@ -150,6 +151,7 @@ class _RelatedSection(QWidget):
 class EntityCardDialog(QDialog):
     saved = Signal(dict)
     create_related_requested = Signal(str, str)  # (attr_name, entity_type)
+    mention_clicked = Signal(str, int)  # (entity_type, entity_id)
 
     def __init__(self, entity_vm, entity_type: str = "organization", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -230,12 +232,14 @@ class EntityCardDialog(QDialog):
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
 
-        self.characteristics_input = QTextEdit()
+        self.characteristics_input = MentionTextEdit()
         self.characteristics_input.setMinimumHeight(60)
+        self.characteristics_input.mention_clicked.connect(self.mention_clicked)
         form.addRow("Характеристики:", self.characteristics_input)
 
-        self.backstory_input = QTextEdit()
+        self.backstory_input = MentionTextEdit()
         self.backstory_input.setMinimumHeight(60)
+        self.backstory_input.mention_clicked.connect(self.mention_clicked)
         form.addRow("Предыстория:", self.backstory_input)
 
         # Extra fields based on entity type
@@ -246,13 +250,15 @@ class EntityCardDialog(QDialog):
         self.tasks_input = None
 
         if "personality" in extras:
-            self.personality_input = QTextEdit()
+            self.personality_input = MentionTextEdit()
             self.personality_input.setMinimumHeight(40)
+            self.personality_input.mention_clicked.connect(self.mention_clicked)
             form.addRow("Личность:", self.personality_input)
 
         if "tasks" in extras:
-            self.tasks_input = QTextEdit()
+            self.tasks_input = MentionTextEdit()
             self.tasks_input.setMinimumHeight(40)
+            self.tasks_input.mention_clicked.connect(self.mention_clicked)
             form.addRow("Задачи:", self.tasks_input)
 
         form_layout.addLayout(form)
@@ -329,13 +335,13 @@ class EntityCardDialog(QDialog):
 
         desc = getattr(entity, "description", None)
         if desc:
-            self.characteristics_input.setPlainText(getattr(desc, "characteristics", "") or "")
-            self.backstory_input.setPlainText(getattr(desc, "backstory", "") or "")
+            self.characteristics_input.setContent(getattr(desc, "characteristics", "") or "")
+            self.backstory_input.setContent(getattr(desc, "backstory", "") or "")
 
         if self.personality_input and hasattr(entity, "personality"):
-            self.personality_input.setPlainText(entity.personality or "")
+            self.personality_input.setContent(entity.personality or "")
         if self.tasks_input and hasattr(entity, "tasks"):
-            self.tasks_input.setPlainText(entity.tasks or "")
+            self.tasks_input.setContent(entity.tasks or "")
 
         # Image from DB (base64)
         img_data = getattr(entity, "image", None)
@@ -362,15 +368,15 @@ class EntityCardDialog(QDialog):
             "rating": self.rating_input.value(),
             "start_date": self.start_date_input.date().toPython(),
             "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
-            "characteristics": self.characteristics_input.toPlainText().strip(),
-            "backstory": self.backstory_input.toPlainText().strip(),
+            "characteristics": self.characteristics_input.getContent().strip(),
+            "backstory": self.backstory_input.getContent().strip(),
         }
         if self.personality_input:
-            data["personality"] = self.personality_input.toPlainText().strip()
+            data["personality"] = self.personality_input.getContent().strip()
         if self._has_image_field:
             data["image"] = self._image_b64
         if self.tasks_input:
-            data["tasks"] = self.tasks_input.toPlainText().strip()
+            data["tasks"] = self.tasks_input.getContent().strip()
 
         # Related entity changes
         if self._related_sections:
@@ -380,6 +386,15 @@ class EntityCardDialog(QDialog):
             data["related_changes"] = related_changes
 
         return data
+
+    def get_mention_edits(self) -> list[MentionTextEdit]:
+        """Return all MentionTextEdit instances for wiring search."""
+        edits = [self.characteristics_input, self.backstory_input]
+        if self.personality_input:
+            edits.append(self.personality_input)
+        if self.tasks_input:
+            edits.append(self.tasks_input)
+        return edits
 
     def _on_save(self) -> None:
         self.saved.emit(self.get_data())

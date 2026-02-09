@@ -19,3 +19,19 @@ class SearchService:
         for key, repo in self._repos.items():
             results[key] = list(await repo.search(query))
         return results
+
+    async def search_names(self, query: str) -> List[Dict[str, Any]]:
+        """Search by name only across all entities. Returns [{type, id, name}, ...]."""
+        _type_map = {
+            "events": "event",
+            "organizations": "organization",
+            "characters": "character",
+            "items": "item",
+            "locations": "location",
+        }
+        results: List[Dict[str, Any]] = []
+        for key, repo in self._repos.items():
+            entities = await repo.search_by_name(query)
+            for e in entities:
+                results.append({"type": _type_map[key], "id": e.id, "name": e.name})
+        return results

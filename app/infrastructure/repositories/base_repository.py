@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, Sequence, Type, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.db.models import Base
@@ -47,3 +47,10 @@ class BaseRepository(Generic[T]):
         await self._session.delete(obj)
         await self._session.flush()
         return True
+
+    async def search_by_name(self, query: str) -> Sequence[T]:
+        stmt = select(self._model).where(
+            func.lower(self._model.name).contains(query.lower())
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().unique().all()
