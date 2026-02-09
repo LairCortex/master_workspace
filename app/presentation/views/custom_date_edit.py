@@ -1,11 +1,10 @@
 """QDateEdit with custom month names in both text display and calendar popup."""
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QLocale, Qt
-from PySide6.QtGui import QTextCharFormat
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QCalendarWidget, QComboBox, QDateEdit, QHBoxLayout, QLabel,
-    QPushButton, QVBoxLayout, QWidget,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from app.presentation.utils.date_utils import get_custom_months, month_name
@@ -20,42 +19,42 @@ class _CustomCalendar(QCalendarWidget):
         super().__init__(parent)
         self.setNavigationBarVisible(False)
         self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        self.setMinimumWidth(350)
 
         # Build custom navigation bar
         self._nav = QWidget(self)
         nav_lay = QHBoxLayout(self._nav)
-        nav_lay.setContentsMargins(4, 2, 4, 2)
+        nav_lay.setContentsMargins(6, 4, 6, 4)
+        nav_lay.setSpacing(2)
 
+        # ◀ prev month
         self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedWidth(30)
+        self._prev_btn.setFixedSize(28, 28)
         self._prev_btn.clicked.connect(self.showPreviousMonth)
 
+        # Month combo
         self._month_combo = QComboBox()
-        self._month_combo.setMinimumWidth(120)
+        self._month_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self._populate_months()
         self._month_combo.currentIndexChanged.connect(self._on_month_selected)
 
-        self._year_label = QLabel()
-        self._year_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._year_label.setStyleSheet("font-weight: bold; font-size: 13px; min-width: 50px;")
+        # Year spin box
+        self._year_spin = QSpinBox()
+        self._year_spin.setRange(100, 9999)
+        self._year_spin.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
+        self._year_spin.setFixedWidth(80)
+        self._year_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._year_spin.valueChanged.connect(self._on_year_changed)
 
-        self._prev_year_btn = QPushButton("«")
-        self._prev_year_btn.setFixedWidth(24)
-        self._prev_year_btn.clicked.connect(self.showPreviousYear)
-
-        self._next_year_btn = QPushButton("»")
-        self._next_year_btn.setFixedWidth(24)
-        self._next_year_btn.clicked.connect(self.showNextYear)
-
+        # ▶ next month
         self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedWidth(30)
+        self._next_btn.setFixedSize(28, 28)
         self._next_btn.clicked.connect(self.showNextMonth)
 
         nav_lay.addWidget(self._prev_btn)
         nav_lay.addWidget(self._month_combo, 1)
-        nav_lay.addWidget(self._prev_year_btn)
-        nav_lay.addWidget(self._year_label)
-        nav_lay.addWidget(self._next_year_btn)
+        nav_lay.addSpacing(8)
+        nav_lay.addWidget(self._year_spin)
         nav_lay.addWidget(self._next_btn)
 
         # Insert nav bar at the top of calendar layout
@@ -83,7 +82,9 @@ class _CustomCalendar(QCalendarWidget):
         self._month_combo.blockSignals(True)
         self._month_combo.setCurrentIndex(month - 1)
         self._month_combo.blockSignals(False)
-        self._year_label.setText(str(year))
+        self._year_spin.blockSignals(True)
+        self._year_spin.setValue(year)
+        self._year_spin.blockSignals(False)
 
     def _on_month_selected(self, index: int) -> None:
         if index < 0:
@@ -91,6 +92,9 @@ class _CustomCalendar(QCalendarWidget):
         month = self._month_combo.itemData(index)
         if month is not None:
             self.setCurrentPage(self.yearShown(), month)
+
+    def _on_year_changed(self, year: int) -> None:
+        self.setCurrentPage(year, self.monthShown())
 
 
 # ── Custom Date Edit ──────────────────────────────────────────────────────
@@ -109,7 +113,6 @@ class CustomDateEdit(QDateEdit):
     def textFromDateTime(self, dt: QDate) -> str:
         """Override to show custom month name in the date edit field."""
         if hasattr(dt, 'date'):
-            # QDateTime
             d = dt.date() if hasattr(dt, 'date') else dt
         else:
             d = dt
@@ -121,5 +124,4 @@ class CustomDateEdit(QDateEdit):
         """Refresh display after month names change."""
         self._calendar.refresh_month_names()
         self.update()
-        # Force text refresh
         self.setDate(self.date())
