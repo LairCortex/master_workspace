@@ -10,6 +10,9 @@ from PySide6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 
+from app.presentation.utils.date_utils import format_game_date
+from app.presentation.views.custom_date_edit import CustomDateEdit
+
 
 class TimelineWidget(QWidget):
     event_selected = Signal(int)
@@ -45,19 +48,13 @@ class TimelineWidget(QWidget):
         filter_layout.setSpacing(4)
 
         filter_layout.addWidget(QLabel("С:"))
-        self.filter_start = QDateEdit()
-        self.filter_start.setCalendarPopup(True)
-        self.filter_start.setMinimumDate(QDate(100, 1, 1))
+        self.filter_start = CustomDateEdit()
         self.filter_start.setDate(QDate(100, 1, 1))
-        self.filter_start.setDisplayFormat("dd.MM.yyyy")
         filter_layout.addWidget(self.filter_start, 1)
 
         filter_layout.addWidget(QLabel("По:"))
-        self.filter_end = QDateEdit()
-        self.filter_end.setCalendarPopup(True)
-        self.filter_end.setMinimumDate(QDate(100, 1, 1))
+        self.filter_end = CustomDateEdit()
         self.filter_end.setDate(QDate.currentDate())
-        self.filter_end.setDisplayFormat("dd.MM.yyyy")
         filter_layout.addWidget(self.filter_end, 1)
 
         self.filter_button = QPushButton("▶")
@@ -92,8 +89,8 @@ class TimelineWidget(QWidget):
     def update_events(self, events: Sequence[Any]) -> None:
         self.list_widget.clear()
         for i, event in enumerate(events):
-            start = event.start_date.strftime("%d.%m.%Y") if event.start_date else "?"
-            end = event.end_date.strftime("%d.%m.%Y") if event.end_date else "∞"
+            start = format_game_date(event.start_date)
+            end = format_game_date(event.end_date, "∞")
             text = f"{start} — {end}\n{event.name}"
             item = QListWidgetItem(text)
             item.setData(256, event)  # Qt.UserRole = 256

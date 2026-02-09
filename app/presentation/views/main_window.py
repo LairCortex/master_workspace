@@ -64,6 +64,7 @@ class _DocViewerDialog(QDialog):
 class MainWindow(QMainWindow):
     switch_game_requested = Signal()
     export_requested = Signal()
+    month_settings_requested = Signal()
 
     def __init__(
         self,
@@ -90,6 +91,12 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("Экспорт игры…", self)
         self.export_action.triggered.connect(self.export_requested.emit)
         file_menu.addAction(self.export_action)
+
+        # Настройки
+        settings_menu = menu_bar.addMenu("Настройки")
+        self.month_settings_action = QAction("Названия месяцев…", self)
+        self.month_settings_action.triggered.connect(self.month_settings_requested.emit)
+        settings_menu.addAction(self.month_settings_action)
 
         # О приложении
         about_menu = menu_bar.addMenu("О приложении")

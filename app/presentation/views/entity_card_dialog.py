@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.image_utils import base64_to_pixmap, load_and_encode
+from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
 
 # Fields that only appear for certain entity types
@@ -213,18 +214,12 @@ class EntityCardDialog(QDialog):
         self.rating_input.setToolTip("1 — наименее важно, 20 — наиболее важно")
         form.addRow("Рейтинг (1-20):", self.rating_input)
 
-        self.start_date_input = QDateEdit()
-        self.start_date_input.setCalendarPopup(True)
-        self.start_date_input.setMinimumDate(QDate(100, 1, 1))
-        self.start_date_input.setMaximumDate(QDate(9999, 12, 31))
+        self.start_date_input = CustomDateEdit()
         self.start_date_input.setDate(QDate.currentDate())
         form.addRow("Дата начала:", self.start_date_input)
 
         end_row = QHBoxLayout()
-        self.end_date_input = QDateEdit()
-        self.end_date_input.setCalendarPopup(True)
-        self.end_date_input.setMinimumDate(QDate(100, 1, 1))
-        self.end_date_input.setMaximumDate(QDate(9999, 12, 31))
+        self.end_date_input = CustomDateEdit()
         self.end_date_input.setDate(QDate.currentDate())
         end_row.addWidget(self.end_date_input, 1)
         self.no_end_date_cb = QCheckBox("Бессрочно")

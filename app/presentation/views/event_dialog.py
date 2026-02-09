@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.image_utils import load_and_encode
+from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
 
 
@@ -53,18 +54,12 @@ class _EntityTabWidget(QWidget):
         self.backstory_input.setMaximumHeight(80)
         form.addRow("Предыстория:", self.backstory_input)
 
-        self.start_date_input = QDateEdit()
-        self.start_date_input.setCalendarPopup(True)
-        self.start_date_input.setMinimumDate(QDate(100, 1, 1))
-        self.start_date_input.setMaximumDate(QDate(9999, 12, 31))
+        self.start_date_input = CustomDateEdit()
         self.start_date_input.setDate(QDate.currentDate())
         form.addRow("Дата начала:", self.start_date_input)
 
         end_row = QHBoxLayout()
-        self.end_date_input = QDateEdit()
-        self.end_date_input.setCalendarPopup(True)
-        self.end_date_input.setMinimumDate(QDate(100, 1, 1))
-        self.end_date_input.setMaximumDate(QDate(9999, 12, 31))
+        self.end_date_input = CustomDateEdit()
         self.end_date_input.setDate(QDate.currentDate())
         end_row.addWidget(self.end_date_input, 1)
         self.no_end_date_cb = QCheckBox("Бессрочно")
@@ -234,19 +229,13 @@ class EventDialog(QDialog):
         self.name_input.textChanged.connect(self._update_validity)
         form.addRow("Название *:", self.name_input)
 
-        self.start_date_input = QDateEdit()
-        self.start_date_input.setCalendarPopup(True)
-        self.start_date_input.setMinimumDate(QDate(100, 1, 1))
-        self.start_date_input.setMaximumDate(QDate(9999, 12, 31))
+        self.start_date_input = CustomDateEdit()
         self.start_date_input.setDate(QDate.currentDate())
         self.start_date_input.dateChanged.connect(self._update_validity)
         form.addRow("Дата начала *:", self.start_date_input)
 
         end_row = QHBoxLayout()
-        self.end_date_input = QDateEdit()
-        self.end_date_input.setCalendarPopup(True)
-        self.end_date_input.setMinimumDate(QDate(100, 1, 1))
-        self.end_date_input.setMaximumDate(QDate(9999, 12, 31))
+        self.end_date_input = CustomDateEdit()
         self.end_date_input.setDate(QDate.currentDate())
         self.end_date_input.dateChanged.connect(self._update_validity)
         end_row.addWidget(self.end_date_input, 1)

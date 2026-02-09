@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from app.presentation.utils.date_utils import format_game_date
+from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.detail_panel import rating_to_color
 from app.presentation.utils.image_utils import base64_to_thumbnail
 
@@ -88,11 +90,8 @@ class WorldSnapshotWidget(QWidget):
         date_bar.setSpacing(6)
 
         date_bar.addWidget(QLabel("Дата:"))
-        self.date_edit = QDateEdit()
-        self.date_edit.setCalendarPopup(True)
-        self.date_edit.setMinimumDate(QDate(100, 1, 1))
+        self.date_edit = CustomDateEdit()
         self.date_edit.setDate(QDate.currentDate())
-        self.date_edit.setDisplayFormat("dd.MM.yyyy")
         date_bar.addWidget(self.date_edit, 1)
 
         self.show_button = QPushButton("Показать")
@@ -176,8 +175,8 @@ class WorldSnapshotWidget(QWidget):
             ev_section.setExpanded(False)
             for ev in events:
                 ev_item = QTreeWidgetItem(ev_section)
-                sd = ev.start_date.strftime("%d.%m.%Y") if ev.start_date else "?"
-                ed = ev.end_date.strftime("%d.%m.%Y") if ev.end_date else "∞"
+                sd = format_game_date(ev.start_date)
+                ed = format_game_date(ev.end_date, "∞")
                 ev_item.setText(0, f"{sd} — {ed}  |  {ev.name}")
                 ev_item.setIcon(0, _icon("event"))
                 ev_item.setData(0, Qt.ItemDataRole.UserRole, ("event", ev.id))
@@ -209,7 +208,7 @@ class WorldSnapshotWidget(QWidget):
         # ── Stats ──
         target = self.date_edit.date().toPython()
         self.stats_label.setText(
-            f"Дата: {target.strftime('%d.%m.%Y')}  |  "
+            f"Дата: {format_game_date(target)}  |  "
             f"Событий: {len(events)}  |  "
             f"Персонажей: {len(characters)}  |  "
             f"Организаций: {len(organizations)}  |  "

@@ -242,6 +242,13 @@ class LocationModel(Base):
     )
 
 
+class GameSettingsModel(Base):
+    __tablename__ = "game_settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
 class RatingModel(Base):
     __tablename__ = "ratings"
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from app.presentation.utils.date_utils import format_game_date
+
 from PySide6.QtCore import QTimer, Signal, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -120,7 +122,7 @@ class SearchBar(QWidget):
                 name = getattr(entity, "name", str(entity))
                 dates = ""
                 if hasattr(entity, "start_date") and entity.start_date:
-                    dates = f"  [{entity.start_date}]"
+                    dates = f"  [{format_game_date(entity.start_date)}]"
                 item = QListWidgetItem(f"  {name}{dates}")
                 item.setData(256, {"type": entity_type, "id": getattr(entity, "id", None)})
                 self.results_list.addItem(item)

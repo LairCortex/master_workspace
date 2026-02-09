@@ -10,7 +10,7 @@ from qasync import QEventLoop
 
 from app.infrastructure.db.database import create_engine, create_session_factory
 from app.infrastructure.db.game_manager import export_game, get_db_url
-from app.infrastructure.db.models import Base
+from app.infrastructure.db.models import Base, GameSettingsModel
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -29,10 +29,14 @@ from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 
+from app.presentation.utils.date_utils import (
+    SETTINGS_KEY, get_custom_months, months_from_json, months_to_json, set_custom_months,
+)
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
+from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 
 # Map attr names to entity_type strings for relationship syncing
 _ATTR_TO_ENTITY_TYPE = {
@@ -131,6 +135,9 @@ class Application:
 
         game_name = Path(db_path).stem
 
+        # Load custom month names
+        await self._load_month_settings()
+
         # Repositories
         desc_repo = BaseRepository(self._session, DescriptionModel)
         event_repo = EventRepository(self._session)
@@ -174,6 +181,11 @@ class Application:
 
         # Export game menu
         window.export_requested.connect(self._on_export_game)
+
+        # Month settings menu
+        window.month_settings_requested.connect(
+            lambda: asyncio.ensure_future(self._on_month_settings(window, timeline_vm))
+        )
 
         # Initial load
         await timeline_vm.load_events()
@@ -554,6 +566,50 @@ class Application:
         if repo:
             return EntityService(repo=repo, description_repo=desc_repo)
         return None
+
+    async def _load_month_settings(self) -> None:
+        """Load custom month names from game_settings table."""
+        from sqlalchemy import select
+        try:
+            result = await self._session.execute(
+                select(GameSettingsModel).where(GameSettingsModel.key == SETTINGS_KEY)
+            )
+            row = result.scalars().first()
+            if row:
+                months = months_from_json(row.value)
+                set_custom_months(months)
+            else:
+                set_custom_months(None)
+        except Exception:
+            set_custom_months(None)
+
+    async def _save_month_settings(self, months: dict) -> None:
+        """Save custom month names to game_settings table."""
+        from sqlalchemy import select
+        result = await self._session.execute(
+            select(GameSettingsModel).where(GameSettingsModel.key == SETTINGS_KEY)
+        )
+        row = result.scalars().first()
+        value = months_to_json(months)
+        if row:
+            row.value = value
+        else:
+            self._session.add(GameSettingsModel(key=SETTINGS_KEY, value=value))
+        await self._session.commit()
+
+    async def _on_month_settings(self, window, timeline_vm) -> None:
+        """Show month settings dialog and apply changes."""
+        dialog = MonthSettingsDialog(get_custom_months(), parent=window)
+
+        async def _on_saved(months):
+            set_custom_months(months)
+            await self._save_month_settings(months)
+            # Refresh all views with new month names
+            await timeline_vm.load_events()
+            window.timeline_widget.update_events(timeline_vm.events)
+
+        dialog.saved.connect(lambda m: asyncio.ensure_future(_on_saved(m)))
+        dialog.open()
 
     async def shutdown(self) -> None:
         if self._session:

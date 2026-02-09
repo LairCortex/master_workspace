@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.presentation.utils.date_utils import format_game_date
+
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -185,8 +187,8 @@ class DetailPanel(QWidget):
     def show_event(self, event: Any) -> None:
         self._current_event_id = getattr(event, "id", None)
         self.title_label.setText(event.name)
-        sd = event.start_date.strftime("%d.%m.%Y") if event.start_date else "?"
-        ed = event.end_date.strftime("%d.%m.%Y") if event.end_date else "∞"
+        sd = format_game_date(event.start_date)
+        ed = format_game_date(event.end_date, "∞")
         self.date_label.setText(f"{sd} — {ed}")
         self._fill_list(self.org_list, event.organizations, "organization")
         self._fill_list(self.char_list, event.characters, "character")
