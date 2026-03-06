@@ -119,8 +119,32 @@ class TestEntityCardDialog:
         d.backstory_input.setPlainText("Forged")
         d.start_date_input.setDate(QDate(500, 1, 1))
         d.end_date_input.setDate(QDate(3000, 12, 31))
+        d.music_input.setText("https://example.com/sword-theme.mp3")
         data = d.get_data()
         assert data["name"] == "Sword"
+        assert data["music_url"] == "https://example.com/sword-theme.mp3"
+
+    def test_entity_card_populate_music_link(self, qtbot):
+        vm = MagicMock()
+        d = EntityCardDialog(vm, entity_type="character")
+        qtbot.addWidget(d)
+        entity = MagicMock()
+        entity.name = "Bard"
+        entity.start_date = date(1200, 1, 1)
+        entity.end_date = date(1300, 1, 1)
+        entity.tasks = None
+        entity.personality = None
+        entity.image = None
+        entity.music_url = "https://example.com/bard-theme.ogg"
+        desc = MagicMock()
+        desc.characteristics = ""
+        desc.backstory = ""
+        entity.description = desc
+
+        d.populate(entity)
+        d.show()  # ensure visibility state is active
+        assert d.music_display.isVisible()
+        assert not d.music_input.isVisible()
 
     def test_entity_card_character_extra_fields(self, qtbot):
         vm = MagicMock()

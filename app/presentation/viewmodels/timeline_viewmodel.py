@@ -17,14 +17,24 @@ class TimelineViewModel(QObject):
         self._all_events: list[Any] = []
         self.events: list[Any] = []
         self.selected_event: Any | None = None
+        self._current_filter: tuple[date | None, date | None] = (None, None)
 
     async def load_events(self) -> None:
         self._all_events = list(await self._event_service.get_all_events())
-        self.events = list(self._all_events)
+        # Re-apply current filter (if any) after reload
+        start, end = self._current_filter
+        if start is None or end is None:
+            self.events = list(self._all_events)
+        else:
+            self.events = [
+                e for e in self._all_events
+                if e.start_date >= start and (e.end_date is None or e.end_date <= end)
+            ]
         self.events_changed.emit()
 
     def filter_by_dates(self, start: date | None, end: date | None) -> None:
         """Filter events by date range. None clears the filter."""
+        self._current_filter = (start, end)
         if start is None or end is None:
             self.events = list(self._all_events)
         else:

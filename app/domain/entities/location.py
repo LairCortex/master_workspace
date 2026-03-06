@@ -22,6 +22,7 @@ class Location:
     id: int | None = None
     tasks: str | None = None
     image: str | None = None
+    music_url: str | None = None
     characters: list[Character] = field(default_factory=list)
     organizations: list[Organization] = field(default_factory=list)
     ratings: list[Rating] = field(default_factory=list)

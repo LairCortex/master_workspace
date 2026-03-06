@@ -23,6 +23,7 @@ class Character:
     tasks: str | None = None
     personality: str | None = None
     image: str | None = None
+    music_url: str | None = None
     items: list[Item] = field(default_factory=list)
     locations: list[Location] = field(default_factory=list)
     ratings: list[Rating] = field(default_factory=list)

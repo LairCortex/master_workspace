@@ -135,6 +135,7 @@ class OrganizationModel(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
+    music_url: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
@@ -164,6 +165,7 @@ class CharacterModel(Base):
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     personality: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)
+    music_url: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
@@ -193,6 +195,7 @@ class ItemModel(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    music_url: Mapped[str | None] = mapped_column(Text, default=None)
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
     events: Mapped[list[EventModel]] = relationship(
@@ -222,6 +225,7 @@ class LocationModel(Base):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)
+    music_url: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")

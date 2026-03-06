@@ -124,7 +124,8 @@ class TestCustomDateEdit:
         from app.presentation.views.custom_date_edit import CustomDateEdit
         edit = CustomDateEdit()
         qtbot.addWidget(edit)
-        assert edit.calendarPopup() is True
+        # We use three combo boxes instead of calendar popup
+        assert edit.calendarPopup() is False
 
 
 # ── MonthSettingsDialog ───────────────────────────────────────────────────

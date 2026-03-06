@@ -161,6 +161,7 @@ class EntityCardDialog(QDialog):
         self._related_sections: dict[str, _RelatedSection] = {}
         self._image_b64: str = ""
         self._has_image_field = "image" in _EXTRA_FIELDS.get(entity_type, [])
+        self._music_url: str = ""
         self.setWindowTitle(f"Карточка: {entity_type}")
         self.setMinimumSize(750 if self._has_image_field else 550, 550)
         self._init_ui()
@@ -237,6 +238,29 @@ class EntityCardDialog(QDialog):
         self.backstory_input.mention_clicked.connect(self.mention_clicked)
         form.addRow("Предыстория:", self.backstory_input)
 
+        # Music link (for all entity types)
+        music_row = QHBoxLayout()
+        self.music_display = QLabel()
+        self.music_display.setTextFormat(Qt.TextFormat.RichText)
+        self.music_display.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+        )
+        self.music_display.setOpenExternalLinks(True)
+        self.music_display.hide()
+
+        self.music_input = QLineEdit()
+        self.music_input.setPlaceholderText("Ссылка на музыку")
+
+        self.music_edit_btn = QPushButton("✎")
+        self.music_edit_btn.setToolTip("Редактировать ссылку на музыку")
+        self.music_edit_btn.setFixedWidth(28)
+        self.music_edit_btn.clicked.connect(self._on_toggle_music_edit)
+
+        music_row.addWidget(self.music_display, 1)
+        music_row.addWidget(self.music_input, 1)
+        music_row.addWidget(self.music_edit_btn, 0)
+        form.addRow("Музыка:", music_row)
+
         # Extra fields based on entity type
         extras = _EXTRA_FIELDS.get(self._entity_type, [])
 
@@ -283,6 +307,32 @@ class EntityCardDialog(QDialog):
         btn_layout.addWidget(self.save_button)
         btn_layout.addWidget(cancel_button)
         root_layout.addLayout(btn_layout)
+
+    def _set_music_url(self, url: str) -> None:
+        self._music_url = url.strip()
+        if self._music_url:
+            safe_url = self._music_url.replace('"', "&quot;")
+            self.music_display.setText(f'<a href="{safe_url}">{self._music_url}</a>')
+            self.music_display.show()
+        else:
+            self.music_display.setText("")
+            self.music_display.hide()
+        # Always keep input in sync but hide when displaying as link
+        self.music_input.setText(self._music_url)
+        if self._music_url:
+            self.music_input.hide()
+        else:
+            self.music_input.show()
+
+    def _on_toggle_music_edit(self) -> None:
+        if self.music_input.isVisible():
+            # Switch to link view (if any text)
+            self._set_music_url(self.music_input.text())
+        else:
+            # Switch to edit mode
+            self.music_display.hide()
+            self.music_input.show()
+            self.music_input.setFocus()
 
     # ── Image handling ─────────────────────────────────────────────────────
 
@@ -344,6 +394,12 @@ class EntityCardDialog(QDialog):
             self._image_b64 = img_data
             self._show_preview()
 
+        # Music URL
+        music_url = getattr(entity, "music_url", None)
+        if not isinstance(music_url, str):
+            music_url = ""
+        self._set_music_url(music_url or "")
+
         # Populate related entities
         for attr, section in self._related_sections.items():
             entities = getattr(entity, attr, [])
@@ -365,6 +421,7 @@ class EntityCardDialog(QDialog):
             "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
             "characteristics": self.characteristics_input.getContent().strip(),
             "backstory": self.backstory_input.getContent().strip(),
+            "music_url": self.music_input.text().strip(),
         }
         if self.personality_input:
             data["personality"] = self.personality_input.getContent().strip()

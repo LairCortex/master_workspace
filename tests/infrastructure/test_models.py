@@ -131,15 +131,19 @@ class TestOrganizationModel:
         await async_session.flush()
 
         org = OrganizationModel(
-            name="Guild", description_id=desc.id,
-            start_date=date(1000, 1, 1), end_date=date(1500, 12, 31),
+            name="Guild",
+            description_id=desc.id,
+            start_date=date(1000, 1, 1),
+            end_date=date(1500, 12, 31),
             tasks="Protect the realm",
+            music_url="https://example.com/theme.mp3",
         )
         async_session.add(org)
         await async_session.commit()
 
         result = await async_session.get(OrganizationModel, org.id)
         assert result.tasks == "Protect the realm"
+        assert result.music_url == "https://example.com/theme.mp3"
 
     @pytest.mark.asyncio
     async def test_org_character_m2m(self, async_session: AsyncSession):
@@ -168,9 +172,14 @@ class TestCharacterModel:
         await async_session.flush()
 
         char = CharacterModel(
-            name="Aragon", description_id=desc.id,
-            start_date=date(1100, 3, 15), end_date=date(1200, 7, 20),
-            personality="Noble", image="/img/aragon.png", tasks="Lead",
+            name="Aragon",
+            description_id=desc.id,
+            start_date=date(1100, 3, 15),
+            end_date=date(1200, 7, 20),
+            personality="Noble",
+            image="/img/aragon.png",
+            tasks="Lead",
+            music_url="file:///music/hero_theme.ogg",
         )
         async_session.add(char)
         await async_session.commit()
@@ -178,6 +187,7 @@ class TestCharacterModel:
         result = await async_session.get(CharacterModel, char.id)
         assert result.personality == "Noble"
         assert result.image == "/img/aragon.png"
+        assert result.music_url == "file:///music/hero_theme.ogg"
 
     @pytest.mark.asyncio
     async def test_character_rating_m2m(self, async_session: AsyncSession):
@@ -206,12 +216,19 @@ class TestItemModel:
         async_session.add(desc)
         await async_session.flush()
 
-        item = ItemModel(name="Ring", description_id=desc.id, start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
+        item = ItemModel(
+            name="Ring",
+            description_id=desc.id,
+            start_date=date(500, 1, 1),
+            end_date=date(3000, 12, 31),
+            music_url="ring-theme.flac",
+        )
         async_session.add(item)
         await async_session.commit()
 
         result = await async_session.get(ItemModel, item.id)
         assert result.name == "Ring"
+        assert result.music_url == "ring-theme.flac"
 
 
 # --- LocationModel ---
@@ -224,9 +241,13 @@ class TestLocationModel:
         await async_session.flush()
 
         loc = LocationModel(
-            name="Mordor", description_id=desc.id,
-            start_date=date(100, 1, 1), end_date=date(3000, 12, 31),
-            image="/maps/mordor.png", tasks="Defend",
+            name="Mordor",
+            description_id=desc.id,
+            start_date=date(100, 1, 1),
+            end_date=date(3000, 12, 31),
+            image="/maps/mordor.png",
+            tasks="Defend",
+            music_url="mordor-theme.ogg",
         )
         async_session.add(loc)
         await async_session.commit()
@@ -234,6 +255,7 @@ class TestLocationModel:
         result = await async_session.get(LocationModel, loc.id)
         assert result.image == "/maps/mordor.png"
         assert result.tasks == "Defend"
+        assert result.music_url == "mordor-theme.ogg"
 
 
 # --- RatingModel ---

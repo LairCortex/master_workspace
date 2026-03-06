@@ -218,6 +218,8 @@ class TestTimelineWidget:
         w = TimelineWidget(vm)
         qtbot.addWidget(w)
         assert w.add_button is not None
+        assert hasattr(w, "add_event_requested")
+        assert hasattr(w, "add_entity_requested")
 
     def test_timeline_has_date_filter(self, qtbot):
         vm = MagicMock()
@@ -846,7 +848,7 @@ class TestWorldSnapshotWidget:
     def test_populate_no_events(self, qtbot):
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        w.populate([])
+        w.populate([], date(1200, 1, 1))
         assert w.tree.topLevelItemCount() == 1  # "no events" placeholder
 
     def test_populate_with_events(self, qtbot):
@@ -867,7 +869,7 @@ class TestWorldSnapshotWidget:
 
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        w.populate([event])
+        w.populate([event], date(1200, 1, 1))
 
         # Events section + 1 location = 2 top-level items
         assert w.tree.topLevelItemCount() >= 2
@@ -900,7 +902,7 @@ class TestWorldSnapshotWidget:
 
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        w.populate([event])
+        w.populate([event], date(1200, 1, 1))
 
         received = []
         w.entity_clicked.connect(lambda t, i: received.append((t, i)))
@@ -937,7 +939,7 @@ class TestWorldSnapshotWidget:
 
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        w.populate([event])
+        w.populate([event], date(1200, 1, 1))
         assert w.tree.topLevelItemCount() >= 2
 
         w.clear_button.click()
@@ -961,7 +963,7 @@ class TestWorldSnapshotWidget:
 
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        w.populate([event])
+        w.populate([event], date(1200, 1, 1))
         assert "Персонажей: 1" in w.stats_label.text()
         assert "Локаций: 1" in w.stats_label.text()
 
@@ -972,3 +974,11 @@ class TestWorldSnapshotWidget:
         qtbot.addWidget(w)
         assert hasattr(w, "world_snapshot")
         assert isinstance(w.world_snapshot, WorldSnapshotWidget)
+
+    def test_world_snapshot_show_all_emits_none(self, qtbot):
+        w = WorldSnapshotWidget()
+        qtbot.addWidget(w)
+        received = []
+        w.snapshot_requested.connect(lambda d: received.append(d))
+        w.show_all_button.click()
+        assert received == [None]

@@ -23,6 +23,7 @@ from app.infrastructure.db.models import DescriptionModel
 from app.application.services.event_service import EventService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
+from app.application.services.xlsx_import_service import XlsxImportService
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
@@ -98,6 +99,10 @@ async def init_db(engine):
         ("items", "rating", "INTEGER DEFAULT 1"),
         ("locations", "rating", "INTEGER DEFAULT 1"),
         ("organizations", "image", "TEXT"),
+        ("organizations", "music_url", "TEXT"),
+        ("characters", "music_url", "TEXT"),
+        ("items", "music_url", "TEXT"),
+        ("locations", "music_url", "TEXT"),
     ]
     async with engine.begin() as conn:
         for table, column, col_type in _MIGRATIONS:
@@ -256,6 +261,61 @@ class Application:
 
         window.timeline_widget.filter_changed.connect(on_filter_changed)
 
+        # ── XLSX import actions ─────────────────────────────────────────────
+        desc_repo = BaseRepository(self._session, DescriptionModel)
+        org_svc = EntityService(repo=OrganizationRepository(self._session), description_repo=desc_repo)
+        char_svc = EntityService(repo=CharacterRepository(self._session), description_repo=desc_repo)
+        item_svc = EntityService(repo=ItemRepository(self._session), description_repo=desc_repo)
+        loc_svc = EntityService(repo=LocationRepository(self._session), description_repo=desc_repo)
+        xlsx_import = XlsxImportService(
+            event_service=event_service,
+            character_service=char_svc,
+            location_service=loc_svc,
+            organization_service=org_svc,
+            item_service=item_svc,
+        )
+
+        async def _run_import(entity_type: str):
+            from PySide6.QtWidgets import QMessageBox
+            from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
+
+            dlg = XlsxImportDialog(entity_type, window)
+            dlg.open()
+
+            async def _do_import(path: str):
+                try:
+                    result = await xlsx_import.import_file(
+                        entity_type, path, progress_callback=dlg.set_progress
+                    )
+                    await timeline_vm.load_events()
+                    window.timeline_widget.update_events(timeline_vm.events)
+                    msg = f"Создано записей: {result.created}"
+                    if result.errors:
+                        msg += "\n\nНекоторые строки пропущены:\n- " + "\n- ".join(result.errors[:10])
+                    QMessageBox.information(window, "Импорт завершён", msg)
+                except Exception as exc:  # noqa: BLE001
+                    QMessageBox.critical(window, "Ошибка импорта", str(exc))
+                finally:
+                    dlg.close()
+
+            dlg.import_requested.connect(lambda p: asyncio.ensure_future(_do_import(p)))
+
+        window.import_events_action.triggered.connect(
+            lambda: asyncio.ensure_future(_run_import("event"))
+        )
+        window.import_characters_action.triggered.connect(
+            lambda: asyncio.ensure_future(_run_import("character"))
+        )
+        window.import_locations_action.triggered.connect(
+            lambda: asyncio.ensure_future(_run_import("location"))
+        )
+        window.import_organizations_action.triggered.connect(
+            lambda: asyncio.ensure_future(_run_import("organization"))
+        )
+        window.import_items_action.triggered.connect(
+            lambda: asyncio.ensure_future(_run_import("item"))
+        )
+
         # ── Helper: load available entities and set them on dialog tabs ──
         async def _load_available_into_dialog(dialog):
             """Load all entities from DB and set them as available for linking."""
@@ -326,6 +386,39 @@ class Application:
             dialog.open()
 
         window.timeline_widget.add_event_requested.connect(on_add_event)
+
+        # Create standalone entities from timeline "+" context menu
+        async def on_add_entity(entity_type: str):
+            try:
+                entity_service = self._get_entity_service(entity_type)
+                if not entity_service:
+                    return
+
+                dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
+                self._wire_mentions_for_dialog(dialog, on_entity_click)
+
+                async def on_entity_saved(data):
+                    try:
+                        data.pop("related_changes", None)
+                        chars_text = data.pop("characteristics", "")
+                        backstory_text = data.pop("backstory", "")
+                        await entity_service.create_entity(
+                            characteristics=chars_text,
+                            backstory=backstory_text,
+                            **data,
+                        )
+                        await self._session.commit()
+                    except Exception:
+                        await self._session.rollback()
+
+                dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
+                dialog.open()
+            except Exception:
+                await self._session.rollback()
+
+        window.timeline_widget.add_entity_requested.connect(
+            lambda t: asyncio.ensure_future(on_add_entity(t))
+        )
 
         # Edit event (double-click on timeline)
         async def on_edit_event(event_id):
@@ -524,8 +617,11 @@ class Application:
 
         # World snapshot — date query
         async def on_snapshot_requested(target_date):
-            events = await event_service.get_events_at_date(target_date)
-            window.world_snapshot.populate(events)
+            if target_date is None:
+                events = await event_service.get_all_events()
+            else:
+                events = await event_service.get_events_at_date(target_date)
+            window.world_snapshot.populate(events, target_date)
 
         window.world_snapshot.snapshot_requested.connect(
             lambda d: asyncio.ensure_future(on_snapshot_requested(d))

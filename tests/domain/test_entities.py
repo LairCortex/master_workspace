@@ -107,6 +107,7 @@ class TestOrganization:
         )
         assert org.name == "The Guild"
         assert org.tasks is None
+        assert org.music_url is None
         assert org.characters == []
         assert org.items == []
         assert org.locations == []
@@ -154,6 +155,7 @@ class TestCharacter:
         assert ch.name == "Aragon"
         assert ch.personality is None
         assert ch.image is None
+        assert ch.music_url is None
         assert ch.tasks is None
         assert ch.items == []
         assert ch.locations == []
@@ -168,9 +170,11 @@ class TestCharacter:
             personality="Mysterious and wise",
             image="/images/gandalf.png",
             tasks="Guide the fellowship",
+            music_url="https://example.com/theme.mp3",
         )
         assert ch.personality == "Mysterious and wise"
         assert ch.image == "/images/gandalf.png"
+        assert ch.music_url == "https://example.com/theme.mp3"
 
     def test_character_requires_name(self):
         with pytest.raises(ValueError, match="name"):
@@ -196,6 +200,7 @@ class TestItem:
         assert item.name == "The One Ring"
         assert item.locations == []
         assert item.ratings == []
+        assert item.music_url is None
 
     def test_item_requires_name(self):
         with pytest.raises(ValueError, match="name"):
@@ -221,6 +226,7 @@ class TestLocation:
         assert loc.name == "Mordor"
         assert loc.tasks is None
         assert loc.image is None
+        assert loc.music_url is None
         assert loc.characters == []
         assert loc.organizations == []
         assert loc.ratings == []

@@ -108,6 +108,30 @@ class TestTimelineViewModel:
         vm.filter_by_dates(date(1300, 1, 1), date(1400, 1, 1))
         assert len(vm.events) == 0
 
+    @pytest.mark.asyncio
+    async def test_filter_persists_after_reload(self):
+        service = AsyncMock()
+        e1 = _mock_event(1, "Early")
+        e1.start_date = date(1100, 1, 1)
+        e1.end_date = date(1100, 6, 1)
+        e2 = _mock_event(2, "Mid")
+        e2.start_date = date(1200, 1, 1)
+        e2.end_date = date(1200, 12, 31)
+        service.get_all_events.return_value = [e1, e2]
+        vm = TimelineViewModel(service)
+        await vm.load_events()
+        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))
+        assert [e.name for e in vm.events] == ["Mid"]
+
+        # Simulate reload after creating a new event in the same range
+        e3 = _mock_event(3, "New")
+        e3.start_date = date(1200, 5, 1)
+        e3.end_date = date(1200, 5, 10)
+        service.get_all_events.return_value = [e1, e2, e3]
+        await vm.load_events()
+        names = sorted(e.name for e in vm.events)
+        assert names == ["Mid", "New"]
+
 
 # ── DetailViewModel ──────────────────────────────────────────────────────
 

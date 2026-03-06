@@ -1,6 +1,7 @@
 """World Snapshot widget — visual overview of the game world at a specific date."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Sequence
 
 from PySide6.QtCore import QDate, QSize, Qt, Signal
@@ -108,6 +109,10 @@ class WorldSnapshotWidget(QWidget):
         self.clear_button.clicked.connect(self._on_clear)
         date_bar.addWidget(self.clear_button)
 
+        self.show_all_button = QPushButton("Показать всё")
+        self.show_all_button.clicked.connect(self._on_show_all)
+        date_bar.addWidget(self.show_all_button)
+
         layout.addLayout(date_bar)
 
         # ── Tree ──
@@ -135,13 +140,17 @@ class WorldSnapshotWidget(QWidget):
 
     # ── Public API ──
 
-    def populate(self, events: Sequence[Any]) -> None:
-        """Build the world tree from a list of events active at the given date."""
+    def populate(self, events: Sequence[Any], for_date: date | None) -> None:
+        """Build the world tree from a list of events.
+        for_date: date for stats label; None means 'show all' mode.
+        """
         self.tree.clear()
         self.clear_button.setEnabled(True)
 
         if not events:
-            self._show_empty("На эту дату нет активных событий")
+            self._show_empty(
+                "Нет событий в игре" if for_date is None else "На эту дату нет активных событий"
+            )
             return
 
         # ── Collect all unique entities from events ──
@@ -206,15 +215,26 @@ class WorldSnapshotWidget(QWidget):
                 self._make_entity_node(item_section, it, "item", "🗡")
 
         # ── Stats ──
-        target = self.date_edit.date().toPython()
-        self.stats_label.setText(
-            f"Дата: {format_game_date(target)}  |  "
-            f"Событий: {len(events)}  |  "
-            f"Персонажей: {len(characters)}  |  "
-            f"Организаций: {len(organizations)}  |  "
-            f"Локаций: {len(locations)}  |  "
-            f"Предметов: {len(items)}"
-        )
+        if for_date is None:
+            stats_text = (
+                "Показано: все события  |  "
+                f"Событий: {len(events)}  |  "
+                f"Персонажей: {len(characters)}  |  "
+                f"Организаций: {len(organizations)}  |  "
+                f"Локаций: {len(locations)}  |  "
+                f"Предметов: {len(items)}"
+            )
+        else:
+            target = for_date
+            stats_text = (
+                f"Дата: {format_game_date(target)}  |  "
+                f"Событий: {len(events)}  |  "
+                f"Персонажей: {len(characters)}  |  "
+                f"Организаций: {len(organizations)}  |  "
+                f"Локаций: {len(locations)}  |  "
+                f"Предметов: {len(items)}"
+            )
+        self.stats_label.setText(stats_text)
 
     # ── Tree node helpers ──
 
@@ -275,6 +295,10 @@ class WorldSnapshotWidget(QWidget):
     def _on_show(self) -> None:
         target = self.date_edit.date().toPython()
         self.snapshot_requested.emit(target)
+
+    def _on_show_all(self) -> None:
+        """Show snapshot without date filter (all events/entities)."""
+        self.snapshot_requested.emit(None)
 
     def _on_clear(self) -> None:
         self.tree.clear()

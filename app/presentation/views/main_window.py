@@ -98,6 +98,18 @@ class MainWindow(QMainWindow):
         self.month_settings_action.triggered.connect(self.month_settings_requested.emit)
         settings_menu.addAction(self.month_settings_action)
 
+        # Импорт из .xlsx
+        self.import_events_action = QAction("Импорт событий из .xlsx…", self)
+        settings_menu.addAction(self.import_events_action)
+        self.import_characters_action = QAction("Импорт персонажей из .xlsx…", self)
+        settings_menu.addAction(self.import_characters_action)
+        self.import_locations_action = QAction("Импорт локаций из .xlsx…", self)
+        settings_menu.addAction(self.import_locations_action)
+        self.import_organizations_action = QAction("Импорт организаций из .xlsx…", self)
+        settings_menu.addAction(self.import_organizations_action)
+        self.import_items_action = QAction("Импорт предметов из .xlsx…", self)
+        settings_menu.addAction(self.import_items_action)
+
         # О приложении
         about_menu = menu_bar.addMenu("О приложении")
         self.readme_action = QAction("Документация", self)

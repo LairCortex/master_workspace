@@ -21,6 +21,7 @@ class Organization:
     end_date: date | None = None
     id: int | None = None
     tasks: str | None = None
+    music_url: str | None = None
     characters: list[Character] = field(default_factory=list)
     items: list[Item] = field(default_factory=list)
     locations: list[Location] = field(default_factory=list)

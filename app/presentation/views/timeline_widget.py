@@ -7,7 +7,7 @@ from PySide6.QtCore import QDate, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDateEdit, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QVBoxLayout, QWidget,
+    QPushButton, QVBoxLayout, QWidget, QMenu,
 )
 
 from app.presentation.utils.date_utils import format_game_date
@@ -18,6 +18,7 @@ class TimelineWidget(QWidget):
     event_selected = Signal(int)
     event_double_clicked = Signal(int)  # event_id
     add_event_requested = Signal()
+    add_entity_requested = Signal(str)  # entity_type: character/location/organization/item
     filter_changed = Signal(object, object)  # (start_date | None, end_date | None)
 
     def __init__(self, timeline_vm, parent: QWidget | None = None) -> None:
@@ -38,8 +39,10 @@ class TimelineWidget(QWidget):
 
         self.add_button = QPushButton("+")
         self.add_button.setFixedSize(30, 30)
-        self.add_button.setToolTip("Добавить событие")
+        self.add_button.setToolTip("Добавить событие (правый клик — другие сущности)")
         self.add_button.clicked.connect(self.add_event_requested.emit)
+        self.add_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.add_button.customContextMenuRequested.connect(self._on_add_context_menu)
         header.addWidget(self.add_button)
         layout.addLayout(header)
 
@@ -85,6 +88,27 @@ class TimelineWidget(QWidget):
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self.list_widget, 1)
+
+    def _on_add_context_menu(self, pos) -> None:
+        menu = QMenu(self)
+        act_event = menu.addAction("Новое событие")
+        act_char = menu.addAction("Новый персонаж")
+        act_loc = menu.addAction("Новая локация")
+        act_org = menu.addAction("Новая организация")
+        act_item = menu.addAction("Новый предмет")
+
+        global_pos = self.add_button.mapToGlobal(pos)
+        action = menu.exec(global_pos)
+        if action is act_event:
+            self.add_event_requested.emit()
+        elif action is act_char:
+            self.add_entity_requested.emit("character")
+        elif action is act_loc:
+            self.add_entity_requested.emit("location")
+        elif action is act_org:
+            self.add_entity_requested.emit("organization")
+        elif action is act_item:
+            self.add_entity_requested.emit("item")
 
     def update_events(self, events: Sequence[Any]) -> None:
         self.list_widget.clear()
