@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.image_utils import base64_to_pixmap, load_and_encode
+from app.presentation.views.ai_assist_button import AiAssistButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
 
@@ -162,9 +163,11 @@ class EntityCardDialog(QDialog):
         self._image_b64: str = ""
         self._has_image_field = "image" in _EXTRA_FIELDS.get(entity_type, [])
         self._music_url: str = ""
+        self._ai_buttons: list[AiAssistButton] = []
         self.setWindowTitle(f"Карточка: {entity_type}")
         self.setMinimumSize(750 if self._has_image_field else 550, 550)
         self._init_ui()
+        self._setup_ai_buttons()
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -448,6 +451,30 @@ class EntityCardDialog(QDialog):
             edits.append(self.tasks_input)
         return edits
 
+    def _setup_ai_buttons(self) -> None:
+        et = self._entity_type
+        fields: list[tuple[QWidget, str, str]] = [
+            (self.name_input, "name", "Название"),
+            (self.characteristics_input, "characteristics", "Характеристики"),
+            (self.backstory_input, "backstory", "Предыстория"),
+        ]
+        if self.personality_input:
+            fields.append((self.personality_input, "personality", "Личность"))
+        if self.tasks_input:
+            fields.append((self.tasks_input, "tasks", "Задачи"))
+
+        for widget, field_name, field_label in fields:
+            btn = AiAssistButton(widget, et, field_name, field_label)
+            self._ai_buttons.append(btn)
+
+    def get_ai_buttons(self) -> list[AiAssistButton]:
+        return list(self._ai_buttons)
+
+    def reject(self) -> None:
+        if any(b.is_generating for b in self._ai_buttons):
+            return
+        super().reject()
+
     def _on_save(self) -> None:
         self.saved.emit(self.get_data())
-        self.accept()
+        super().accept()

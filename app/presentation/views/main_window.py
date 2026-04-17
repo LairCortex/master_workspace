@@ -65,17 +65,20 @@ class MainWindow(QMainWindow):
     switch_game_requested = Signal()
     export_requested = Signal()
     month_settings_requested = Signal()
+    llm_setup_requested = Signal()
 
     def __init__(
         self,
         timeline_vm,
         detail_vm,
         search_vm,
+        llm_vm=None,
         game_name: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._base_title = "НРИ Сценарий Менеджер"
+        self.llm_vm = llm_vm
         self.set_game_name(game_name)
         self.setMinimumSize(1024, 680)
 
@@ -109,6 +112,12 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(self.import_organizations_action)
         self.import_items_action = QAction("Импорт предметов из .xlsx…", self)
         settings_menu.addAction(self.import_items_action)
+
+        # LLM
+        llm_menu = menu_bar.addMenu("LLM")
+        self.llm_setup_action = QAction("Настройка LLM…", self)
+        self.llm_setup_action.triggered.connect(self.llm_setup_requested.emit)
+        llm_menu.addAction(self.llm_setup_action)
 
         # О приложении
         about_menu = menu_bar.addMenu("О приложении")

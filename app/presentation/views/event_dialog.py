@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.image_utils import load_and_encode
+from app.presentation.views.ai_assist_button import AiAssistButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
 
@@ -212,10 +213,11 @@ class EventDialog(QDialog):
         super().__init__(parent)
         self._vm = event_dialog_vm
         self._event_id: int | None = None
+        self._ai_buttons: list[AiAssistButton] = []
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
-        # Wire mention clicks from all MentionTextEdits
+        self._setup_ai_buttons()
         self.characteristics_input.mention_clicked.connect(self.mention_clicked)
         self.backstory_input.mention_clicked.connect(self.mention_clicked)
 
@@ -356,6 +358,24 @@ class EventDialog(QDialog):
         """Return all MentionTextEdit instances for wiring search."""
         return [self.characteristics_input, self.backstory_input]
 
+    def _setup_ai_buttons(self) -> None:
+        fields: list[tuple[QWidget, str, str]] = [
+            (self.name_input, "name", "Название"),
+            (self.characteristics_input, "characteristics", "Характеристики"),
+            (self.backstory_input, "backstory", "Предыстория"),
+        ]
+        for widget, field_name, field_label in fields:
+            btn = AiAssistButton(widget, "event", field_name, field_label)
+            self._ai_buttons.append(btn)
+
+    def get_ai_buttons(self) -> list[AiAssistButton]:
+        return list(self._ai_buttons)
+
+    def reject(self) -> None:
+        if any(b.is_generating for b in self._ai_buttons):
+            return
+        super().reject()
+
     def _on_save(self) -> None:
         self.saved.emit(self.get_data())
-        self.accept()
+        super().accept()

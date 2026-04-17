@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
@@ -24,20 +27,27 @@ from app.application.services.event_service import EventService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.application.services.xlsx_import_service import XlsxImportService
+from app.application.services.llm_service import LlmService
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
+from app.presentation.viewmodels.llm_viewmodel import (
+    FIELD_PROMPTS_KEY, WORLD_PROMPT_KEY, LlmViewModel,
+)
 
 from app.presentation.utils.date_utils import (
     SETTINGS_KEY, get_custom_months, months_from_json, months_to_json, set_custom_months,
 )
+from app.infrastructure.llm.local_provider import LocalGgufProvider
+from app.infrastructure.llm.model_manager import ModelManager
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
+from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
 # Map attr names to entity_type strings for relationship syncing
 _ATTR_TO_ENTITY_TYPE = {
@@ -129,6 +139,11 @@ class Application:
         self._window: MainWindow | None = None
         self._db_path: str | None = None
 
+        self._model_manager = ModelManager()
+        self._local_provider = LocalGgufProvider(self._model_manager.get_model_path())
+        self._llm_service = LlmService(self._local_provider)
+        self._llm_vm = LlmViewModel(self._llm_service, self._model_manager)
+
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window."""
         self._db_path = db_path
@@ -168,11 +183,15 @@ class Application:
         search_vm = SearchViewModel(search_service)
         event_dialog_vm = EventDialogViewModel(event_service)
 
+        # Load LLM settings
+        await self._load_llm_settings()
+
         # Main window
         window = MainWindow(
             timeline_vm=timeline_vm,
             detail_vm=detail_vm,
             search_vm=search_vm,
+            llm_vm=self._llm_vm,
             game_name=game_name,
         )
 
@@ -190,6 +209,11 @@ class Application:
         # Month settings menu
         window.month_settings_requested.connect(
             lambda: asyncio.ensure_future(self._on_month_settings(window, timeline_vm))
+        )
+
+        # LLM setup menu
+        window.llm_setup_requested.connect(
+            lambda: self._on_llm_setup(window)
         )
 
         # Initial load
@@ -360,6 +384,7 @@ class Application:
             dialog = EventDialog(event_dialog_vm, parent=window)
             asyncio.ensure_future(_load_available_into_dialog(dialog))
             self._wire_mentions_for_dialog(dialog, on_entity_click)
+            self._wire_ai_buttons(dialog)
 
             async def on_saved(data):
                 try:
@@ -396,6 +421,7 @@ class Application:
 
                 dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
                 self._wire_mentions_for_dialog(dialog, on_entity_click)
+                self._wire_ai_buttons(dialog)
 
                 async def on_entity_saved(data):
                     try:
@@ -430,6 +456,7 @@ class Application:
                 await _load_available_into_dialog(dialog)
                 dialog.populate(event)
                 self._wire_mentions_for_dialog(dialog, on_entity_click)
+                self._wire_ai_buttons(dialog)
 
                 async def on_event_updated(data):
                     try:
@@ -516,6 +543,7 @@ class Application:
                 dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
                 dialog.populate(entity)
                 self._wire_mentions_for_dialog(dialog, on_entity_click)
+                self._wire_ai_buttons(dialog)
 
                 # Load available related entities for linking
                 from app.presentation.views.entity_card_dialog import _RELATED_CONFIG
@@ -584,6 +612,7 @@ class Application:
                 async def on_create_related(attr_name, related_entity_type):
                     sub_dialog = EntityCardDialog(None, entity_type=related_entity_type, parent=dialog)
                     self._wire_mentions_for_dialog(sub_dialog, on_entity_click)
+                    self._wire_ai_buttons(sub_dialog)
 
                     async def on_sub_saved(sub_data):
                         sub_data.pop("related_changes", None)
@@ -706,6 +735,128 @@ class Application:
 
         dialog.saved.connect(lambda m: asyncio.ensure_future(_on_saved(m)))
         dialog.open()
+
+    def _wire_ai_buttons(self, dialog) -> None:
+        """Connect AI buttons in a dialog to the LLM ViewModel."""
+        if not hasattr(dialog, "get_ai_buttons"):
+            return
+        llm_vm = self._llm_vm
+        for btn in dialog.get_ai_buttons():
+            btn.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
+            llm_vm.model_status_changed.connect(
+                lambda _s, _b=btn: _b.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
+            )
+
+            def _on_generate(et, fn, fl, ct, _btn=btn):
+                field_id = f"{et}.{fn}"
+                log = logging.getLogger("llm.wire")
+                log.info("AI button clicked: %s, label=%s, text=%r", field_id, fl, ct[:50] if ct else "")
+                _btn.set_generating(True)
+
+                async def _do():
+                    try:
+                        await llm_vm.request_generation(field_id, et, fn, fl, ct)
+                    except Exception as exc:
+                        log.error("Generation failed: %s — %s", field_id, exc)
+                        _btn.set_generating(False)
+
+                asyncio.ensure_future(_do())
+
+            btn.generate_requested.connect(_on_generate)
+
+            def _on_finished(fid, text, _btn=btn, _et=btn.entity_type, _fn=btn.field_name):
+                expected_id = f"{_et}.{_fn}"
+                if fid == expected_id:
+                    _btn.set_result_text(text)
+
+            def _on_error(fid, _err, _btn=btn, _et=btn.entity_type, _fn=btn.field_name):
+                expected_id = f"{_et}.{_fn}"
+                if fid == expected_id:
+                    _btn.set_generating(False)
+
+            llm_vm.generation_finished.connect(_on_finished)
+            llm_vm.generation_error.connect(_on_error)
+
+    def _on_llm_setup(self, window) -> None:
+        llm_vm = self._llm_vm
+        model_downloaded = self._model_manager.get_model_path() is not None
+        dialog = LlmSetupDialog(
+            model_downloaded=model_downloaded,
+            world_prompt=llm_vm.world_prompt,
+            field_prompts=llm_vm.field_prompts,
+            parent=window,
+        )
+        dialog._download_btn.clicked.connect(
+            lambda: asyncio.ensure_future(self._do_llm_download(dialog))
+        )
+        dialog._delete_btn.clicked.connect(self._do_llm_delete_factory(dialog))
+
+        async def _on_saved(world_prompt, field_prompts):
+            llm_vm.world_prompt = world_prompt
+            llm_vm.field_prompts = field_prompts
+            await self._save_llm_settings()
+
+        dialog.saved.connect(lambda wp, fp: asyncio.ensure_future(_on_saved(wp, fp)))
+        dialog.open()
+
+    async def _do_llm_download(self, dialog) -> None:
+        dialog._download_btn.setEnabled(False)
+        dialog._back_btn.setEnabled(False)
+        dialog._next_btn.setEnabled(False)
+        self._llm_vm.download_progress.connect(dialog.set_download_progress)
+        try:
+            await self._llm_vm.download_model()
+            dialog.set_model_downloaded(True)
+        except Exception as exc:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(dialog, "Ошибка", str(exc))
+        finally:
+            self._llm_vm.download_progress.disconnect(dialog.set_download_progress)
+            dialog._download_btn.setEnabled(True)
+            dialog._back_btn.setEnabled(True)
+            dialog._next_btn.setEnabled(True)
+            dialog._update_nav_buttons()
+
+    def _do_llm_delete_factory(self, dialog):
+        def _delete():
+            self._llm_vm.delete_model()
+            dialog.set_model_downloaded(False)
+        return _delete
+
+    async def _load_llm_settings(self) -> None:
+        from sqlalchemy import select
+        try:
+            result = await self._session.execute(
+                select(GameSettingsModel).where(GameSettingsModel.key == WORLD_PROMPT_KEY)
+            )
+            row = result.scalars().first()
+            if row:
+                self._llm_vm.world_prompt_from_json(row.value)
+
+            result2 = await self._session.execute(
+                select(GameSettingsModel).where(GameSettingsModel.key == FIELD_PROMPTS_KEY)
+            )
+            row2 = result2.scalars().first()
+            if row2:
+                self._llm_vm.field_prompts_from_json(row2.value)
+        except Exception:
+            pass
+
+    async def _save_llm_settings(self) -> None:
+        from sqlalchemy import select
+        for key, value in [
+            (WORLD_PROMPT_KEY, self._llm_vm.world_prompt_to_json()),
+            (FIELD_PROMPTS_KEY, self._llm_vm.field_prompts_to_json()),
+        ]:
+            result = await self._session.execute(
+                select(GameSettingsModel).where(GameSettingsModel.key == key)
+            )
+            row = result.scalars().first()
+            if row:
+                row.value = value
+            else:
+                self._session.add(GameSettingsModel(key=key, value=value))
+        await self._session.commit()
 
     async def shutdown(self) -> None:
         if self._session:
