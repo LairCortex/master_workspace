@@ -150,6 +150,8 @@ class DetailPanel(QWidget):
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
         self.title_label = QLabel("")
         self.title_label.setStyleSheet("font-weight: bold; font-size: 14px;")

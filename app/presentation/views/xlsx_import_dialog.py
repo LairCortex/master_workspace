@@ -18,36 +18,73 @@ from PySide6.QtWidgets import (
 )
 
 FORMAT_TEXTS: dict[str, str] = {
-    "event": """Формат файла для импорта событий:
-• Обязательные столбцы: name, start_date
-• name — название события
-• start_date — дата начала (YYYY-MM-DD или дата Excel)
-• end_date — дата конца (необязательно)
-• characteristics, backstory — описание (необязательно)""",
-    "character": """Формат файла для импорта персонажей:
-• Обязательные столбцы: name, start_date
-• name — имя персонажа
-• start_date — дата начала (YYYY-MM-DD)
-• end_date, characteristics, backstory — необязательно
-• personality, tasks, music_url — необязательно
-• image или изображение — путь к файлу картинки (относительно .xlsx или абсолютный). Форматы: PNG, JPG, BMP, GIF, WebP""",
-    "location": """Формат файла для импорта локаций:
-• Обязательные столбцы: name, start_date
-• name — название локации
-• start_date — дата начала (YYYY-MM-DD)
-• end_date, characteristics, backstory, tasks, music_url — необязательно
-• image или изображение — путь к файлу изображения (локальный)""",
-    "organization": """Формат файла для импорта организаций:
-• Обязательные столбцы: name, start_date
-• name — название организации
-• start_date — дата начала (YYYY-MM-DD)
-• end_date, characteristics, backstory, tasks, music_url — необязательно
-• image или изображение — путь к файлу изображения (локальный)""",
-    "item": """Формат файла для импорта предметов:
-• Обязательные столбцы: name, start_date
-• name — название предмета
-• start_date — дата начала (YYYY-MM-DD)
-• end_date, characteristics, backstory, music_url — необязательно""",
+    "event": (
+        "Первая строка файла — заголовки столбцов (порядок не важен).\n"
+        "Столбцы ищутся по имени.\n\n"
+        "Столбец            | Обяз. | Описание\n"
+        "name               | да    | Название события\n"
+        "start_date         | да    | Дата начала (YYYY-MM-DD или дата Excel)\n"
+        "end_date           | нет   | Дата конца\n"
+        "characteristics    | нет   | Описание / характеристики\n"
+        "backstory          | нет   | Предыстория"
+    ),
+    "character": (
+        "Первая строка файла — заголовки столбцов (порядок не важен).\n"
+        "Столбцы ищутся по имени.\n\n"
+        "Столбец            | Обяз. | Описание\n"
+        "name               | да    | Имя персонажа\n"
+        "start_date         | да    | Дата начала (YYYY-MM-DD или дата Excel)\n"
+        "end_date           | нет   | Дата конца\n"
+        "characteristics    | нет   | Описание / характеристики\n"
+        "backstory          | нет   | Предыстория\n"
+        "personality        | нет   | Личность\n"
+        "tasks              | нет   | Задачи\n"
+        "music_url          | нет   | Ссылка на музыкальную тему\n"
+        "image              | нет   | Путь к изображению (относит. или абс.)\n"
+        "\nДля image допустимы форматы: PNG, JPG, BMP, GIF, WebP.\n"
+        "Альтернативное имя столбца: «изображение»."
+    ),
+    "location": (
+        "Первая строка файла — заголовки столбцов (порядок не важен).\n"
+        "Столбцы ищутся по имени.\n\n"
+        "Столбец            | Обяз. | Описание\n"
+        "name               | да    | Название локации\n"
+        "start_date         | да    | Дата начала (YYYY-MM-DD или дата Excel)\n"
+        "end_date           | нет   | Дата конца\n"
+        "characteristics    | нет   | Описание / характеристики\n"
+        "backstory          | нет   | Предыстория\n"
+        "tasks              | нет   | Задачи\n"
+        "music_url          | нет   | Ссылка на музыкальную тему\n"
+        "image              | нет   | Путь к изображению (относит. или абс.)\n"
+        "\nДля image допустимы форматы: PNG, JPG, BMP, GIF, WebP.\n"
+        "Альтернативное имя столбца: «изображение»."
+    ),
+    "organization": (
+        "Первая строка файла — заголовки столбцов (порядок не важен).\n"
+        "Столбцы ищутся по имени.\n\n"
+        "Столбец            | Обяз. | Описание\n"
+        "name               | да    | Название организации\n"
+        "start_date         | да    | Дата начала (YYYY-MM-DD или дата Excel)\n"
+        "end_date           | нет   | Дата конца\n"
+        "characteristics    | нет   | Описание / характеристики\n"
+        "backstory          | нет   | Предыстория\n"
+        "tasks              | нет   | Задачи\n"
+        "music_url          | нет   | Ссылка на музыкальную тему\n"
+        "image              | нет   | Путь к изображению (относит. или абс.)\n"
+        "\nДля image допустимы форматы: PNG, JPG, BMP, GIF, WebP.\n"
+        "Альтернативное имя столбца: «изображение»."
+    ),
+    "item": (
+        "Первая строка файла — заголовки столбцов (порядок не важен).\n"
+        "Столбцы ищутся по имени.\n\n"
+        "Столбец            | Обяз. | Описание\n"
+        "name               | да    | Название предмета\n"
+        "start_date         | да    | Дата начала (YYYY-MM-DD или дата Excel)\n"
+        "end_date           | нет   | Дата конца\n"
+        "characteristics    | нет   | Описание / характеристики\n"
+        "backstory          | нет   | Предыстория\n"
+        "music_url          | нет   | Ссылка на музыкальную тему"
+    ),
 }
 
 ENTITY_LABELS: dict[str, str] = {
@@ -68,7 +105,7 @@ class XlsxImportDialog(QDialog):
         self._entity_type = entity_type
         self._path: str = ""
         self.setWindowTitle(f"Импорт {ENTITY_LABELS.get(entity_type, entity_type)} из .xlsx")
-        self.setMinimumSize(520, 420)
+        self.setMinimumSize(580, 480)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -80,7 +117,8 @@ class XlsxImportDialog(QDialog):
 
         self.format_text = QTextEdit()
         self.format_text.setReadOnly(True)
-        self.format_text.setMaximumHeight(180)
+        self.format_text.setMaximumHeight(260)
+        self.format_text.setStyleSheet("QTextEdit { font-family: monospace; font-size: 12px; }")
         self.format_text.setPlainText(FORMAT_TEXTS.get(self._entity_type, ""))
         layout.addWidget(self.format_text)
 

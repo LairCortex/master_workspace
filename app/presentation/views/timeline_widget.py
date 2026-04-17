@@ -29,6 +29,8 @@ class TimelineWidget(QWidget):
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
         # Header
         header = QHBoxLayout()
