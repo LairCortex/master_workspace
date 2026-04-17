@@ -169,3 +169,17 @@ def test_get_field_prompts(dialog):
     assert "item" in result
     assert "location" in result
     assert "organization" in result
+
+
+def test_set_download_status_packages(dialog):
+    dialog.set_download_status("Установка необходимых пакетов…")
+    assert dialog._progress_label.text() == "Установка необходимых пакетов…"
+    assert dialog._progress.minimum() == 0
+    assert dialog._progress.maximum() == 0
+
+
+def test_set_download_status_model(dialog):
+    dialog.set_download_status("Загрузка модели…")
+    assert dialog._progress_label.text() == "Загрузка модели…"
+    assert dialog._progress.maximum() == 100
+    assert dialog._progress.value() == 0

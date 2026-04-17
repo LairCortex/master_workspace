@@ -804,6 +804,7 @@ class Application:
         dialog._back_btn.setEnabled(False)
         dialog._next_btn.setEnabled(False)
         self._llm_vm.download_progress.connect(dialog.set_download_progress)
+        self._llm_vm.download_status_message.connect(dialog.set_download_status)
         try:
             await self._llm_vm.download_model()
             dialog.set_model_downloaded(True)
@@ -812,6 +813,7 @@ class Application:
             QMessageBox.critical(dialog, "Ошибка", str(exc))
         finally:
             self._llm_vm.download_progress.disconnect(dialog.set_download_progress)
+            self._llm_vm.download_status_message.disconnect(dialog.set_download_status)
             dialog._download_btn.setEnabled(True)
             dialog._back_btn.setEnabled(True)
             dialog._next_btn.setEnabled(True)

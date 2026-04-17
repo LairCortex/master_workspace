@@ -225,8 +225,22 @@ class LlmSetupDialog(QDialog):
         self._progress.setValue(pct)
         if value >= 1.0:
             self._progress_label.setText("Загрузка завершена!")
+        elif self._progress.format() == "установка пакетов…":
+            pass
         else:
             self._progress_label.setText(f"Загрузка модели… {pct}%")
+
+    def set_download_status(self, message: str) -> None:
+        self._progress.show()
+        self._progress_label.show()
+        self._progress_label.setText(message)
+        if "пакет" in message.lower():
+            self._progress.setRange(0, 0)
+            self._progress.setFormat("установка пакетов…")
+        else:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(0)
+            self._progress.setFormat("%p% скачано")
 
     def _build_world_prompt_page(self) -> QWidget:
         page = QWidget()

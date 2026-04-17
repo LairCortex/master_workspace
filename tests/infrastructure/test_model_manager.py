@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -88,9 +90,53 @@ def test_save_and_load_config(manager, tmp_path):
         with patch("app.infrastructure.llm.model_manager._CONFIG_FILE", tmp_path / "llm_config.json"):
             manager.save_config(provider_type="local")
             config = ModelManager.load_config()
-            # load_config reads from _CONFIG_FILE which we patched
             cfg_file = tmp_path / "llm_config.json"
             assert cfg_file.exists()
             data = json.loads(cfg_file.read_text())
             assert data["provider_type"] == "local"
             assert data["repo_id"] == "test/repo"
+
+
+def test_are_llm_packages_installed_true():
+    with patch("importlib.util.find_spec", return_value=MagicMock()):
+        assert ModelManager.are_llm_packages_installed() is True
+
+
+def test_are_llm_packages_installed_false():
+    def _find_spec(name):
+        if name == "llama_cpp":
+            return None
+        return MagicMock()
+
+    with patch("importlib.util.find_spec", side_effect=_find_spec):
+        assert ModelManager.are_llm_packages_installed() is False
+
+
+@pytest.mark.asyncio
+async def test_install_llm_packages_calls_pip(manager):
+    with patch.object(ModelManager, "are_llm_packages_installed", return_value=False):
+        with patch.object(ModelManager, "_install_packages_sync") as mock_install:
+            cb = MagicMock()
+            await manager.install_llm_packages(status_callback=cb)
+            mock_install.assert_called_once()
+            cb.assert_called_once_with("Установка необходимых пакетов…")
+
+
+@pytest.mark.asyncio
+async def test_install_llm_packages_skips_if_installed(manager):
+    with patch.object(ModelManager, "are_llm_packages_installed", return_value=True):
+        with patch.object(ModelManager, "_install_packages_sync") as mock_install:
+            await manager.install_llm_packages()
+            mock_install.assert_not_called()
+
+
+def test_install_packages_sync_runs_pip():
+    with patch("subprocess.check_call") as mock_call:
+        ModelManager._install_packages_sync()
+        mock_call.assert_called_once()
+        args = mock_call.call_args[0][0]
+        assert args[0] == sys.executable
+        assert "-m" in args
+        assert "pip" in args
+        assert "install" in args
+        assert "llama-cpp-python" in args

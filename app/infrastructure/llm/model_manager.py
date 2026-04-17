@@ -1,9 +1,18 @@
 """Model download and lifecycle management."""
 from __future__ import annotations
 
+import asyncio
+import importlib
 import json
+import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
+
+log = logging.getLogger(__name__)
+
+LLM_PACKAGES = ["llama-cpp-python", "huggingface-hub", "tqdm"]
 
 DEFAULT_REPO = "bartowski/Qwen2.5-14B-Instruct-GGUF"
 DEFAULT_FILENAME = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"
@@ -34,12 +43,39 @@ class ModelManager:
         path = self._models_dir / self._filename
         return path if path.exists() else None
 
+    @staticmethod
+    def are_llm_packages_installed() -> bool:
+        for mod in ("llama_cpp", "huggingface_hub", "tqdm"):
+            if importlib.util.find_spec(mod) is None:
+                return False
+        return True
+
+    async def install_llm_packages(
+        self,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if self.are_llm_packages_installed():
+            return
+        if status_callback:
+            status_callback("Установка необходимых пакетов…")
+        await asyncio.to_thread(self._install_packages_sync)
+
+    @staticmethod
+    def _install_packages_sync() -> None:
+        log.info("Installing LLM packages: %s", LLM_PACKAGES)
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", *LLM_PACKAGES],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for mod in ("llama_cpp", "huggingface_hub", "tqdm"):
+            if mod in sys.modules:
+                importlib.reload(sys.modules[mod])
+
     async def download_model(
         self,
         progress_callback: Callable[[float], None] | None = None,
     ) -> Path:
-        import asyncio
-
         return await asyncio.to_thread(
             self._download_sync, progress_callback
         )

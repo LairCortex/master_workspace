@@ -1,7 +1,7 @@
 """Tests for LlmViewModel — status transitions, persistence, signals."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from PySide6.QtCore import QCoreApplication
@@ -129,3 +129,37 @@ def test_delete_model(vm, mock_manager):
     vm.delete_model()
     mock_manager.delete_model.assert_called_once()
     assert vm.status == LlmViewModel.STATUS_NOT_INSTALLED
+
+
+@pytest.mark.asyncio
+async def test_download_installs_packages_first(vm, mock_manager, qtbot):
+    mock_manager.are_llm_packages_installed.return_value = False
+    mock_manager.install_llm_packages = AsyncMock()
+    mock_manager.download_model = AsyncMock()
+    mock_manager.save_config = MagicMock()
+
+    messages = []
+    vm.download_status_message.connect(messages.append)
+
+    await vm.download_model()
+
+    mock_manager.install_llm_packages.assert_awaited_once()
+    mock_manager.download_model.assert_awaited_once()
+    assert any("пакет" in m.lower() for m in messages)
+    assert vm.status == LlmViewModel.STATUS_READY
+
+
+@pytest.mark.asyncio
+async def test_download_skips_packages_if_installed(vm, mock_manager, qtbot):
+    mock_manager.are_llm_packages_installed.return_value = True
+    mock_manager.install_llm_packages = AsyncMock()
+    mock_manager.download_model = AsyncMock()
+    mock_manager.save_config = MagicMock()
+
+    messages = []
+    vm.download_status_message.connect(messages.append)
+
+    await vm.download_model()
+
+    mock_manager.install_llm_packages.assert_not_awaited()
+    assert any("модел" in m.lower() for m in messages)

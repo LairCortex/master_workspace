@@ -21,6 +21,7 @@ def _default_field_prompts() -> dict[str, dict[str, str]]:
 class LlmViewModel(QObject):
     model_status_changed = Signal(str)
     download_progress = Signal(float)
+    download_status_message = Signal(str)
     generation_started = Signal(str)
     generation_finished = Signal(str, str)
     generation_error = Signal(str, str)
@@ -131,6 +132,13 @@ class LlmViewModel(QObject):
     async def download_model(self) -> None:
         self.set_status(self.STATUS_DOWNLOADING)
         try:
+            if not self._manager.are_llm_packages_installed():
+                self.download_status_message.emit("Установка необходимых пакетов…")
+                self.download_progress.emit(0.0)
+                await self._manager.install_llm_packages()
+                self.download_status_message.emit("Пакеты установлены. Загрузка модели…")
+            else:
+                self.download_status_message.emit("Загрузка модели…")
             await self._manager.download_model(
                 progress_callback=lambda p: self.download_progress.emit(p)
             )
