@@ -70,6 +70,15 @@ jobs:
       - name: Build application
         run: python build_app.py --clean
 
+      - name: Sign macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          APP="dist/НРИ Сценарий Менеджер.app"
+          if [ -d "$APP" ]; then
+            codesign --force --deep --sign - "$APP"
+            echo "Ad-hoc signed: $APP"
+          fi
+
       # ── Package artifacts ──
       - name: Package (macOS)
         if: runner.os == 'macOS'

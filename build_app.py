@@ -35,6 +35,21 @@ def build() -> None:
     subprocess.check_call(cmd, cwd=str(ROOT))
 
 
+def codesign_macos(app_path: Path) -> None:
+    """Ad-hoc sign the .app bundle so macOS Gatekeeper allows launching."""
+    print("  Ad-hoc signing .app bundle...")
+    try:
+        subprocess.check_call([
+            "codesign", "--force", "--deep", "--sign", "-",
+            str(app_path),
+        ])
+        print("  Signing OK")
+    except FileNotFoundError:
+        print("  WARNING: codesign not found, skipping")
+    except subprocess.CalledProcessError as exc:
+        print(f"  WARNING: codesign failed (exit {exc.returncode}), app may not launch on other Macs")
+
+
 def post_build() -> None:
     """Print summary of build results."""
     system = platform.system()
@@ -42,6 +57,7 @@ def post_build() -> None:
         app_bundle = DIST / "НРИ Сценарий Менеджер.app"
         folder = DIST / "nri_manager"
         if app_bundle.exists():
+            codesign_macos(app_bundle)
             print(f"\n  macOS app bundle: {app_bundle}")
         elif folder.exists():
             print(f"\n  macOS folder:     {folder}")
