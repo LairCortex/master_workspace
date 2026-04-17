@@ -65,7 +65,7 @@ async def test_download_model_progress_callback(manager, tmp_models_dir):
     callback = MagicMock()
     mock_hf = MagicMock()
     mock_hf.hf_hub_download.return_value = str(dest)
-    with patch.dict("sys.modules", {"huggingface_hub": mock_hf}):
+    with patch.dict("sys.modules", {"huggingface_hub": mock_hf, "tqdm": MagicMock()}):
         await manager.download_model(progress_callback=callback)
         callback.assert_called_with(1.0)
 
