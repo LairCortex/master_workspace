@@ -131,12 +131,44 @@ async def test_install_llm_packages_skips_if_installed(manager):
 
 
 def test_install_packages_sync_runs_pip():
-    with patch("subprocess.check_call") as mock_call:
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "Successfully installed"
+    mock_result.stderr = ""
+    with patch("subprocess.run", return_value=mock_result) as mock_run, \
+         patch("importlib.util.find_spec", return_value=MagicMock()):
         ModelManager._install_packages_sync()
-        mock_call.assert_called_once()
-        args = mock_call.call_args[0][0]
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
         assert args[0] == sys.executable
         assert "-m" in args
         assert "pip" in args
         assert "install" in args
         assert "llama-cpp-python" in args
+
+
+def test_install_packages_sync_raises_on_failure():
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+    mock_result.stderr = "ERROR: some pip error"
+    with patch("subprocess.run", return_value=mock_result):
+        with pytest.raises(RuntimeError, match="Не удалось установить"):
+            ModelManager._install_packages_sync()
+
+
+def test_install_packages_sync_raises_if_not_importable():
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "Successfully installed"
+    mock_result.stderr = ""
+
+    def _find_spec(name):
+        if name == "huggingface_hub":
+            return None
+        return MagicMock()
+
+    with patch("subprocess.run", return_value=mock_result), \
+         patch("importlib.util.find_spec", side_effect=_find_spec):
+        with pytest.raises(RuntimeError, match="Перезапустите приложение"):
+            ModelManager._install_packages_sync()

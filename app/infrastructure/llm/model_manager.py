@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.util
 import json
 import logging
+import site
 import subprocess
 import sys
 from pathlib import Path
@@ -63,14 +65,46 @@ class ModelManager:
     @staticmethod
     def _install_packages_sync() -> None:
         log.info("Installing LLM packages: %s", LLM_PACKAGES)
-        subprocess.check_call(
+        result = subprocess.run(
             [sys.executable, "-m", "pip", "install", *LLM_PACKAGES],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
+            text=True,
         )
-        for mod in ("llama_cpp", "huggingface_hub", "tqdm"):
-            if mod in sys.modules:
-                importlib.reload(sys.modules[mod])
+        log.info("pip stdout: %s", result.stdout[-500:] if result.stdout else "")
+        if result.returncode != 0:
+            log.error("pip stderr: %s", result.stderr[-1000:] if result.stderr else "")
+            raise RuntimeError(
+                f"Не удалось установить пакеты (код {result.returncode}):\n"
+                f"{result.stderr[-500:] if result.stderr else 'unknown error'}"
+            )
+
+        # Refresh sys.path so the running process sees newly installed packages
+        importlib.invalidate_caches()
+        known = set(sys.path)
+        for d in site.getsitepackages() + [site.getusersitepackages()]:
+            if d not in known:
+                log.info("Adding to sys.path: %s", d)
+                sys.path.insert(0, d)
+        importlib.invalidate_caches()
+
+        stale = [
+            k for k in sys.modules
+            if k in ("llama_cpp", "huggingface_hub", "tqdm")
+            or k.startswith(("llama_cpp.", "huggingface_hub.", "tqdm."))
+        ]
+        for k in stale:
+            del sys.modules[k]
+        log.info("Cleared %d stale module entries from sys.modules", len(stale))
+
+        # Verify packages are importable
+        for mod in ("huggingface_hub", "tqdm"):
+            spec = importlib.util.find_spec(mod)
+            log.info("find_spec(%s) = %s", mod, spec)
+            if spec is None:
+                raise RuntimeError(
+                    f"Пакет {mod} установлен, но не найден в текущем процессе. "
+                    f"Перезапустите приложение."
+                )
 
     async def download_model(
         self,
@@ -84,10 +118,13 @@ class ModelManager:
         self,
         progress_callback: Callable[[float], None] | None = None,
     ) -> Path:
+        log.info("Importing huggingface_hub…")
         from huggingface_hub import hf_hub_download
         from tqdm import tqdm as _tqdm_cls
+        log.info("huggingface_hub imported OK")
 
         self._models_dir.mkdir(parents=True, exist_ok=True)
+        log.info("Starting download to %s", self._models_dir)
 
         class _ProgressTqdm(_tqdm_cls):
             """tqdm subclass that forwards progress to our callback."""
