@@ -109,19 +109,27 @@ def test_get_python_executable_frozen_prefers_homebrew():
         assert result == "/opt/homebrew/bin/python3"
 
 
-def test_get_python_executable_frozen_xcode_clt_as_last_resort():
+def test_get_python_executable_frozen_rejects_apple_shims():
+    with patch.object(sys, "frozen", True, create=True), \
+         patch("pathlib.Path.is_file", return_value=False), \
+         patch("shutil.which", side_effect=lambda n: "/usr/bin/python3" if n == "python3" else None):
+        with pytest.raises(RuntimeError, match="Не найден Python"):
+            _get_python_executable()
+
+
+def test_get_python_executable_frozen_rejects_xcode_clt():
     with patch.object(sys, "frozen", True, create=True), \
          patch("pathlib.Path.is_file", return_value=False), \
          patch("shutil.which", side_effect=lambda n: "/Library/Developer/CommandLineTools/usr/bin/python3" if n == "python3" else None):
-        result = _get_python_executable()
-        assert result == "/Library/Developer/CommandLineTools/usr/bin/python3"
+        with pytest.raises(RuntimeError, match="Не найден Python"):
+            _get_python_executable()
 
 
 def test_get_python_executable_frozen_fallback_which():
     with patch.object(sys, "frozen", True, create=True), \
          patch("pathlib.Path.is_file", return_value=False), \
-         patch("shutil.which", side_effect=lambda n: "/usr/local/bin/python3" if n == "python3" else None):
-        assert _get_python_executable() == "/usr/local/bin/python3"
+         patch("shutil.which", side_effect=lambda n: "/some/custom/python3" if n == "python3" else None):
+        assert _get_python_executable() == "/some/custom/python3"
 
 
 def test_get_python_executable_frozen_no_python():

@@ -133,6 +133,7 @@ class Application:
 
     def __init__(self, qapp: QApplication) -> None:
         self._qapp = qapp
+        self._llm_downloading = False
         self.engine = None
         self.session_factory = None
         self._session = None
@@ -790,6 +791,7 @@ class Application:
             lambda: asyncio.ensure_future(self._do_llm_download(dialog))
         )
         dialog._delete_btn.clicked.connect(self._do_llm_delete_factory(dialog))
+        dialog.cancel_download_requested.connect(self._on_cancel_llm_download)
 
         async def _on_saved(world_prompt, field_prompts):
             llm_vm.world_prompt = world_prompt
@@ -799,7 +801,15 @@ class Application:
         dialog.saved.connect(lambda wp, fp: asyncio.ensure_future(_on_saved(wp, fp)))
         dialog.open()
 
+    def _on_cancel_llm_download(self) -> None:
+        if self._llm_downloading:
+            self._model_manager.cancel_download()
+
     async def _do_llm_download(self, dialog) -> None:
+        if self._llm_downloading:
+            return
+        self._llm_downloading = True
+        dialog.set_downloading(True)
         dialog._download_btn.setEnabled(False)
         dialog._back_btn.setEnabled(False)
         dialog._next_btn.setEnabled(False)
@@ -809,11 +819,21 @@ class Application:
             await self._llm_vm.download_model()
             dialog.set_model_downloaded(True)
         except Exception as exc:
+            from app.infrastructure.llm.model_manager import DownloadCancelled
+            if isinstance(exc.__cause__, DownloadCancelled) or isinstance(exc, DownloadCancelled):
+                dialog.set_downloading(False)
+                dialog.close()
+                return
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(dialog, "Ошибка", str(exc))
         finally:
-            self._llm_vm.download_progress.disconnect(dialog.set_download_progress)
-            self._llm_vm.download_status_message.disconnect(dialog.set_download_status)
+            self._llm_downloading = False
+            dialog.set_downloading(False)
+            try:
+                self._llm_vm.download_progress.disconnect(dialog.set_download_progress)
+                self._llm_vm.download_status_message.disconnect(dialog.set_download_status)
+            except RuntimeError:
+                pass
             dialog._download_btn.setEnabled(True)
             dialog._back_btn.setEnabled(True)
             dialog._next_btn.setEnabled(True)

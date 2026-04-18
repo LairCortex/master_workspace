@@ -10,6 +10,7 @@ import shutil
 import site
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -20,8 +21,17 @@ LLM_PACKAGES = ["llama-cpp-python", "huggingface-hub", "tqdm"]
 
 _PREFERRED_PYTHON_PATHS = [
     "/opt/homebrew/bin/python3",
+    "/opt/homebrew/bin/python3.11",
+    "/opt/homebrew/bin/python3.12",
+    "/opt/homebrew/bin/python3.13",
     "/usr/local/bin/python3",
 ]
+
+_APPLE_SHIM_PREFIXES = ("/usr/bin/", "/Library/Developer/CommandLineTools/")
+
+
+def _is_apple_shim(path: str) -> bool:
+    return any(path.startswith(prefix) for prefix in _APPLE_SHIM_PREFIXES)
 
 
 def _get_python_executable() -> str:
@@ -33,20 +43,20 @@ def _get_python_executable() -> str:
                 return p
         for name in ("python3", "python"):
             path = shutil.which(name)
-            if path and "/CommandLineTools/" not in path:
+            if path and not _is_apple_shim(path):
                 log.info("Frozen app: using system Python: %s", path)
                 return path
-        # Last resort: even Xcode CLT Python
-        for name in ("python3", "python"):
-            path = shutil.which(name)
-            if path:
-                log.warning("Frozen app: only Xcode CLT Python found: %s", path)
-                return path
         raise RuntimeError(
-            "Не найден Python в системе. Установите Python 3.10+ "
-            "(рекомендуется Homebrew: brew install python)."
+            "Не найден Python 3.10+ с pip.\n\n"
+            "Установите через Homebrew:\n"
+            "  brew install python\n\n"
+            "Или скачайте с python.org."
         )
     return sys.executable
+
+class DownloadCancelled(Exception):
+    pass
+
 
 DEFAULT_REPO = "bartowski/Qwen2.5-14B-Instruct-GGUF"
 DEFAULT_FILENAME = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"
@@ -68,6 +78,7 @@ class ModelManager:
         self._repo_id = repo_id
         self._filename = filename
         self._models_dir = models_dir or _MODELS_DIR
+        self._cancel_event = threading.Event()
 
     @property
     def models_dir(self) -> Path:
@@ -76,6 +87,21 @@ class ModelManager:
     def get_model_path(self) -> Path | None:
         path = self._models_dir / self._filename
         return path if path.exists() else None
+
+    def cancel_download(self) -> None:
+        self._cancel_event.set()
+
+    def cleanup_partial(self) -> None:
+        """Remove partially downloaded files from the models directory."""
+        if not self._models_dir.exists():
+            return
+        for f in self._models_dir.iterdir():
+            if f.is_file():
+                log.info("Cleaning up partial file: %s", f)
+                f.unlink()
+        if self._models_dir.exists() and not any(self._models_dir.iterdir()):
+            self._models_dir.rmdir()
+            log.info("Removed empty models dir: %s", self._models_dir)
 
     @staticmethod
     def are_llm_packages_installed() -> bool:
@@ -151,6 +177,7 @@ class ModelManager:
         self,
         progress_callback: Callable[[float], None] | None = None,
     ) -> Path:
+        self._cancel_event.clear()
         return await asyncio.to_thread(
             self._download_sync, progress_callback
         )
@@ -166,11 +193,12 @@ class ModelManager:
 
         self._models_dir.mkdir(parents=True, exist_ok=True)
         log.info("Starting download to %s", self._models_dir)
+        cancel = self._cancel_event
 
         class _ProgressTqdm(_tqdm_cls):
-            """tqdm subclass that forwards progress to our callback."""
-
             def update(self, n=1):
+                if cancel.is_set():
+                    raise DownloadCancelled()
                 super().update(n)
                 if progress_callback and self.total and self.total > 0:
                     progress_callback(min(self.n / self.total, 0.99))
@@ -178,13 +206,18 @@ class ModelManager:
         import os
         token = os.environ.get("HF_TOKEN", "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")
 
-        path = hf_hub_download(
-            repo_id=self._repo_id,
-            filename=self._filename,
-            local_dir=str(self._models_dir),
-            tqdm_class=_ProgressTqdm,
-            token=token,
-        )
+        try:
+            path = hf_hub_download(
+                repo_id=self._repo_id,
+                filename=self._filename,
+                local_dir=str(self._models_dir),
+                tqdm_class=_ProgressTqdm,
+                token=token,
+            )
+        except DownloadCancelled:
+            log.info("Download cancelled by user")
+            self.cleanup_partial()
+            raise
 
         if progress_callback:
             progress_callback(1.0)

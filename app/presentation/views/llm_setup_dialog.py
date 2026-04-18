@@ -100,6 +100,7 @@ class _FieldPromptsPage(QWidget):
 
 class LlmSetupDialog(QDialog):
     saved = Signal(str, dict)  # (world_prompt, field_prompts_dict)
+    cancel_download_requested = Signal()
 
     def __init__(
         self,
@@ -115,8 +116,18 @@ class LlmSetupDialog(QDialog):
         self._world_prompt_initial = world_prompt
         self._field_prompts_initial = field_prompts or {}
         self._field_pages: dict[str, _FieldPromptsPage] = {}
+        self._downloading = False
         self._init_ui()
         self._update_nav_buttons()
+
+    def set_downloading(self, value: bool) -> None:
+        self._downloading = value
+
+    def reject(self) -> None:
+        if self._downloading:
+            self.cancel_download_requested.emit()
+            return
+        super().reject()
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
