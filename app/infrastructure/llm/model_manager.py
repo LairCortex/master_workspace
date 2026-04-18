@@ -18,17 +18,33 @@ log = logging.getLogger(__name__)
 LLM_PACKAGES = ["llama-cpp-python", "huggingface-hub", "tqdm"]
 
 
+_PREFERRED_PYTHON_PATHS = [
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+]
+
+
 def _get_python_executable() -> str:
     """Return path to the Python interpreter (not the frozen app binary)."""
     if getattr(sys, "frozen", False):
+        for p in _PREFERRED_PYTHON_PATHS:
+            if Path(p).is_file():
+                log.info("Frozen app: using preferred Python: %s", p)
+                return p
+        for name in ("python3", "python"):
+            path = shutil.which(name)
+            if path and "/CommandLineTools/" not in path:
+                log.info("Frozen app: using system Python: %s", path)
+                return path
+        # Last resort: even Xcode CLT Python
         for name in ("python3", "python"):
             path = shutil.which(name)
             if path:
-                log.info("Frozen app detected, using system Python: %s", path)
+                log.warning("Frozen app: only Xcode CLT Python found: %s", path)
                 return path
         raise RuntimeError(
             "Не найден Python в системе. Установите Python 3.10+ "
-            "и убедитесь, что он доступен в PATH."
+            "(рекомендуется Homebrew: brew install python)."
         )
     return sys.executable
 
@@ -82,8 +98,16 @@ class ModelManager:
     def _install_packages_sync() -> None:
         python = _get_python_executable()
         log.info("Installing LLM packages via %s: %s", python, LLM_PACKAGES)
+
+        # Upgrade pip first to ensure wheel support
+        log.info("Upgrading pip…")
+        subprocess.run(
+            [python, "-m", "pip", "install", "--upgrade", "pip"],
+            capture_output=True, text=True,
+        )
+
         result = subprocess.run(
-            [python, "-m", "pip", "install", *LLM_PACKAGES],
+            [python, "-m", "pip", "install", "--prefer-binary", *LLM_PACKAGES],
             capture_output=True,
             text=True,
         )

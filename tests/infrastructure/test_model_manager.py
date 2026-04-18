@@ -102,14 +102,31 @@ def test_get_python_executable_not_frozen():
         assert _get_python_executable() == sys.executable
 
 
-def test_get_python_executable_frozen_finds_python():
+def test_get_python_executable_frozen_prefers_homebrew():
     with patch.object(sys, "frozen", True, create=True), \
-         patch("shutil.which", side_effect=lambda n: "/usr/bin/python3" if n == "python3" else None):
-        assert _get_python_executable() == "/usr/bin/python3"
+         patch("pathlib.Path.is_file", return_value=True):
+        result = _get_python_executable()
+        assert result == "/opt/homebrew/bin/python3"
+
+
+def test_get_python_executable_frozen_xcode_clt_as_last_resort():
+    with patch.object(sys, "frozen", True, create=True), \
+         patch("pathlib.Path.is_file", return_value=False), \
+         patch("shutil.which", side_effect=lambda n: "/Library/Developer/CommandLineTools/usr/bin/python3" if n == "python3" else None):
+        result = _get_python_executable()
+        assert result == "/Library/Developer/CommandLineTools/usr/bin/python3"
+
+
+def test_get_python_executable_frozen_fallback_which():
+    with patch.object(sys, "frozen", True, create=True), \
+         patch("pathlib.Path.is_file", return_value=False), \
+         patch("shutil.which", side_effect=lambda n: "/usr/local/bin/python3" if n == "python3" else None):
+        assert _get_python_executable() == "/usr/local/bin/python3"
 
 
 def test_get_python_executable_frozen_no_python():
     with patch.object(sys, "frozen", True, create=True), \
+         patch("pathlib.Path.is_file", return_value=False), \
          patch("shutil.which", return_value=None):
         with pytest.raises(RuntimeError, match="Не найден Python"):
             _get_python_executable()
@@ -157,13 +174,15 @@ def test_install_packages_sync_runs_pip():
          patch("importlib.util.find_spec", return_value=MagicMock()), \
          patch("app.infrastructure.llm.model_manager._get_python_executable", return_value="/usr/bin/python3"):
         ModelManager._install_packages_sync()
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        assert args[0] == "/usr/bin/python3"
-        assert "-m" in args
-        assert "pip" in args
-        assert "install" in args
-        assert "llama-cpp-python" in args
+        assert mock_run.call_count == 2
+        # First call: upgrade pip
+        upgrade_args = mock_run.call_args_list[0][0][0]
+        assert upgrade_args == ["/usr/bin/python3", "-m", "pip", "install", "--upgrade", "pip"]
+        # Second call: install packages
+        install_args = mock_run.call_args_list[1][0][0]
+        assert install_args[0] == "/usr/bin/python3"
+        assert "--prefer-binary" in install_args
+        assert "llama-cpp-python" in install_args
 
 
 def test_install_packages_sync_raises_on_failure():
