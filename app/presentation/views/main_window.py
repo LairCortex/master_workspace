@@ -1,6 +1,7 @@
 """Main application window."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -11,10 +12,21 @@ from PySide6.QtWidgets import (
     QSplitter, QVBoxLayout, QWidget,
 )
 
+log = logging.getLogger(__name__)
+
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_widget import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
+
+
+_LOG_FILENAME = "nri_manager.log"
+
+
+def _app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 def _docs_dir() -> Path:
@@ -129,6 +141,15 @@ class MainWindow(QMainWindow):
         self.changelog_action.triggered.connect(self._show_changelog)
         about_menu.addAction(self.changelog_action)
 
+        about_menu.addSeparator()
+        self.log_action = QAction("Сохранять логи в файл", self)
+        self.log_action.setCheckable(True)
+        self.log_action.setChecked(False)
+        self.log_action.toggled.connect(self._on_log_toggle)
+        about_menu.addAction(self.log_action)
+
+        self._file_handler: logging.FileHandler | None = None
+
         self.setMenuBar(menu_bar)
 
         central = QWidget()
@@ -165,6 +186,26 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(self._base_title)
 
     # ------ О приложении ------
+
+    def _on_log_toggle(self, enabled: bool) -> None:
+        root_logger = logging.getLogger()
+        if enabled:
+            log_path = _app_root() / _LOG_FILENAME
+            self._file_handler = logging.FileHandler(
+                str(log_path), encoding="utf-8",
+            )
+            self._file_handler.setLevel(logging.DEBUG)
+            self._file_handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+            )
+            root_logger.addHandler(self._file_handler)
+            log.info("Логирование в файл включено: %s", log_path)
+        else:
+            if self._file_handler is not None:
+                log.info("Логирование в файл выключено")
+                root_logger.removeHandler(self._file_handler)
+                self._file_handler.close()
+                self._file_handler = None
 
     def _show_readme(self) -> None:
         dlg = _DocViewerDialog("Документация", _docs_dir() / "README.md", parent=self)

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from app.infrastructure.llm.model_manager import ModelManager
+from app.infrastructure.llm.model_manager import ModelManager, _get_python_executable
 
 
 @pytest.fixture
@@ -97,6 +97,24 @@ def test_save_and_load_config(manager, tmp_path):
             assert data["repo_id"] == "test/repo"
 
 
+def test_get_python_executable_not_frozen():
+    with patch.object(sys, "frozen", False, create=True):
+        assert _get_python_executable() == sys.executable
+
+
+def test_get_python_executable_frozen_finds_python():
+    with patch.object(sys, "frozen", True, create=True), \
+         patch("shutil.which", side_effect=lambda n: "/usr/bin/python3" if n == "python3" else None):
+        assert _get_python_executable() == "/usr/bin/python3"
+
+
+def test_get_python_executable_frozen_no_python():
+    with patch.object(sys, "frozen", True, create=True), \
+         patch("shutil.which", return_value=None):
+        with pytest.raises(RuntimeError, match="Не найден Python"):
+            _get_python_executable()
+
+
 def test_are_llm_packages_installed_true():
     with patch("importlib.util.find_spec", return_value=MagicMock()):
         assert ModelManager.are_llm_packages_installed() is True
@@ -136,11 +154,12 @@ def test_install_packages_sync_runs_pip():
     mock_result.stdout = "Successfully installed"
     mock_result.stderr = ""
     with patch("subprocess.run", return_value=mock_result) as mock_run, \
-         patch("importlib.util.find_spec", return_value=MagicMock()):
+         patch("importlib.util.find_spec", return_value=MagicMock()), \
+         patch("app.infrastructure.llm.model_manager._get_python_executable", return_value="/usr/bin/python3"):
         ModelManager._install_packages_sync()
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
-        assert args[0] == sys.executable
+        assert args[0] == "/usr/bin/python3"
         assert "-m" in args
         assert "pip" in args
         assert "install" in args
@@ -152,7 +171,8 @@ def test_install_packages_sync_raises_on_failure():
     mock_result.returncode = 1
     mock_result.stdout = ""
     mock_result.stderr = "ERROR: some pip error"
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("subprocess.run", return_value=mock_result), \
+         patch("app.infrastructure.llm.model_manager._get_python_executable", return_value="/usr/bin/python3"):
         with pytest.raises(RuntimeError, match="Не удалось установить"):
             ModelManager._install_packages_sync()
 
@@ -169,6 +189,7 @@ def test_install_packages_sync_raises_if_not_importable():
         return MagicMock()
 
     with patch("subprocess.run", return_value=mock_result), \
-         patch("importlib.util.find_spec", side_effect=_find_spec):
+         patch("importlib.util.find_spec", side_effect=_find_spec), \
+         patch("app.infrastructure.llm.model_manager._get_python_executable", return_value="/usr/bin/python3"):
         with pytest.raises(RuntimeError, match="Перезапустите приложение"):
             ModelManager._install_packages_sync()

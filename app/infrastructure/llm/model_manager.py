@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import json
 import logging
+import shutil
 import site
 import subprocess
 import sys
@@ -15,6 +16,21 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 LLM_PACKAGES = ["llama-cpp-python", "huggingface-hub", "tqdm"]
+
+
+def _get_python_executable() -> str:
+    """Return path to the Python interpreter (not the frozen app binary)."""
+    if getattr(sys, "frozen", False):
+        for name in ("python3", "python"):
+            path = shutil.which(name)
+            if path:
+                log.info("Frozen app detected, using system Python: %s", path)
+                return path
+        raise RuntimeError(
+            "Не найден Python в системе. Установите Python 3.10+ "
+            "и убедитесь, что он доступен в PATH."
+        )
+    return sys.executable
 
 DEFAULT_REPO = "bartowski/Qwen2.5-14B-Instruct-GGUF"
 DEFAULT_FILENAME = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"
@@ -64,9 +80,10 @@ class ModelManager:
 
     @staticmethod
     def _install_packages_sync() -> None:
-        log.info("Installing LLM packages: %s", LLM_PACKAGES)
+        python = _get_python_executable()
+        log.info("Installing LLM packages via %s: %s", python, LLM_PACKAGES)
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", *LLM_PACKAGES],
+            [python, "-m", "pip", "install", *LLM_PACKAGES],
             capture_output=True,
             text=True,
         )
