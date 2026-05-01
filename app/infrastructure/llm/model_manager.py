@@ -64,6 +64,7 @@ DEFAULT_FILENAME = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"
 _CONFIG_DIR = Path.home() / ".nri_manager"
 _MODELS_DIR = _CONFIG_DIR / "models"
 _CONFIG_FILE = _CONFIG_DIR / "llm_config.json"
+VENV_DIR = Path.home() / ".nri_manager_venv"
 
 
 class ModelManager:
@@ -120,24 +121,50 @@ class ModelManager:
             status_callback("Установка необходимых пакетов…")
         await asyncio.to_thread(self._install_packages_sync)
 
+    def _ensure_venv(base_python: str) -> str:
+        """Create venv if not exists and return path to its python."""
+        venv_python = VENV_DIR / "bin" / "python"
+
+        if not venv_python.exists():
+            log.info("Creating virtual environment at %s", VENV_DIR)
+            subprocess.run(
+                [base_python, "-m", "venv", str(VENV_DIR)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        return str(venv_python)
+
+
     @staticmethod
     def _install_packages_sync() -> None:
-        python = _get_python_executable()
-        log.info("Installing LLM packages via %s: %s", python, LLM_PACKAGES)
+        base_python = _get_python_executable()
 
-        # Upgrade pip first to ensure wheel support
-        log.info("Upgrading pip…")
+        # 👉 создаём/получаем venv
+        python = _ensure_venv(base_python)
+
+        log.info("Installing LLM packages via venv python: %s", python)
+        log.info("Packages: %s", LLM_PACKAGES)
+
+        # --- upgrade pip внутри venv ---
+        log.info("Upgrading pip in venv…")
         subprocess.run(
             [python, "-m", "pip", "install", "--upgrade", "pip"],
-            capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
+        # --- установка пакетов ---
         result = subprocess.run(
             [python, "-m", "pip", "install", "--prefer-binary", *LLM_PACKAGES],
             capture_output=True,
             text=True,
         )
+
         log.info("pip stdout: %s", result.stdout[-500:] if result.stdout else "")
+
         if result.returncode != 0:
             log.error("pip stderr: %s", result.stderr[-1000:] if result.stderr else "")
             raise RuntimeError(
@@ -145,15 +172,23 @@ class ModelManager:
                 f"{result.stderr[-500:] if result.stderr else 'unknown error'}"
             )
 
-        # Refresh sys.path so the running process sees newly installed packages
-        importlib.invalidate_caches()
-        known = set(sys.path)
-        for d in site.getsitepackages() + [site.getusersitepackages()]:
-            if d not in known:
-                log.info("Adding to sys.path: %s", d)
-                sys.path.insert(0, d)
+        # --- добавляем venv site-packages в sys.path ---
+        log.info("Refreshing sys.path with venv site-packages")
+
+        site_packages = subprocess.run(
+            [python, "-c", "import site; print(site.getsitepackages()[0])"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        if site_packages and site_packages not in sys.path:
+            log.info("Adding to sys.path: %s", site_packages)
+            sys.path.insert(0, site_packages)
+
         importlib.invalidate_caches()
 
+        # --- чистим старые модули ---
         stale = [
             k for k in sys.modules
             if k in ("llama_cpp", "huggingface_hub", "tqdm")
@@ -161,9 +196,10 @@ class ModelManager:
         ]
         for k in stale:
             del sys.modules[k]
+
         log.info("Cleared %d stale module entries from sys.modules", len(stale))
 
-        # Verify packages are importable
+        # --- проверка импортов ---
         for mod in ("huggingface_hub", "tqdm"):
             spec = importlib.util.find_spec(mod)
             log.info("find_spec(%s) = %s", mod, spec)
