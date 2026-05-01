@@ -70,6 +70,8 @@ VENV_DIR = Path.home() / ".nri_manager_venv"
 class ModelManager:
     """Handles downloading, locating and removing GGUF model files."""
 
+    VENV_DIR = Path.home() / ".nri_manager_venv"
+
     def __init__(
         self,
         repo_id: str = DEFAULT_REPO,
@@ -93,7 +95,6 @@ class ModelManager:
         self._cancel_event.set()
 
     def cleanup_partial(self) -> None:
-        """Remove partially downloaded files from the models directory."""
         if not self._models_dir.exists():
             return
         for f in self._models_dir.iterdir():
@@ -121,14 +122,14 @@ class ModelManager:
             status_callback("Установка необходимых пакетов…")
         await asyncio.to_thread(self._install_packages_sync)
 
+    @staticmethod
     def _ensure_venv(base_python: str) -> str:
-        """Create venv if not exists and return path to its python."""
-        venv_python = VENV_DIR / "bin" / "python"
+        venv_python = ModelManager.VENV_DIR / "bin" / "python"
 
         if not venv_python.exists():
-            log.info("Creating virtual environment at %s", VENV_DIR)
+            log.info("Creating virtual environment at %s", ModelManager.VENV_DIR)
             subprocess.run(
-                [base_python, "-m", "venv", str(VENV_DIR)],
+                [base_python, "-m", "venv", str(ModelManager.VENV_DIR)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -136,18 +137,15 @@ class ModelManager:
 
         return str(venv_python)
 
-
     @staticmethod
     def _install_packages_sync() -> None:
         base_python = _get_python_executable()
 
-        # 👉 создаём/получаем venv
-        python = _ensure_venv(base_python)
+        python = ModelManager._ensure_venv(base_python)
 
         log.info("Installing LLM packages via venv python: %s", python)
         log.info("Packages: %s", LLM_PACKAGES)
 
-        # --- upgrade pip внутри venv ---
         log.info("Upgrading pip in venv…")
         subprocess.run(
             [python, "-m", "pip", "install", "--upgrade", "pip"],
@@ -156,7 +154,6 @@ class ModelManager:
             text=True,
         )
 
-        # --- установка пакетов ---
         result = subprocess.run(
             [python, "-m", "pip", "install", "--prefer-binary", *LLM_PACKAGES],
             capture_output=True,
@@ -172,7 +169,6 @@ class ModelManager:
                 f"{result.stderr[-500:] if result.stderr else 'unknown error'}"
             )
 
-        # --- добавляем venv site-packages в sys.path ---
         log.info("Refreshing sys.path with venv site-packages")
 
         site_packages = subprocess.run(
@@ -188,7 +184,6 @@ class ModelManager:
 
         importlib.invalidate_caches()
 
-        # --- чистим старые модули ---
         stale = [
             k for k in sys.modules
             if k in ("llama_cpp", "huggingface_hub", "tqdm")
@@ -199,7 +194,6 @@ class ModelManager:
 
         log.info("Cleared %d stale module entries from sys.modules", len(stale))
 
-        # --- проверка импортов ---
         for mod in ("huggingface_hub", "tqdm"):
             spec = importlib.util.find_spec(mod)
             log.info("find_spec(%s) = %s", mod, spec)
@@ -208,76 +202,3 @@ class ModelManager:
                     f"Пакет {mod} установлен, но не найден в текущем процессе. "
                     f"Перезапустите приложение."
                 )
-
-    async def download_model(
-        self,
-        progress_callback: Callable[[float], None] | None = None,
-    ) -> Path:
-        self._cancel_event.clear()
-        return await asyncio.to_thread(
-            self._download_sync, progress_callback
-        )
-
-    def _download_sync(
-        self,
-        progress_callback: Callable[[float], None] | None = None,
-    ) -> Path:
-        log.info("Importing huggingface_hub…")
-        from huggingface_hub import hf_hub_download
-        from tqdm import tqdm as _tqdm_cls
-        log.info("huggingface_hub imported OK")
-
-        self._models_dir.mkdir(parents=True, exist_ok=True)
-        log.info("Starting download to %s", self._models_dir)
-        cancel = self._cancel_event
-
-        class _ProgressTqdm(_tqdm_cls):
-            def update(self, n=1):
-                if cancel.is_set():
-                    raise DownloadCancelled()
-                super().update(n)
-                if progress_callback and self.total and self.total > 0:
-                    progress_callback(min(self.n / self.total, 0.99))
-
-        import os
-        token = os.environ.get("HF_TOKEN", "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")
-
-        try:
-            path = hf_hub_download(
-                repo_id=self._repo_id,
-                filename=self._filename,
-                local_dir=str(self._models_dir),
-                tqdm_class=_ProgressTqdm,
-                token=token,
-            )
-        except DownloadCancelled:
-            log.info("Download cancelled by user")
-            self.cleanup_partial()
-            raise
-
-        if progress_callback:
-            progress_callback(1.0)
-        return Path(path)
-
-    def delete_model(self) -> bool:
-        path = self._models_dir / self._filename
-        if path.exists():
-            path.unlink()
-            return True
-        return False
-
-    def save_config(self, provider_type: str = "local") -> None:
-        _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        data = {
-            "repo_id": self._repo_id,
-            "filename": self._filename,
-            "model_path": str(self._models_dir / self._filename),
-            "provider_type": provider_type,
-        }
-        _CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    @staticmethod
-    def load_config() -> dict | None:
-        if _CONFIG_FILE.exists():
-            return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
-        return None
