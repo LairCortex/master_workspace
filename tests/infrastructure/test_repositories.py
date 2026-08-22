@@ -67,6 +67,78 @@ class TestBaseRepository:
         result = await repo.get_by_id(999)
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_delete_not_found(self, async_session: AsyncSession):
+        repo = BaseRepository(async_session, DescriptionModel)
+        assert await repo.delete(999) is False
+
+    @pytest.mark.asyncio
+    async def test_search_by_name(self, async_session: AsyncSession):
+        repo = BaseRepository(async_session, ItemModel)
+        await repo.create(name="Sword of Dawn", start_date=date(500, 1, 1))
+        await repo.create(name="Shield", start_date=date(500, 1, 1))
+        results = await repo.search_by_name("sword")
+        assert len(results) == 1
+        assert results[0].name == "Sword of Dawn"
+
+
+# ── BaseRepository.search: one parameterized set for the 4 entity types ──
+
+ENTITY_REPOS = [
+    (OrganizationRepository, OrganizationModel),
+    (CharacterRepository, CharacterModel),
+    (ItemRepository, ItemModel),
+    (LocationRepository, LocationModel),
+]
+
+
+@pytest.mark.parametrize(("repo_cls", "model"), ENTITY_REPOS, ids=["organization", "character", "item", "location"])
+class TestEntitySearch:
+    """BaseRepository.search is inherited by all entity repositories."""
+
+    @pytest.mark.asyncio
+    async def test_search_by_name(self, async_session: AsyncSession, repo_cls, model):
+        desc = await _make_desc(async_session)
+        repo = repo_cls(async_session)
+        await repo.create(name="Battle of Plains", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Siege of Castle", description_id=desc.id, start_date=date(1201, 1, 1), end_date=date(1201, 12, 31))
+        results = await repo.search("Battle")
+        assert len(results) == 1
+        assert results[0].name == "Battle of Plains"
+
+    @pytest.mark.asyncio
+    async def test_search_is_case_insensitive(self, async_session: AsyncSession, repo_cls, model):
+        desc = await _make_desc(async_session)
+        repo = repo_cls(async_session)
+        await repo.create(name="Battle of Plains", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        assert len(await repo.search("bAtTlE")) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_by_characteristics(self, async_session: AsyncSession, repo_cls, model):
+        desc = await _make_desc(async_session, chars="Massive cavalry charge", back="y")
+        repo = repo_cls(async_session)
+        await repo.create(name="Entry1", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        results = await repo.search("cavalry")
+        assert len(results) == 1
+        assert results[0].name == "Entry1"
+
+    @pytest.mark.asyncio
+    async def test_search_by_backstory(self, async_session: AsyncSession, repo_cls, model):
+        desc = await _make_desc(async_session, chars="x", back="Two ancient kingdoms clashed")
+        repo = repo_cls(async_session)
+        await repo.create(name="Entry2", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        results = await repo.search("ancient")
+        assert len(results) == 1
+        assert results[0].name == "Entry2"
+
+    @pytest.mark.asyncio
+    async def test_search_no_duplicates_on_multiple_hits(self, async_session: AsyncSession, repo_cls, model):
+        # Matches name AND description in one row -> still a single result
+        desc = await _make_desc(async_session, chars="Dragon attack", back="Dragon era")
+        repo = repo_cls(async_session)
+        await repo.create(name="Dragon war", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        assert len(await repo.search("Dragon")) == 1
+
 
 # ── EventRepository ───────────────────────────────────────────────────────
 
@@ -148,6 +220,18 @@ class TestEventRepository:
         assert events[0].name == "Earlier"
         assert events[1].name == "Later"
 
+    @pytest.mark.asyncio
+    async def test_get_events_at_date(self, async_session: AsyncSession):
+        d1 = await _make_desc(async_session)
+        d2 = await _make_desc(async_session)
+        repo = EventRepository(async_session)
+        await repo.create(name="Closed", description_id=d1.id, start_date=date(1200, 1, 1), end_date=date(1200, 6, 30))
+        await repo.create(name="Infinite", description_id=d2.id, start_date=date(1300, 1, 1), end_date=None)
+        names = {e.name for e in await repo.get_events_at_date(date(1200, 6, 15))}
+        assert names == {"Closed"}
+        names = {e.name for e in await repo.get_events_at_date(date(1300, 3, 1))}
+        assert names == {"Infinite"}
+
 
 # ── OrganizationRepository ────────────────────────────────────────────────
 
@@ -164,23 +248,6 @@ class TestOrganizationRepository:
         assert org.name == "Guild"
         result = await repo.get_by_id(org.id)
         assert result.tasks == "Protect"
-
-    @pytest.mark.asyncio
-    async def test_search(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session)
-        repo = OrganizationRepository(async_session)
-        await repo.create(name="Thieves Guild", description_id=desc.id, start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
-        await repo.create(name="Mages Tower", description_id=desc.id, start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
-        results = await repo.search("Guild")
-        assert len(results) == 1
-
-    @pytest.mark.asyncio
-    async def test_search_by_backstory(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session, chars="x", back="Founded in darkness")
-        repo = OrganizationRepository(async_session)
-        await repo.create(name="Org1", description_id=desc.id, start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
-        results = await repo.search("darkness")
-        assert len(results) == 1
 
 
 # ── CharacterRepository ──────────────────────────────────────────────────
@@ -199,23 +266,6 @@ class TestCharacterRepository:
         result = await repo.get_by_id(char.id)
         assert result.personality == "Brave"
 
-    @pytest.mark.asyncio
-    async def test_search(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session)
-        repo = CharacterRepository(async_session)
-        await repo.create(name="Gandalf the Grey", description_id=desc.id, start_date=date(1, 1, 1), end_date=date(9999, 12, 31))
-        await repo.create(name="Frodo Baggins", description_id=desc.id, start_date=date(1, 1, 1), end_date=date(9999, 12, 31))
-        results = await repo.search("Gandalf")
-        assert len(results) == 1
-
-    @pytest.mark.asyncio
-    async def test_search_by_characteristics(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session, chars="Powerful wizard", back="y")
-        repo = CharacterRepository(async_session)
-        await repo.create(name="Mage1", description_id=desc.id, start_date=date(1, 1, 1), end_date=date(9999, 12, 31))
-        results = await repo.search("wizard")
-        assert len(results) == 1
-
 
 # ── ItemRepository ────────────────────────────────────────────────────────
 
@@ -226,23 +276,6 @@ class TestItemRepository:
         repo = ItemRepository(async_session)
         item = await repo.create(name="Sword", description_id=desc.id, start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
         assert item.name == "Sword"
-
-    @pytest.mark.asyncio
-    async def test_search(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session)
-        repo = ItemRepository(async_session)
-        await repo.create(name="Magic Sword", description_id=desc.id, start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
-        await repo.create(name="Shield", description_id=desc.id, start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
-        results = await repo.search("Sword")
-        assert len(results) == 1
-
-    @pytest.mark.asyncio
-    async def test_search_by_backstory(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session, chars="x", back="Forged by dwarves")
-        repo = ItemRepository(async_session)
-        await repo.create(name="Axe", description_id=desc.id, start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
-        results = await repo.search("dwarves")
-        assert len(results) == 1
 
 
 # ── LocationRepository ────────────────────────────────────────────────────
@@ -258,23 +291,6 @@ class TestLocationRepository:
             tasks="Defend", image="/maps/mordor.png",
         )
         assert loc.name == "Mordor"
-
-    @pytest.mark.asyncio
-    async def test_search(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session)
-        repo = LocationRepository(async_session)
-        await repo.create(name="Mordor", description_id=desc.id, start_date=date(100, 1, 1), end_date=date(3000, 12, 31))
-        await repo.create(name="Shire", description_id=desc.id, start_date=date(100, 1, 1), end_date=date(3000, 12, 31))
-        results = await repo.search("Shire")
-        assert len(results) == 1
-
-    @pytest.mark.asyncio
-    async def test_search_by_characteristics(self, async_session: AsyncSession):
-        desc = await _make_desc(async_session, chars="Volcanic wasteland", back="y")
-        repo = LocationRepository(async_session)
-        await repo.create(name="Place1", description_id=desc.id, start_date=date(100, 1, 1), end_date=date(3000, 12, 31))
-        results = await repo.search("Volcanic")
-        assert len(results) == 1
 
 
 # ── RatingRepository ──────────────────────────────────────────────────────

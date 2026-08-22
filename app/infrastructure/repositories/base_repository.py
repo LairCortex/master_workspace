@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Generic, Sequence, Type, TypeVar
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.db.models import Base
+from app.infrastructure.db.models import Base, DescriptionModel
 
 T = TypeVar("T", bound=Base)
 
@@ -47,6 +47,22 @@ class BaseRepository(Generic[T]):
         await self._session.delete(obj)
         await self._session.flush()
         return True
+
+    async def search(self, query: str) -> Sequence[T]:
+        """Case-insensitive search over name, characteristics and backstory."""
+        stmt = (
+            select(self._model)
+            .outerjoin(DescriptionModel, self._model.description_id == DescriptionModel.id)
+            .where(
+                or_(
+                    func.lower(self._model.name).contains(query.lower()),
+                    func.lower(DescriptionModel.characteristics).contains(query.lower()),
+                    func.lower(DescriptionModel.backstory).contains(query.lower()),
+                )
+            )
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().unique().all()
 
     async def search_by_name(self, query: str) -> Sequence[T]:
         stmt = select(self._model).where(

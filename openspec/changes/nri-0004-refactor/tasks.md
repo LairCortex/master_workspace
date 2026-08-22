@@ -26,7 +26,7 @@
 
 ## 5. Дедупликация репозиториев (C)
 
-- [ ] 5.1 `search()` поднять в `BaseRepository` (outerjoin DescriptionModel, `func.lower().contains`); удалить 4 копии; параметризованный тест на 4 модели; покрытие репозиториев остаётся 100% (commit `NRI-0004: deduplicate entity repository search`, pytest + чек-лист №2,6)
+- [x] 5.1 `search()` поднять в `BaseRepository` (outerjoin DescriptionModel, `func.lower().contains`); удалить 4 копии; параметризованный тест на 4 модели; покрытие репозиториев остаётся 100% (commit `NRI-0004: deduplicate entity repository search`, pytest + чек-лист №2,6)
 
 ## 6. Гигиена (G)
 
