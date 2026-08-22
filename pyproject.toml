@@ -17,10 +17,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-llm = [
-    "llama-cpp-python>=0.3",
-    "huggingface-hub>=0.25",
-]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.3",

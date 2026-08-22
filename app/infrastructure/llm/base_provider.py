@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 
 
 class BaseLlmProvider(ABC):
-    """Interface for all LLM backends (local GGUF, cloud APIs, etc.)."""
+    """Interface for LLM backends (remote OpenAI-compatible APIs)."""
 
     @abstractmethod
     async def generate(
@@ -16,14 +16,5 @@ class BaseLlmProvider(ABC):
     ) -> str:
         """Generate text given system and user prompts."""
 
-    @abstractmethod
-    def is_ready(self) -> bool:
-        """Return True when the provider can accept generate() calls."""
-
-    @abstractmethod
-    async def load_model(self) -> None:
-        """Load / initialise the underlying model."""
-
-    @abstractmethod
-    async def unload_model(self) -> None:
-        """Release resources held by the model."""
+    async def close(self) -> None:
+        """Release resources held by the provider."""

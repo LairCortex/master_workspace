@@ -35,7 +35,7 @@ class AiAssistButton(QPushButton):
         self._entity_type = entity_type
         self._field_name = field_name
         self._field_label = field_label
-        self._llm_status: str = "not_installed"
+        self._llm_status: str = "not_configured"
         self._has_world_prompt: bool = False
         self._generating: bool = False
 
@@ -51,7 +51,7 @@ class AiAssistButton(QPushButton):
 
         self._target.installEventFilter(self)
         self._reposition()
-        self.update_llm_state("not_installed", False)
+        self.update_llm_state("not_configured", False)
 
     @property
     def entity_type(self) -> str:
@@ -135,7 +135,7 @@ class AiAssistButton(QPushButton):
                 self,
                 "AI-ассистент",
                 "AI-ассистент не настроен.\n"
-                "Перейдите в меню LLM → Настройка LLM… чтобы скачать и настроить модель.",
+                "Перейдите в меню LLM → Настройка LLM… и настройте подключение к LLM.",
             )
             return
 

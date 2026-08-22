@@ -1,14 +1,12 @@
-"""LLM ViewModel — model status, world/field prompts, generation proxy."""
+"""LLM ViewModel — connection status, world/field prompts, generation proxy."""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any
+import logging
 
 from PySide6.QtCore import QObject, Signal
 
 from app.application.services.llm_service import FIELD_CONFIG, LlmService
-from app.infrastructure.llm.model_manager import ModelManager
 
 WORLD_PROMPT_KEY = "llm_world_prompt"
 FIELD_PROMPTS_KEY = "llm_field_prompts"
@@ -20,32 +18,28 @@ def _default_field_prompts() -> dict[str, dict[str, str]]:
 
 class LlmViewModel(QObject):
     model_status_changed = Signal(str)
-    download_progress = Signal(float)
-    download_status_message = Signal(str)
     generation_started = Signal(str)
     generation_finished = Signal(str, str)
     generation_error = Signal(str, str)
     queue_size_changed = Signal(int)
 
-    STATUS_NOT_INSTALLED = "not_installed"
-    STATUS_DOWNLOADING = "downloading"
-    STATUS_LOADING = "loading"
+    STATUS_NOT_CONFIGURED = "not_configured"
     STATUS_READY = "ready"
 
     def __init__(
         self,
         llm_service: LlmService,
-        model_manager: ModelManager,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = llm_service
-        self._manager = model_manager
         self._world_prompt: str = ""
         self._field_prompts: dict[str, dict[str, str]] = _default_field_prompts()
-        self._status: str = self.STATUS_NOT_INSTALLED
-        if self._manager.get_model_path() is not None:
-            self._status = self.STATUS_READY
+        self._status: str = (
+            self.STATUS_READY
+            if self._service.provider.is_configured()
+            else self.STATUS_NOT_CONFIGURED
+        )
 
     @property
     def status(self) -> str:
@@ -96,17 +90,7 @@ class LlmViewModel(QObject):
         field_label: str,
         current_text: str,
     ) -> None:
-        import logging
         log = logging.getLogger(__name__)
-
-        if not self._service.provider.is_ready():
-            log.info("LLM provider not loaded, loading model…")
-            try:
-                await self.load_model()
-            except Exception as exc:
-                log.error("Failed to load model: %s", exc)
-                self.generation_error.emit(field_id, f"Не удалось загрузить модель: {exc}")
-                return
 
         field_prompt = self.get_field_prompt(entity_type, field_name)
         self.generation_started.emit(field_id)
@@ -128,43 +112,6 @@ class LlmViewModel(QObject):
             self.generation_error.emit(field_id, str(exc))
         finally:
             self.queue_size_changed.emit(self._service.queue_size)
-
-    async def download_model(self) -> None:
-        self.set_status(self.STATUS_DOWNLOADING)
-        try:
-            if not self._manager.are_llm_packages_installed():
-                self.download_status_message.emit("Установка необходимых пакетов…")
-                self.download_progress.emit(0.0)
-                await self._manager.install_llm_packages()
-                self.download_status_message.emit("Пакеты установлены. Загрузка модели…")
-            else:
-                self.download_status_message.emit("Загрузка модели…")
-            await self._manager.download_model(
-                progress_callback=lambda p: self.download_progress.emit(p)
-            )
-            self._manager.save_config()
-            self.set_status(self.STATUS_READY)
-        except Exception:
-            self.set_status(self.STATUS_NOT_INSTALLED)
-            raise
-
-    async def load_model(self) -> None:
-        self.set_status(self.STATUS_LOADING)
-        try:
-            model_path = self._manager.get_model_path()
-            if model_path is None:
-                self.set_status(self.STATUS_NOT_INSTALLED)
-                return
-            self._service.provider.model_path = model_path  # type: ignore[attr-defined]
-            await self._service.provider.load_model()
-            self.set_status(self.STATUS_READY)
-        except Exception:
-            self.set_status(self.STATUS_NOT_INSTALLED)
-            raise
-
-    def delete_model(self) -> None:
-        self._manager.delete_model()
-        self.set_status(self.STATUS_NOT_INSTALLED)
 
     def world_prompt_to_json(self) -> str:
         return json.dumps(self._world_prompt, ensure_ascii=False)

@@ -1,4 +1,4 @@
-"""LLM setup wizard — 8-step dialog for model download, world prompt and field prompts."""
+"""LLM setup wizard — connection, world prompt and field prompts."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,7 +6,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QProgressBar, QPushButton, QStackedWidget, QTextEdit,
+    QPushButton, QStackedWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
@@ -100,11 +100,9 @@ class _FieldPromptsPage(QWidget):
 
 class LlmSetupDialog(QDialog):
     saved = Signal(str, dict)  # (world_prompt, field_prompts_dict)
-    cancel_download_requested = Signal()
 
     def __init__(
         self,
-        model_downloaded: bool = False,
         world_prompt: str = "",
         field_prompts: dict[str, dict[str, str]] | None = None,
         parent: QWidget | None = None,
@@ -112,31 +110,20 @@ class LlmSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Настройка AI-ассистента (LLM)")
         self.setMinimumSize(620, 480)
-        self._model_downloaded = model_downloaded
         self._world_prompt_initial = world_prompt
         self._field_prompts_initial = field_prompts or {}
         self._field_pages: dict[str, _FieldPromptsPage] = {}
-        self._downloading = False
         self._init_ui()
         self._update_nav_buttons()
-
-    def set_downloading(self, value: bool) -> None:
-        self._downloading = value
-
-    def reject(self) -> None:
-        if self._downloading:
-            self.cancel_download_requested.emit()
-            return
-        super().reject()
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
 
         self._stack = QStackedWidget()
 
-        # Page 0: model status
-        self._model_page = self._build_model_page()
-        self._stack.addWidget(self._model_page)
+        # Page 0: connection
+        self._connection_page = self._build_connection_page()
+        self._stack.addWidget(self._connection_page)
 
         # Page 1: world prompt
         self._world_page = self._build_world_prompt_page()
@@ -171,87 +158,21 @@ class LlmSetupDialog(QDialog):
         nav.addWidget(self._save_btn)
         root.addLayout(nav)
 
-    def _build_model_page(self) -> QWidget:
+    def _build_connection_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel("Шаг 1: Модель")
+        title = QLabel("Шаг 1: Подключение")
         title.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(title)
 
-        self._model_info = QLabel()
-        self._model_info.setWordWrap(True)
-        layout.addWidget(self._model_info)
+        self._connection_info = QLabel("Подключение настраивается в этом диалоге.")
+        self._connection_info.setWordWrap(True)
+        layout.addWidget(self._connection_info)
 
-        self._download_btn = QPushButton("Скачать модель")
-        self._download_btn.setMinimumHeight(36)
-        layout.addWidget(self._download_btn)
-
-        self._delete_btn = QPushButton("Удалить модель")
-        self._delete_btn.setMinimumHeight(36)
-        layout.addWidget(self._delete_btn)
-
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setValue(0)
-        self._progress.setTextVisible(True)
-        self._progress.setFormat("%p% скачано")
-        self._progress.hide()
-        layout.addWidget(self._progress)
-
-        self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet("color: gray;")
-        self._progress_label.hide()
-        layout.addWidget(self._progress_label)
-
-        self._update_model_page()
         layout.addStretch()
         return page
-
-    def _update_model_page(self) -> None:
-        if self._model_downloaded:
-            self._model_info.setText(
-                "Модель Qwen 2.5 14B (GGUF, Q4_K_M) установлена.\n"
-            )
-            self._download_btn.hide()
-            self._delete_btn.show()
-        else:
-            self._model_info.setText(
-                "Модель: Qwen 2.5 14B Instruct (GGUF, Q4_K_M)\n"
-                "Размер: ~8.5 ГБ\n\n"
-                "Нажмите «Скачать модель», чтобы загрузить с HuggingFace."
-            )
-            self._download_btn.show()
-            self._delete_btn.hide()
-
-    def set_model_downloaded(self, value: bool) -> None:
-        self._model_downloaded = value
-        self._update_model_page()
-
-    def set_download_progress(self, value: float) -> None:
-        self._progress.show()
-        self._progress_label.show()
-        pct = int(value * 100)
-        self._progress.setValue(pct)
-        if value >= 1.0:
-            self._progress_label.setText("Загрузка завершена!")
-        elif self._progress.format() == "установка пакетов…":
-            pass
-        else:
-            self._progress_label.setText(f"Загрузка модели… {pct}%")
-
-    def set_download_status(self, message: str) -> None:
-        self._progress.show()
-        self._progress_label.show()
-        self._progress_label.setText(message)
-        if "пакет" in message.lower():
-            self._progress.setRange(0, 0)
-            self._progress.setFormat("установка пакетов…")
-        else:
-            self._progress.setRange(0, 100)
-            self._progress.setValue(0)
-            self._progress.setFormat("%p% скачано")
 
     def _build_world_prompt_page(self) -> QWidget:
         page = QWidget()
@@ -289,7 +210,6 @@ class LlmSetupDialog(QDialog):
 
         warnings = [
             "• LLM будет редактировать и дополнять ваш текст на основе описания мира.",
-            "• Модель использует ~10 ГБ оперативной памяти, пока загружена.",
             "• Генерация выполняется по одному полю за раз. Если запущено несколько — "
             "они встанут в очередь и будут обработаны последовательно.",
             "• Во время генерации поле будет заблокировано, а окно нельзя будет закрыть.",

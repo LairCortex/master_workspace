@@ -1,28 +1,19 @@
-"""Tests for LlmViewModel — status transitions, persistence, signals."""
+"""Tests for LlmViewModel — status, persistence, signals."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QCoreApplication
 
 from app.application.services.llm_service import LlmService
-from app.infrastructure.llm.local_provider import LocalGgufProvider
-from app.infrastructure.llm.model_manager import ModelManager
+from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
 
 
 @pytest.fixture
-def mock_manager(tmp_path):
-    mgr = MagicMock(spec=ModelManager)
-    mgr.get_model_path.return_value = None
-    return mgr
-
-
-@pytest.fixture
 def mock_provider():
-    p = MagicMock(spec=LocalGgufProvider)
-    p.is_ready.return_value = False
+    p = MagicMock(spec=RemoteLlmProvider)
+    p.is_configured.return_value = False
     return p
 
 
@@ -35,41 +26,25 @@ def mock_service(mock_provider):
 
 
 @pytest.fixture
-def vm(mock_service, mock_manager):
-    return LlmViewModel(mock_service, mock_manager)
+def vm(mock_service):
+    return LlmViewModel(mock_service)
 
 
-def test_initial_status_not_installed(vm):
-    assert vm.status == LlmViewModel.STATUS_NOT_INSTALLED
+def test_initial_status_not_configured(vm):
+    assert vm.status == LlmViewModel.STATUS_NOT_CONFIGURED
 
 
-def test_initial_status_ready_if_model_exists(mock_service, tmp_path):
-    mgr = MagicMock(spec=ModelManager)
-    mgr.get_model_path.return_value = tmp_path / "model.gguf"
-    vm = LlmViewModel(mock_service, mgr)
+def test_initial_status_ready_if_configured(mock_service):
+    mock_service.provider.is_configured.return_value = True
+    vm = LlmViewModel(mock_service)
     assert vm.status == LlmViewModel.STATUS_READY
 
 
 def test_set_status_emits_signal(vm, qtbot):
     with qtbot.waitSignal(vm.model_status_changed, timeout=1000) as blocker:
-        vm.set_status(LlmViewModel.STATUS_DOWNLOADING)
-    assert blocker.args == [LlmViewModel.STATUS_DOWNLOADING]
-    assert vm.status == LlmViewModel.STATUS_DOWNLOADING
-
-
-def test_status_transitions(vm, qtbot):
-    statuses = []
-    vm.model_status_changed.connect(statuses.append)
-
-    vm.set_status(LlmViewModel.STATUS_DOWNLOADING)
-    vm.set_status(LlmViewModel.STATUS_LOADING)
-    vm.set_status(LlmViewModel.STATUS_READY)
-
-    assert statuses == [
-        LlmViewModel.STATUS_DOWNLOADING,
-        LlmViewModel.STATUS_LOADING,
-        LlmViewModel.STATUS_READY,
-    ]
+        vm.set_status(LlmViewModel.STATUS_READY)
+    assert blocker.args == [LlmViewModel.STATUS_READY]
+    assert vm.status == LlmViewModel.STATUS_READY
 
 
 def test_world_prompt_persistence(vm):
@@ -124,42 +99,4 @@ def test_is_generation_available(vm):
     assert vm.is_generation_available()
 
 
-def test_delete_model(vm, mock_manager):
-    vm.set_status(LlmViewModel.STATUS_READY)
-    vm.delete_model()
-    mock_manager.delete_model.assert_called_once()
-    assert vm.status == LlmViewModel.STATUS_NOT_INSTALLED
 
-
-@pytest.mark.asyncio
-async def test_download_installs_packages_first(vm, mock_manager, qtbot):
-    mock_manager.are_llm_packages_installed.return_value = False
-    mock_manager.install_llm_packages = AsyncMock()
-    mock_manager.download_model = AsyncMock()
-    mock_manager.save_config = MagicMock()
-
-    messages = []
-    vm.download_status_message.connect(messages.append)
-
-    await vm.download_model()
-
-    mock_manager.install_llm_packages.assert_awaited_once()
-    mock_manager.download_model.assert_awaited_once()
-    assert any("пакет" in m.lower() for m in messages)
-    assert vm.status == LlmViewModel.STATUS_READY
-
-
-@pytest.mark.asyncio
-async def test_download_skips_packages_if_installed(vm, mock_manager, qtbot):
-    mock_manager.are_llm_packages_installed.return_value = True
-    mock_manager.install_llm_packages = AsyncMock()
-    mock_manager.download_model = AsyncMock()
-    mock_manager.save_config = MagicMock()
-
-    messages = []
-    vm.download_status_message.connect(messages.append)
-
-    await vm.download_model()
-
-    mock_manager.install_llm_packages.assert_not_awaited()
-    assert any("модел" in m.lower() for m in messages)

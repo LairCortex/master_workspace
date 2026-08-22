@@ -1,1 +1,1 @@
-"""LLM infrastructure — providers and model management."""
+"""LLM infrastructure — providers and connection configuration."""

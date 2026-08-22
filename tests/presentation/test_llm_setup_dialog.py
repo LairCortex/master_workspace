@@ -1,8 +1,8 @@
-"""Tests for LlmSetupDialog — wizard navigation, download trigger, save."""
+"""Tests for LlmSetupDialog — wizard navigation, save."""
 from __future__ import annotations
 
 import pytest
-from PySide6.QtWidgets import QStackedWidget
+from PySide6.QtWidgets import QLabel, QStackedWidget
 
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
@@ -10,7 +10,6 @@ from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 @pytest.fixture
 def dialog(qtbot):
     dlg = LlmSetupDialog(
-        model_downloaded=False,
         world_prompt="Test world",
         field_prompts={
             "event": {"name": "Evt name", "characteristics": "", "backstory": ""},
@@ -21,7 +20,7 @@ def dialog(qtbot):
     return dlg
 
 
-def test_wizard_shows_download_page_first(dialog):
+def test_wizard_shows_connection_page_first(dialog):
     assert dialog._stack.currentIndex() == 0
 
 
@@ -59,18 +58,6 @@ def test_save_btn_on_last_page(dialog):
 def test_next_btn_on_non_last_page(dialog):
     assert not dialog._next_btn.isHidden()
     assert dialog._save_btn.isHidden()
-
-
-def test_download_button_present(dialog):
-    assert dialog._download_btn is not None
-    assert not dialog._download_btn.isHidden()
-
-
-def test_model_downloaded_hides_download_btn(qtbot):
-    dlg = LlmSetupDialog(model_downloaded=True)
-    qtbot.addWidget(dlg)
-    assert dlg._download_btn.isHidden()
-    assert not dlg._delete_btn.isHidden()
 
 
 def test_world_prompt_saved_on_close(dialog, qtbot):
@@ -150,11 +137,11 @@ def test_warnings_displayed(dialog):
     page = dialog._warnings_page
     labels = [
         child.text()
-        for child in page.findChildren(type(dialog._model_info))
+        for child in page.findChildren(QLabel)
         if hasattr(child, "text") and child.text()
     ]
     full_text = " ".join(labels)
-    assert "оперативной памяти" in full_text or "RAM" in full_text or "10 ГБ" in full_text
+    assert "LLM будет редактировать" in full_text
 
 
 def test_get_world_prompt(dialog):
@@ -169,17 +156,3 @@ def test_get_field_prompts(dialog):
     assert "item" in result
     assert "location" in result
     assert "organization" in result
-
-
-def test_set_download_status_packages(dialog):
-    dialog.set_download_status("Установка необходимых пакетов…")
-    assert dialog._progress_label.text() == "Установка необходимых пакетов…"
-    assert dialog._progress.minimum() == 0
-    assert dialog._progress.maximum() == 0
-
-
-def test_set_download_status_model(dialog):
-    dialog.set_download_status("Загрузка модели…")
-    assert dialog._progress_label.text() == "Загрузка модели…"
-    assert dialog._progress.maximum() == 100
-    assert dialog._progress.value() == 0

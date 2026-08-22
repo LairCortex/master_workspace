@@ -40,8 +40,7 @@ from app.presentation.viewmodels.llm_viewmodel import (
 from app.presentation.utils.date_utils import (
     SETTINGS_KEY, get_custom_months, months_from_json, months_to_json, set_custom_months,
 )
-from app.infrastructure.llm.local_provider import LocalGgufProvider
-from app.infrastructure.llm.model_manager import ModelManager
+from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -133,17 +132,15 @@ class Application:
 
     def __init__(self, qapp: QApplication) -> None:
         self._qapp = qapp
-        self._llm_downloading = False
         self.engine = None
         self.session_factory = None
         self._session = None
         self._window: MainWindow | None = None
         self._db_path: str | None = None
 
-        self._model_manager = ModelManager()
-        self._local_provider = LocalGgufProvider(self._model_manager.get_model_path())
-        self._llm_service = LlmService(self._local_provider)
-        self._llm_vm = LlmViewModel(self._llm_service, self._model_manager)
+        self._llm_provider = RemoteLlmProvider()
+        self._llm_service = LlmService(self._llm_provider)
+        self._llm_vm = LlmViewModel(self._llm_service)
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window."""
@@ -780,18 +777,11 @@ class Application:
 
     def _on_llm_setup(self, window) -> None:
         llm_vm = self._llm_vm
-        model_downloaded = self._model_manager.get_model_path() is not None
         dialog = LlmSetupDialog(
-            model_downloaded=model_downloaded,
             world_prompt=llm_vm.world_prompt,
             field_prompts=llm_vm.field_prompts,
             parent=window,
         )
-        dialog._download_btn.clicked.connect(
-            lambda: asyncio.ensure_future(self._do_llm_download(dialog))
-        )
-        dialog._delete_btn.clicked.connect(self._do_llm_delete_factory(dialog))
-        dialog.cancel_download_requested.connect(self._on_cancel_llm_download)
 
         async def _on_saved(world_prompt, field_prompts):
             llm_vm.world_prompt = world_prompt
@@ -800,50 +790,6 @@ class Application:
 
         dialog.saved.connect(lambda wp, fp: asyncio.ensure_future(_on_saved(wp, fp)))
         dialog.open()
-
-    def _on_cancel_llm_download(self) -> None:
-        if self._llm_downloading:
-            self._model_manager.cancel_download()
-
-    async def _do_llm_download(self, dialog) -> None:
-        if self._llm_downloading:
-            return
-        self._llm_downloading = True
-        dialog.set_downloading(True)
-        dialog._download_btn.setEnabled(False)
-        dialog._back_btn.setEnabled(False)
-        dialog._next_btn.setEnabled(False)
-        self._llm_vm.download_progress.connect(dialog.set_download_progress)
-        self._llm_vm.download_status_message.connect(dialog.set_download_status)
-        try:
-            await self._llm_vm.download_model()
-            dialog.set_model_downloaded(True)
-        except Exception as exc:
-            from app.infrastructure.llm.model_manager import DownloadCancelled
-            if isinstance(exc.__cause__, DownloadCancelled) or isinstance(exc, DownloadCancelled):
-                dialog.set_downloading(False)
-                dialog.close()
-                return
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(dialog, "Ошибка", str(exc))
-        finally:
-            self._llm_downloading = False
-            dialog.set_downloading(False)
-            try:
-                self._llm_vm.download_progress.disconnect(dialog.set_download_progress)
-                self._llm_vm.download_status_message.disconnect(dialog.set_download_status)
-            except RuntimeError:
-                pass
-            dialog._download_btn.setEnabled(True)
-            dialog._back_btn.setEnabled(True)
-            dialog._next_btn.setEnabled(True)
-            dialog._update_nav_buttons()
-
-    def _do_llm_delete_factory(self, dialog):
-        def _delete():
-            self._llm_vm.delete_model()
-            dialog.set_model_downloaded(False)
-        return _delete
 
     async def _load_llm_settings(self) -> None:
         from sqlalchemy import select
