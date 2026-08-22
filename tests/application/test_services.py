@@ -41,7 +41,19 @@ class TestEventService:
     def _make_service(self):
         event_repo = AsyncMock()
         desc_repo = AsyncMock()
-        return EventService(event_repo=event_repo, description_repo=desc_repo), event_repo, desc_repo
+        org_svc = AsyncMock()
+        char_svc = AsyncMock()
+        item_svc = AsyncMock()
+        loc_svc = AsyncMock()
+        svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=org_svc,
+            character_service=char_svc,
+            item_service=item_svc,
+            location_service=loc_svc,
+        )
+        return svc, event_repo, desc_repo
 
     @pytest.mark.asyncio
     async def test_create_event(self):

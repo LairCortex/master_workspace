@@ -3,6 +3,7 @@ from datetime import date
 
 import pytest
 import pytest_asyncio
+from unittest.mock import AsyncMock
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from app.infrastructure.db.models import Base, DescriptionModel
@@ -38,7 +39,14 @@ class TestFullEventFlow:
     async def test_create_and_retrieve_event(self, session):
         desc_repo = BaseRepository(session, DescriptionModel)
         event_repo = EventRepository(session)
-        svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
 
         event = await svc.create_event(
             name="Battle of Plains",
@@ -63,7 +71,14 @@ class TestFullEventFlow:
         item_repo = ItemRepository(session)
         loc_repo = LocationRepository(session)
 
-        event_svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        event_svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
         search_svc = SearchService(
             event=event_repo,
             organization=org_repo,
@@ -94,7 +109,14 @@ class TestFullEventFlow:
         item_repo = ItemRepository(session)
         loc_repo = LocationRepository(session)
 
-        event_svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        event_svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
         org_svc = EntityService(repo=org_repo, description_repo=desc_repo)
         char_svc = EntityService(repo=char_repo, description_repo=desc_repo)
 
@@ -137,7 +159,14 @@ class TestFullEventFlow:
     async def test_timeline_ordering(self, session):
         desc_repo = BaseRepository(session, DescriptionModel)
         event_repo = EventRepository(session)
-        svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
 
         await svc.create_event(name="Later", characteristics="x", backstory="y",
                                start_date=date(1300, 1, 1), end_date=date(1300, 12, 31))
@@ -160,7 +189,14 @@ class TestFullEventFlow:
         item_repo = ItemRepository(session)
         loc_repo = LocationRepository(session)
 
-        event_svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        event_svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
         char_svc = EntityService(repo=char_repo, description_repo=desc_repo)
 
         await event_svc.create_event(
@@ -210,7 +246,14 @@ class TestFullEventFlow:
         item_repo = ItemRepository(session)
         loc_repo = LocationRepository(session)
 
-        event_svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        event_svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
         # "Dragon" appears in name, characteristics, and backstory
         await event_svc.create_event(
             name="Dragon attack",
@@ -232,7 +275,14 @@ class TestFullEventFlow:
     async def test_update_and_delete_event(self, session):
         desc_repo = BaseRepository(session, DescriptionModel)
         event_repo = EventRepository(session)
-        svc = EventService(event_repo=event_repo, description_repo=desc_repo)
+        svc = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=AsyncMock(),
+            character_service=AsyncMock(),
+            item_service=AsyncMock(),
+            location_service=AsyncMock(),
+        )
 
         event = await svc.create_event(
             name="Original",

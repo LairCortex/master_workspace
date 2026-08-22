@@ -169,7 +169,18 @@ class Application:
         rating_repo = RatingRepository(self._session)
 
         # Services
-        event_service = EventService(event_repo=event_repo, description_repo=desc_repo)
+        org_svc = EntityService(repo=org_repo, description_repo=desc_repo)
+        char_svc = EntityService(repo=char_repo, description_repo=desc_repo)
+        item_svc = EntityService(repo=item_repo, description_repo=desc_repo)
+        loc_svc = EntityService(repo=loc_repo, description_repo=desc_repo)
+        event_service = EventService(
+            event_repo=event_repo,
+            description_repo=desc_repo,
+            organization_service=org_svc,
+            character_service=char_svc,
+            item_service=item_svc,
+            location_service=loc_svc,
+        )
         search_service = SearchService(
             event=event_repo,
             organization=org_repo,
@@ -359,32 +370,6 @@ class Application:
             dialog.item_tab.set_available_entities(list(await item_svc.get_all()))
             dialog.loc_tab.set_available_entities(list(await loc_svc.get_all()))
 
-        # ── Helper: process entity items (existing → link, new → create) ──
-        async def _process_entity_items(items, repo_cls, event_collection):
-            desc_repo = BaseRepository(self._session, DescriptionModel)
-            existing_ids = {obj.id for obj in event_collection}
-            new_ids = set()
-
-            for ent in items:
-                eid = ent.get("_existing_id")
-                if eid:
-                    new_ids.add(eid)
-                    if eid not in existing_ids:
-                        svc = EntityService(repo=repo_cls(self._session), description_repo=desc_repo)
-                        obj = await svc.get_entity(eid)
-                        if obj:
-                            event_collection.append(obj)
-                else:
-                    svc = EntityService(repo=repo_cls(self._session), description_repo=desc_repo)
-                    obj = await svc.create_entity(**ent)
-                    event_collection.append(obj)
-                    new_ids.add(obj.id)
-
-            # Remove unlinked entities (were in event before but not in new list)
-            to_remove = [obj for obj in event_collection if obj.id not in new_ids]
-            for obj in to_remove:
-                event_collection.remove(obj)
-
         # Add event button
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window)
@@ -402,10 +387,9 @@ class Application:
                     event = await event_service.create_event(**data)
                     await self._session.refresh(event, attribute_names=["organizations", "characters", "items", "locations"])
 
-                    await _process_entity_items(org_items, OrganizationRepository, event.organizations)
-                    await _process_entity_items(char_items, CharacterRepository, event.characters)
-                    await _process_entity_items(item_items, ItemRepository, event.items)
-                    await _process_entity_items(loc_items, LocationRepository, event.locations)
+                    await event_service.apply_event_relations(
+                        event, org_items, char_items, item_items, loc_items
+                    )
 
                     await self._session.commit()
                     await timeline_vm.load_events()
@@ -489,10 +473,9 @@ class Application:
 
                         # Sync M2M relationships
                         await self._session.refresh(updated_event, attribute_names=["organizations", "characters", "items", "locations"])
-                        await _process_entity_items(org_items, OrganizationRepository, updated_event.organizations)
-                        await _process_entity_items(char_items, CharacterRepository, updated_event.characters)
-                        await _process_entity_items(item_items, ItemRepository, updated_event.items)
-                        await _process_entity_items(loc_items, LocationRepository, updated_event.locations)
+                        await event_service.apply_event_relations(
+                            updated_event, org_items, char_items, item_items, loc_items
+                        )
 
                         await self._session.commit()
                         await timeline_vm.load_events()
