@@ -30,6 +30,10 @@ class EntityService:
         # lookups in the old main.py closures).
         self._related_services = related_services or {}
 
+    def set_related_services(self, services: Dict[str, "EntityService"]) -> None:
+        """Point at sibling services (populated by the Application catalog)."""
+        self._related_services = services
+
     async def create_entity(
         self,
         name: str,

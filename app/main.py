@@ -26,8 +26,8 @@ from app.infrastructure.db.models import DescriptionModel
 from app.application.services.event_service import EventService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
-from app.application.services.xlsx_import_service import XlsxImportService
 from app.application.services.llm_service import LlmService
+from app.application.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
@@ -44,8 +44,6 @@ from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
-from app.presentation.views.event_dialog import EventDialog
-from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
@@ -135,6 +133,9 @@ class Application:
         self._http: AppHttpClient | None = None
         self._llm_service: LlmService | None = None
         self._llm_vm: LlmViewModel | None = None
+        # Entity service catalog — built once per game in start()
+        self._entity_services: dict[str, EntityService] = {}
+        self._wiring: ApplicationWiring | None = None
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window."""
@@ -160,17 +161,14 @@ class Application:
         rating_repo = RatingRepository(self._session)
 
         # Services
-        org_svc = EntityService(repo=org_repo, description_repo=desc_repo)
-        char_svc = EntityService(repo=char_repo, description_repo=desc_repo)
-        item_svc = EntityService(repo=item_repo, description_repo=desc_repo)
-        loc_svc = EntityService(repo=loc_repo, description_repo=desc_repo)
+        self._entity_services = self._build_entity_services()
         event_service = EventService(
             event_repo=event_repo,
             description_repo=desc_repo,
-            organization_service=org_svc,
-            character_service=char_svc,
-            item_service=item_svc,
-            location_service=loc_svc,
+            organization_service=self._entity_services["organization"],
+            character_service=self._entity_services["character"],
+            item_service=self._entity_services["item"],
+            location_service=self._entity_services["location"],
         )
         search_service = SearchService(
             event=event_repo,
@@ -206,7 +204,10 @@ class Application:
         self._search_service = search_service
 
         # Wire signals
-        self._wire_signals(window, timeline_vm, detail_vm, search_vm, event_dialog_vm, event_service)
+        self._wiring = ApplicationWiring(
+            self, window, timeline_vm, detail_vm, search_vm, event_dialog_vm, event_service,
+        )
+        self._wiring.connect()
 
         # Switch game menu
         window.switch_game_requested.connect(lambda: asyncio.ensure_future(self._on_switch_game()))
@@ -269,324 +270,6 @@ class Application:
         dialog.game_selected.connect(lambda p: asyncio.ensure_future(_do_switch(p)))
         dialog.open()
 
-    def _wire_signals(self, window, timeline_vm, detail_vm, search_vm, event_dialog_vm, event_service):
-        """Connect signals between components."""
-
-        # Timeline selection -> detail panel
-        async def on_event_selected(index):
-            timeline_vm.select_event(index)
-            event = timeline_vm.selected_event
-            if event:
-                await detail_vm.load_details(event.id)
-                window.detail_panel.show_event(detail_vm.event)
-            else:
-                window.detail_panel.clear()
-
-        window.timeline_widget.event_selected.connect(
-            lambda idx: asyncio.ensure_future(on_event_selected(idx))
-        )
-
-        # Date range filter
-        def on_filter_changed(start, end):
-            timeline_vm.filter_by_dates(start, end)
-            window.timeline_widget.update_events(timeline_vm.events)
-
-        window.timeline_widget.filter_changed.connect(on_filter_changed)
-
-        # ── XLSX import actions ─────────────────────────────────────────────
-        desc_repo = BaseRepository(self._session, DescriptionModel)
-        org_svc = EntityService(repo=OrganizationRepository(self._session), description_repo=desc_repo)
-        char_svc = EntityService(repo=CharacterRepository(self._session), description_repo=desc_repo)
-        item_svc = EntityService(repo=ItemRepository(self._session), description_repo=desc_repo)
-        loc_svc = EntityService(repo=LocationRepository(self._session), description_repo=desc_repo)
-        xlsx_import = XlsxImportService(
-            event_service=event_service,
-            character_service=char_svc,
-            location_service=loc_svc,
-            organization_service=org_svc,
-            item_service=item_svc,
-        )
-
-        async def _run_import(entity_type: str):
-            from PySide6.QtWidgets import QMessageBox
-            from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
-
-            dlg = XlsxImportDialog(entity_type, window)
-            dlg.open()
-
-            async def _do_import(path: str):
-                try:
-                    result = await xlsx_import.import_file(
-                        entity_type, path, progress_callback=dlg.set_progress
-                    )
-                    await timeline_vm.load_events()
-                    window.timeline_widget.update_events(timeline_vm.events)
-                    msg = f"Создано записей: {result.created}"
-                    if result.errors:
-                        msg += "\n\nНекоторые строки пропущены:\n- " + "\n- ".join(result.errors[:10])
-                    QMessageBox.information(window, "Импорт завершён", msg)
-                except Exception as exc:  # noqa: BLE001
-                    QMessageBox.critical(window, "Ошибка импорта", str(exc))
-                finally:
-                    dlg.close()
-
-            dlg.import_requested.connect(lambda p: asyncio.ensure_future(_do_import(p)))
-
-        window.import_events_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("event"))
-        )
-        window.import_characters_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("character"))
-        )
-        window.import_locations_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("location"))
-        )
-        window.import_organizations_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("organization"))
-        )
-        window.import_items_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("item"))
-        )
-
-        # ── Helper: load available entities and set them on dialog tabs ──
-        async def _load_available_into_dialog(dialog):
-            """Load all entities from DB and set them as available for linking."""
-            desc_repo = BaseRepository(self._session, DescriptionModel)
-            org_svc = EntityService(repo=OrganizationRepository(self._session), description_repo=desc_repo)
-            char_svc = EntityService(repo=CharacterRepository(self._session), description_repo=desc_repo)
-            item_svc = EntityService(repo=ItemRepository(self._session), description_repo=desc_repo)
-            loc_svc = EntityService(repo=LocationRepository(self._session), description_repo=desc_repo)
-            dialog.org_tab.set_available_entities(list(await org_svc.get_all()))
-            dialog.char_tab.set_available_entities(list(await char_svc.get_all()))
-            dialog.item_tab.set_available_entities(list(await item_svc.get_all()))
-            dialog.loc_tab.set_available_entities(list(await loc_svc.get_all()))
-
-        # Add event button
-        def on_add_event():
-            dialog = EventDialog(event_dialog_vm, parent=window)
-            asyncio.ensure_future(_load_available_into_dialog(dialog))
-            self._wire_mentions_for_dialog(dialog, on_entity_click)
-            self._wire_ai_buttons(dialog)
-
-            async def on_saved(data):
-                relations = {
-                    "organizations": data.pop("organizations", []),
-                    "characters": data.pop("characters", []),
-                    "items": data.pop("items", []),
-                    "locations": data.pop("locations", []),
-                }
-                await event_service.create_event_with_relations(
-                    name=data.pop("name"),
-                    start_date=data.pop("start_date"),
-                    end_date=data.pop("end_date"),
-                    characteristics=data.pop("characteristics", ""),
-                    backstory=data.pop("backstory", ""),
-                    relations=relations,
-                )
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
-
-            dialog.saved.connect(lambda data: asyncio.ensure_future(on_saved(data)))
-            dialog.open()
-
-        window.timeline_widget.add_event_requested.connect(on_add_event)
-
-        # Create standalone entities from timeline "+" context menu
-        async def on_add_entity(entity_type: str):
-            try:
-                entity_service = self._get_entity_service(entity_type)
-                if not entity_service:
-                    return
-
-                dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
-                self._wire_mentions_for_dialog(dialog, on_entity_click)
-                self._wire_ai_buttons(dialog)
-
-                async def on_entity_saved(data):
-                    try:
-                        data.pop("related_changes", None)
-                        chars_text = data.pop("characteristics", "")
-                        backstory_text = data.pop("backstory", "")
-                        await entity_service.create_entity(
-                            characteristics=chars_text,
-                            backstory=backstory_text,
-                            **data,
-                        )
-                        await self._session.commit()
-                    except Exception:
-                        await self._session.rollback()
-
-                dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
-                dialog.open()
-            except Exception:
-                await self._session.rollback()
-
-        window.timeline_widget.add_entity_requested.connect(
-            lambda t: asyncio.ensure_future(on_add_entity(t))
-        )
-
-        # Edit event (double-click on timeline)
-        async def on_edit_event(event_id):
-            try:
-                event = await event_service.get_event(event_id)
-                if not event:
-                    return
-                dialog = EventDialog(event_dialog_vm, parent=window)
-                await _load_available_into_dialog(dialog)
-                dialog.populate(event)
-                self._wire_mentions_for_dialog(dialog, on_entity_click)
-                self._wire_ai_buttons(dialog)
-
-                async def on_event_updated(data):
-                    eid = data.pop("event_id", None)
-                    relations = {
-                        "organizations": data.pop("organizations", []),
-                        "characters": data.pop("characters", []),
-                        "items": data.pop("items", []),
-                        "locations": data.pop("locations", []),
-                    }
-                    await event_service.update_event_with_relations(
-                        eid,
-                        name=data.pop("name"),
-                        start_date=data.pop("start_date"),
-                        end_date=data.pop("end_date"),
-                        characteristics=data.pop("characteristics", ""),
-                        backstory=data.pop("backstory", ""),
-                        relations=relations,
-                    )
-                    await timeline_vm.load_events()
-                    window.timeline_widget.update_events(timeline_vm.events)
-
-                    # Refresh detail panel
-                    await detail_vm.load_details(eid)
-                    window.detail_panel.show_event(detail_vm.event)
-
-                dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
-                dialog.open()
-            except Exception:
-                await self._session.rollback()
-
-        window.timeline_widget.event_double_clicked.connect(
-            lambda eid: asyncio.ensure_future(on_edit_event(eid))
-        )
-
-        # Search
-        async def on_search(query):
-            await search_vm.search(query)
-
-        window.search_bar.search_requested.connect(
-            lambda q: asyncio.ensure_future(on_search(q))
-        )
-
-        # Search result click -> open entity card (or select event in timeline)
-        async def on_search_result(entity_type, entity_id):
-            if entity_type == "event":
-                # Select in timeline and show details
-                for i, ev in enumerate(timeline_vm.events):
-                    if ev.id == entity_id:
-                        window.timeline_widget.list_widget.setCurrentRow(i)
-                        break
-            else:
-                await on_entity_click(entity_type, entity_id)
-
-        window.search_bar.result_selected.connect(
-            lambda t, i: asyncio.ensure_future(on_search_result(t, i))
-        )
-
-        # Entity card double-click
-        async def on_entity_click(entity_type, entity_id):
-            try:
-                entity_service = self._get_entity_service(entity_type)
-                if not entity_service:
-                    return
-                entity = await entity_service.get_entity(entity_id)
-                if not entity:
-                    return
-
-                dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
-                dialog.populate(entity)
-                self._wire_mentions_for_dialog(dialog, on_entity_click)
-                self._wire_ai_buttons(dialog)
-
-                # Load available related entities for linking
-                from app.presentation.views.entity_card_dialog import _RELATED_CONFIG
-                related_configs = _RELATED_CONFIG.get(entity_type, [])
-                for cfg in related_configs:
-                    rel_svc = self._get_entity_service(cfg["entity_type"])
-                    if rel_svc:
-                        available = await rel_svc.get_all()
-                        dialog.set_available_entities(cfg["attr"], list(available))
-
-                # Handle save (update entity fields + sync relationships)
-                async def on_entity_saved(data):
-                    related_changes = data.pop("related_changes", {})
-                    chars_text = data.pop("characteristics", "")
-                    backstory_text = data.pop("backstory", "")
-                    field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
-                    await entity_service.update_entity_with_relations(
-                        entity_id, field_data, chars_text, backstory_text, related_changes,
-                    )
-
-                    # Refresh detail panel if an event is selected
-                    if detail_vm.event:
-                        await detail_vm.load_details(detail_vm.event.id)
-                        window.detail_panel.show_event(detail_vm.event)
-
-                dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
-
-                # Handle create new related entity
-                async def on_create_related(attr_name, related_entity_type):
-                    sub_dialog = EntityCardDialog(None, entity_type=related_entity_type, parent=dialog)
-                    self._wire_mentions_for_dialog(sub_dialog, on_entity_click)
-                    self._wire_ai_buttons(sub_dialog)
-
-                    async def on_sub_saved(sub_data):
-                        sub_data.pop("related_changes", None)
-                        sub_svc = self._get_entity_service(related_entity_type)
-                        if not sub_svc:
-                            return
-                        chars_text = sub_data.pop("characteristics", "")
-                        backstory_text = sub_data.pop("backstory", "")
-                        new_entity = await sub_svc.create_entity(
-                            characteristics=chars_text,
-                            backstory=backstory_text,
-                            **sub_data,
-                        )
-                        await self._session.flush()
-                        dialog.add_related_entity(attr_name, new_entity)
-
-                    sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
-                    sub_dialog.open()
-
-                dialog.create_related_requested.connect(
-                    lambda a, t: asyncio.ensure_future(on_create_related(a, t))
-                )
-
-                dialog.open()
-            except Exception:
-                await self._session.rollback()
-
-        window.detail_panel.entity_clicked.connect(
-            lambda t, i: asyncio.ensure_future(on_entity_click(t, i))
-        )
-
-        # World snapshot — date query
-        async def on_snapshot_requested(target_date):
-            if target_date is None:
-                events = await event_service.get_all_events()
-            else:
-                events = await event_service.get_events_at_date(target_date)
-            window.world_snapshot.populate(events, target_date)
-
-        window.world_snapshot.snapshot_requested.connect(
-            lambda d: asyncio.ensure_future(on_snapshot_requested(d))
-        )
-
-        # World snapshot — entity double-click (reuse on_entity_click)
-        window.world_snapshot.entity_clicked.connect(
-            lambda t, i: asyncio.ensure_future(on_entity_click(t, i))
-        )
-
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
         """Connect mention search and click signals for a dialog's MentionTextEdits."""
         for edit in dialog.get_mention_edits():
@@ -606,6 +289,11 @@ class Application:
         )
 
     def _get_entity_service(self, entity_type: str) -> EntityService | None:
+        """Thin wrapper over the per-game service catalog."""
+        return self._entity_services.get(entity_type)
+
+    def _build_entity_services(self) -> dict[str, EntityService]:
+        """Build the per-game catalog once (replaces per-call construction)."""
         desc_repo = BaseRepository(self._session, DescriptionModel)
         repo_map = {
             "organization": OrganizationRepository(self._session),
@@ -613,17 +301,15 @@ class Application:
             "item": ItemRepository(self._session),
             "location": LocationRepository(self._session),
         }
-        repo = repo_map.get(entity_type)
-        if not repo:
-            return None
-        related_services = {
+        services = {
             t: EntityService(repo=r, description_repo=desc_repo)
             for t, r in repo_map.items()
-            if t != entity_type
         }
-        return EntityService(
-            repo=repo, description_repo=desc_repo, related_services=related_services,
-        )
+        for type_name, svc in services.items():
+            svc.set_related_services(
+                {t: s for t, s in services.items() if t != type_name},
+            )
+        return services
 
     async def _load_month_settings(self) -> None:
         """Load custom month names from game_settings table."""
