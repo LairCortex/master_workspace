@@ -1,6 +1,7 @@
 """Entity card dialog — view/edit any entity type with related entities."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
@@ -17,14 +18,34 @@ from app.presentation.views.ai_assist_button import AiAssistButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
 
-# Fields that only appear for certain entity types
-_EXTRA_FIELDS = {
-    "character": ["personality", "image", "tasks"],
-    "organization": ["image", "tasks"],
-    "location": ["image", "tasks"],
+# Fields that only appear for certain entity types. The 5th entity type is
+# data in this table, not a code branch. kind: "mention" | "image".
+@dataclass(frozen=True)
+class _FieldSpec:
+    name: str   # data key; widget attribute is "<name>_input"
+    label: str  # RU label without trailing colon
+    kind: str
+
+
+_FIELD_SPECS: dict[str, list[_FieldSpec]] = {
+    "character": [
+        _FieldSpec("personality", "Личность", "mention"),
+        _FieldSpec("image", "Изображение", "image"),
+        _FieldSpec("tasks", "Задачи", "mention"),
+    ],
+    "organization": [
+        _FieldSpec("image", "Изображение", "image"),
+        _FieldSpec("tasks", "Задачи", "mention"),
+    ],
+    "location": [
+        _FieldSpec("image", "Изображение", "image"),
+        _FieldSpec("tasks", "Задачи", "mention"),
+    ],
     "item": [],
     "rating": [],
 }
+
+_EXTRA_FIELD_MIN_HEIGHT = 40
 
 # Related entities config: which entity types have which related sub-entities
 _RELATED_CONFIG: dict[str, list[dict[str, str]]] = {
@@ -161,7 +182,9 @@ class EntityCardDialog(QDialog):
         self._entity_type = entity_type
         self._related_sections: dict[str, _RelatedSection] = {}
         self._image_b64: str = ""
-        self._has_image_field = "image" in _EXTRA_FIELDS.get(entity_type, [])
+        self._extra_specs = _FIELD_SPECS.get(entity_type, [])
+        self._has_image_field = any(spec.kind == "image" for spec in self._extra_specs)
+        self._extra_widgets: dict[str, MentionTextEdit] = {}
         self._music_url: str = ""
         self._ai_buttons: list[AiAssistButton] = []
         self.setWindowTitle(f"Карточка: {entity_type}")
@@ -264,24 +287,21 @@ class EntityCardDialog(QDialog):
         music_row.addWidget(self.music_edit_btn, 0)
         form.addRow("Музыка:", music_row)
 
-        # Extra fields based on entity type
-        extras = _EXTRA_FIELDS.get(self._entity_type, [])
-
+        # Entity-specific fields — built from _FIELD_SPECS (no per-type branches).
+        # Public widget attribute names stay stable: <name>_input.
         self.personality_input = None
         self.image_input = None  # kept for compatibility but hidden
         self.tasks_input = None
 
-        if "personality" in extras:
-            self.personality_input = MentionTextEdit()
-            self.personality_input.setMinimumHeight(40)
-            self.personality_input.mention_clicked.connect(self.mention_clicked)
-            form.addRow("Личность:", self.personality_input)
-
-        if "tasks" in extras:
-            self.tasks_input = MentionTextEdit()
-            self.tasks_input.setMinimumHeight(40)
-            self.tasks_input.mention_clicked.connect(self.mention_clicked)
-            form.addRow("Задачи:", self.tasks_input)
+        for spec in self._extra_specs:
+            if spec.kind == "image":
+                continue  # image panel is built in the top area
+            widget = MentionTextEdit()
+            widget.setMinimumHeight(_EXTRA_FIELD_MIN_HEIGHT)
+            widget.mention_clicked.connect(self.mention_clicked)
+            setattr(self, f"{spec.name}_input", widget)
+            self._extra_widgets[spec.name] = widget
+            form.addRow(f"{spec.label}:", widget)
 
         form_layout.addLayout(form)
         top_layout.addWidget(form_widget, 1)
@@ -386,10 +406,9 @@ class EntityCardDialog(QDialog):
             self.characteristics_input.setContent(getattr(desc, "characteristics", "") or "")
             self.backstory_input.setContent(getattr(desc, "backstory", "") or "")
 
-        if self.personality_input and hasattr(entity, "personality"):
-            self.personality_input.setContent(entity.personality or "")
-        if self.tasks_input and hasattr(entity, "tasks"):
-            self.tasks_input.setContent(entity.tasks or "")
+        for name, widget in self._extra_widgets.items():
+            value = getattr(entity, name, None)
+            widget.setContent(value or "")
 
         # Image from DB (base64)
         img_data = getattr(entity, "image", None)
@@ -426,12 +445,10 @@ class EntityCardDialog(QDialog):
             "backstory": self.backstory_input.getContent().strip(),
             "music_url": self.music_input.text().strip(),
         }
-        if self.personality_input:
-            data["personality"] = self.personality_input.getContent().strip()
+        for name, widget in self._extra_widgets.items():
+            data[name] = widget.getContent().strip()
         if self._has_image_field:
             data["image"] = self._image_b64
-        if self.tasks_input:
-            data["tasks"] = self.tasks_input.getContent().strip()
 
         # Related entity changes
         if self._related_sections:
@@ -445,10 +462,7 @@ class EntityCardDialog(QDialog):
     def get_mention_edits(self) -> list[MentionTextEdit]:
         """Return all MentionTextEdit instances for wiring search."""
         edits = [self.characteristics_input, self.backstory_input]
-        if self.personality_input:
-            edits.append(self.personality_input)
-        if self.tasks_input:
-            edits.append(self.tasks_input)
+        edits.extend(self._extra_widgets.values())
         return edits
 
     def _setup_ai_buttons(self) -> None:
@@ -458,10 +472,10 @@ class EntityCardDialog(QDialog):
             (self.characteristics_input, "characteristics", "Характеристики"),
             (self.backstory_input, "backstory", "Предыстория"),
         ]
-        if self.personality_input:
-            fields.append((self.personality_input, "personality", "Личность"))
-        if self.tasks_input:
-            fields.append((self.tasks_input, "tasks", "Задачи"))
+        for spec in self._extra_specs:
+            if spec.kind != "mention":
+                continue
+            fields.append((self._extra_widgets[spec.name], spec.name, spec.label))
 
         for widget, field_name, field_label in fields:
             btn = AiAssistButton(widget, et, field_name, field_label)

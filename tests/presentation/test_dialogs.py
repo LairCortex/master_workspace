@@ -158,3 +158,68 @@ class TestEntityCardDialog:
         qtbot.addWidget(d)
         assert d._has_image_field
         assert hasattr(d, "image_label")
+
+    @pytest.mark.parametrize(
+        ("entity_type", "extra_fields"),
+        [
+            ("character", ["personality", "tasks"]),
+            ("organization", ["tasks"]),
+            ("location", ["tasks"]),
+            ("item", []),
+        ],
+    )
+    def test_entity_card_fields_driven_by_spec(
+        self, qtbot, entity_type, extra_fields
+    ):
+        """Widget attributes and get_data keys follow _FIELD_SPECS, no branches."""
+        vm = MagicMock()
+        d = EntityCardDialog(vm, entity_type=entity_type)
+        qtbot.addWidget(d)
+        d.name_input.setText("X")
+        data = d.get_data()
+        for name in ("personality", "tasks"):
+            present = name in extra_fields
+            assert bool(getattr(d, f"{name}_input")) == present, entity_type
+            assert (name in data) == present, entity_type
+
+    def test_entity_card_image_panel_follows_spec(self, qtbot):
+        for entity_type in ("character", "organization", "location"):
+            vm = MagicMock()
+            d = EntityCardDialog(vm, entity_type=entity_type)
+            qtbot.addWidget(d)
+            assert d._has_image_field, entity_type
+        d = EntityCardDialog(MagicMock(), entity_type="item")
+        qtbot.addWidget(d)
+        assert not d._has_image_field
+
+    def test_entity_card_extra_fields_roundtrip(self, qtbot):
+        vm = MagicMock()
+        d = EntityCardDialog(vm, entity_type="character")
+        qtbot.addWidget(d)
+        entity = MagicMock()
+        entity.name = "Bard"
+        entity.start_date = date(1200, 1, 1)
+        entity.end_date = date(1300, 1, 1)
+        entity.personality = "Cheerful"
+        entity.tasks = "Sing"
+        entity.image = None
+        entity.music_url = ""
+        desc = MagicMock()
+        desc.characteristics = ""
+        desc.backstory = ""
+        entity.description = desc
+
+        d.populate(entity)
+        assert d.personality_input.toPlainText() == "Cheerful"
+        assert d.tasks_input.toPlainText() == "Sing"
+
+    @pytest.mark.parametrize(
+        ("entity_type", "ai_button_count"),
+        [("character", 5), ("organization", 4), ("location", 4), ("item", 3)],
+    )
+    def test_entity_card_ai_buttons_per_type(self, qtbot, entity_type, ai_button_count):
+        """One AI button per mention field: 3 common + spec extras."""
+        vm = MagicMock()
+        d = EntityCardDialog(vm, entity_type=entity_type)
+        qtbot.addWidget(d)
+        assert len(d.get_ai_buttons()) == ai_button_count

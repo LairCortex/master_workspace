@@ -35,7 +35,7 @@
 
 ## 7. EntityCardDialog data-driven (F)
 
-- [ ] 7.1 Заменить ветвления по типу на `_FIELD_SPECS[type]` (спецификация полей: kind mention/text; имена атрибутов виджетов — `characteristics_input`, `backstory_input`, `personality_input`, `tasks_input` — без изменений); `_init_ui`/`populate`/`get_data` итеративные (commit `NRI-0004: make entity card dialog config-driven`, pytest + чек-лист №4,5,6,11,14)
+- [x] 7.1 Заменить ветвления по типу на `_FIELD_SPECS[type]` (спецификация полей: kind mention/text; имена атрибутов виджетов — `characteristics_input`, `backstory_input`, `personality_input`, `tasks_input` — без изменений); `_init_ui`/`populate`/`get_data` итеративные (commit `NRI-0004: make entity card dialog config-driven`, pytest + чек-лист №4,5,6,11,14)
 
 ## 8. Доменные dataclass'ы (D)
 
