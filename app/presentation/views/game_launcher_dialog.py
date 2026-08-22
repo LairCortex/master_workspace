@@ -126,7 +126,7 @@ class GameLauncherDialog(QDialog):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-            db_path = import_game(path)
+            import_game(path)
             self._refresh_list()
             QMessageBox.information(
                 self, "Импорт", f"Игра «{game_name}» успешно импортирована.",

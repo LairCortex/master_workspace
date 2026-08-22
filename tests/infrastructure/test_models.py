@@ -2,12 +2,9 @@
 from datetime import date
 
 import pytest
-import pytest_asyncio
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.db.models import (
-    Base,
     DescriptionModel,
     EventModel,
     OrganizationModel,
@@ -63,7 +60,8 @@ class TestEventModel:
         await async_session.flush()
 
         event = EventModel(name="E1", description_id=desc1.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
-        org = OrganizationModel(name="O1", description_id=desc2.id, start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
+        org = OrganizationModel(name="O1", description_id=desc2.id,
+            start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
         event.organizations.append(org)
         async_session.add(event)
         await async_session.commit()
@@ -80,7 +78,8 @@ class TestEventModel:
         await async_session.flush()
 
         event = EventModel(name="E1", description_id=desc1.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
-        char = CharacterModel(name="Hero", description_id=desc2.id, start_date=date(1100, 1, 1), end_date=date(1200, 1, 1))
+        char = CharacterModel(name="Hero", description_id=desc2.id,
+            start_date=date(1100, 1, 1), end_date=date(1200, 1, 1))
         event.characters.append(char)
         async_session.add(event)
         await async_session.commit()
@@ -112,7 +111,8 @@ class TestEventModel:
         await async_session.flush()
 
         event = EventModel(name="E1", description_id=desc1.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
-        loc = LocationModel(name="Forest", description_id=desc2.id, start_date=date(100, 1, 1), end_date=date(3000, 12, 31))
+        loc = LocationModel(name="Forest", description_id=desc2.id,
+            start_date=date(100, 1, 1), end_date=date(3000, 12, 31))
         event.locations.append(loc)
         async_session.add(event)
         await async_session.commit()
@@ -152,7 +152,8 @@ class TestOrganizationModel:
         async_session.add_all([d1, d2])
         await async_session.flush()
 
-        org = OrganizationModel(name="O1", description_id=d1.id, start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
+        org = OrganizationModel(name="O1", description_id=d1.id,
+            start_date=date(1000, 1, 1), end_date=date(1500, 12, 31))
         char = CharacterModel(name="C1", description_id=d2.id, start_date=date(1100, 1, 1), end_date=date(1200, 1, 1))
         org.characters.append(char)
         async_session.add(org)

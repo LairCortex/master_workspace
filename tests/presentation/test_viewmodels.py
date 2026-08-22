@@ -1,9 +1,8 @@
 """Tests for ViewModels — TDD: tests first."""
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from PySide6.QtCore import QObject
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
@@ -263,7 +262,7 @@ class TestEntityViewModel:
         service.update_entity.return_value = MagicMock(id=5)
         vm = EntityViewModel(service)
         vm.entity = MagicMock(id=5)
-        result = await vm.save(name="Updated")
+        await vm.save(name="Updated")
         service.update_entity.assert_awaited_once_with(5, name="Updated")
 
     @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Sequence
+from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 

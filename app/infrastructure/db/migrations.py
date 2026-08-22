@@ -34,7 +34,11 @@ async def _migrate_nullable_end_dates(conn):
                     flags=re.IGNORECASE,
                 )
                 tmp = f"__{table}_tmp"
-                new_sql = new_sql.replace(f'"{table}"', f'"{tmp}"', 1).replace(f" {table} ", f" {tmp} ", 1).replace(f" {table}(", f" {tmp}(", 1)
+                new_sql = (
+                    new_sql.replace(f'"{table}"', f'"{tmp}"', 1)
+                    .replace(f" {table} ", f" {tmp} ", 1)
+                    .replace(f" {table}(", f" {tmp}(", 1)
+                )
                 if tmp not in new_sql:
                     new_sql = new_sql.replace(table, tmp, 1)
                 col_names = ", ".join(r[1] for r in rows)

@@ -5,19 +5,19 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QDialog, QMainWindow, QMenuBar, QPlainTextEdit,
     QSplitter, QVBoxLayout, QWidget,
 )
 
-log = logging.getLogger(__name__)
-
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_widget import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
+
+log = logging.getLogger(__name__)
 
 
 _LOG_FILENAME = "nri_manager.log"

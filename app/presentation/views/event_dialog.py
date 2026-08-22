@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import os
-from datetime import date
 from typing import Any
 
 from PySide6.QtCore import QDate, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDateEdit, QDialog, QFileDialog, QFormLayout,
+    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from app.presentation.utils.image_utils import load_and_encode
@@ -96,7 +95,7 @@ class _EntityTabWidget(QWidget):
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        self.link_button = QPushButton(f"Привязать существующего")
+        self.link_button = QPushButton("Привязать существующего")
         self.link_button.clicked.connect(self._on_link_existing)
         btn_row.addWidget(self.link_button)
         btn_row.addStretch()

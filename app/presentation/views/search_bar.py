@@ -6,7 +6,6 @@ from typing import Any, Dict, List
 from app.presentation.utils.date_utils import format_game_date
 
 from PySide6.QtCore import QTimer, Signal, Qt
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QVBoxLayout, QWidget,

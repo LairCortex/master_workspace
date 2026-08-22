@@ -118,7 +118,7 @@ class TestSearchAll:
         await _Db().setup(async_session)
         svc = _make_service(async_session)
         results = await svc.search_all("стормград")
-        assert [l.name for l in results["locations"]] == ["Стормград"]
+        assert [loc.name for loc in results["locations"]] == ["Стормград"]
 
     async def test_search_entity_without_description(self, async_session):
         await _Db().setup(async_session)

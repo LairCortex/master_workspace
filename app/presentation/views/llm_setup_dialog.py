@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QStackedWidget, QTextEdit,
@@ -85,7 +85,10 @@ class _FieldPromptsPage(QWidget):
         title.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(title)
 
-        hint = QLabel("Для каждого поля можно задать инструкцию для AI. Пустое поле — используется только название поля.")
+        hint = QLabel(
+            "Для каждого поля можно задать инструкцию для AI. "
+            "Пустое поле — используется только название поля."
+        )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray; margin-bottom: 8px;")
         layout.addWidget(hint)

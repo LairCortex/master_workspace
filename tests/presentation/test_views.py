@@ -1,13 +1,12 @@
 """Tests for Views — TDD: tests first with pytest-qt."""
 from datetime import date
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import json
 import zipfile
 
 import pytest
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
 
 from app.presentation.views.main_window import MainWindow

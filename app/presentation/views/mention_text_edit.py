@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 from html import escape as html_escape
-from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QTextCursor

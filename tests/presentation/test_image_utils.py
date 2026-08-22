@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import base64
-import os
-import tempfile
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 from app.presentation.utils.image_utils import (

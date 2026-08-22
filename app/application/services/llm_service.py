@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
 
 from app.infrastructure.llm.base_provider import BaseLlmProvider
 

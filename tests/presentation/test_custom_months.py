@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock
 
-import pytest
 from PySide6.QtCore import QDate
 
 from app.presentation.utils.date_utils import (

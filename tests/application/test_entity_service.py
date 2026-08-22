@@ -9,11 +9,9 @@ Characterizes the behavior of the on_entity_saved closure from main.py:
 import types
 from datetime import date
 
-import pytest
 
 from app.application.services.entity_service import EntityService
 from app.infrastructure.db.models import (
-    CharacterModel,
     DescriptionModel,
     ItemModel,
     LocationModel,
@@ -85,7 +83,7 @@ class TestSyncRelated:
         # Desired: keep Tavern, add Dock, drop nothing
         await w.item_svc.sync_related(w.item, "locations", {w.tavern.id, w.dock.id})
         await async_session.refresh(w.item, attribute_names=["locations"])
-        assert sorted(l.name for l in w.item.locations) == ["Dock", "Tavern"]
+        assert sorted(loc.name for loc in w.item.locations) == ["Dock", "Tavern"]
 
     async def test_only_link_never_creates(self, async_session):
         w = await _world(async_session)
@@ -103,7 +101,7 @@ class TestSyncRelated:
         await w.item_svc.sync_related(w.item, "nonsense", {1, 2, 3})
         await async_session.refresh(w.item, attribute_names=["organizations", "locations"])
         assert [o.name for o in w.item.organizations] == ["Guild"]
-        assert [l.name for l in w.item.locations] == ["Tavern"]
+        assert [loc.name for loc in w.item.locations] == ["Tavern"]
 
     async def test_missing_sibling_service_is_noop(self, async_session):
         w = await _world(async_session)

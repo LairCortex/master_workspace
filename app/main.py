@@ -21,7 +21,6 @@ from app.infrastructure.repositories.organization_repository import Organization
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
 from app.infrastructure.repositories.location_repository import LocationRepository
-from app.infrastructure.repositories.rating_repository import RatingRepository
 from app.infrastructure.db.models import DescriptionModel
 
 from app.application.services.event_service import EventService
@@ -89,7 +88,6 @@ class Application:
         char_repo = CharacterRepository(self._session)
         item_repo = ItemRepository(self._session)
         loc_repo = LocationRepository(self._session)
-        rating_repo = RatingRepository(self._session)
 
         # Services
         self._entity_services = self._build_entity_services()
@@ -427,7 +425,7 @@ def main():
 
     # Show launcher
     launcher = GameLauncherDialog()
-    result = launcher.exec()
+    launcher.exec()
     if not launcher.selected_path:
         sys.exit(0)
 

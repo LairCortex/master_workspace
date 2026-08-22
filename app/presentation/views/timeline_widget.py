@@ -4,9 +4,8 @@ from __future__ import annotations
 from typing import Any, Sequence
 
 from PySide6.QtCore import QDate, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QDateEdit, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QPushButton, QVBoxLayout, QWidget, QMenu,
 )
 

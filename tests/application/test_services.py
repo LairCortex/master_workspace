@@ -9,7 +9,6 @@ from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.infrastructure.db.models import (
     DescriptionModel, EventModel, OrganizationModel,
-    CharacterModel, ItemModel, LocationModel,
 )
 
 
@@ -187,7 +186,7 @@ class TestEntityService:
         mock_obj = MagicMock()
         mock_obj.id = 5
         repo.update.return_value = mock_obj
-        result = await svc.update_entity(5, name="New")
+        await svc.update_entity(5, name="New")
         repo.update.assert_awaited_once_with(5, name="New")
 
     @pytest.mark.asyncio

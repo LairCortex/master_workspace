@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QCalendarWidget, QComboBox, QDateEdit, QHBoxLayout, QLabel,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QCalendarWidget, QComboBox, QDateEdit, QHBoxLayout, QPushButton, QSpinBox, QWidget,
 )
 
 from app.presentation.utils.date_utils import get_custom_months, month_name

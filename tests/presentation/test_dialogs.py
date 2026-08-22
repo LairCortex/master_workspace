@@ -1,6 +1,6 @@
 """Tests for dialog Views — TDD: tests first with pytest-qt."""
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QDate

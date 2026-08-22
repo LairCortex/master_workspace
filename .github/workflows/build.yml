@@ -30,11 +30,27 @@ jobs:
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -v
+        run: python -m pytest tests/ -v --cov=app --cov-report=term --cov-fail-under=79
+
+  # ── Lint (ruff, errors only: E + F) ─────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff
+        run: ruff check app/ tests/
 
   # ── Build on 3 platforms ─────────────────────────────────────────────────
   build:
-    needs: test
+    needs: [test, lint]
     strategy:
       matrix:
         include:

@@ -1,7 +1,6 @@
 """Item repository."""
 from __future__ import annotations
 
-from sqlalchemy import select
 
 from app.infrastructure.db.models import ItemModel
 from app.infrastructure.repositories.base_repository import BaseRepository

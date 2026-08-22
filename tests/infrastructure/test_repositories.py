@@ -2,12 +2,11 @@
 from datetime import date
 
 import pytest
-import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.db.models import (
-    DescriptionModel, EventModel, OrganizationModel,
-    CharacterModel, ItemModel, LocationModel, RatingModel,
+    DescriptionModel, OrganizationModel,
+    CharacterModel, ItemModel, LocationModel,
 )
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
@@ -100,8 +99,10 @@ class TestEntitySearch:
     async def test_search_by_name(self, async_session: AsyncSession, repo_cls, model):
         desc = await _make_desc(async_session)
         repo = repo_cls(async_session)
-        await repo.create(name="Battle of Plains", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
-        await repo.create(name="Siege of Castle", description_id=desc.id, start_date=date(1201, 1, 1), end_date=date(1201, 12, 31))
+        await repo.create(name="Battle of Plains", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Siege of Castle", description_id=desc.id,
+            start_date=date(1201, 1, 1), end_date=date(1201, 12, 31))
         results = await repo.search("Battle")
         assert len(results) == 1
         assert results[0].name == "Battle of Plains"
@@ -110,14 +111,16 @@ class TestEntitySearch:
     async def test_search_is_case_insensitive(self, async_session: AsyncSession, repo_cls, model):
         desc = await _make_desc(async_session)
         repo = repo_cls(async_session)
-        await repo.create(name="Battle of Plains", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Battle of Plains", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         assert len(await repo.search("bAtTlE")) == 1
 
     @pytest.mark.asyncio
     async def test_search_by_characteristics(self, async_session: AsyncSession, repo_cls, model):
         desc = await _make_desc(async_session, chars="Massive cavalry charge", back="y")
         repo = repo_cls(async_session)
-        await repo.create(name="Entry1", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Entry1", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         results = await repo.search("cavalry")
         assert len(results) == 1
         assert results[0].name == "Entry1"
@@ -126,7 +129,8 @@ class TestEntitySearch:
     async def test_search_by_backstory(self, async_session: AsyncSession, repo_cls, model):
         desc = await _make_desc(async_session, chars="x", back="Two ancient kingdoms clashed")
         repo = repo_cls(async_session)
-        await repo.create(name="Entry2", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Entry2", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         results = await repo.search("ancient")
         assert len(results) == 1
         assert results[0].name == "Entry2"
@@ -136,7 +140,8 @@ class TestEntitySearch:
         # Matches name AND description in one row -> still a single result
         desc = await _make_desc(async_session, chars="Dragon attack", back="Dragon era")
         repo = repo_cls(async_session)
-        await repo.create(name="Dragon war", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Dragon war", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         assert len(await repo.search("Dragon")) == 1
 
 
@@ -170,8 +175,10 @@ class TestEventRepository:
     async def test_search_events_by_name(self, async_session: AsyncSession):
         desc = await _make_desc(async_session)
         repo = EventRepository(async_session)
-        await repo.create(name="Battle of Plains", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
-        await repo.create(name="Siege of Castle", description_id=desc.id, start_date=date(1201, 1, 1), end_date=date(1201, 12, 31))
+        await repo.create(name="Battle of Plains", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Siege of Castle", description_id=desc.id,
+            start_date=date(1201, 1, 1), end_date=date(1201, 12, 31))
         results = await repo.search("Battle")
         assert len(results) == 1
         assert results[0].name == "Battle of Plains"
@@ -180,7 +187,8 @@ class TestEventRepository:
     async def test_search_events_by_partial_name_2_chars(self, async_session: AsyncSession):
         desc = await _make_desc(async_session)
         repo = EventRepository(async_session)
-        await repo.create(name="Battle of Plains", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Battle of Plains", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         results = await repo.search("Ba")
         assert len(results) == 1
 
@@ -188,7 +196,8 @@ class TestEventRepository:
     async def test_search_events_by_characteristics(self, async_session: AsyncSession):
         desc = await _make_desc(async_session, chars="Massive cavalry charge", back="y")
         repo = EventRepository(async_session)
-        await repo.create(name="Event1", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Event1", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         results = await repo.search("cavalry")
         assert len(results) == 1
         assert results[0].name == "Event1"
@@ -197,7 +206,8 @@ class TestEventRepository:
     async def test_search_events_by_backstory(self, async_session: AsyncSession):
         desc = await _make_desc(async_session, chars="x", back="Two ancient kingdoms clashed")
         repo = EventRepository(async_session)
-        await repo.create(name="Event2", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Event2", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         results = await repo.search("ancient")
         assert len(results) == 1
         assert results[0].name == "Event2"
@@ -206,7 +216,8 @@ class TestEventRepository:
     async def test_search_events_no_duplicates(self, async_session: AsyncSession):
         desc = await _make_desc(async_session, chars="Dragon attack", back="Dragon era")
         repo = EventRepository(async_session)
-        await repo.create(name="Dragon war", description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
+        await repo.create(name="Dragon war", description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31))
         results = await repo.search("Dragon")
         assert len(results) == 1
 
@@ -214,8 +225,10 @@ class TestEventRepository:
     async def test_get_all_ordered_by_start_date(self, async_session: AsyncSession):
         desc = await _make_desc(async_session)
         repo = EventRepository(async_session)
-        await repo.create(name="Later", description_id=desc.id, start_date=date(1300, 1, 1), end_date=date(1300, 12, 31))
-        await repo.create(name="Earlier", description_id=desc.id, start_date=date(1100, 1, 1), end_date=date(1100, 12, 31))
+        await repo.create(name="Later", description_id=desc.id,
+            start_date=date(1300, 1, 1), end_date=date(1300, 12, 31))
+        await repo.create(name="Earlier", description_id=desc.id,
+            start_date=date(1100, 1, 1), end_date=date(1100, 12, 31))
         events = await repo.get_all_ordered()
         assert events[0].name == "Earlier"
         assert events[1].name == "Later"
@@ -274,7 +287,8 @@ class TestItemRepository:
     async def test_crud(self, async_session: AsyncSession):
         desc = await _make_desc(async_session)
         repo = ItemRepository(async_session)
-        item = await repo.create(name="Sword", description_id=desc.id, start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
+        item = await repo.create(name="Sword", description_id=desc.id,
+            start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
         assert item.name == "Sword"
 
 
@@ -300,7 +314,8 @@ class TestRatingRepository:
     async def test_crud(self, async_session: AsyncSession):
         desc = await _make_desc(async_session)
         repo = RatingRepository(async_session)
-        rating = await repo.create(description_id=desc.id, start_date=date(1200, 1, 1), end_date=date(1200, 12, 31), level=5)
+        rating = await repo.create(description_id=desc.id,
+            start_date=date(1200, 1, 1), end_date=date(1200, 12, 31), level=5)
         assert rating.level == 5
         result = await repo.get_by_id(rating.id)
         assert result.level == 5

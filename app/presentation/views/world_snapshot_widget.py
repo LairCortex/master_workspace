@@ -7,7 +7,7 @@ from typing import Any, Sequence
 from PySide6.QtCore import QDate, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QDateEdit, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 

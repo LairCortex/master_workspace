@@ -134,7 +134,10 @@ class XlsxImportService:
 
                 # Image: column "image" or "изображение" — local path (relative to xlsx dir or absolute)
                 if entity_type in ("character", "organization", "location"):
-                    img_path = self._get_str(row, header_index, "image") or self._get_str(row, header_index, "изображение")
+                    img_path = (
+                        self._get_str(row, header_index, "image")
+                        or self._get_str(row, header_index, "изображение")
+                    )
                     if img_path:
                         b64 = self._load_image_from_path(path.parent, img_path)
                         if b64:

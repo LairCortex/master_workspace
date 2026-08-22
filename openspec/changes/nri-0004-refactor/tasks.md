@@ -43,8 +43,8 @@
 
 ## 9. Тулинг-страховка (H)
 
-- [ ] 9.1 `ruff` в `[dev]` + `[tool.ruff]` (py311, line-length 120, select E+F); замер нарушений; при >30 — baseline-исключения с пометкой, иначе — исправить (commit `NRI-0004: add ruff lint to project and CI`, `ruff check app/ tests/` зелёный)
-- [ ] 9.2 CI: job `lint` (установка dev-deps + `ruff check`); `build.needs: [test, lint]`; test-шаг → `--cov=app --cov-report=term --cov-fail-under=<X из task 2.6>` (commit, проверка локальным прогом обоих команд; CI на push зелёный)
+- [x] 9.1 `ruff` в `[dev]` + `[tool.ruff]` (py311, line-length 120, select E+F); замер нарушений; при >30 — baseline-исключения с пометкой, иначе — исправить (commit `NRI-0004: add ruff lint to project and CI`, `ruff check app/ tests/` зелёный)
+- [x] 9.2 CI: job `lint` (установка dev-deps + `ruff check`); `build.needs: [test, lint]`; test-шаг → `--cov=app --cov-report=term --cov-fail-under=<X из task 2.6>` (commit, проверка локальным прогом обоих команд; CI на push зелёный)
 
 ## 10. Финальная верификация
 

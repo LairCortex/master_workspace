@@ -1,7 +1,6 @@
 """Tests for MentionTextEdit — @mention widget."""
 from __future__ import annotations
 
-import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QMouseEvent, QTextCursor
 

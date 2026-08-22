@@ -186,7 +186,7 @@ class TestApplyEventRelations:
         assert [o.name for o in w.event.organizations] == ["Guild"]
         assert [c.name for c in w.event.characters] == ["Hero"]
         assert [i.name for i in w.event.items] == ["Dagger"]
-        assert [l.name for l in w.event.locations] == ["Tavern"]
+        assert [loc.name for loc in w.event.locations] == ["Tavern"]
 
     async def test_unlinked_entity_stays_unlinked(self, async_session):
         w = await _world(async_session)
