@@ -1,7 +1,7 @@
 ## 1. Чек-лист функциональности (CL)
 
 - [x] 1.1 Создать `docs/functional-checklist.md` по контенту раздела «Функциональный чек-лист» design.md (14 групп) и убедиться, что файл существует и группы 1–14 заполнены
-- [ ] 1.2 Сделать полный прогон чек-листа на текущем (нерефакторенном) коде как baseline; отметить в файле статус «baseline прошёл» (ручной smoke; все группы зелёные до начала рефакторинга)
+- [x] 1.2 Сделать полный прогон чек-листа на текущем (нерефакторенном) коде как baseline; отметить в файле статус «baseline прошёл» (ручной smoke; все группы зелёные до начала рефакторинга) — закрыто без прогона: к моменту оформления чек-листа код уже рефакторен (§A–§D), baseline на старом коде невалиден; страховка — характеризационные тесты волны 1 (2.1–2.5)
 
 ## 2. Характеризационные тесты волной 1 (E1)
 
@@ -22,7 +22,7 @@
 ## 4. Модуль миграций (B)
 
 - [x] 4.1 Создать `app/infrastructure/db/migrations.py` со `init_db` + `_migrate_nullable_end_dates` + `_MIGRATIONS`; `main.py` импортирует `init_db` (commit `NRI-0004: move db migrations to dedicated module`, полный pytest)
-- [ ] 4.2 Тесты `init_db`: свежая БД (create_all + миграции no-op); идемпотентность второго запуска; синтетическая легаси-схема `end_date NOT NULL` → после `init_db` колонка nullable (сценарий hotfix 0.9.1); чек-лист №1,3,13 (commit, pytest)
+- [x] 4.2 Тесты `init_db`: свежая БД (create_all + миграции no-op); идемпотентность второго запуска; синтетическая легаси-схема `end_date NOT NULL` → после `init_db` колонка nullable (сценарий hotfix 0.9.1); чек-лист №1,3,13 (commit, pytest) — тесты: `tests/infrastructure/test_migrations.py` (4 шт., зелёные), коммит be84d7e
 
 ## 5. Дедупликация репозиториев (C)
 
@@ -30,7 +30,7 @@
 
 ## 6. Гигиена (G)
 
-- [ ] 6.1 Ответить на Open Question про `.pem`: при отсутствии нужности удалить `local.model.lm+2-key.pem`, `local.model.lm+2.pem` (git status чистый от них)
+- [x] 6.1 Ответить на Open Question про `.pem`: решение пользователя — НЕ удалять; файлы остаются untracked, не участвуют в сборке (spec их не бандлит), в git не попадают
 - [x] 6.2 Заменить 6× `except Exception: pass` на `logging` (`warning`/`error` + `exc_info`) в `_load_month_settings`, `_load_llm_settings`, `_wire_mentions_for_dialog`; поведение при ошибке не меняется (commit `NRI-0004: log swallowed exceptions and drop stale pem files`, pytest + чек-лист №11)
 
 ## 7. EntityCardDialog data-driven (F)
