@@ -31,7 +31,7 @@
 ## 6. Гигиена (G)
 
 - [ ] 6.1 Ответить на Open Question про `.pem`: при отсутствии нужности удалить `local.model.lm+2-key.pem`, `local.model.lm+2.pem` (git status чистый от них)
-- [ ] 6.2 Заменить 6× `except Exception: pass` на `logging` (`warning`/`error` + `exc_info`) в `_load_month_settings`, `_load_llm_settings`, `_wire_mentions_for_dialog`; поведение при ошибке не меняется (commit `NRI-0004: log swallowed exceptions and drop stale pem files`, pytest + чек-лист №11)
+- [x] 6.2 Заменить 6× `except Exception: pass` на `logging` (`warning`/`error` + `exc_info`) в `_load_month_settings`, `_load_llm_settings`, `_wire_mentions_for_dialog`; поведение при ошибке не меняется (commit `NRI-0004: log swallowed exceptions and drop stale pem files`, pytest + чек-лист №11)
 
 ## 7. EntityCardDialog data-driven (F)
 

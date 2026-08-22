@@ -208,8 +208,10 @@ class Application:
                 try:
                     results = await self._search_service.search_names(query)
                     _edit.show_mention_results(results)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.getLogger("app.main").error(
+                        "Mention search failed for %r: %s", query, exc, exc_info=True
+                    )
 
             edit.mention_search_requested.connect(
                 lambda q, _fn=_do_search: asyncio.ensure_future(_fn(q))
@@ -255,7 +257,10 @@ class Application:
                 set_custom_months(months)
             else:
                 set_custom_months(None)
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("app.main").warning(
+                "Failed to load month settings: %s", exc
+            )
             set_custom_months(None)
 
     async def _save_month_settings(self, months: dict) -> None:
@@ -376,8 +381,10 @@ class Application:
             row2 = result2.scalars().first()
             if row2:
                 self._llm_vm.field_prompts_from_json(row2.value)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger("app.main").warning(
+                "Failed to load LLM settings: %s", exc
+            )
 
     async def _save_llm_settings(self) -> None:
         from sqlalchemy import select
