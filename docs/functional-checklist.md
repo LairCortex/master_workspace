@@ -14,6 +14,7 @@
 **Baseline (до рефакторинга, v0.13.0):** авто-прогон ✅ — 389/389 тестов, offscreen-запуск (launcher → Application.start → MainWindow → shutdown) без ошибок; ручной smoke 14 групп — закрыт без прогона (решение 2026-08-22): к моменту оформления чек-листа код уже рефакторен (§A–§D), baseline на старом коде невалиден; регрессионная страховка — характеризационные тесты волны 1 (tasks 2.1–2.5)
 
 ## 1. Лаунчер игр
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/infrastructure/test_game_manager.py` (create/open/delete/import), `tests/presentation/test_views.py` GameLauncherDialog, `tests/test_application_start.py` (смена игры без перезапуска).
 
 - Создать игру (новое имя)
 - Открыть игру
@@ -23,6 +24,7 @@
 - Файл → Сменить игру без перезапуска приложения
 
 ## 2. Глобальный поиск
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/application/test_search_service.py` (имя/характеристики/предыстория, регистр, дедупликация, группы), `tests/presentation/test_views.py` SearchBar (debounce, старт от 2 символов), `tests/test_integration.py` (поиск на реальных данных через сервисы).
 
 - debounce 300 мс
 - старт поиска от 2 символов
@@ -35,6 +37,7 @@
 - результаты сгруппированы по типам
 
 ## 3. Таймлайн
+> Статус финального прогона (2026-08-22): ⚙️ авто — `tests/application/test_services.py` TimelineViewModel (сортировка, выбор), `tests/presentation/test_views.py` TimelineWidget (фильтр С/По, сброс, сигналы), `tests/test_integration.py::test_timeline_ordering`; ⏳ ручной: сохранение фильтра после перезапуска игры в GUI.
 
 - сортировка событий по дате
 - выбор события — панель деталей
@@ -46,6 +49,7 @@
 - фильтр сохраняется после перезагрузки (per-game)
 
 ## 4. Событие (создание/редактирование)
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/presentation/test_dialogs.py` EventDialog (валидация, даты, бессрочно), `tests/application/test_event_service.py` (создание/обновление со связями: привязать/создать/отвязать), `tests/test_integration.py` (полный цикл).
 
 - валидация обязательных полей (кнопка «Сохранить» блокируется)
 - выбор дат
@@ -57,6 +61,7 @@
 - характеристики сохраняются
 
 ## 5. Карточка сущности (4 типа)
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/presentation/test_dialogs.py` EntityCardDialog (поля по типу, image, music, M2M-секции, рейтинг 1–20, spec-driven набор), `tests/application/test_entity_service.py` (sync_related); ⏳ ручной: визуальный цветовой фон рейтинга.
 
 - поля по типу: personality — только персонаж
 - поля по типу: image — персонаж / организация / локация
@@ -73,6 +78,7 @@
 - M2M-вкладки: отвязать лишние
 
 ## 6. @Mention
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/presentation/test_mention_text_edit.py` (popup от 2 символов, навигация, Enter/клик, кликабельная ссылка, маркеры в старых текстах, roundtrip HTML).
 
 - `@` + 2 символа → popup с иконками
 - навигация стрелками + Enter
@@ -81,6 +87,7 @@
 - обратная совместимость старых текстов с маркерами
 
 ## 7. World Snapshot
+> Статус финального прогона (2026-08-22): ⚙️ авто — `tests/presentation/test_views.py` WorldSnapshotWidget (секции, «Показать всё», signal снапшота), `tests/application/test_services.py` (активные события по дате); ⏳ ручной: цвета по рейтингу, тултипы.
 
 - выбор даты → активные события (диапазон / `∞`)
 - 5 секций без дубликатов
@@ -91,6 +98,7 @@
 - статистика внизу
 
 ## 8. Кастомные месяцы
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/presentation/test_custom_months.py` (диалог, стандарт/сброс, форматирование ∞, per-game JSON), failure-fallback `_load_month_settings` — `tests/test_application_settings_errors.py`.
 
 - диалог настроек месяцев
 - пустые поля = стандартные названия
@@ -103,6 +111,7 @@
 - per-game хранение
 
 ## 9. XLSX-импорт
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/application/test_xlsx_import_service.py` (5 типов, заголовки, пропуск с предупреждением, даты текст+native, отчёт), `tests/presentation/test_xlsx_import_dialog.py` (сигнал, прогресс).
 
 - импорт 5 типов сущностей
 - заголовки колонок по имени
@@ -113,12 +122,14 @@
 - отчёт «Создано / Пропущено»
 
 ## 10. Экспорт/импорт `.nri`
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/infrastructure/test_game_manager.py` (экспорт/импорт `.nri`, структура ZIP `game.db` + `meta.json`); меню-экспорт заводится в `tests/test_application_start.py` (start/shutdown smoke).
 
 - экспорт через меню
 - структура ZIP: `game.db` + `meta.json`
 - импорт через лаунчер
 
 ## 11. LLM-AI-ассистент
+> Статус финального прогона (2026-08-22): ⚙️ авто — `tests/infrastructure/test_llm_config.py` (конфиг 0600), `test_llm_errors.py` + `test_llm_providers.py` (RU-ошибки, ретраи 429/5xx, статусы not_configured/ready), `tests/presentation/test_llm_viewmodel.py` (очередь, блокировка поля), `test_llm_setup_dialog.py`, per-game промты — `tests/test_application_settings_errors.py`; ⏳ ручной: прохождение визарда 8 шагов в GUI.
 
 - визард 8 шагов
 - «Проверить соединение» (1 токен)
@@ -132,6 +143,7 @@
 - per-game промты
 
 ## 12. Изображения
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/presentation/test_image_utils.py` (ресайз ≤1000×1000, base64, превью 280, thumbnail 100).
 
 - ресайз ≤ 1000×1000
 - base64 в БД
@@ -139,6 +151,7 @@
 - thumbnail 100×100
 
 ## 13. Бессрочность
+> Статус финального прогона (2026-08-22): ✅ авто — `tests/domain/test_entities.py` (end_date=None), `tests/infrastructure/test_repositories.py::TestEventRepository::test_get_events_at_date` (бессрочные включаются в диапазон), EventDialog «Бессрочно» — `tests/presentation/test_dialogs.py`, `format_game_date(None, «∞»)`.
 
 - чекбокс скрывает поле даты
 - `∞` на таймлайне
@@ -146,6 +159,7 @@
 - фильтр включает бессрочные
 
 ## 14. Рейтинг
+> Статус финального прогона (2026-08-22): ⚙️ авто — `tests/presentation/test_dialogs.py` (spinbox 1–20, clamp в populate); ⏳ ручной: цвет серый→красный в списках и snapshot.
 
 - spinbox 1–20
 - цвет серый → красный в списках
