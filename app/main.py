@@ -794,11 +794,24 @@ class Application:
         )
 
         async def _on_saved(config, world_prompt, field_prompts):
-            self._config_manager.save(config)
-            llm_vm.world_prompt = world_prompt
-            llm_vm.field_prompts = field_prompts
-            llm_vm.apply_config(config)
-            await self._save_llm_settings()
+            ok = True
+            try:
+                self._config_manager.save(config)
+                llm_vm.world_prompt = world_prompt
+                llm_vm.field_prompts = field_prompts
+                llm_vm.apply_config(config)
+                if self._session is not None:
+                    await self._save_llm_settings()
+                else:
+                    # App is shutting down: global config file is saved,
+                    # per-game prompts are dropped — nothing to surface.
+                    logging.getLogger("llm.setup").info(
+                        "LLM session closed before per-game prompts saved"
+                    )
+            except Exception as exc:
+                logging.getLogger("llm.setup").error("Failed to save LLM settings: %s", exc)
+                ok = False
+            dialog.finish_saving(ok)
 
         dialog.saved.connect(lambda c, wp, fp: asyncio.ensure_future(_on_saved(c, wp, fp)))
         dialog.open()

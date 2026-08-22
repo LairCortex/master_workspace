@@ -76,7 +76,7 @@ if sys.platform == "darwin":
         icon=None,
         bundle_identifier="com.nri.scenario-manager",
         info_plist={
-            "CFBundleShortVersionString": "0.1.1",
+            "CFBundleShortVersionString": "0.13.0",
             "NSHighResolutionCapable": True,
         },
     )

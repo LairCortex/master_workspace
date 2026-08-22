@@ -173,9 +173,51 @@ def test_save_emits_config_and_prompts(dialog, qtbot):
     assert field_prompts["event"]["name"] == "Evt name"
 
 
-def test_save_accepts_dialog(dialog):
+def test_dialog_not_accepted_until_save_finished(dialog):
     dialog._on_save()
+    # save button is not disabled; dialog stays open until the async save completes
+    assert dialog._saving
+    assert dialog._save_btn.isEnabled()
+    assert not dialog.result()
+    dialog.finish_saving(True)
     assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_save_reentry_ignored_while_saving(dialog):
+    counts = []
+    dialog.saved.connect(lambda *a: counts.append(1))
+    dialog._on_save()
+    dialog._on_save()
+    assert len(counts) == 1
+    dialog.finish_saving(True)
+
+
+def test_reject_blocked_while_saving(dialog):
+    dialog._on_save()
+    dialog.reject()
+    assert not dialog.result()  # dialog stays open
+    dialog.finish_saving(True)
+
+
+def test_close_and_reject_blocked_while_saving(dialog):
+    dialog._on_save()
+    dialog.close()
+    dialog.reject()
+    assert not dialog.result()  # closing the dialog is blocked while saving
+    dialog.finish_saving(True)
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_finish_saving_failure_shows_warning_and_keeps_open(dialog):
+    dialog._on_save()
+    with patch.object(QMessageBox, "warning") as mock_warning:
+        dialog.finish_saving(False)
+    mock_warning.assert_called_once()
+    assert not dialog.result()
+    assert not dialog._saving
+    # save can be retried after a failed attempt
+    dialog._on_save()
+    dialog.finish_saving(True)
 
 
 # --- wizard (unchanged parts) -------------------------------------------------------

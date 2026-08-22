@@ -131,9 +131,37 @@ class LlmSetupDialog(QDialog):
         self._field_prompts_initial = field_prompts or {}
         self._http = http
         self._field_pages: dict[str, _FieldPromptsPage] = {}
+        self._saving = False
         self._init_ui()
         self._update_nav_buttons()
         self._update_check_button()
+
+    def reject(self) -> None:
+        if self._saving:
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        if self._saving:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def finish_saving(self, success: bool) -> None:
+        """Called by the application after the async save has completed.
+
+        The dialog closes only when the save is done, so a shutdown right
+        after «Сохранить» cannot race with the write.
+        """
+        self._saving = False
+        if success:
+            self.accept()
+        else:
+            QMessageBox.warning(
+                self,
+                "Настройка LLM",
+                "Не удалось сохранить настройки. Попробуйте ещё раз.",
+            )
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -334,6 +362,8 @@ class LlmSetupDialog(QDialog):
         self._save_btn.setVisible(is_last)
 
     def _on_save(self) -> None:
+        if self._saving:
+            return
         config = self.get_connection()
         if not config.is_complete:
             QMessageBox.warning(
@@ -343,10 +373,12 @@ class LlmSetupDialog(QDialog):
             )
             return
 
+        self._saving = True
         world_prompt = self._world_prompt_edit.toPlainText().strip()
         field_prompts = self.get_field_prompts()
         self.saved.emit(config, world_prompt, field_prompts)
-        self.accept()
+        # The dialog accepts itself in finish_saving() once the application
+        # has finished the async save.
 
     def get_world_prompt(self) -> str:
         return self._world_prompt_edit.toPlainText().strip()
