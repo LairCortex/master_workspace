@@ -1,13 +1,16 @@
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
+from app.infrastructure.db.database import create_engine as app_create_engine
 from app.infrastructure.db.models import Base
 
 
 @pytest_asyncio.fixture
 async def async_engine():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    # App's create_engine registers a unicode-aware SQLite lower() —
+    # fixtures must match runtime behavior for case-insensitive search.
+    engine = app_create_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine

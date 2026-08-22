@@ -3,9 +3,12 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import json
+import zipfile
+
 import pytest
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
 
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.timeline_widget import TimelineWidget
@@ -115,6 +118,95 @@ class TestMainWindow:
         qtbot.addWidget(w)
         assert w.menuBar() is not None
 
+    # -- log file toggle -----------------------------------------------------
+
+    def test_log_toggle_on_enables_file_handler(self, qtbot, mocker, tmp_path):
+        import logging as pylogging
+
+        from app.presentation.views import main_window as mw
+
+        mocker.patch.object(mw, "_app_root", return_value=tmp_path)
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        root = pylogging.getLogger()
+        before = set(root.handlers)
+        w.log_action.setChecked(True)
+        assert w._file_handler is not None
+        assert (tmp_path / "nri_manager.log").exists()
+        assert set(root.handlers) - before == {w._file_handler}
+        # Clean up: disable again so the test does not pollute root logger.
+        w.log_action.setChecked(False)
+        assert w._file_handler is None
+
+    def test_log_toggle_off_removes_file_handler(self, qtbot, mocker, tmp_path):
+        import logging as pylogging
+
+        from app.presentation.views import main_window as mw
+
+        mocker.patch.object(mw, "_app_root", return_value=tmp_path)
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        root = pylogging.getLogger()
+        w.log_action.setChecked(True)
+        handler = w._file_handler
+        assert handler is not None
+        w.log_action.setChecked(False)
+        assert w._file_handler is None
+        assert handler not in root.handlers
+
+    # -- docs dialogs ---------------------------------------------------------
+
+    def test_show_readme_and_changelog_open_doc_viewers(self, qtbot, mocker, tmp_path):
+        from app.presentation.views import main_window as mw
+
+        (tmp_path / "README.md").write_text("DOC CONTENT", encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text("CH TEXT", encoding="utf-8")
+        mocker.patch.object(mw, "_docs_dir", return_value=tmp_path)
+        captured = []
+
+        class Spy(mw._DocViewerDialog):
+            def __init__(self, title, file_path, parent=None):
+                super().__init__(title, file_path, parent)
+                edit = self.findChild(QPlainTextEdit)
+                captured.append((title, edit.toPlainText()))
+
+            def open(self):
+                return True
+
+        mocker.patch.object(mw, "_DocViewerDialog", Spy)
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        w._show_readme()
+        w._show_changelog()
+        assert captured == [("Документация", "DOC CONTENT"), ("Changelog", "CH TEXT")]
+
+    def test_doc_viewer_missing_file_placeholder(self, qtbot, tmp_path):
+        from app.presentation.views.main_window import _DocViewerDialog
+
+        dlg = _DocViewerDialog("T", tmp_path / "missing.md")
+        qtbot.addWidget(dlg)
+        edit = dlg.findChild(QPlainTextEdit)
+        assert "Файл не найден" in edit.toPlainText()
+
+
+class TestMainWindowLogToggleCleanup:
+    """Root logger must not accumulate handlers across tests."""
+
+    def test_no_leftover_file_handler(self):
+        import logging as pylogging
+
+        handlers = [
+            h for h in pylogging.getLogger().handlers
+            if isinstance(h, pylogging.FileHandler) and "nri_manager.log" in getattr(h, "baseFilename", "")
+        ]
+        assert handlers == []
+
 
 # ── GameLauncherDialog ─────────────────────────────────────────────────────
 
@@ -167,6 +259,207 @@ class TestGameLauncherDialog:
         qtbot.addWidget(w)
         assert hasattr(w, "import_button")
         assert w.import_button.text() == "Импорт"
+
+    # -- create new game ----------------------------------------------------
+
+    def test_on_new_creates_and_selects(self, qtbot, mocker):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Fresh", True),
+        )
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        with qtbot.waitSignal(w.game_selected, timeout=1000):
+            w._on_new()
+        assert w.selected_path is not None
+        assert w.selected_path.endswith("Fresh.db")
+        assert w.list_widget.count() == 1
+
+    def test_on_new_duplicate_shows_warning(self, qtbot, mocker):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "Old.db").touch()
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Old", True),
+        )
+        warn = mocker.patch.object(QMessageBox, "warning")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_new()
+        warn.assert_called_once()
+        assert w.selected_path is None
+
+    def test_on_new_empty_name_is_noop(self, qtbot, mocker):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("   ", True),
+        )
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_new()
+        assert w.selected_path is None
+        assert w.list_widget.count() == 0
+
+    def test_on_new_dialog_cancelled_is_noop(self, qtbot, mocker):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Whatever", False),
+        )
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_new()
+        assert w.selected_path is None
+
+    # -- delete game ---------------------------------------------------------
+
+    def test_on_delete_yes_removes_game(self, qtbot, mocker):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "G.db").touch()
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w.list_widget.setCurrentRow(0)
+        ask = mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        )
+        w._on_delete()
+        ask.assert_called_once()
+        assert w.list_widget.count() == 0
+        assert not (self._tmp / "G.db").exists()
+
+    def test_on_delete_no_keeps_game(self, qtbot, mocker):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "G.db").touch()
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w.list_widget.setCurrentRow(0)
+        mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.No,
+        )
+        w._on_delete()
+        assert w.list_widget.count() == 1
+        assert (self._tmp / "G.db").exists()
+
+    def test_on_delete_without_selection_is_noop(self, qtbot, mocker):
+        ask = mocker.patch.object(QMessageBox, "question")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_delete()
+        ask.assert_not_called()
+
+    # -- import game ---------------------------------------------------------
+
+    def _make_archive(self, game_name: str) -> str:
+        db = self._tmp / "src.db"
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"db-bytes")
+        arc = self._tmp / f"{game_name}.nri"
+        with zipfile.ZipFile(arc, "w") as zf:
+            zf.write(db, "game.db")
+            zf.writestr(
+                "meta.json",
+                json.dumps({"game_name": game_name, "version": "0.6", "exported_at": "2026-01-01"}),
+            )
+        return str(arc)
+
+    def _listed_names(self, w) -> list:
+        return [w.list_widget.item(i).text() for i in range(w.list_widget.count())]
+
+    def test_on_import_success(self, qtbot, mocker):
+        arc = self._make_archive("Imported")
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(arc, ""),
+        )
+        ask = mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        )
+        info = mocker.patch.object(QMessageBox, "information")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_import()
+        ask.assert_called_once()
+        info.assert_called_once()
+        assert any(name.startswith("Imported") for name in self._listed_names(w))
+
+    def test_on_import_declined_by_user(self, qtbot, mocker):
+        arc = self._make_archive("Imported")
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(arc, ""),
+        )
+        mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.No,
+        )
+        info = mocker.patch.object(QMessageBox, "information")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_import()
+        info.assert_not_called()
+        assert not any(name.startswith("Imported") for name in self._listed_names(w))
+
+    def test_on_import_dialog_canceled(self, qtbot, mocker):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=("", ""),
+        )
+        read_meta = mocker.patch(
+            "app.presentation.views.game_launcher_dialog.read_archive_meta"
+        )
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_import()
+        read_meta.assert_not_called()
+
+    def test_on_import_duplicate_game_name_warns(self, qtbot, mocker):
+        arc = self._make_archive("Existing")
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "Existing.db").touch()
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(arc, ""),
+        )
+        mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        )
+        warn = mocker.patch.object(QMessageBox, "warning")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_import()
+        warn.assert_called_once()
+
+    def test_on_import_invalid_archive_warns(self, qtbot, mocker):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        arc = self._tmp / "bad.nri"
+        with zipfile.ZipFile(arc, "w") as zf:
+            zf.writestr("unrelated.txt", "x")  # no meta.json
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(str(arc), ""),
+        )
+        warn = mocker.patch.object(QMessageBox, "warning")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_import()
+        warn.assert_called_once()
+
+    def test_on_import_unreadable_file_shows_critical(self, qtbot, mocker):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        arc = self._tmp / "garbage.nri"
+        arc.write_bytes(b"not a zip at all")
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(str(arc), ""),
+        )
+        crit = mocker.patch.object(QMessageBox, "critical")
+        w = GameLauncherDialog()
+        qtbot.addWidget(w)
+        w._on_import()
+        crit.assert_called_once()
 
 
 class TestMainWindowExportAction:
