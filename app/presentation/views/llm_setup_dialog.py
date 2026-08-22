@@ -1,6 +1,8 @@
 """LLM setup wizard — connection, world prompt and field prompts."""
 from __future__ import annotations
 
+import asyncio
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -249,7 +251,7 @@ class LlmSetupDialog(QDialog):
 
         self._check_btn = QPushButton("Проверить соединение")
         self._check_btn.setMinimumHeight(36)
-        self._check_btn.clicked.connect(self._on_check)
+        self._check_btn.clicked.connect(lambda: asyncio.ensure_future(self._on_check()))
         layout.addWidget(self._check_btn)
 
         self._check_label = QLabel("")

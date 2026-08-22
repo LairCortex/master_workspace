@@ -1,6 +1,7 @@
 """Tests for LlmSetupDialog — connection page, check, wizard navigation, save."""
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 import httpx
@@ -137,7 +138,20 @@ async def test_check_button_blocked_during_check(make_dialog):
     assert dlg._check_btn.isEnabled()
 
 
+
+@pytest.mark.asyncio
+async def test_check_button_click_runs_check(dialog):
+    """Qt signal -> async slot must be bridged into the event loop."""
+    dialog._check_btn.click()
+    for _ in range(200):
+        await asyncio.sleep(0)
+        if dialog._check_label.text():
+            break
+    assert "установлено" in dialog._check_label.text().lower()
+
+
 # --- save -------------------------------------------------------------------------
+
 
 
 def test_save_blocked_when_endpoint_empty(dialog):
