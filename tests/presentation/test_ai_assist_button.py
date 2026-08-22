@@ -35,8 +35,12 @@ def btn_on_line(line_edit):
     return AiAssistButton(line_edit, "event", "name", "Название")
 
 
-def test_button_disabled_when_model_not_installed(btn_on_text):
-    btn_on_text.update_llm_state("not_installed", False)
+def test_default_state_is_not_configured(btn_on_text):
+    assert btn_on_text._llm_status == "not_configured"
+
+
+def test_button_disabled_when_not_configured(btn_on_text):
+    btn_on_text.update_llm_state("not_configured", False)
     assert "128,128,128" in btn_on_text.styleSheet()
 
 
@@ -50,16 +54,17 @@ def test_button_enabled_when_ready(btn_on_text):
     assert "91,155,213" in btn_on_text.styleSheet()
 
 
-def test_click_when_disabled_shows_message(btn_on_text, qtbot):
-    btn_on_text.update_llm_state("not_installed", False)
+def test_click_when_not_configured_mentions_setup(btn_on_text):
+    btn_on_text.update_llm_state("not_configured", False)
     with patch.object(QMessageBox, "information") as mock_msg:
         btn_on_text._on_clicked()
         mock_msg.assert_called_once()
-        args = mock_msg.call_args
-        assert "не настроен" in args[0][2]
+        text = mock_msg.call_args[0][2]
+        assert "Настройка LLM" in text
+        assert "не настроен" in text
 
 
-def test_click_when_no_world_prompt_shows_message(btn_on_text, qtbot):
+def test_click_when_no_world_prompt_shows_message(btn_on_text):
     btn_on_text.update_llm_state("ready", False)
     with patch.object(QMessageBox, "information") as mock_msg:
         btn_on_text._on_clicked()
@@ -67,17 +72,20 @@ def test_click_when_no_world_prompt_shows_message(btn_on_text, qtbot):
         assert "промт мира" in mock_msg.call_args[0][2]
 
 
-def test_click_when_ready_emits_generate(btn_on_text, text_edit, qtbot):
+def test_click_when_ready_emits_generate(btn_on_text, text_edit):
     btn_on_text.update_llm_state("ready", True)
     text_edit.setPlainText("Герой родился в деревне")
 
-    with qtbot.waitSignal(btn_on_text.generate_requested, timeout=1000) as blocker:
-        btn_on_text._on_clicked()
+    emitted: list[tuple] = []
+    btn_on_text.generate_requested.connect(lambda *args: emitted.append(args))
+    btn_on_text._on_clicked()
 
-    assert blocker.args[0] == "character"
-    assert blocker.args[1] == "backstory"
-    assert blocker.args[2] == "Предыстория"
-    assert "Герой родился" in blocker.args[3]
+    assert len(emitted) == 1
+    et, fn, fl, ct = emitted[0]
+    assert et == "character"
+    assert fn == "backstory"
+    assert fl == "Предыстория"
+    assert "Герой родился" in ct
 
 
 def test_field_disabled_during_generation(btn_on_text, text_edit):

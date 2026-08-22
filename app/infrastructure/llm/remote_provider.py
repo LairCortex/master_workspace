@@ -1,39 +1,64 @@
-"""Remote OpenAI-compatible LLM provider (skeleton)."""
+"""Remote OpenAI-compatible LLM provider.
+
+Covers cloud backends (OpenAI, OpenRouter, Groq, …) and local
+OpenAI-compatible servers (Ollama, vLLM, LM Studio, llama.cpp server)
+via ``POST {base_url}/chat/completions``.
+"""
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import asyncio
+import logging
 
 import httpx
 
+from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.base_provider import BaseLlmProvider
+from app.infrastructure.llm.config import LlmConfig
+from app.infrastructure.llm.errors import (
+    LlmError,
+    LlmHttpError,
+    LlmNetworkError,
+    LlmTimeoutError,
+    parse_error_message,
+)
 
-CONFIG_DIR = Path.home() / ".nri_manager"
-CONFIG_FILE = CONFIG_DIR / "llm_config.json"
+log = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT = 10.0
-READ_TIMEOUT = 120.0
+#: Retries after the first attempt (up to 3 total attempts).
+MAX_RETRIES = 2
+#: Backoff delays before retry attempts, seconds (exponential).
+RETRY_BACKOFFS: tuple[float, ...] = (0.5, 1.0)
+#: Generation temperature — fixed constant, no UI.
+TEMPERATURE = 0.7
+#: Endpoint path appended to the user-provided base URL.
+CHAT_COMPLETIONS_PATH = "/chat/completions"
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    """Only 429 and 5xx responses are retried; other 4xx fail immediately."""
+    return status_code == 429 or 500 <= status_code < 600
 
 
 class RemoteLlmProvider(BaseLlmProvider):
-    """Talks to an OpenAI-compatible chat/completions endpoint."""
+    """Sends chat-completion requests to an OpenAI-compatible endpoint."""
 
-    def __init__(self, config_file: Path | None = None) -> None:
-        self._config_file = config_file or CONFIG_FILE
-        self._config = self._load_config()
+    def __init__(
+        self,
+        config: LlmConfig,
+        http: AppHttpClient,
+        backoffs: tuple[float, ...] = RETRY_BACKOFFS,
+    ) -> None:
+        self._config = config
+        self._http = http
+        self._backoffs = backoffs
 
-    def _load_config(self) -> dict:
-        try:
-            with open(self._config_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return data if isinstance(data, dict) else {}
+    @property
+    def config(self) -> LlmConfig:
+        return self._config
 
     def is_configured(self) -> bool:
-        """True when non-empty base_url and model are present in the config."""
-        cfg = self._config
-        return bool(str(cfg.get("base_url", "")).strip()) and bool(str(cfg.get("model", "")).strip())
+        """True when non-empty base_url and model are set (no network)."""
+        return self._config.is_complete
 
     async def generate(
         self,
@@ -41,34 +66,63 @@ class RemoteLlmProvider(BaseLlmProvider):
         user_prompt: str,
         max_tokens: int = 512,
     ) -> str:
+        return await self._request(system_prompt, user_prompt, max_tokens=max_tokens)
+
+    async def check_connection(self, max_tokens: int = 1) -> str:
+        """Minimal test request (single token); raises LlmError on failure."""
+        return await self._request("Тест подключения.", "Ответь одним словом.", max_tokens=max_tokens)
+
+    async def _request(self, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str:
         if not self.is_configured():
-            raise RuntimeError("LLM не настроен. Откройте меню LLM → Настройка LLM…")
+            raise LlmError("LLM не настроен. Откройте меню LLM → Настройка LLM…")
 
-        base_url = str(self._config.get("base_url", "")).strip().rstrip("/")
-        model = str(self._config.get("model", "")).strip()
-        api_key = str(self._config.get("api_key", "")).strip()
-
+        url = self._config.base_url.strip().rstrip("/") + CHAT_COMPLETIONS_PATH
         headers = {"Content-Type": "application/json"}
+        api_key = self._config.api_key.strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
         payload = {
-            "model": model,
+            "model": self._config.model.strip(),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             "max_tokens": max_tokens,
-            "temperature": 0.7,
+            "temperature": TEMPERATURE,
         }
 
-        timeout = httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        error: LlmError | None = None
+        response: httpx.Response | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await self._http.client.post(url, json=payload, headers=headers)
+            except httpx.TimeoutException:
+                log.warning("LLM request timed out (attempt %d)", attempt + 1)
+                error = LlmTimeoutError()
+            except httpx.HTTPError as exc:
+                log.warning("LLM request failed (attempt %d): %s", attempt + 1, exc)
+                error = LlmNetworkError()
+            else:
+                if response.status_code < 400:
+                    break
+                error = LlmHttpError(response.status_code, parse_error_message(response.text))
+                if not _is_retryable_status(response.status_code):
+                    raise error
 
-        choices = data.get("choices", [])
-        if not choices:
-            return ""
-        return choices[0].get("message", {}).get("content", "").strip()
+            if attempt < MAX_RETRIES:
+                delay = self._backoffs[min(attempt, len(self._backoffs) - 1)]
+                log.info("Retrying LLM request in %.1f s (attempt %d)", delay, attempt + 2)
+                await asyncio.sleep(delay)
+            else:
+                raise error
+        assert response is not None
+        return self._extract_content(response.json())
+
+    @staticmethod
+    def _extract_content(data: dict) -> str:
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LlmError("LLM вернул пустой ответ. Попробуйте позже.")
+        content = choices[0].get("message", {}).get("content", "")
+        return (content or "").strip()

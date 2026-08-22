@@ -1,16 +1,18 @@
 """LLM setup wizard — connection, world prompt and field prompts."""
 from __future__ import annotations
 
-from typing import Any
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QStackedWidget, QTextEdit,
+    QMessageBox, QPushButton, QStackedWidget, QTextEdit,
     QVBoxLayout, QWidget,
 )
 
 from app.application.services.llm_service import FIELD_CONFIG, FIELD_LABELS
+from app.infrastructure.http import AppHttpClient
+from app.infrastructure.llm.config import LlmConfig
+from app.infrastructure.llm.errors import LlmError
+from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 
 _ENTITY_LABELS: dict[str, str] = {
     "event": "События",
@@ -21,6 +23,15 @@ _ENTITY_LABELS: dict[str, str] = {
 }
 
 _ENTITY_ORDER = ["event", "organization", "character", "item", "location"]
+
+_ENDPOINT_PLACEHOLDER = (
+    "Базовый URL до /v1, например https://api.openai.com/v1"
+    " или http://localhost:11434/v1 (Ollama)"
+)
+
+_CHECK_OK_STYLE = "color: #2e7d32;"
+_CHECK_ERROR_STYLE = "color: #c62828;"
+
 
 _FIELD_PLACEHOLDERS: dict[str, dict[str, str]] = {
     "event": {
@@ -98,23 +109,31 @@ class _FieldPromptsPage(QWidget):
                 self._inputs[name].setText(text)
 
 
+
+
+
 class LlmSetupDialog(QDialog):
-    saved = Signal(str, dict)  # (world_prompt, field_prompts_dict)
+    saved = Signal(object, str, dict)  # (LlmConfig, world_prompt, field_prompts_dict)
 
     def __init__(
         self,
+        config: LlmConfig,
         world_prompt: str = "",
         field_prompts: dict[str, dict[str, str]] | None = None,
+        http: AppHttpClient | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Настройка AI-ассистента (LLM)")
         self.setMinimumSize(620, 480)
+        self._initial_config = config or LlmConfig()
         self._world_prompt_initial = world_prompt
         self._field_prompts_initial = field_prompts or {}
+        self._http = http
         self._field_pages: dict[str, _FieldPromptsPage] = {}
         self._init_ui()
         self._update_nav_buttons()
+        self._update_check_button()
 
     def _init_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -163,13 +182,51 @@ class LlmSetupDialog(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel("Шаг 1: Подключение")
+        title = QLabel("Шаг 1: Подключение к LLM")
         title.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(title)
 
-        self._connection_info = QLabel("Подключение настраивается в этом диалоге.")
-        self._connection_info.setWordWrap(True)
-        layout.addWidget(self._connection_info)
+        hint = QLabel(
+            "Поддерживаются любые OpenAI-совместимые серверы:\n"
+            "• OpenAI: https://api.openai.com/v1\n"
+            "• Ollama: http://localhost:11434/v1\n"
+            "• vLLM: http://host:8000/v1\n"
+            "• LM Studio: http://localhost:1234/v1"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; margin-bottom: 8px;")
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+
+        self._endpoint_edit = QLineEdit()
+        self._endpoint_edit.setPlaceholderText(_ENDPOINT_PLACEHOLDER)
+        self._endpoint_edit.setText(self._initial_config.base_url)
+        self._endpoint_edit.textChanged.connect(self._update_check_button)
+        form.addRow("Endpoint:", self._endpoint_edit)
+
+        self._model_edit = QLineEdit()
+        self._model_edit.setPlaceholderText("Название модели, например gpt-4o-mini или llama3")
+        self._model_edit.setText(self._initial_config.model)
+        self._model_edit.textChanged.connect(self._update_check_button)
+        form.addRow("Модель:", self._model_edit)
+
+        self._key_edit = QLineEdit()
+        self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_edit.setPlaceholderText("Ключ API — необязательно для локальных серверов")
+        self._key_edit.setText(self._initial_config.api_key)
+        form.addRow("Ключ API:", self._key_edit)
+
+        layout.addLayout(form)
+
+        self._check_btn = QPushButton("Проверить соединение")
+        self._check_btn.setMinimumHeight(36)
+        self._check_btn.clicked.connect(self._on_check)
+        layout.addWidget(self._check_btn)
+
+        self._check_label = QLabel("")
+        self._check_label.setWordWrap(True)
+        layout.addWidget(self._check_label)
 
         layout.addStretch()
         return page
@@ -213,6 +270,8 @@ class LlmSetupDialog(QDialog):
             "• Генерация выполняется по одному полю за раз. Если запущено несколько — "
             "они встанут в очередь и будут обработаны последовательно.",
             "• Во время генерации поле будет заблокировано, а окно нельзя будет закрыть.",
+            "• Ключ API хранится в локальном файле ~/.nri_manager/llm_config.json "
+            "(права 0600, только текущий пользователь).",
         ]
         for text in warnings:
             lbl = QLabel(text)
@@ -222,6 +281,37 @@ class LlmSetupDialog(QDialog):
 
         layout.addStretch()
         return page
+
+    def _update_check_button(self, *_args) -> None:
+        self._check_btn.setEnabled(bool(self._endpoint_edit.text().strip()) and bool(self._model_edit.text().strip()))
+
+    def get_connection(self) -> LlmConfig:
+        return LlmConfig(
+            base_url=self._endpoint_edit.text().strip(),
+            model=self._model_edit.text().strip(),
+            api_key=self._key_edit.text().strip(),
+        )
+
+    async def _on_check(self) -> None:
+        """Run a minimal test request (1 token) against the entered settings."""
+        config = self.get_connection()
+        if not config.is_complete:
+            return
+
+        self._check_btn.setEnabled(False)
+        self._check_label.setStyleSheet("")
+        self._check_label.setText("Проверка соединения…")
+
+        provider = RemoteLlmProvider(config, self._http)
+        try:
+            await provider.check_connection()
+            self._check_label.setText("Соединение установлено")
+            self._check_label.setStyleSheet(_CHECK_OK_STYLE)
+        except LlmError as exc:
+            self._check_label.setText(f"Ошибка: {exc}")
+            self._check_label.setStyleSheet(_CHECK_ERROR_STYLE)
+        finally:
+            self._update_check_button()
 
     def _go_back(self) -> None:
         idx = self._stack.currentIndex()
@@ -244,11 +334,18 @@ class LlmSetupDialog(QDialog):
         self._save_btn.setVisible(is_last)
 
     def _on_save(self) -> None:
+        config = self.get_connection()
+        if not config.is_complete:
+            QMessageBox.warning(
+                self,
+                "Настройка LLM",
+                "Заполните поля «Endpoint» и «Модель», чтобы сохранить подключение.",
+            )
+            return
+
         world_prompt = self._world_prompt_edit.toPlainText().strip()
-        field_prompts: dict[str, dict[str, str]] = {}
-        for etype, page in self._field_pages.items():
-            field_prompts[etype] = page.get_prompts()
-        self.saved.emit(world_prompt, field_prompts)
+        field_prompts = self.get_field_prompts()
+        self.saved.emit(config, world_prompt, field_prompts)
         self.accept()
 
     def get_world_prompt(self) -> str:

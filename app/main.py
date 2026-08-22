@@ -40,6 +40,8 @@ from app.presentation.viewmodels.llm_viewmodel import (
 from app.presentation.utils.date_utils import (
     SETTINGS_KEY, get_custom_months, months_from_json, months_to_json, set_custom_months,
 )
+from app.infrastructure.http import AppHttpClient
+from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.event_dialog import EventDialog
@@ -138,9 +140,10 @@ class Application:
         self._window: MainWindow | None = None
         self._db_path: str | None = None
 
-        self._llm_provider = RemoteLlmProvider()
-        self._llm_service = LlmService(self._llm_provider)
-        self._llm_vm = LlmViewModel(self._llm_service)
+        self._config_manager = LlmConfigManager()
+        self._http: AppHttpClient | None = None
+        self._llm_service: LlmService | None = None
+        self._llm_vm: LlmViewModel | None = None
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window."""
@@ -180,6 +183,11 @@ class Application:
         detail_vm = DetailViewModel(event_service)
         search_vm = SearchViewModel(search_service)
         event_dialog_vm = EventDialogViewModel(event_service)
+
+        # LLM: shared http client + provider from the global connection config
+        self._http = AppHttpClient()
+        self._llm_service = LlmService(RemoteLlmProvider(LlmConfig(), self._http))
+        self._llm_vm = LlmViewModel(self._llm_service, self._config_manager, self._http)
 
         # Load LLM settings
         await self._load_llm_settings()
@@ -778,17 +786,21 @@ class Application:
     def _on_llm_setup(self, window) -> None:
         llm_vm = self._llm_vm
         dialog = LlmSetupDialog(
+            config=llm_vm.config,
             world_prompt=llm_vm.world_prompt,
             field_prompts=llm_vm.field_prompts,
+            http=self._http,
             parent=window,
         )
 
-        async def _on_saved(world_prompt, field_prompts):
+        async def _on_saved(config, world_prompt, field_prompts):
+            self._config_manager.save(config)
             llm_vm.world_prompt = world_prompt
             llm_vm.field_prompts = field_prompts
+            llm_vm.apply_config(config)
             await self._save_llm_settings()
 
-        dialog.saved.connect(lambda wp, fp: asyncio.ensure_future(_on_saved(wp, fp)))
+        dialog.saved.connect(lambda c, wp, fp: asyncio.ensure_future(_on_saved(c, wp, fp)))
         dialog.open()
 
     async def _load_llm_settings(self) -> None:
@@ -833,6 +845,13 @@ class Application:
         if self.engine:
             await self.engine.dispose()
             self.engine = None
+        if self._llm_service is not None:
+            await self._llm_service.provider.close()
+            self._llm_service = None
+            self._llm_vm = None
+        if self._http is not None and not self._http.is_closed:
+            await self._http.close()
+        self._http = None
 
 
 def main():

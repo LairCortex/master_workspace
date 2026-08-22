@@ -1,4 +1,4 @@
-"""LLM ViewModel — connection status, world/field prompts, generation proxy."""
+"""LLM ViewModel — connection config, status, world/field prompts, generation proxy."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,9 @@ import logging
 from PySide6.QtCore import QObject, Signal
 
 from app.application.services.llm_service import FIELD_CONFIG, LlmService
+from app.infrastructure.http import AppHttpClient
+from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
+from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 
 WORLD_PROMPT_KEY = "llm_world_prompt"
 FIELD_PROMPTS_KEY = "llm_field_prompts"
@@ -29,17 +32,39 @@ class LlmViewModel(QObject):
     def __init__(
         self,
         llm_service: LlmService,
+        config_manager: LlmConfigManager,
+        http: AppHttpClient,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._service = llm_service
+        self._config_manager = config_manager
+        self._http = http
         self._world_prompt: str = ""
         self._field_prompts: dict[str, dict[str, str]] = _default_field_prompts()
+
+        loaded = config_manager.load()
+        self._config: LlmConfig = loaded if loaded is not None else LlmConfig()
+        self._service.provider = self._create_provider(self._config)
         self._status: str = (
-            self.STATUS_READY
-            if self._service.provider.is_configured()
-            else self.STATUS_NOT_CONFIGURED
+            self.STATUS_READY if self._config.is_complete else self.STATUS_NOT_CONFIGURED
         )
+
+    def _create_provider(self, config: LlmConfig) -> RemoteLlmProvider:
+        return RemoteLlmProvider(config, self._http)
+
+    def apply_config(self, config: LlmConfig) -> None:
+        """Apply a new connection config: recreate provider, update status.
+
+        Readiness depends only on the stored config values (no network).
+        """
+        self._config = config
+        self._service.provider = self._create_provider(config)
+        self.set_status(self.STATUS_READY if config.is_complete else self.STATUS_NOT_CONFIGURED)
+
+    @property
+    def config(self) -> LlmConfig:
+        return self._config
 
     @property
     def status(self) -> str:
@@ -67,9 +92,9 @@ class LlmViewModel(QObject):
         return self._field_prompts
 
     @field_prompts.setter
-    def field_prompts(self, value: dict[str, dict[str, str]]) -> None:
+    def field_prompts(self, value: dict[str, dict[str, str]] | None) -> None:
         merged = _default_field_prompts()
-        for etype, fields in value.items():
+        for etype, fields in (value or {}).items():
             if etype in merged:
                 for fname, prompt in fields.items():
                     if fname in merged[etype]:
