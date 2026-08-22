@@ -12,8 +12,9 @@ from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
 from app.infrastructure.db.database import create_engine, create_session_factory
+from app.infrastructure.db.migrations import init_db
 from app.infrastructure.db.game_manager import export_game, get_db_url
-from app.infrastructure.db.models import Base, GameSettingsModel
+from app.infrastructure.db.models import GameSettingsModel
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -47,76 +48,6 @@ from app.presentation.views.main_window import MainWindow
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
-
-async def _migrate_nullable_end_dates(conn):
-    """Make end_date columns nullable in existing databases (SQLite table rebuild)."""
-    import re
-    tables = ["events", "organizations", "characters", "items", "locations", "ratings"]
-    for table in tables:
-        try:
-            rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
-        except Exception:
-            continue
-        for row in rows:
-            # row: (cid, name, type, notnull, dflt_value, pk)
-            if row[1] == "end_date" and row[3] == 1:  # notnull == 1 → needs fix
-                sql_result = (await conn.exec_driver_sql(
-                    f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'"
-                )).scalar()
-                if not sql_result:
-                    break
-                new_sql = re.sub(
-                    r'(end_date\s+\w+)\s+NOT\s+NULL',
-                    r'\1',
-                    sql_result,
-                    flags=re.IGNORECASE,
-                )
-                tmp = f"__{table}_tmp"
-                new_sql = new_sql.replace(f'"{table}"', f'"{tmp}"', 1).replace(f" {table} ", f" {tmp} ", 1).replace(f" {table}(", f" {tmp}(", 1)
-                if tmp not in new_sql:
-                    new_sql = new_sql.replace(table, tmp, 1)
-                col_names = ", ".join(r[1] for r in rows)
-                await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
-                await conn.exec_driver_sql(new_sql)
-                await conn.exec_driver_sql(
-                    f"INSERT INTO {tmp} ({col_names}) SELECT {col_names} FROM {table}"
-                )
-                await conn.exec_driver_sql(f"DROP TABLE {table}")
-                await conn.exec_driver_sql(f"ALTER TABLE {tmp} RENAME TO {table}")
-                await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
-                break
-
-
-async def init_db(engine):
-    """Create tables if they don't exist, and migrate missing columns."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Migrate missing columns for existing databases
-    _MIGRATIONS = [
-        ("organizations", "rating", "INTEGER DEFAULT 1"),
-        ("characters", "rating", "INTEGER DEFAULT 1"),
-        ("items", "rating", "INTEGER DEFAULT 1"),
-        ("locations", "rating", "INTEGER DEFAULT 1"),
-        ("organizations", "image", "TEXT"),
-        ("organizations", "music_url", "TEXT"),
-        ("characters", "music_url", "TEXT"),
-        ("items", "music_url", "TEXT"),
-        ("locations", "music_url", "TEXT"),
-    ]
-    async with engine.begin() as conn:
-        for table, column, col_type in _MIGRATIONS:
-            try:
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
-                )
-            except Exception:
-                pass  # column already exists
-
-    # Migrate end_date NOT NULL → nullable
-    async with engine.begin() as conn:
-        await _migrate_nullable_end_dates(conn)
-
 
 class Application:
     """Wires up DI and manages the application lifecycle."""

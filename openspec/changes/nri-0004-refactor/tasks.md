@@ -21,7 +21,7 @@
 
 ## 4. Модуль миграций (B)
 
-- [ ] 4.1 Создать `app/infrastructure/db/migrations.py` со `init_db` + `_migrate_nullable_end_dates` + `_MIGRATIONS`; `main.py` импортирует `init_db` (commit `NRI-0004: move db migrations to dedicated module`, полный pytest)
+- [x] 4.1 Создать `app/infrastructure/db/migrations.py` со `init_db` + `_migrate_nullable_end_dates` + `_MIGRATIONS`; `main.py` импортирует `init_db` (commit `NRI-0004: move db migrations to dedicated module`, полный pytest)
 - [ ] 4.2 Тесты `init_db`: свежая БД (create_all + миграции no-op); идемпотентность второго запуска; синтетическая легаси-схема `end_date NOT NULL` → после `init_db` колонка nullable (сценарий hotfix 0.9.1); чек-лист №1,3,13 (commit, pytest)
 
 ## 5. Дедупликация репозиториев (C)
