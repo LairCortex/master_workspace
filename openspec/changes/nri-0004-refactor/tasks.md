@@ -39,7 +39,7 @@
 
 ## 8. Доменные dataclass'ы (D)
 
-- [ ] 8.1 `BaseEntity` (общие поля + `_validate_base` из `base.py`); дочерние — только специфика (personality/image/tasks); импорты и тесты домена обновлены; `pytest tests/domain` зелёный (commit `NRI-0004: introduce base entity dataclass`, pytest)
+- [x] 8.1 `BaseEntity` (общие поля + `_validate_base` из `base.py`); дочерние — только специфика (personality/image/tasks); импорты и тесты домена обновлены; `pytest tests/domain` зелёный (commit `NRI-0004: introduce base entity dataclass`, pytest)
 
 ## 9. Тулинг-страховка (H)
 

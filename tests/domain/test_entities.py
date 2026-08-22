@@ -3,6 +3,7 @@ from datetime import date
 
 import pytest
 
+from app.domain.entities.base import BaseEntity
 from app.domain.entities.description import Description
 from app.domain.entities.event import Event
 from app.domain.entities.organization import Organization
@@ -46,6 +47,10 @@ class TestEvent:
         assert e.characters == []
         assert e.items == []
         assert e.locations == []
+        # Fields inherited from BaseEntity
+        assert e.id is None
+        assert e.music_url is None
+        assert e.ratings == []
 
     def test_event_requires_name(self):
         with pytest.raises(ValueError, match="name"):
@@ -107,10 +112,12 @@ class TestOrganization:
         )
         assert org.name == "The Guild"
         assert org.tasks is None
+        assert org.image is None
         assert org.music_url is None
         assert org.characters == []
         assert org.items == []
         assert org.locations == []
+        assert org.ratings == []
 
     def test_organization_with_tasks(self):
         org = Organization(
@@ -294,3 +301,20 @@ class TestEntityType:
         assert EntityType.ITEM.value == "item"
         assert EntityType.LOCATION.value == "location"
         assert EntityType.RATING.value == "rating"
+
+
+# --- BaseEntity inheritance & shared validation ---
+
+class TestBaseEntity:
+    @pytest.mark.parametrize("cls", [Event, Organization, Character, Item, Location])
+    def test_entities_inherit_base_entity(self, cls):
+        assert issubclass(cls, BaseEntity)
+
+    @pytest.mark.parametrize("cls", [Event, Organization, Character, Item, Location])
+    def test_base_validation_requires_name(self, cls):
+        with pytest.raises(ValueError, match="name"):
+            cls(
+                name="",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=date(1200, 1, 1),
+            )
