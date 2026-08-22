@@ -50,15 +50,6 @@ from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
-# Map attr names to entity_type strings for relationship syncing
-_ATTR_TO_ENTITY_TYPE = {
-    "characters": "character",
-    "items": "item",
-    "organizations": "organization",
-    "locations": "location",
-}
-
-
 async def _migrate_nullable_end_dates(conn):
     """Make end_date columns nullable in existing databases (SQLite table rebuild)."""
     import re
@@ -528,55 +519,18 @@ class Application:
 
                 # Handle save (update entity fields + sync relationships)
                 async def on_entity_saved(data):
-                    try:
-                        related_changes = data.pop("related_changes", {})
-                        chars_text = data.pop("characteristics", "")
-                        backstory_text = data.pop("backstory", "")
+                    related_changes = data.pop("related_changes", {})
+                    chars_text = data.pop("characteristics", "")
+                    backstory_text = data.pop("backstory", "")
+                    field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
+                    await entity_service.update_entity_with_relations(
+                        entity_id, field_data, chars_text, backstory_text, related_changes,
+                    )
 
-                        # Update basic entity fields
-                        field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
-                        await entity_service.update_entity(entity_id, **field_data)
-
-                        # Update description
-                        refreshed = await entity_service.get_entity(entity_id)
-                        if refreshed and refreshed.description:
-                            refreshed.description.characteristics = chars_text
-                            refreshed.description.backstory = backstory_text
-
-                        # Sync M2M relationships
-                        for attr_name, change_data in related_changes.items():
-                            desired_ids = set(change_data.get("current_ids", []))
-                            rel_type = _ATTR_TO_ENTITY_TYPE.get(attr_name)
-                            if not rel_type:
-                                continue
-                            rel_svc = self._get_entity_service(rel_type)
-                            if not rel_svc:
-                                continue
-
-                            ent = await entity_service.get_entity(entity_id)
-                            await self._session.refresh(ent, attribute_names=[attr_name])
-                            current_collection = getattr(ent, attr_name)
-                            current_ids = {e.id for e in current_collection}
-
-                            # Add missing
-                            for aid in desired_ids - current_ids:
-                                rel_entity = await rel_svc.get_entity(aid)
-                                if rel_entity:
-                                    current_collection.append(rel_entity)
-
-                            # Remove extras
-                            to_remove = [e for e in current_collection if e.id in (current_ids - desired_ids)]
-                            for e in to_remove:
-                                current_collection.remove(e)
-
-                        await self._session.commit()
-
-                        # Refresh detail panel if an event is selected
-                        if detail_vm.event:
-                            await detail_vm.load_details(detail_vm.event.id)
-                            window.detail_panel.show_event(detail_vm.event)
-                    except Exception:
-                        await self._session.rollback()
+                    # Refresh detail panel if an event is selected
+                    if detail_vm.event:
+                        await detail_vm.load_details(detail_vm.event.id)
+                        window.detail_panel.show_event(detail_vm.event)
 
                 dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
 
@@ -660,9 +614,16 @@ class Application:
             "location": LocationRepository(self._session),
         }
         repo = repo_map.get(entity_type)
-        if repo:
-            return EntityService(repo=repo, description_repo=desc_repo)
-        return None
+        if not repo:
+            return None
+        related_services = {
+            t: EntityService(repo=r, description_repo=desc_repo)
+            for t, r in repo_map.items()
+            if t != entity_type
+        }
+        return EntityService(
+            repo=repo, description_repo=desc_repo, related_services=related_services,
+        )
 
     async def _load_month_settings(self) -> None:
         """Load custom month names from game_settings table."""
