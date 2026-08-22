@@ -378,24 +378,22 @@ class Application:
             self._wire_ai_buttons(dialog)
 
             async def on_saved(data):
-                try:
-                    org_items = data.pop("organizations", [])
-                    char_items = data.pop("characters", [])
-                    item_items = data.pop("items", [])
-                    loc_items = data.pop("locations", [])
-
-                    event = await event_service.create_event(**data)
-                    await self._session.refresh(event, attribute_names=["organizations", "characters", "items", "locations"])
-
-                    await event_service.apply_event_relations(
-                        event, org_items, char_items, item_items, loc_items
-                    )
-
-                    await self._session.commit()
-                    await timeline_vm.load_events()
-                    window.timeline_widget.update_events(timeline_vm.events)
-                except Exception:
-                    await self._session.rollback()
+                relations = {
+                    "organizations": data.pop("organizations", []),
+                    "characters": data.pop("characters", []),
+                    "items": data.pop("items", []),
+                    "locations": data.pop("locations", []),
+                }
+                await event_service.create_event_with_relations(
+                    name=data.pop("name"),
+                    start_date=data.pop("start_date"),
+                    end_date=data.pop("end_date"),
+                    characteristics=data.pop("characteristics", ""),
+                    backstory=data.pop("backstory", ""),
+                    relations=relations,
+                )
+                await timeline_vm.load_events()
+                window.timeline_widget.update_events(timeline_vm.events)
 
             dialog.saved.connect(lambda data: asyncio.ensure_future(on_saved(data)))
             dialog.open()
@@ -449,43 +447,28 @@ class Application:
                 self._wire_ai_buttons(dialog)
 
                 async def on_event_updated(data):
-                    try:
-                        eid = data.pop("event_id", None)
-                        chars_text = data.pop("characteristics", "")
-                        backstory_text = data.pop("backstory", "")
-                        org_items = data.pop("organizations", [])
-                        char_items = data.pop("characters", [])
-                        item_items = data.pop("items", [])
-                        loc_items = data.pop("locations", [])
+                    eid = data.pop("event_id", None)
+                    relations = {
+                        "organizations": data.pop("organizations", []),
+                        "characters": data.pop("characters", []),
+                        "items": data.pop("items", []),
+                        "locations": data.pop("locations", []),
+                    }
+                    await event_service.update_event_with_relations(
+                        eid,
+                        name=data.pop("name"),
+                        start_date=data.pop("start_date"),
+                        end_date=data.pop("end_date"),
+                        characteristics=data.pop("characteristics", ""),
+                        backstory=data.pop("backstory", ""),
+                        relations=relations,
+                    )
+                    await timeline_vm.load_events()
+                    window.timeline_widget.update_events(timeline_vm.events)
 
-                        await event_service.update_event(
-                            event_id,
-                            name=data["name"],
-                            start_date=data["start_date"],
-                            end_date=data["end_date"],
-                        )
-
-                        # Update description
-                        updated_event = await event_service.get_event(event_id)
-                        if updated_event and updated_event.description:
-                            updated_event.description.characteristics = chars_text
-                            updated_event.description.backstory = backstory_text
-
-                        # Sync M2M relationships
-                        await self._session.refresh(updated_event, attribute_names=["organizations", "characters", "items", "locations"])
-                        await event_service.apply_event_relations(
-                            updated_event, org_items, char_items, item_items, loc_items
-                        )
-
-                        await self._session.commit()
-                        await timeline_vm.load_events()
-                        window.timeline_widget.update_events(timeline_vm.events)
-
-                        # Refresh detail panel
-                        await detail_vm.load_details(event_id)
-                        window.detail_panel.show_event(detail_vm.event)
-                    except Exception:
-                        await self._session.rollback()
+                    # Refresh detail panel
+                    await detail_vm.load_details(eid)
+                    window.detail_panel.show_event(detail_vm.event)
 
                 dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
                 dialog.open()

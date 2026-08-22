@@ -205,3 +205,153 @@ class TestApplyEventRelations:
         await async_session.refresh(w.event, attribute_names=["characters"])
         names = sorted(c.name for c in w.event.characters)
         assert names == ["Free", "Old One", "Old Three", "Old Two"]
+
+
+# ── create_event_with_relations / update_event_with_relations ─────────────
+
+
+class TestCreateEventWithRelations:
+    async def test_create_with_new_and_existing_relations(self, async_session):
+        w = await _world(async_session)
+        ev = await w.event_service.create_event_with_relations(
+            name="Council",
+            start_date=D1,
+            end_date=D2,
+            characteristics="Ch text",
+            backstory="BS text",
+            relations={
+                "organizations": [{"_existing_id": w.org.id}],
+                "characters": [_new_char_item("Hero")],
+                "items": [],
+                "locations": [],
+            },
+        )
+        assert ev is not None
+        assert ev.name == "Council"
+        await async_session.refresh(
+            ev, attribute_names=["description", "organizations", "characters"],
+        )
+        assert ev.description.characteristics == "Ch text"
+        assert ev.description.backstory == "BS text"
+        assert [o.name for o in ev.organizations] == ["Guild"]
+        assert [c.name for c in ev.characters] == ["Hero"]
+
+    async def test_create_with_empty_relations(self, async_session):
+        w = await _world(async_session)
+        ev = await w.event_service.create_event_with_relations(
+            name="Quiet",
+            start_date=D1,
+            end_date=None,
+            characteristics="",
+            backstory="",
+            relations={},
+        )
+        assert ev is not None
+        assert ev.end_date is None
+        await async_session.refresh(
+            ev,
+            attribute_names=["organizations", "characters", "items", "locations"],
+        )
+        assert ev.organizations == []
+        assert ev.characters == []
+        assert ev.items == []
+        assert ev.locations == []
+
+    async def test_failing_create_is_rolled_back_silently(self, async_session):
+        w = await _world(async_session)
+        # Commit the fixture baseline so the operation below has its own
+        # transaction to roll back (mirrors app state where prior data is committed).
+        await async_session.commit()
+        before_chars = len(await w.char_svc.get_all())
+        ev = await w.event_service.create_event_with_relations(
+            name="Doomed",
+            start_date=D1,
+            end_date=D2,
+            characteristics="",
+            backstory="",
+            relations={
+                "organizations": [],
+                "characters": [_new_char_item("Ghost")],
+                # Incomplete item dict -> create_entity raises mid-sync
+                "items": [{"name": "Bad"}],
+                "locations": [],
+            },
+        )
+        # 1:1 behavior: error swallowed, session rolled back, None returned
+        assert ev is None
+        events = list(await w.event_repo.get_all())
+        assert all(e.name != "Doomed" for e in events)
+        # The partially-created character is gone too (single transaction)
+        assert len(await w.char_svc.get_all()) == before_chars
+
+
+class TestUpdateEventWithRelations:
+    async def test_update_fields_description_and_relations(self, async_session):
+        w = await _world(async_session)
+        result = await w.event_service.update_event_with_relations(
+            w.event.id,
+            name="Brawl Redux",
+            start_date=D1,
+            end_date=None,
+            characteristics="New ch",
+            backstory="New bs",
+            relations={
+                "organizations": [{"_existing_id": w.org.id}],
+                "characters": [
+                    {"_existing_id": w.c1.id},
+                    _new_char_item("Renegade"),
+                ],
+                "items": [],
+                "locations": [],
+            },
+        )
+        assert result is not None
+        await async_session.refresh(
+            result,
+            attribute_names=["name", "end_date", "description", "organizations", "characters"],
+        )
+        assert result.name == "Brawl Redux"
+        assert result.end_date is None
+        assert result.description.characteristics == "New ch"
+        assert result.description.backstory == "New bs"
+        assert [o.name for o in result.organizations] == ["Guild"]
+        # Old Two / Old Three unlinked (not in the desired list)
+        assert sorted(c.name for c in result.characters) == ["Old One", "Renegade"]
+
+    async def test_update_null_description_is_tolerated(self, async_session):
+        w = await _world(async_session)
+        bare = EventModel(name="Bare", start_date=D1, end_date=D2)
+        async_session.add(bare)
+        await async_session.flush()
+        await async_session.refresh(
+            bare, attribute_names=["organizations", "characters", "items", "locations"],
+        )
+        result = await w.event_service.update_event_with_relations(
+            bare.id,
+            name="Bare 2",
+            start_date=D1,
+            end_date=None,
+            characteristics="Ch",
+            backstory="Bs",
+            relations={"organizations": [], "characters": [], "items": [], "locations": []},
+        )
+        # description is None — must not raise, name still updated
+        assert result is not None
+        await async_session.refresh(result, attribute_names=["name", "description"])
+        assert result.name == "Bare 2"
+        assert result.description is None
+
+    async def test_update_missing_event_returns_none(self, async_session):
+        w = await _world(async_session)
+        result = await w.event_service.update_event_with_relations(
+            999999,
+            name="X",
+            start_date=D1,
+            end_date=None,
+            characteristics="c",
+            backstory="b",
+            relations={"organizations": [], "characters": [], "items": [], "locations": []},
+        )
+        # Current behavior: refresh(None) raises inside the service,
+        # rollback + silent None (characterized 1:1, not "fixed").
+        assert result is None
