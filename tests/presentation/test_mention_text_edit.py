@@ -488,3 +488,44 @@ class TestLinkClick:
         mocker.patch.object(MentionTextEdit, "anchorAt", return_value="")
         edit.mouseMoveEvent(self._mouse_event(QEvent.Type.MouseMove, Qt.MouseButton.NoButton, Qt.MouseButton.NoButton))
         assert edit.viewport().cursor().shape() == Qt.CursorShape.IBeamCursor
+
+
+# ── Remaining branches: multi-block docs, degenerate anchors, plain keys ──
+
+class TestMentionEdgeBranches:
+    def test_multi_block_document_joined_with_newline(self, qtbot):
+        edit = MentionTextEdit()
+        qtbot.addWidget(edit)
+        edit.setHtml("<p>Первый блок</p><p>Второй блок</p>")
+        assert edit.getContent() == "Первый блок\nВторой блок"
+
+    def test_anchor_without_slash_renders_plain_text(self, qtbot):
+        edit = MentionTextEdit()
+        qtbot.addWidget(edit)
+        edit.setHtml('<a href="mention://x">без пары</a>')
+        assert edit.getContent() == "без пары"
+
+    def test_key_press_outside_mention_mode_type(self, qtbot):
+        """A normal keystroke outside mention mode just types (no mention state)."""
+        edit = MentionTextEdit()
+        qtbot.addWidget(edit)
+        ev = _key(qtbot, edit, text="x")
+        edit.keyPressEvent(ev)
+        assert edit.toPlainText() == "x"
+        assert edit._mention_start == -1
+        assert not edit._popup.isVisible()
+
+    def test_cursor_before_at_sign_cancels_mention_mode(self, qtbot):
+        """pos <= mention_start - 1 (cursor back before the @) cancels the mode."""
+        edit = MentionTextEdit()
+        qtbot.addWidget(edit)
+        edit.keyPressEvent(_key(qtbot, edit, text="@", modifiers=Qt.KeyboardModifier.ShiftModifier))
+        edit.keyPressEvent(_key(qtbot, edit, text="a"))
+        assert edit._mention_start == 1
+        # Move the cursor to the very start (before '@') while still in mode
+        cur = edit.textCursor()
+        cur.setPosition(0)
+        edit.setTextCursor(cur)
+        edit._check_mention_query()
+        assert edit._mention_start == -1
+        assert edit.toPlainText() == "@a"  # text untouched, only the mode cancelled

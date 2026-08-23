@@ -51,7 +51,13 @@ from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 class Application:
     """Wires up DI and manages the application lifecycle."""
 
-    def __init__(self, qapp: QApplication) -> None:
+    def __init__(self, qapp: QApplication, http: AppHttpClient | None = None) -> None:
+        """Wires up DI and manages the application lifecycle.
+
+        ``http`` is the optional application-wide HTTP client (injected by
+        tests with an emulated transport). When omitted the application
+        creates and closes its own default client per start/shutdown cycle.
+        """
         self._qapp = qapp
         self.engine = None
         self.session_factory = None
@@ -60,6 +66,7 @@ class Application:
         self._db_path: str | None = None
 
         self._config_manager = LlmConfigManager()
+        self._http_injected: AppHttpClient | None = http
         self._http: AppHttpClient | None = None
         self._llm_service: LlmService | None = None
         self._llm_vm: LlmViewModel | None = None
@@ -113,8 +120,8 @@ class Application:
         search_vm = SearchViewModel(search_service)
         event_dialog_vm = EventDialogViewModel(event_service)
 
-        # LLM: shared http client + provider from the global connection config
-        self._http = AppHttpClient()
+        # LLM: shared http client (injected in tests) + provider from the global connection config
+        self._http = self._http_injected if self._http_injected is not None else AppHttpClient()
         self._llm_service = LlmService(RemoteLlmProvider(LlmConfig(), self._http))
         self._llm_vm = LlmViewModel(self._llm_service, self._config_manager, self._http)
 
@@ -412,7 +419,9 @@ class Application:
             self._llm_service = None
             self._llm_vm = None
         if self._http is not None and not self._http.is_closed:
-            await self._http.close()
+            # An injected client is owned by the caller — the app must not close it.
+            if self._http is not self._http_injected:
+                await self._http.close()
         self._http = None
 
 

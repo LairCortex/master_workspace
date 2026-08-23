@@ -35,6 +35,19 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 qt_api = "pyside6"
 
+# Coverage: the gate is LINE coverage (run 1). Branch coverage is measured
+# separately as a report-only run (run 2 in CI) — it is not a gate.
+[tool.coverage.run]
+source = ["app"]
+branch = false
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+exclude_lines = [
+    "if __name__ == .__main__.:",
+]
+
 [tool.setuptools.packages.find]
 include = ["app*"]
 
