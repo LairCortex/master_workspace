@@ -120,9 +120,35 @@ def _describe_task(t: asyncio.Task) -> str:
     try:
         frame = t.get_stack()[0]
         loc = f"{frame.filename}:{frame.lineno} in {frame.name}"
-    except Exception:
-        loc = "unknown frame"
-    return f"  - {name} stuck at {loc}\n"
+    except Exception as e:
+        loc = f"unknown frame ({type(e).__name__})"
+    try:
+        import sys
+        cr_frame = coro.cr_frame
+        cr_await = coro.cr_await
+        await_info = type(cr_await).__name__ if cr_await is not None else "None"
+        if cr_await is not None and hasattr(cr_await, "get_loop"):
+            await_info += f"(loop_closed={cr_await.get_loop().is_closed()})"
+        import threading
+        frames = sys._current_frames()
+        parts = []
+        for th in threading.enumerate():
+            f = frames.get(th.ident)
+            top = f"{f.f_code.co_filename}:{f.f_lineno} in {f.f_code.co_name}" if f else "?"
+            parts.append(f"{th.name}[{top}]")
+        threads = " | ".join(parts)
+        loc += (
+            f" | cr_frame={cr_frame} cr_await={await_info}"
+            f" | task_loop_closed={t.get_loop().is_closed()}"
+            f" | threads=[{threads}]"
+        )
+        # Full thread dump to stderr for post-mortem analysis.
+        import faulthandler
+        import sys as _sys
+        faulthandler.dump_traceback(file=_sys.stderr, all_threads=True)
+    except Exception as diag_exc:  # diagnostics must never mask the timeout
+        loc += f" | diag failed: {diag_exc!r}"
+    return f"  - {name} stuck at {loc}\n  - repr: {t!r}\n"
 
 
 def find_child(parent: QWidget, cls) -> Any | None:
