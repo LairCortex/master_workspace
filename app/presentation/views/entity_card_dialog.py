@@ -186,6 +186,7 @@ class EntityCardDialog(QDialog):
         self._extra_widgets: dict[str, MentionTextEdit] = {}
         self._music_url: str = ""
         self._ai_buttons: list[AiAssistButton] = []
+        self._ai_row_layouts: dict[str, QHBoxLayout] = {}
         self.setWindowTitle(f"Карточка: {entity_type}")
         self.setMinimumSize(750 if self._has_image_field else 550, 550)
         self._init_ui()
@@ -231,7 +232,7 @@ class EntityCardDialog(QDialog):
         form = QFormLayout()
 
         self.name_input = QLineEdit()
-        form.addRow("Название:", self.name_input)
+        form.addRow("Название:", self._make_ai_row(self.name_input, "name"))
 
         self.rating_input = QSpinBox()
         self.rating_input.setMinimum(1)
@@ -256,12 +257,12 @@ class EntityCardDialog(QDialog):
         self.characteristics_input = MentionTextEdit()
         self.characteristics_input.setMinimumHeight(60)
         self.characteristics_input.mention_clicked.connect(self.mention_clicked)
-        form.addRow("Характеристики:", self.characteristics_input)
+        form.addRow("Характеристики:", self._make_ai_row(self.characteristics_input, "characteristics"))
 
         self.backstory_input = MentionTextEdit()
         self.backstory_input.setMinimumHeight(60)
         self.backstory_input.mention_clicked.connect(self.mention_clicked)
-        form.addRow("Предыстория:", self.backstory_input)
+        form.addRow("Предыстория:", self._make_ai_row(self.backstory_input, "backstory"))
 
         # Music link (for all entity types)
         music_row = QHBoxLayout()
@@ -300,7 +301,7 @@ class EntityCardDialog(QDialog):
             widget.mention_clicked.connect(self.mention_clicked)
             setattr(self, f"{spec.name}_input", widget)
             self._extra_widgets[spec.name] = widget
-            form.addRow(f"{spec.label}:", widget)
+            form.addRow(f"{spec.label}:", self._make_ai_row(widget, spec.name))
 
         form_layout.addLayout(form)
         top_layout.addWidget(form_widget, 1)
@@ -464,6 +465,15 @@ class EntityCardDialog(QDialog):
         edits.extend(self._extra_widgets.values())
         return edits
 
+    def _make_ai_row(self, field: QWidget, field_name: str) -> QWidget:
+        """Wrap a field in a horizontal row reserving the right slot for the AI button."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(field, 1)
+        self._ai_row_layouts[field_name] = row_layout
+        return row
+
     def _setup_ai_buttons(self) -> None:
         et = self._entity_type
         fields: list[tuple[QWidget, str, str]] = [
@@ -479,6 +489,13 @@ class EntityCardDialog(QDialog):
         for widget, field_name, field_label in fields:
             btn = AiAssistButton(widget, et, field_name, field_label)
             self._ai_buttons.append(btn)
+            # Single-line fields align to the middle; multi-line ones pin to the top edge.
+            align = (
+                Qt.AlignmentFlag.AlignVCenter
+                if isinstance(widget, QLineEdit)
+                else Qt.AlignmentFlag.AlignTop
+            )
+            self._ai_row_layouts[field_name].addWidget(btn, 0, align)
 
     def get_ai_buttons(self) -> list[AiAssistButton]:
         return list(self._ai_buttons)

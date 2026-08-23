@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from PySide6.QtCore import QDate, Signal
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -213,6 +213,7 @@ class EventDialog(QDialog):
         self._vm = event_dialog_vm
         self._event_id: int | None = None
         self._ai_buttons: list[AiAssistButton] = []
+        self._ai_row_layouts: dict[str, QHBoxLayout] = {}
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
@@ -228,7 +229,7 @@ class EventDialog(QDialog):
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("Название события *")
         self.name_input.textChanged.connect(self._update_validity)
-        form.addRow("Название *:", self.name_input)
+        form.addRow("Название *:", self._make_ai_row(self.name_input, "name"))
 
         self.start_date_input = CustomDateEdit()
         self.start_date_input.setDate(QDate.currentDate())
@@ -256,13 +257,13 @@ class EventDialog(QDialog):
         self.characteristics_input.setPlaceholderText("Характеристики *")
         self.characteristics_input.setMinimumHeight(60)
         self.characteristics_input.textChanged.connect(self._update_validity)
-        form.addRow("Характеристики *:", self.characteristics_input)
+        form.addRow("Характеристики *:", self._make_ai_row(self.characteristics_input, "characteristics"))
 
         self.backstory_input = MentionTextEdit()
         self.backstory_input.setPlaceholderText("Предыстория *")
         self.backstory_input.setMinimumHeight(60)
         self.backstory_input.textChanged.connect(self._update_validity)
-        form.addRow("Предыстория *:", self.backstory_input)
+        form.addRow("Предыстория *:", self._make_ai_row(self.backstory_input, "backstory"))
 
         layout.addLayout(form)
 
@@ -357,6 +358,15 @@ class EventDialog(QDialog):
         """Return all MentionTextEdit instances for wiring search."""
         return [self.characteristics_input, self.backstory_input]
 
+    def _make_ai_row(self, field: QWidget, field_name: str) -> QWidget:
+        """Wrap a field in a horizontal row reserving the right slot for the AI button."""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(field, 1)
+        self._ai_row_layouts[field_name] = row_layout
+        return row
+
     def _setup_ai_buttons(self) -> None:
         fields: list[tuple[QWidget, str, str]] = [
             (self.name_input, "name", "Название"),
@@ -366,6 +376,13 @@ class EventDialog(QDialog):
         for widget, field_name, field_label in fields:
             btn = AiAssistButton(widget, "event", field_name, field_label)
             self._ai_buttons.append(btn)
+            # Single-line fields align to the middle; multi-line ones pin to the top edge.
+            align = (
+                Qt.AlignmentFlag.AlignVCenter
+                if isinstance(widget, QLineEdit)
+                else Qt.AlignmentFlag.AlignTop
+            )
+            self._ai_row_layouts[field_name].addWidget(btn, 0, align)
 
     def get_ai_buttons(self) -> list[AiAssistButton]:
         return list(self._ai_buttons)

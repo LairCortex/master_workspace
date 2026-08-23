@@ -101,6 +101,14 @@ def test_field_reenabled_after_generation(btn_on_text, text_edit):
     assert not btn_on_text.is_generating
 
 
+def test_button_disabled_in_place_during_generation(btn_on_text):
+    """The button is layout-managed: it is disabled, not hidden, while generating."""
+    btn_on_text.set_generating(True)
+    assert not btn_on_text.isEnabled()
+    btn_on_text.set_generating(False)
+    assert btn_on_text.isEnabled()
+
+
 def test_set_result_text_on_textedit(btn_on_text, text_edit):
     btn_on_text.set_generating(True)
     btn_on_text.set_result_text("AI generated text")

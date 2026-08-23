@@ -1,4 +1,4 @@
-"""AI assist button — overlay on text fields for LLM generation."""
+"""AI assist button — sits to the right of a field in the same row; triggers LLM generation."""
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
@@ -8,7 +8,12 @@ from PySide6.QtWidgets import (
 
 
 class AiAssistButton(QPushButton):
-    """Square button overlaid on a text field; triggers LLM generation."""
+    """Square button placed next to a text field; triggers LLM generation.
+
+    The host dialog adds the button to the field's row layout (see
+    ``_make_ai_row`` in EventDialog / EntityCardDialog), so the button
+    follows the field with the layout — no manual positioning.
+    """
 
     generate_requested = Signal(str, str, str, str)  # entity_type, field_name, field_label, current_text
 
@@ -44,13 +49,15 @@ class AiAssistButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(self._on_clicked)
 
-        self._progress = QProgressBar(parent or target_widget)
+        # The indeterminate progress bar stays an overlay on the field itself
+        # (repositioned on its resize/move); the button is layout-managed.
+        self._progress = QProgressBar(target_widget)
         self._progress.setRange(0, 0)
         self._progress.setFixedHeight(4)
         self._progress.hide()
 
         self._target.installEventFilter(self)
-        self._reposition()
+        self._reposition_progress()
         self.update_llm_state("not_configured", False)
 
     @property
@@ -78,14 +85,15 @@ class AiAssistButton(QPushButton):
     def set_generating(self, generating: bool) -> None:
         self._generating = generating
         if generating:
-            self.hide()
+            # Disable in place: hiding a layout-managed button would make
+            # the row reflow while generation is in flight.
+            self.setEnabled(False)
             self._progress.show()
             self._set_target_readonly(True)
         else:
             self._progress.hide()
-            self.show()
+            self.setEnabled(True)
             self._set_target_readonly(False)
-        self._reposition()
 
     def set_result_text(self, text: str) -> None:
         if isinstance(self._target, QTextEdit):
@@ -100,14 +108,12 @@ class AiAssistButton(QPushButton):
             QEvent.Type.Move,
             QEvent.Type.Show,
         ):
-            self._reposition()
+            self._reposition_progress()
         return False
 
-    def _reposition(self) -> None:
+    def _reposition_progress(self) -> None:
+        """Stretch the progress overlay across the field's bottom edge."""
         tr = self._target.rect()
-        x = tr.right() - self.width() - 2
-        y = tr.top() + 2
-        self.move(x, y)
         self._progress.setFixedWidth(tr.width())
         self._progress.move(tr.left(), tr.bottom() - 4)
 

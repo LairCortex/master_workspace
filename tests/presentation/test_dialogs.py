@@ -75,6 +75,21 @@ class TestEventDialog:
         qtbot.addWidget(d)
         assert d.tabs is not None
 
+    def test_event_dialog_ai_buttons_sit_right_of_field_in_row(self, qtbot):
+        """Each button is the last widget of its field's row layout (right side)."""
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        for field_name, widget in [
+            ("name", d.name_input),
+            ("characteristics", d.characteristics_input),
+            ("backstory", d.backstory_input),
+        ]:
+            row_layout = d._ai_row_layouts[field_name]
+            widgets = [row_layout.itemAt(i).widget() for i in range(row_layout.count())]
+            assert row_layout.itemAt(0).widget() is widget
+            btn = next(b for b in d.get_ai_buttons() if b.field_name == field_name)
+            assert widgets[-1] is btn
+
 
 # ── EntityCardDialog ─────────────────────────────────────────────────────
 
@@ -223,3 +238,22 @@ class TestEntityCardDialog:
         d = EntityCardDialog(vm, entity_type=entity_type)
         qtbot.addWidget(d)
         assert len(d.get_ai_buttons()) == ai_button_count
+
+    def test_entity_card_ai_buttons_sit_right_of_field_in_row(self, qtbot):
+        """Each button is the last widget of its field's row layout (right side)."""
+        d = EntityCardDialog(MagicMock(), entity_type="character")
+        qtbot.addWidget(d)
+        for field_name, widget in [
+            ("name", d.name_input),
+            ("characteristics", d.characteristics_input),
+            ("backstory", d.backstory_input),
+            ("personality", d.personality_input),
+            ("tasks", d.tasks_input),
+        ]:
+            row_layout = d._ai_row_layouts[field_name]
+            widgets = [row_layout.itemAt(i).widget() for i in range(row_layout.count())]
+            assert widget in widgets
+            btn = next(b for b in d.get_ai_buttons() if b.field_name == field_name)
+            assert widgets[-1] is btn
+            # The field is stretched; the button takes the fixed right slot.
+            assert row_layout.itemAt(0).widget() is widget
