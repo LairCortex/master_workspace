@@ -101,8 +101,28 @@ async def wait_until_settled(timeout_s: float = 10.0) -> None:
             if not _pending():
                 return
         if loop.time() >= deadline:
-            raise TimeoutError("wait_until_settled: app tasks still pending")
+            pending = [
+                t for t in asyncio.all_tasks(loop)
+                if t is not asyncio.current_task() and not t.done()
+            ]
+            raise TimeoutError(
+                f"wait_until_settled({timeout_s}s): "
+                f"{len(pending)} app task(s) still pending:\n"
+                + "".join(_describe_task(t) for t in pending[:5])
+            )
         await asyncio.sleep(0)
+
+
+def _describe_task(t: asyncio.Task) -> str:
+    """One line: the stuck coroutine and where it is suspended."""
+    coro = t.get_coro()
+    name = getattr(coro, "__qualname__", type(coro).__name__)
+    try:
+        frame = t.get_stack()[0]
+        loc = f"{frame.filename}:{frame.lineno} in {frame.name}"
+    except Exception:
+        loc = "unknown frame"
+    return f"  - {name} stuck at {loc}\n"
 
 
 def find_child(parent: QWidget, cls) -> Any | None:
