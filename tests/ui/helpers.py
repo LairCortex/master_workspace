@@ -152,8 +152,11 @@ async def create_event_via_ui(
     the event is visible on the timeline.
     """
     window.timeline_widget.add_button.click()
-    await wait_for(lambda: bool(window.findChildren(EventDialog)))
-    dialog = window.findChildren(EventDialog)[0]
+    # A dialog accepted earlier stays in the child list: resolve the visible one.
+    await wait_for(
+        lambda: any(d.isVisible() for d in window.findChildren(EventDialog))
+    )
+    dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     load_done = watch_available_entity_load(dialog)
     await wait_for(lambda: len(load_done) == 4)
     dialog.name_input.setText(name)
@@ -192,8 +195,11 @@ async def create_entity_via_context_menu(
     }
     pick_menu_action(menu_qmenu, menu_labels[entity_type])
     right_click(window.timeline_widget.add_button)
-    await wait_for(lambda: bool(window.findChildren(EntityCardDialog)))
-    dialog = window.findChildren(EntityCardDialog)[0]
+    # A card accepted earlier stays in the child list: resolve the visible one.
+    await wait_for(
+        lambda: any(d.isVisible() for d in window.findChildren(EntityCardDialog))
+    )
+    dialog = next(d for d in window.findChildren(EntityCardDialog) if d.isVisible())
     dialog.name_input.setText(name)
     if characteristics:
         dialog.characteristics_input.setContent(characteristics)

@@ -41,10 +41,13 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     row = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
     assert row and CUSTOM_MAY in row[0][0]
 
-    # Second save: the game_settings row already exists → update-in-place path
+    # Second save: the game_settings row already exists → update-in-place path.
+    # Pick the VISIBLE dialog: the first one stayed in the child list after accept().
     window.month_settings_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(MonthSettingsDialog)))
-    dialog2 = window.findChildren(MonthSettingsDialog)[0]
+    await wait_for(
+        lambda: any(d.isVisible() for d in window.findChildren(MonthSettingsDialog))
+    )
+    dialog2 = next(d for d in window.findChildren(MonthSettingsDialog) if d.isVisible())
     may_input2 = next(
         inp for inp in dialog2.findChildren(QLineEdit) if inp.placeholderText() == "Май"
     )
