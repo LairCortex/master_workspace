@@ -169,7 +169,13 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     ))
 
 
-async def test_create_related_entity_from_card(app, wait_for, menu_qmenu):
+async def test_create_related_entity_from_card(app, wait_for, menu_qmenu, modal_qdialog):
+    """4.6 Card sub-flow: the popup is populated, its links are applied.
+
+    Creating a related entity from the card while linking a pre-existing
+    entity inside the popup: after saving the popup and the parent card,
+    the new entity's relations are persisted.
+    """
     application, window = app
     db_path = application._db_path
     await helpers.create_entity_via_context_menu(
@@ -178,9 +184,17 @@ async def test_create_related_entity_from_card(app, wait_for, menu_qmenu):
     await helpers.wait_until_settled()
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'Мастер'")[0][0]
 
+    # A pre-existing location to link inside the creation popup.
+    await application._entity_services["location"].create_entity(
+        name="Цех", characteristics="", backstory="",
+        start_date=datetime.date(1200, 1, 1), end_date=datetime.date(1200, 12, 31),
+    )
+    await application._session.commit()
+    loc_id = query_db(db_path, "SELECT id FROM locations WHERE name = 'Цех'")[0][0]
+
     card = await _open_entity_card(window, wait_for, "character", char_id)
 
-    # Request a new related entity → sub-card opens (non-modal)
+    # Request a new related entity → sub-card opens (non-modal).
     card.create_related_requested.emit("items", "item")
 
     def _sub_visible() -> bool:
@@ -195,22 +209,36 @@ async def test_create_related_entity_from_card(app, wait_for, menu_qmenu):
         if d.isVisible() and d._entity_type == "item"
     )
 
-    sub.saved.emit({
-        "name": "Клинок",
-        "start_date": datetime.date(1300, 1, 1),
-        "end_date": datetime.date(1300, 2, 1),
-    })
+    # The popup's related sections are populated: link the existing location.
+    await helpers.link_existing_entity_in_tab(
+        modal_qdialog, sub._related_sections["locations"], "Цех"
+    )
+    await wait_for(lambda: any(
+        "Цех" in sub._related_sections["locations"].list_widget.item(i).text()
+        for i in range(sub._related_sections["locations"].list_widget.count())
+    ))
+
+    sub.name_input.setText("Клинок")
+    sub.save_button.click()
     await helpers.wait_until_settled()
 
-    # on_sub_saved flushes only; the row is visible through the app session
-    # (the parent card's save would commit it in the real flow)
-    items = list(await application._entity_services["item"].get_all())
-    assert any(it.name == "Клинок" for it in items)
-    # The new entity was attached to the parent card's related section
+    # The new entity was attached to the parent card's related section.
     section = card._related_sections["items"].list_widget
     assert any(
         "Клинок" in section.item(i).text() for i in range(section.count())
     )
+
+    # Save the parent card — the popped-up entity and its links are committed.
+    card.save_button.click()
+    await helpers.wait_until_settled()
+
+    item_id = query_db(db_path, "SELECT id FROM items WHERE name = 'Клинок'")[0][0]
+    linked = query_db(
+        db_path,
+        "SELECT 1 FROM item_location WHERE item_id = ? AND location_id = ?",
+        (item_id, loc_id),
+    )
+    assert len(linked) == 1
 
 
 async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):

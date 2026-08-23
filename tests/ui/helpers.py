@@ -136,24 +136,24 @@ def find_child(parent: QWidget, cls) -> Any | None:
 # ── E2E drivers (full user path through the wiring) ───────────────────────
 
 def watch_available_entity_load(dialog) -> list:
-    """Count per-tab ``set_available_entities`` calls.
+    """Count the dialog's ``set_available_entities`` calls (attr-API).
 
     The dialog's available-entities load is a fire-and-forget task started in
     the same step the dialog opens; for the creation dialog it is still in
     flight when the test would save or link, racing the shared session.
-    Spying each tab instance makes completion deterministic (install
+    Spying the dialog method makes completion deterministic (install
     synchronously after the dialog becomes visible — the load task cannot
-    have run yet).
+    have run yet). Returns the attr names as they get filled (4 for
+    EventDialog: organizations, characters, items, locations).
     """
     done: list = []
-    for tab in (dialog.org_tab, dialog.char_tab, dialog.item_tab, dialog.loc_tab):
-        original = tab.set_available_entities
+    original = dialog.set_available_entities
 
-        def spy(entities, _tab=tab, _orig=original):
-            _orig(entities)
-            done.append(_tab)
+    def spy(attr, entities, _orig=original):
+        _orig(attr, entities)
+        done.append(attr)
 
-        tab.set_available_entities = spy  # type: ignore[method-assign]
+    dialog.set_available_entities = spy
     return done
 
 
@@ -242,3 +242,63 @@ async def link_existing_entity_in_tab(
 
     modal_qdialog.on_exec(preselect)
     tab.link_button.click()
+
+
+_EVENT_TAB_ATTR = {
+    "organizations": "org_tab",
+    "characters": "char_tab",
+    "items": "item_tab",
+    "locations": "loc_tab",
+}
+
+
+def _parent_section(parent_dialog, attr: str):
+    """The parent dialog's RelatedSection for ``attr`` (card or event dialog)."""
+    sections = getattr(parent_dialog, "_related_sections", None)
+    if sections and attr in sections:
+        return sections[attr]
+    return getattr(parent_dialog, _EVENT_TAB_ATTR[attr])
+
+
+async def create_related_via_popup(
+    window,
+    wait_for: Callable,
+    modal_qdialog,
+    parent_dialog,
+    attr: str,
+    entity_type: str,
+    name: str,
+    links: tuple[tuple[str, str], ...] = (),
+) -> EntityCardDialog:
+    """Create a related entity through the section's «Создать нового» popup.
+
+    Clicks the create button of the parent's section for ``attr``, fills the
+    popup card — optionally linking pre-existing entities in its own related
+    sections (``links`` = [(related_attr, name), ...]) — and saves it.
+    Returns the popup dialog (already accepted).
+    """
+    _parent_section(parent_dialog, attr).create_button.click()
+    await wait_for(
+        lambda: any(
+            d.isVisible() and d._entity_type == entity_type
+            for d in window.findChildren(EntityCardDialog)
+        )
+    )
+    sub = next(
+        d for d in window.findChildren(EntityCardDialog)
+        if d.isVisible() and d._entity_type == entity_type
+    )
+    for rel_attr, link_name in links:
+        await link_existing_entity_in_tab(
+            modal_qdialog, sub._related_sections[rel_attr], link_name
+        )
+        section = sub._related_sections[rel_attr]
+        await wait_for(
+            lambda ln=link_name, s=section: any(
+                ln in s.list_widget.item(i).text() for i in range(s.list_widget.count())
+            )
+        )
+    sub.name_input.setText(name)
+    sub.save_button.click()
+    await wait_for(lambda: not sub.isVisible())
+    return sub

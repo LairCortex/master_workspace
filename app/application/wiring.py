@@ -118,19 +118,23 @@ class ApplicationWiring:
             lambda: asyncio.ensure_future(_run_import("item"))
         )
 
-        # ── Helper: load available entities and set them on dialog tabs ──
+        # ── Helper: load available entities and set them on dialog sections ──
         async def _load_available_into_dialog(dialog):
             """Load all entities from DB and set them as available for linking."""
-            dialog.org_tab.set_available_entities(
+            dialog.set_available_entities(
+                "organizations",
                 list(await self._app._entity_services["organization"].get_all()),
             )
-            dialog.char_tab.set_available_entities(
+            dialog.set_available_entities(
+                "characters",
                 list(await self._app._entity_services["character"].get_all()),
             )
-            dialog.item_tab.set_available_entities(
+            dialog.set_available_entities(
+                "items",
                 list(await self._app._entity_services["item"].get_all()),
             )
-            dialog.loc_tab.set_available_entities(
+            dialog.set_available_entities(
+                "locations",
                 list(await self._app._entity_services["location"].get_all()),
             )
 
@@ -160,6 +164,11 @@ class ApplicationWiring:
                 window.timeline_widget.update_events(timeline_vm.events)
 
             dialog.saved.connect(lambda data: asyncio.ensure_future(on_saved(data)))
+            dialog.create_related_requested.connect(
+                lambda a, t: asyncio.ensure_future(
+                    _open_related_create_dialog(dialog, a, t)
+                )
+            )
             dialog.open()
 
         window.timeline_widget.add_event_requested.connect(on_add_event)
@@ -235,6 +244,11 @@ class ApplicationWiring:
                     window.detail_panel.show_event(detail_vm.event)
 
                 dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
+                dialog.create_related_requested.connect(
+                    lambda a, t: asyncio.ensure_future(
+                        _open_related_create_dialog(dialog, a, t)
+                    )
+                )
                 dialog.open()
             except Exception:
                 await self._app._session.rollback()
@@ -306,39 +320,58 @@ class ApplicationWiring:
 
                 dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
 
-                # Handle create new related entity
-                async def on_create_related(attr_name, related_entity_type):
-                    sub_dialog = EntityCardDialog(
-                        None, entity_type=related_entity_type, parent=dialog,
-                    )
-                    self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
-                    self._app._wire_ai_buttons(sub_dialog)
-
-                    async def on_sub_saved(sub_data):
-                        sub_data.pop("related_changes", None)
-                        sub_svc = self._app._get_entity_service(related_entity_type)
-                        if not sub_svc:
-                            return
-                        chars_text = sub_data.pop("characteristics", "")
-                        backstory_text = sub_data.pop("backstory", "")
-                        new_entity = await sub_svc.create_entity(
-                            characteristics=chars_text,
-                            backstory=backstory_text,
-                            **sub_data,
-                        )
-                        await self._app._session.flush()
-                        dialog.add_related_entity(attr_name, new_entity)
-
-                    sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
-                    sub_dialog.open()
-
                 dialog.create_related_requested.connect(
-                    lambda a, t: asyncio.ensure_future(on_create_related(a, t))
+                    lambda a, t: asyncio.ensure_future(
+                        _open_related_create_dialog(dialog, a, t)
+                    )
                 )
 
                 dialog.open()
             except Exception:
                 await self._app._session.rollback()
+
+        # ── Shared helper: popup for creating a related entity ─────────────
+        # One card window opened from the parent dialog (event or entity card).
+        # On save the entity is created + flushed (no commit) and attached to
+        # the parent's section; commit happens with the parent dialog's save.
+        # Nested «Создать нового» is intentionally not wired (depth = 1).
+        async def _open_related_create_dialog(parent_dialog, attr_name: str, entity_type: str):
+            sub_dialog = EntityCardDialog(
+                None, entity_type=entity_type, parent=parent_dialog,
+            )
+            self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
+            self._app._wire_ai_buttons(sub_dialog)
+
+            # Fill the popup's own related sections so «Привязать существующего» works inside.
+            for cfg in _RELATED_CONFIG.get(entity_type, []):
+                rel_svc = self._app._get_entity_service(cfg["entity_type"])
+                if rel_svc:
+                    available = await rel_svc.get_all()
+                    sub_dialog.set_available_entities(cfg["attr"], list(available))
+
+            async def on_sub_saved(sub_data):
+                related_changes = sub_data.pop("related_changes", {})
+                sub_svc = self._app._get_entity_service(entity_type)
+                if not sub_svc:
+                    return
+                chars_text = sub_data.pop("characteristics", "")
+                backstory_text = sub_data.pop("backstory", "")
+                new_entity = await sub_svc.create_entity(
+                    characteristics=chars_text,
+                    backstory=backstory_text,
+                    **sub_data,
+                )
+                await self._app._session.flush()
+                for attr, change in related_changes.items():
+                    # Pre-load the collection (link-only sync must not lazy-load).
+                    await self._app._session.refresh(new_entity, attribute_names=[attr])
+                    await sub_svc.sync_related(
+                        new_entity, attr, set(change.get("current_ids", []))
+                    )
+                parent_dialog.add_related_entity(attr_name, new_entity)
+
+            sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
+            sub_dialog.open()
 
         window.detail_panel.entity_clicked.connect(
             lambda t, i: asyncio.ensure_future(on_entity_click(t, i))

@@ -75,6 +75,60 @@ class TestEventDialog:
         qtbot.addWidget(d)
         assert d.tabs is not None
 
+    def test_event_dialog_tabs_are_related_sections_without_inline_form(self, qtbot):
+        from app.presentation.views.related_section import RelatedSection
+
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        for tab in (d.org_tab, d.char_tab, d.item_tab, d.loc_tab):
+            assert isinstance(tab, RelatedSection)
+            # no inline creation form inside the tab
+            assert not hasattr(tab, "name_input")
+            assert not hasattr(tab, "add_button")
+
+    @pytest.mark.parametrize(
+        ("tab_attr", "attr", "entity_type"),
+        [
+            ("org_tab", "organizations", "organization"),
+            ("char_tab", "characters", "character"),
+            ("item_tab", "items", "item"),
+            ("loc_tab", "locations", "location"),
+        ],
+    )
+    def test_event_dialog_create_button_emits_request(self, qtbot, tab_attr, attr, entity_type):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        section = getattr(d, tab_attr)
+        received: list[tuple[str, str]] = []
+        d.create_related_requested.connect(lambda a, t: received.append((a, t)))
+        section.create_button.click()
+        assert received == [(attr, entity_type)]
+
+    def test_event_dialog_set_available_entities(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        ent = MagicMock()
+        ent.id = 1
+        ent.name = "Guild"
+        d.set_available_entities("organizations", [ent])
+        assert d.org_tab.get_current_ids() == []
+        assert len(d.org_tab._available) == 1
+        d.set_available_entities("no-such-attr", [ent])  # guard: unknown attr is ignored
+        assert len(d.org_tab._available) == 1
+
+    def test_event_dialog_add_related_entity_in_get_data(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        char = MagicMock()
+        char.id = 7
+        char.name = "Hero"
+        d.add_related_entity("characters", char)
+        data = d.get_data()
+        assert data["characters"] == [{"_existing_id": 7}]
+        assert data["organizations"] == []
+        assert data["items"] == []
+        assert data["locations"] == []
+
     def test_event_dialog_ai_buttons_sit_right_of_field_in_row(self, qtbot):
         """Each button is the last widget of its field's row layout (right side)."""
         d = EventDialog(MagicMock())

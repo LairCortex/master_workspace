@@ -7,8 +7,8 @@ from typing import Any
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QCheckBox, QDialog, QFileDialog, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -16,6 +16,7 @@ from app.presentation.utils.image_utils import base64_to_pixmap, load_and_encode
 from app.presentation.views.ai_assist_button import AiAssistButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
+from app.presentation.views.related_section import RelatedSection
 
 # Fields that only appear for certain entity types. The 5th entity type is
 # data in this table, not a code branch. kind: "mention" | "image".
@@ -73,103 +74,6 @@ _RELATED_CONFIG: dict[str, list[dict[str, str]]] = {
 _IMAGE_FILTERS = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
 
 
-class _RelatedSection(QWidget):
-    """Widget for managing a list of related entities (link existing / create new / unlink)."""
-
-    create_requested = Signal()
-
-    def __init__(self, attr_name: str, entity_type: str, label: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._attr_name = attr_name
-        self._entity_type = entity_type
-        self._label = label
-        self._entities: list[Any] = []
-        self._available: list[Any] = []
-        self._init_ui()
-
-    def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        self.list_widget = QListWidget()
-        layout.addWidget(self.list_widget, 1)
-
-        btn_row = QHBoxLayout()
-        link_btn = QPushButton("Привязать существующего")
-        link_btn.clicked.connect(self._on_link_existing)
-        create_btn = QPushButton("Создать нового")
-        create_btn.clicked.connect(self.create_requested.emit)
-        remove_btn = QPushButton("Отвязать")
-        remove_btn.clicked.connect(self._on_remove)
-        btn_row.addWidget(link_btn)
-        btn_row.addWidget(create_btn)
-        btn_row.addWidget(remove_btn)
-        layout.addLayout(btn_row)
-
-    def set_entities(self, entities: list[Any]) -> None:
-        self._entities = list(entities)
-        self._refresh()
-
-    def set_available(self, entities: list[Any]) -> None:
-        self._available = list(entities)
-
-    def add_entity(self, entity: Any) -> None:
-        self._entities.append(entity)
-        self._available.append(entity)
-        self._refresh()
-
-    def get_current_ids(self) -> list[int]:
-        return [getattr(e, "id", None) for e in self._entities]
-
-    def _refresh(self) -> None:
-        self.list_widget.clear()
-        for e in self._entities:
-            item = QListWidgetItem(getattr(e, "name", str(e)))
-            item.setData(256, getattr(e, "id", None))
-            self.list_widget.addItem(item)
-
-    def _on_link_existing(self) -> None:
-        current_ids = {getattr(e, "id", None) for e in self._entities}
-        candidates = [e for e in self._available if getattr(e, "id", None) not in current_ids]
-        if not candidates:
-            return
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Выберите {self._label.lower()}")
-        dlg.setMinimumSize(300, 400)
-        lay = QVBoxLayout(dlg)
-
-        lst = QListWidget()
-        lst.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        for e in candidates:
-            item = QListWidgetItem(getattr(e, "name", str(e)))
-            item.setData(256, getattr(e, "id", None))
-            lst.addItem(item)
-        lay.addWidget(lst)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        lay.addWidget(buttons)
-
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            for sel_item in lst.selectedItems():
-                eid = sel_item.data(256)
-                for e in self._available:
-                    if getattr(e, "id", None) == eid:
-                        self._entities.append(e)
-                        break
-            self._refresh()
-
-    def _on_remove(self) -> None:
-        row = self.list_widget.currentRow()
-        if 0 <= row < len(self._entities):
-            self._entities.pop(row)
-            self._refresh()
-
-
 class EntityCardDialog(QDialog):
     saved = Signal(dict)
     create_related_requested = Signal(str, str)  # (attr_name, entity_type)
@@ -179,7 +83,7 @@ class EntityCardDialog(QDialog):
         super().__init__(parent)
         self._vm = entity_vm
         self._entity_type = entity_type
-        self._related_sections: dict[str, _RelatedSection] = {}
+        self._related_sections: dict[str, RelatedSection] = {}
         self._image_b64: str = ""
         self._extra_specs = _FIELD_SPECS.get(entity_type, [])
         self._has_image_field = any(spec.kind == "image" for spec in self._extra_specs)
@@ -312,7 +216,7 @@ class EntityCardDialog(QDialog):
         if related_configs:
             related_tabs = QTabWidget()
             for cfg in related_configs:
-                section = _RelatedSection(cfg["attr"], cfg["entity_type"], cfg["label"])
+                section = RelatedSection(cfg["attr"], cfg["entity_type"], cfg["label"])
                 section.create_requested.connect(
                     lambda a=cfg["attr"], t=cfg["entity_type"]: self.create_related_requested.emit(a, t)
                 )

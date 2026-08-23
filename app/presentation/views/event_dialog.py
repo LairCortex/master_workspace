@@ -1,211 +1,34 @@
 """Event creation/edit dialog."""
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from app.presentation.utils.image_utils import load_and_encode
 from app.presentation.views.ai_assist_button import AiAssistButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
+from app.presentation.views.related_section import RelatedSection
 
+# (public widget attribute, attr key, entity type, tab label)
+_TABS: list[tuple[str, str, str, str]] = [
+    ("org_tab", "organizations", "organization", "Организации"),
+    ("char_tab", "characters", "character", "Персонажи"),
+    ("item_tab", "items", "item", "Предметы"),
+    ("loc_tab", "locations", "location", "Локации"),
+]
 
-class _EntityTabWidget(QWidget):
-    """Reusable tab for adding entities of a given type inside EventDialog."""
-
-    def __init__(self, entity_label: str, extra_fields: list[str] | None = None, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._entity_label = entity_label
-        self._extra_fields = extra_fields or []
-        self._items: list[dict] = []  # each dict has optional "_existing_id"
-        self._available_entities: list = []  # entities from DB for linking
-        self._init_ui()
-
-    def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        # List of added entities
-        self.list_widget = QListWidget()
-        layout.addWidget(self.list_widget, 1)
-
-        # Inline add form
-        form = QFormLayout()
-        self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText(f"Название {self._entity_label}")
-        form.addRow("Название:", self.name_input)
-
-        self.chars_input = QTextEdit()
-        self.chars_input.setPlaceholderText("Характеристики")
-        self.chars_input.setMinimumHeight(50)
-        self.chars_input.setMaximumHeight(80)
-        form.addRow("Характеристики:", self.chars_input)
-
-        self.backstory_input = QTextEdit()
-        self.backstory_input.setPlaceholderText("Предыстория")
-        self.backstory_input.setMinimumHeight(50)
-        self.backstory_input.setMaximumHeight(80)
-        form.addRow("Предыстория:", self.backstory_input)
-
-        self.start_date_input = CustomDateEdit()
-        self.start_date_input.setDate(QDate.currentDate())
-        form.addRow("Дата начала:", self.start_date_input)
-
-        end_row = QHBoxLayout()
-        self.end_date_input = CustomDateEdit()
-        self.end_date_input.setDate(QDate.currentDate())
-        end_row.addWidget(self.end_date_input, 1)
-        self.no_end_date_cb = QCheckBox("Бессрочно")
-        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setVisible(not checked))
-        end_row.addWidget(self.no_end_date_cb)
-        form.addRow("Дата конца:", end_row)
-
-        self._extra_inputs: dict[str, QLineEdit | QTextEdit] = {}
-        self._image_b64: str = ""
-        field_labels = {
-            "personality": "Личность",
-            "image": "Изображение",
-            "tasks": "Задачи",
-        }
-        for field in self._extra_fields:
-            if field == "image":
-                img_row = QHBoxLayout()
-                self._image_label = QLabel("не выбрано")
-                self._image_label.setStyleSheet("color: #999; font-style: italic;")
-                img_btn = QPushButton("Выбрать файл…")
-                img_btn.clicked.connect(self._on_pick_image)
-                img_row.addWidget(self._image_label, 1)
-                img_row.addWidget(img_btn)
-                form.addRow(f"{field_labels['image']}:", img_row)
-            else:
-                inp = QTextEdit()
-                inp.setPlaceholderText(field_labels.get(field, field))
-                inp.setMinimumHeight(40)
-                inp.setMaximumHeight(70)
-                form.addRow(f"{field_labels.get(field, field)}:", inp)
-                self._extra_inputs[field] = inp
-
-        layout.addLayout(form)
-
-        btn_row = QHBoxLayout()
-        self.link_button = QPushButton("Привязать существующего")
-        self.link_button.clicked.connect(self._on_link_existing)
-        btn_row.addWidget(self.link_button)
-        btn_row.addStretch()
-        self.add_button = QPushButton(f"Добавить {self._entity_label}")
-        self.add_button.clicked.connect(self._on_add)
-        self.remove_button = QPushButton("Удалить")
-        self.remove_button.clicked.connect(self._on_remove)
-        btn_row.addWidget(self.add_button)
-        btn_row.addWidget(self.remove_button)
-        layout.addLayout(btn_row)
-
-    def _on_pick_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Выбрать изображение", "",
-            "Изображения (*.png *.jpg *.jpeg *.bmp *.webp);;Все файлы (*)",
-        )
-        if path:
-            try:
-                self._image_b64 = load_and_encode(path)
-                self._image_label.setText(os.path.basename(path))
-                self._image_label.setStyleSheet("color: #7eb87e; font-style: normal;")
-            except Exception:
-                self._image_b64 = ""
-                self._image_label.setText("ошибка загрузки")
-                self._image_label.setStyleSheet("color: #cc5555; font-style: italic;")
-
-    def _on_add(self) -> None:
-        name = self.name_input.text().strip()
-        if not name:
-            return
-        item = {
-            "name": name,
-            "characteristics": self.chars_input.toPlainText().strip(),
-            "backstory": self.backstory_input.toPlainText().strip(),
-            "start_date": self.start_date_input.date().toPython(),
-            "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
-        }
-        for field, inp in self._extra_inputs.items():
-            item[field] = inp.toPlainText().strip() if isinstance(inp, QTextEdit) else inp.text().strip()
-        # Image field — store base64
-        if "image" in self._extra_fields:
-            item["image"] = self._image_b64 if self._image_b64 else None
-        self._items.append(item)
-        self.list_widget.addItem(name)
-        # Clear inputs
-        self.name_input.clear()
-        self.chars_input.clear()
-        self.backstory_input.clear()
-        for inp in self._extra_inputs.values():
-            inp.clear()
-        # Clear image selection
-        self._image_b64 = ""
-        if hasattr(self, "_image_label"):
-            self._image_label.setText("не выбрано")
-            self._image_label.setStyleSheet("color: #999; font-style: italic;")
-
-    def _on_remove(self) -> None:
-        row = self.list_widget.currentRow()
-        if 0 <= row < len(self._items):
-            self._items.pop(row)
-            self.list_widget.takeItem(row)
-
-    def set_available_entities(self, entities: list) -> None:
-        """Set the list of existing entities available for linking."""
-        self._available_entities = entities
-
-    def populate_existing(self, entities: list) -> None:
-        """Pre-fill the tab with entities already linked to the event."""
-        for ent in entities:
-            entry = {"_existing_id": ent.id, "name": getattr(ent, "name", str(ent))}
-            self._items.append(entry)
-            self.list_widget.addItem(f"🔗 {entry['name']}")
-
-    def _on_link_existing(self) -> None:
-        """Show a dialog to pick from existing entities in the DB."""
-        # Exclude already-added IDs
-        added_ids = {it.get("_existing_id") for it in self._items if it.get("_existing_id")}
-        available = [e for e in self._available_entities if e.id not in added_ids]
-        if not available:
-            return
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f"Привязать {self._entity_label}")
-        dlg.setMinimumSize(360, 320)
-        lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel("Выберите из списка (множественный выбор):"))
-        pick_list = QListWidget()
-        pick_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        for ent in available:
-            item = QListWidgetItem(getattr(ent, "name", str(ent)))
-            item.setData(256, ent)
-            pick_list.addItem(item)
-        lay.addWidget(pick_list, 1)
-        btn = QPushButton("Привязать")
-        btn.clicked.connect(dlg.accept)
-        lay.addWidget(btn)
-
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            for item in pick_list.selectedItems():
-                ent = item.data(256)
-                entry = {"_existing_id": ent.id, "name": getattr(ent, "name", str(ent))}
-                self._items.append(entry)
-                self.list_widget.addItem(f"🔗 {entry['name']}")
-
-    def get_items(self) -> list[dict]:
-        return list(self._items)
+_REL_ATTRS = ("organizations", "characters", "items", "locations")
 
 
 class EventDialog(QDialog):
     saved = Signal(dict)
+    create_related_requested = Signal(str, str)  # (attr_name, entity_type)
     mention_clicked = Signal(str, int)  # (entity_type, entity_id)
 
     def __init__(self, event_dialog_vm, parent: QWidget | None = None) -> None:
@@ -214,6 +37,7 @@ class EventDialog(QDialog):
         self._event_id: int | None = None
         self._ai_buttons: list[AiAssistButton] = []
         self._ai_row_layouts: dict[str, QHBoxLayout] = {}
+        self._sections: dict[str, RelatedSection] = {}
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
@@ -267,16 +91,17 @@ class EventDialog(QDialog):
 
         layout.addLayout(form)
 
-        # Entity tabs with inline add forms
+        # Entity tabs: name list + «Привязать существующего»/«Создать нового»/«Отвязать».
+        # No inline creation form — new entities are created in a separate card window.
         self.tabs = QTabWidget()
-        self.org_tab = _EntityTabWidget("организацию", extra_fields=["image", "tasks"])
-        self.char_tab = _EntityTabWidget("персонажа", extra_fields=["personality", "image", "tasks"])
-        self.item_tab = _EntityTabWidget("предмет")
-        self.loc_tab = _EntityTabWidget("локацию", extra_fields=["image", "tasks"])
-        self.tabs.addTab(self.org_tab, "Организации")
-        self.tabs.addTab(self.char_tab, "Персонажи")
-        self.tabs.addTab(self.item_tab, "Предметы")
-        self.tabs.addTab(self.loc_tab, "Локации")
+        for widget_attr, attr, entity_type, label in _TABS:
+            section = RelatedSection(attr, entity_type, label)
+            section.create_requested.connect(
+                lambda a=attr, t=entity_type: self.create_related_requested.emit(a, t)
+            )
+            setattr(self, widget_attr, section)
+            self._sections[attr] = section
+            self.tabs.addTab(section, label)
         layout.addWidget(self.tabs, 1)
 
         # Buttons
@@ -315,16 +140,26 @@ class EventDialog(QDialog):
             self.characteristics_input.setContent(getattr(desc, "characteristics", "") or "")
             self.backstory_input.setContent(getattr(desc, "backstory", "") or "")
 
-        # Pre-fill entity tabs with currently linked entities
-        self.org_tab.populate_existing(getattr(event, "organizations", []))
-        self.char_tab.populate_existing(getattr(event, "characters", []))
-        self.item_tab.populate_existing(getattr(event, "items", []))
-        self.loc_tab.populate_existing(getattr(event, "locations", []))
+        # Pre-fill the related sections with currently linked entities
+        for attr in _REL_ATTRS:
+            self._sections[attr].set_entities(list(getattr(event, attr, [])))
         self._update_validity()
 
     @property
     def event_id(self) -> int | None:
         return self._event_id
+
+    # ── Public API for wiring (same shape as EntityCardDialog) ────────────
+
+    def set_available_entities(self, attr: str, entities: list[Any]) -> None:
+        section = self._sections.get(attr)
+        if section is not None:
+            section.set_available(entities)
+
+    def add_related_entity(self, attr: str, entity: Any) -> None:
+        section = self._sections.get(attr)
+        if section is not None:
+            section.add_entity(entity)
 
     def _update_validity(self) -> None:
         name = self.name_input.text().strip()
@@ -348,10 +183,12 @@ class EventDialog(QDialog):
         }
         if self._event_id is not None:
             data["event_id"] = self._event_id
-        data["organizations"] = self.org_tab.get_items()
-        data["characters"] = self.char_tab.get_items()
-        data["items"] = self.item_tab.get_items()
-        data["locations"] = self.loc_tab.get_items()
+        for attr in _REL_ATTRS:
+            data[attr] = [
+                {"_existing_id": eid}
+                for eid in self._sections[attr].get_current_ids()
+                if eid is not None
+            ]
         return data
 
     def get_mention_edits(self) -> list[MentionTextEdit]:

@@ -370,91 +370,9 @@ class TestEntityCardDialogGaps:
         assert section.get_current_ids() == []
 
 
-# ── EventDialog: tab image pick, add-with-extras, no-available, endless ───
+# ── EventDialog: date validity, endless, reject-while-generating ──────────
 
 class TestEventDialogGaps:
-    def test_tab_pick_image_success(self, qtbot, tmp_path):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        path = _temp_png(tmp_path)
-        tab = d.char_tab
-        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, ""))):
-            tab._on_pick_image()
-        assert tab._image_b64
-        assert tab._image_label.text() == "pic.png"
-        assert "#7eb87e" in tab._image_label.styleSheet()
-
-    def test_tab_pick_image_invalid(self, qtbot, tmp_path):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        bad = tmp_path / "bad.jpg"
-        bad.write_text("not an image")
-        tab = d.char_tab
-        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(bad), ""))):
-            tab._on_pick_image()
-        assert tab._image_b64 == ""
-        assert "ошибка загрузки" in tab._image_label.text()
-        assert "#cc5555" in tab._image_label.styleSheet()
-
-    def test_tab_pick_image_canceled(self, qtbot):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        tab = d.loc_tab
-        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", ""))):
-            tab._on_pick_image()
-        assert tab._image_b64 == ""
-
-    def test_tab_add_requires_name(self, qtbot):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        tab = d.item_tab
-        tab.chars_input.setText("Sharp")
-        tab._on_add()
-        assert tab.get_items() == []
-
-    def test_tab_add_with_extra_fields_and_image(self, qtbot):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        tab = d.char_tab
-        tab.name_input.setText("Рыцарь")
-        tab.chars_input.setText("Сильный")
-        tab.backstory_input.setText("Старый")
-        tab._extra_inputs["personality"].setText("Верный")
-        tab._extra_inputs["tasks"].setText("Служить")
-        tab._image_b64 = _png_b64()  # simulates a picked image
-        tab._on_add()
-
-        items = tab.get_items()
-        assert len(items) == 1
-        assert items[0]["name"] == "Рыцарь"
-        assert items[0]["personality"] == "Верный"
-        assert items[0]["tasks"] == "Служить"
-        assert items[0]["image"] == _png_b64()
-        # inputs cleared afterwards
-        assert tab.name_input.text() == ""
-        assert tab._extra_inputs["personality"].toPlainText() == ""
-        assert tab._image_b64 == ""
-        assert tab._image_label.text() == "не выбрано"
-
-    def test_tab_add_item_type_has_no_extra_keys(self, qtbot):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        tab = d.item_tab
-        tab.name_input.setText("Клинок")
-        tab._on_add()
-        items = tab.get_items()
-        assert list(items[0]) == [
-            "name", "characteristics", "backstory", "start_date", "end_date",
-        ]
-
-    def test_tab_link_existing_no_available(self, qtbot):
-        d = EventDialog(MagicMock())
-        qtbot.addWidget(d)
-        tab = d.item_tab
-        tab.set_available_entities([])
-        tab._on_link_existing()  # early return — no picker dialog
-        assert tab.get_items() == []
-
     def test_endless_checkbox_toggles_date_and_validity(self, qtbot):
         d = EventDialog(MagicMock())
         qtbot.addWidget(d)

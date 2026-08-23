@@ -816,7 +816,9 @@ class TestEventDialogEditMode:
         event.organizations = [org]
         w.populate(event)
         assert w.org_tab.list_widget.count() == 1
-        assert w.org_tab.get_items()[0]["_existing_id"] == 1
+        assert w.org_tab.get_current_ids() == [1]
+        data = w.get_data()
+        assert data["organizations"] == [{"_existing_id": 1}]
 
     def test_get_data_edit_mode_has_event_id_and_entities(self, qtbot):
         vm = MagicMock()
@@ -1078,50 +1080,6 @@ def _mock_entity(id_, name, entity_type, rating=1, **extra):
     for attr in ("characters", "organizations", "items", "locations", "events"):
         setattr(e, attr, extra.get(attr, []))
     return e
-
-
-class TestEntityTabWidgetLinking:
-    def test_has_link_button(self, qtbot):
-        from app.presentation.views.event_dialog import _EntityTabWidget
-        w = _EntityTabWidget("персонажа")
-        qtbot.addWidget(w)
-        assert hasattr(w, "link_button")
-        assert "Привязать" in w.link_button.text()
-
-    def test_set_available_entities(self, qtbot):
-        from app.presentation.views.event_dialog import _EntityTabWidget
-        w = _EntityTabWidget("организацию")
-        qtbot.addWidget(w)
-        ent = MagicMock()
-        ent.id = 1
-        ent.name = "Guild"
-        w.set_available_entities([ent])
-        assert len(w._available_entities) == 1
-
-    def test_populate_existing(self, qtbot):
-        from app.presentation.views.event_dialog import _EntityTabWidget
-        w = _EntityTabWidget("предмет")
-        qtbot.addWidget(w)
-        ent = MagicMock()
-        ent.id = 5
-        ent.name = "Sword"
-        w.populate_existing([ent])
-        assert w.list_widget.count() == 1
-        items = w.get_items()
-        assert items[0]["_existing_id"] == 5
-        assert items[0]["name"] == "Sword"
-
-    def test_add_new_entity_no_existing_id(self, qtbot):
-        from app.presentation.views.event_dialog import _EntityTabWidget
-        w = _EntityTabWidget("предмет")
-        qtbot.addWidget(w)
-        w.name_input.setText("New Item")
-        w.chars_input.setText("Sharp")
-        w._on_add()
-        items = w.get_items()
-        assert len(items) == 1
-        assert "_existing_id" not in items[0]
-        assert items[0]["name"] == "New Item"
 
 
 class TestWorldSnapshotWidget:
