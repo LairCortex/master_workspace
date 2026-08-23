@@ -41,13 +41,27 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     row = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
     assert row and CUSTOM_MAY in row[0][0]
 
+    # Second save: the game_settings row already exists → update-in-place path
+    window.month_settings_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(MonthSettingsDialog)))
+    dialog2 = window.findChildren(MonthSettingsDialog)[0]
+    may_input2 = next(
+        inp for inp in dialog2.findChildren(QLineEdit) if inp.placeholderText() == "Май"
+    )
+    may_input2.setText(f"{CUSTOM_MAY}-2")
+    save_btn2 = next(b for b in dialog2.findChildren(QPushButton) if b.text() == "Сохранить")
+    save_btn2.click()
+    await wait_for(lambda: any(f"15 {CUSTOM_MAY}-2 1200" in timeline.item(i).text() for i in range(timeline.count())))
+    row2 = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
+    assert row2 and f"{CUSTOM_MAY}-2" in row2[0][0]
+
     # Persistence: a fresh start on the same DB shows the custom names again.
     await application.shutdown()
     window2 = await application.start(str(db_path))
     try:
         timeline2 = window2.timeline_widget.list_widget
         await wait_for(lambda: any(
-            f"15 {CUSTOM_MAY} 1200" in timeline2.item(i).text() for i in range(timeline2.count())
+            f"15 {CUSTOM_MAY}-2 1200" in timeline2.item(i).text() for i in range(timeline2.count())
         ))
     finally:
         window.close()  # already closed by start(); safe no-op

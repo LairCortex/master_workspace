@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nri-scenario-manager"
-version = "0.13.0"
+version = "0.13.1"
 description = "Desktop application for managing tabletop RPG scenarios"
 requires-python = ">=3.11"
 dependencies = [
@@ -40,12 +40,18 @@ qt_api = "pyside6"
 [tool.coverage.run]
 source = ["app"]
 branch = false
+concurrency = ["greenlet", "thread"]
 
 [tool.coverage.report]
-fail_under = 95
+fail_under = 100
 show_missing = true
 exclude_lines = [
+    # pragma: no cover — custom exclude_lines replaces the defaults, so the
+    # built-in pragma pattern must be listed explicitly
+    "pragma: no cover",
     "if __name__ == .__main__.:",
+    # typing-only imports: never executed at runtime (TYPE_CHECKING is False)
+    "if TYPE_CHECKING:",
 ]
 
 [tool.setuptools.packages.find]

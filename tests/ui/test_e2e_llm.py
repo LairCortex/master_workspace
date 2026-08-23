@@ -9,6 +9,8 @@ import json
 
 from PySide6.QtWidgets import QDialog
 
+from app.infrastructure.llm.config import LlmConfig
+from app.presentation.viewmodels.llm_viewmodel import _default_field_prompts
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
@@ -40,9 +42,7 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert dialog.name_input.text() == ""
 
     # ── Wizard: menu → configure connection → check connection (canned 200)
-    window.llm_setup_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(LlmSetupDialog)))
-    wizard = window.findChildren(LlmSetupDialog)[0]
+    wizard = _open_wizard(window)
     wizard._endpoint_edit.setText(ENDPOINT)
     wizard._model_edit.setText(MODEL)
     assert wizard._check_btn.isEnabled()
@@ -77,3 +77,79 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert WORLD_PROMPT in generation_payload["messages"][0]["content"]
     # All requests went through the single emulated client
     assert len(llm_client.requests) == 2
+
+
+
+def _open_wizard(win) -> LlmSetupDialog:
+    """Trigger the LLM setup menu and return the wizard created by THIS trigger.
+
+    ``accept()`` does not destroy a dialog, so already-accepted wizards stay
+    in the parent's child list; diff the child sets and drop the leftovers.
+    """
+    before = {id(d) for d in win.findChildren(LlmSetupDialog)}
+    win.llm_setup_action.trigger()
+    fresh = []
+    for dlg in win.findChildren(LlmSetupDialog):
+        if id(dlg) in before:
+            dlg.close()
+        else:
+            fresh.append(dlg)
+    assert len(fresh) == 1
+    return fresh[0]
+
+
+async def test_llm_settings_reload_and_save_edge_paths(
+    app, llm_client, tmp_llm_config, wait_for, message_boxes, monkeypatch
+):
+    application, window = app
+    db_path = application._db_path
+
+    # Save #1: the per-game prompt rows are created
+    window.llm_setup_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(LlmSetupDialog)))
+    wizard = window.findChildren(LlmSetupDialog)[0]
+    wizard.saved.emit(
+        LlmConfig(base_url=ENDPOINT, model=MODEL), WORLD_PROMPT, {"character": {}}
+    )
+    await wait_for(lambda: wizard.result() == QDialog.DialogCode.Accepted)
+
+    # Restart on the same DB: the loader finds the stored rows
+    await application.shutdown()
+    window2 = await application.start(str(db_path))
+    try:
+        assert application._llm_vm.world_prompt == WORLD_PROMPT
+        # The setter merges with defaults: the round-tripped value is the defaults
+        assert application._llm_vm.field_prompts == _default_field_prompts()
+
+        # Save #2: the rows exist now → update-in-place path
+        wizard2 = _open_wizard(window2)
+        wizard2.saved.emit(
+            LlmConfig(base_url=ENDPOINT, model=MODEL), WORLD_PROMPT + "+2", {"character": {}}
+        )
+        await wait_for(lambda: wizard2.result() == QDialog.DialogCode.Accepted)
+        assert application._llm_vm.world_prompt == WORLD_PROMPT + "+2"
+
+        # Session gone mid-save: per-game prompts are dropped, save still succeeds
+        wizard3 = _open_wizard(window2)
+        real_session = application._session
+        application._session = None
+        wizard3.saved.emit(LlmConfig(base_url=ENDPOINT, model=MODEL), "W3", {})
+        await wait_for(lambda: wizard3.result() == QDialog.DialogCode.Accepted)
+
+        # Save failure: warning box, dialog stays open (no accept)
+        application._session = real_session
+
+        async def broken_save(*args, **kwargs):
+            raise RuntimeError("save failed")
+
+        monkeypatch.setattr(application, "_save_llm_settings", broken_save)
+        wizard4 = _open_wizard(window2)
+        wizard4.saved.emit(LlmConfig(base_url=ENDPOINT, model=MODEL), "W4", {})
+        await wait_for(lambda: any(
+            kind == "warning" and "Настройка LLM" in title
+            for kind, title, _text in message_boxes
+        ))
+        assert wizard4.result() != QDialog.DialogCode.Accepted
+    finally:
+        window.close()  # already closed by start(); safe no-op
+        await application.shutdown()

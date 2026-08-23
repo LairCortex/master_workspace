@@ -425,7 +425,9 @@ class Application:
         self._http = None
 
 
-def main():
+def main():  # pragma: no cover — entry point: a second QApplication cannot be
+    # instantiated in tests and run_forever() never returns, so it is exercised
+    # by the manual smoke instead of the automated suite
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
