@@ -7,11 +7,13 @@ data, call the services, and refresh the panels.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.event_service import EventService
 from app.application.services.xlsx_import_service import XlsxImportService
+from app.infrastructure.db.models import DescriptionModel
 from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED_CONFIG
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
@@ -41,6 +43,14 @@ class ApplicationWiring:
         self._search_vm = search_vm
         self._event_dialog_vm = event_dialog_vm
         self._event_service = event_service
+        # Serializes the read-only "fill available entities" sequences on the
+        # shared session: overlapping fills can raise "concurrent operations
+        # are not permitted" on specific interleavings.
+        self._session_fill_lock = asyncio.Lock()
+        # parent_dialog → [(entity_type, entity_id, description_id)] for
+        # entities created in its popups: flushed but not committed, so they
+        # are explicitly deleted if the parent dialog is rejected.
+        self._popup_created: dict[Any, list[tuple[str, int, int]]] = {}
         self._xlsx_import = XlsxImportService(
             event_service=event_service,
             character_service=app._entity_services["character"],
@@ -121,22 +131,23 @@ class ApplicationWiring:
         # ── Helper: load available entities and set them on dialog sections ──
         async def _load_available_into_dialog(dialog):
             """Load all entities from DB and set them as available for linking."""
-            dialog.set_available_entities(
-                "organizations",
-                list(await self._app._entity_services["organization"].get_all()),
-            )
-            dialog.set_available_entities(
-                "characters",
-                list(await self._app._entity_services["character"].get_all()),
-            )
-            dialog.set_available_entities(
-                "items",
-                list(await self._app._entity_services["item"].get_all()),
-            )
-            dialog.set_available_entities(
-                "locations",
-                list(await self._app._entity_services["location"].get_all()),
-            )
+            async with self._session_fill_lock:
+                dialog.set_available_entities(
+                    "organizations",
+                    list(await self._app._entity_services["organization"].get_all()),
+                )
+                dialog.set_available_entities(
+                    "characters",
+                    list(await self._app._entity_services["character"].get_all()),
+                )
+                dialog.set_available_entities(
+                    "items",
+                    list(await self._app._entity_services["item"].get_all()),
+                )
+                dialog.set_available_entities(
+                    "locations",
+                    list(await self._app._entity_services["location"].get_all()),
+                )
 
         # Add event button
         def on_add_event():
@@ -168,6 +179,10 @@ class ApplicationWiring:
                 lambda a, t: asyncio.ensure_future(
                     _open_related_create_dialog(dialog, a, t)
                 )
+            )
+            dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+            dialog.rejected.connect(
+                lambda: asyncio.ensure_future(self._cleanup_popup_entities(dialog))
             )
             dialog.open()
 
@@ -249,6 +264,10 @@ class ApplicationWiring:
                         _open_related_create_dialog(dialog, a, t)
                     )
                 )
+                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+                dialog.rejected.connect(
+                    lambda: asyncio.ensure_future(self._cleanup_popup_entities(dialog))
+                )
                 dialog.open()
             except Exception:
                 await self._app._session.rollback()
@@ -325,6 +344,10 @@ class ApplicationWiring:
                         _open_related_create_dialog(dialog, a, t)
                     )
                 )
+                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+                dialog.rejected.connect(
+                    lambda: asyncio.ensure_future(self._cleanup_popup_entities(dialog))
+                )
 
                 dialog.open()
             except Exception:
@@ -342,12 +365,15 @@ class ApplicationWiring:
             self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
             self._app._wire_ai_buttons(sub_dialog)
 
-            # Fill the popup's own related sections so «Привязать существующего» works inside.
-            for cfg in _RELATED_CONFIG.get(entity_type, []):
-                rel_svc = self._app._get_entity_service(cfg["entity_type"])
-                if rel_svc:
-                    available = await rel_svc.get_all()
-                    sub_dialog.set_available_entities(cfg["attr"], list(available))
+            # Fill the popup's own related sections so «Привязать существующего»
+            # works inside. Serialized with _load_available_into_dialog on the
+            # same lock (shared session, see __init__).
+            async with self._session_fill_lock:
+                for cfg in _RELATED_CONFIG.get(entity_type, []):
+                    rel_svc = self._app._get_entity_service(cfg["entity_type"])
+                    if rel_svc:
+                        available = await rel_svc.get_all()
+                        sub_dialog.set_available_entities(cfg["attr"], list(available))
 
             async def on_sub_saved(sub_data):
                 related_changes = sub_data.pop("related_changes", {})
@@ -356,19 +382,32 @@ class ApplicationWiring:
                     return
                 chars_text = sub_data.pop("characteristics", "")
                 backstory_text = sub_data.pop("backstory", "")
-                new_entity = await sub_svc.create_entity(
-                    characteristics=chars_text,
-                    backstory=backstory_text,
-                    **sub_data,
-                )
-                await self._app._session.flush()
-                for attr, change in related_changes.items():
-                    # Pre-load the collection (link-only sync must not lazy-load).
-                    await self._app._session.refresh(new_entity, attribute_names=[attr])
-                    await sub_svc.sync_related(
-                        new_entity, attr, set(change.get("current_ids", []))
+                try:
+                    new_entity = await sub_svc.create_entity(
+                        characteristics=chars_text,
+                        backstory=backstory_text,
+                        **sub_data,
                     )
+                    await self._app._session.flush()
+                    for attr, change in related_changes.items():
+                        current_ids = change.get("current_ids", [])
+                        if not current_ids:
+                            continue
+                        # Pre-load the collection (link-only sync must not lazy-load).
+                        await self._app._session.refresh(new_entity, attribute_names=[attr])
+                        await sub_svc.sync_related(new_entity, attr, set(current_ids))
+                except Exception as exc:  # noqa: BLE001
+                    # Roll back the partial state (description row, failed
+                    # entity) so the shared session is left usable, and notify.
+                    await self._app._session.rollback()
+                    QMessageBox.critical(
+                        self._window, "Ошибка создания сущности", str(exc)
+                    )
+                    return
                 parent_dialog.add_related_entity(attr_name, new_entity)
+                self._popup_created.setdefault(parent_dialog, []).append(
+                    (entity_type, new_entity.id, new_entity.description_id)
+                )
 
             sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
             sub_dialog.open()
@@ -393,3 +432,24 @@ class ApplicationWiring:
         window.world_snapshot.entity_clicked.connect(
             lambda t, i: asyncio.ensure_future(on_entity_click(t, i))
         )
+
+    async def _cleanup_popup_entities(self, parent_dialog) -> None:
+        """Delete popup-created rows when the parent dialog is rejected.
+
+        Popup saves only flush (no commit): without this cleanup the flushed
+        rows (entities, their descriptions, M2M links) sit pending in the
+        shared session and ride any later commit, persisting entities the
+        user cancelled.
+        """
+        pending = self._popup_created.pop(parent_dialog, [])
+        if not pending:
+            return
+        for entity_type, entity_id, description_id in pending:
+            service = self._app._get_entity_service(entity_type)
+            entity = await service.get_entity(entity_id)
+            if entity is not None:
+                await self._app._session.delete(entity)
+            description = await self._app._session.get(DescriptionModel, description_id)
+            if description is not None:
+                await self._app._session.delete(description)
+        await self._app._session.flush()

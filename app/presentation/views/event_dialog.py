@@ -23,7 +23,9 @@ _TABS: list[tuple[str, str, str, str]] = [
     ("loc_tab", "locations", "location", "Локации"),
 ]
 
-_REL_ATTRS = ("organizations", "characters", "items", "locations")
+# Derived from _TABS so a new tab type cannot silently drop out of
+# populate()/get_data().
+_REL_ATTRS: tuple[str, ...] = tuple(attr for _, attr, _, _ in _TABS)
 
 
 class EventDialog(QDialog):
