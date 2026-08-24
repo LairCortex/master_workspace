@@ -5,11 +5,10 @@ import base64
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QImage
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.migrations import init_db
-from app.infrastructure.db.models import CharacterModel, OrganizationModel
 from app.infrastructure.images.paths import original_path, preview_path
 
 

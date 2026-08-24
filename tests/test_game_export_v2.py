@@ -1,7 +1,6 @@
 """Tests for .nri export v2: game.db + images/** + meta.json (design D9)."""
 from __future__ import annotations
 
-import json
 import zipfile
 
 import pytest
