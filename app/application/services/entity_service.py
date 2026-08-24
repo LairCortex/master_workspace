@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, Sequence
 
+from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.base_repository import BaseRepository
 
 # Map attr names to entity_type strings for relationship syncing
@@ -22,6 +23,7 @@ class EntityService:
         repo: BaseRepository,
         description_repo: BaseRepository,
         related_services: Dict[str, "EntityService"] | None = None,
+        image_store: ImageStore | None = None,
     ) -> None:
         self._repo = repo
         self._desc_repo = description_repo
@@ -29,6 +31,10 @@ class EntityService:
         # entities during M2M sync (replaces Application._get_entity_service
         # lookups in the old main.py closures).
         self._related_services = related_services or {}
+        # Used to GC a replaced/removed image after the ref-mutation commits
+        # (design D6/task 6.2) — None for entity types without an image field
+        # (the "image_id" key is simply absent from field_data for those).
+        self._image_store = image_store
 
     def set_related_services(self, services: Dict[str, "EntityService"]) -> None:
         """Point at sibling services (populated by the Application catalog)."""
@@ -116,6 +122,16 @@ class EntityService:
         commit on success, rollback + silent None on error.
         """
         try:
+            # Snapshot the current image_id (if this entity type has the
+            # field) before mutating it, so a replace/remove can be GC'd
+            # after commit (design D6: commit-first, then gc_after_commit —
+            # never inside the same transaction as the ref mutation).
+            old_image_id = None
+            has_image_field = "image_id" in field_data
+            if has_image_field:
+                current = await self.get_entity(entity_id)
+                old_image_id = getattr(current, "image_id", None) if current else None
+
             # Update basic entity fields
             await self.update_entity(entity_id, **field_data)
 
@@ -139,6 +155,12 @@ class EntityService:
                 await self.sync_related(ent, attr_name, desired_ids)
 
             await self._session.commit()
+
+            if has_image_field and self._image_store is not None:
+                new_image_id = field_data.get("image_id")
+                if new_image_id != old_image_id:
+                    await self._image_store.gc_after_commit(old_image_id)
+
             return refreshed
         except Exception:
             await self._session.rollback()

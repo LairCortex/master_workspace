@@ -13,8 +13,9 @@ from qasync import QEventLoop
 
 from app.infrastructure.db.database import create_engine, create_session_factory
 from app.infrastructure.db.migrations import init_db
-from app.infrastructure.db.game_manager import export_game, get_db_url
+from app.infrastructure.db.game_manager import ensure_game_directory, export_game, get_db_url, get_images_dir
 from app.infrastructure.db.models import GameSettingsModel
+from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -40,6 +41,7 @@ from app.presentation.viewmodels.llm_viewmodel import (
 from app.presentation.utils.date_utils import (
     SETTINGS_KEY, get_custom_months, months_from_json, months_to_json, set_custom_months,
 )
+from app.presentation.utils.image_utils import set_image_dir
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
@@ -64,6 +66,7 @@ class Application:
         self._session = None
         self._window: MainWindow | None = None
         self._db_path: str | None = None
+        self._image_store: ImageStore | None = None
 
         self._config_manager = LlmConfigManager()
         self._http_injected: AppHttpClient | None = http
@@ -75,15 +78,26 @@ class Application:
         self._wiring: ApplicationWiring | None = None
 
     async def start(self, db_path: str) -> MainWindow:
-        """Initialize DB, create all layers, show main window."""
+        """Initialize DB, create all layers, show main window.
+
+        Startup order (design D1/D7/D8): migrate a legacy flat ``.db`` into
+        its catalog directory first (game name = directory name from then
+        on) → schema + legacy-image migration → restore the storage
+        invariant (``startup_gc``) → build layers → show the window.
+        """
+        db_path = str(ensure_game_directory(db_path))
         self._db_path = db_path
         db_url = get_db_url(db_path)
         self.engine = create_engine(db_url)
         self.session_factory = create_session_factory(self.engine)
-        await init_db(self.engine)
+        image_dir = get_images_dir(db_path)
+        await init_db(self.engine, image_dir=image_dir)
         self._session = self.session_factory()
+        self._image_store = ImageStore(self._session, image_dir)
+        await self._image_store.startup_gc()
+        set_image_dir(image_dir)
 
-        game_name = Path(db_path).stem
+        game_name = Path(db_path).parent.name
 
         # Load custom month names
         await self._load_month_settings()
@@ -178,7 +192,7 @@ class Application:
 
         if not self._db_path:
             return
-        game_name = Path(self._db_path).stem
+        game_name = Path(self._db_path).parent.name
         dest, _ = QFileDialog.getSaveFileName(
             self._window,
             "Экспорт игры",
@@ -246,7 +260,7 @@ class Application:
             "location": LocationRepository(self._session),
         }
         services = {
-            t: EntityService(repo=r, description_repo=desc_repo)
+            t: EntityService(repo=r, description_repo=desc_repo, image_store=self._image_store)
             for t, r in repo_map.items()
         }
         for type_name, svc in services.items():
@@ -609,6 +623,8 @@ class Application:
         if self._session:
             await self._session.close()
             self._session = None
+        self._image_store = None
+        set_image_dir(None)
         if self.engine:
             await self.engine.dispose()
             self.engine = None

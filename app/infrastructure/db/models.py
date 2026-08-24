@@ -1,9 +1,9 @@
 """SQLAlchemy ORM models for NRI scenario manager."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Column, Date, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -102,6 +102,23 @@ class DescriptionModel(Base):
     backstory: Mapped[str | None] = mapped_column(Text, default=None)
 
 
+class ImageModel(Base):
+    """Metadata for a file-backed image (see app/infrastructure/images).
+
+    Pixels live on disk, addressed by ``sha256``; this row only records
+    enough to dedup, resolve paths, and display without decoding the file.
+    """
+    __tablename__ = "images"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    ext: Mapped[str] = mapped_column(String(16), nullable=False)
+    width: Mapped[int] = mapped_column(Integer, nullable=False)
+    height: Mapped[int] = mapped_column(Integer, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class EventModel(Base):
     __tablename__ = "events"
 
@@ -136,10 +153,16 @@ class OrganizationModel(Base):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     music_url: Mapped[str | None] = mapped_column(Text, default=None)
-    image: Mapped[str | None] = mapped_column(Text, default=None)
+    image: Mapped[str | None] = mapped_column(Text, default=None)  # legacy base64; NULL after migration
+    image_id: Mapped[int | None] = mapped_column(
+        ForeignKey("images.id", ondelete="SET NULL"), default=None,
+    )
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
+    # Eager-loaded so presentation/utils/image_utils can resolve a display
+    # path synchronously (sha256+ext), without the view ever querying itself.
+    image_ref: Mapped[ImageModel | None] = relationship(lazy="selectin")
     events: Mapped[list[EventModel]] = relationship(
         secondary=event_organization, back_populates="organizations", lazy="selectin",
     )
@@ -164,11 +187,15 @@ class CharacterModel(Base):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     personality: Mapped[str | None] = mapped_column(Text, default=None)
-    image: Mapped[str | None] = mapped_column(Text, default=None)
+    image: Mapped[str | None] = mapped_column(Text, default=None)  # legacy base64; NULL after migration
+    image_id: Mapped[int | None] = mapped_column(
+        ForeignKey("images.id", ondelete="SET NULL"), default=None,
+    )
     music_url: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
+    image_ref: Mapped[ImageModel | None] = relationship(lazy="selectin")
     events: Mapped[list[EventModel]] = relationship(
         secondary=event_character, back_populates="characters", lazy="selectin",
     )
@@ -224,11 +251,15 @@ class LocationModel(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
-    image: Mapped[str | None] = mapped_column(Text, default=None)
+    image: Mapped[str | None] = mapped_column(Text, default=None)  # legacy base64; NULL after migration
+    image_id: Mapped[int | None] = mapped_column(
+        ForeignKey("images.id", ondelete="SET NULL"), default=None,
+    )
     music_url: Mapped[str | None] = mapped_column(Text, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
+    image_ref: Mapped[ImageModel | None] = relationship(lazy="selectin")
     events: Mapped[list[EventModel]] = relationship(
         secondary=event_location, back_populates="locations", lazy="selectin",
     )

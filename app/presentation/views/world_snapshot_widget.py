@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from app.presentation.utils.date_utils import format_game_date
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.detail_panel import rating_to_color
-from app.presentation.utils.image_utils import base64_to_thumbnail
+from app.presentation.utils.image_utils import load_entity_preview
 
 
 # ── Icon helpers ──────────────────────────────────────────────────────────
@@ -268,12 +268,10 @@ class WorldSnapshotWidget(QWidget):
             f.setBold(True)
             node.setFont(0, f)
 
-        # Thumbnail for entities with images
-        img_b64 = getattr(entity, "image", None)
-        if img_b64 and isinstance(img_b64, str):
-            pm = base64_to_thumbnail(img_b64, size=24)
-            if not pm.isNull():
-                node.setIcon(0, QIcon(pm))
+        # Thumbnail for entities with images (file-backed, design D10)
+        pm = load_entity_preview(entity, slot_size=24)
+        if not pm.isNull():
+            node.setIcon(0, QIcon(pm))
         else:
             node.setIcon(0, _icon(entity_type))
 

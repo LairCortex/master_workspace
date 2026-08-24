@@ -63,6 +63,7 @@ class ApplicationWiring:
             location_service=app._entity_services["location"],
             organization_service=app._entity_services["organization"],
             item_service=app._entity_services["item"],
+            image_store=app._image_store,
         )
 
     def _spawn(self, coro: Coroutine) -> asyncio.Task:
@@ -79,6 +80,30 @@ class ApplicationWiring:
     async def _run_locked(self, coro: Coroutine) -> Any:
         async with self._session_lock:
             return await coro
+
+    def _wire_image_picked(self, dialog: EntityCardDialog) -> None:
+        """Ingest a freshly picked file through ``ImageStore`` (design D4/6.1).
+
+        The dialog only reads bytes and shows a local preview; persisting
+        through the single ingest pipeline (dedup, sha256, file writes) is
+        this glue's job. A failure here (corrupt/undecodable content that
+        slipped past the dialog's own check) warns instead of failing
+        silently — the field just stays unset.
+        """
+        async def on_image_picked(data: bytes) -> None:
+            image_store = self._app._image_store
+            if image_store is None:
+                return
+            try:
+                image_id = await image_store.store(data)
+            except ValueError:
+                QMessageBox.warning(
+                    self._window, "Изображение", "Файл повреждён или не является изображением.",
+                )
+                return
+            dialog.set_stored_image_id(image_id)
+
+        dialog.image_picked.connect(lambda data: self._spawn(on_image_picked(data)))
 
     def connect(self) -> None:
         """Connect all signals (called once from Application.start)."""
@@ -216,6 +241,7 @@ class ApplicationWiring:
                 dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
                 self._app._wire_ai_buttons(dialog)
+                self._wire_image_picked(dialog)
 
                 async def on_entity_saved(data):
                     try:
@@ -332,6 +358,7 @@ class ApplicationWiring:
                 dialog.populate(entity)
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
                 self._app._wire_ai_buttons(dialog)
+                self._wire_image_picked(dialog)
 
                 # Load available related entities for linking
                 related_configs = _RELATED_CONFIG.get(entity_type, [])
@@ -381,6 +408,7 @@ class ApplicationWiring:
             )
             self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
             self._app._wire_ai_buttons(sub_dialog)
+            self._wire_image_picked(sub_dialog)
 
             # Fill the popup's own related sections so «Привязать существующего»
             # works inside. Plain awaits: this runs inside the task already

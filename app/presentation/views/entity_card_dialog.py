@@ -2,19 +2,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QDate, QEvent, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from app.presentation.utils.image_utils import base64_to_pixmap, load_and_encode
+from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
 from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
+from app.presentation.views.clickable_label import ClickableLabel
 from app.presentation.views.custom_date_edit import CustomDateEdit
+from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from app.presentation.views.mention_text_edit import MentionTextEdit
 from app.presentation.views.related_section import RelatedSection
 
@@ -78,13 +81,23 @@ class EntityCardDialog(QDialog):
     saved = Signal(dict)
     create_related_requested = Signal(str, str)  # (attr_name, entity_type)
     mention_clicked = Signal(str, int)  # (entity_type, entity_id)
+    # Raw bytes of a freshly picked file — the owner (wiring) persists it via
+    # ImageStore.store() and reports the result back via set_stored_image_id
+    # (design D4: ImageStore is the single ingest pipeline, not the dialog).
+    image_picked = Signal(bytes)
 
     def __init__(self, entity_vm, entity_type: str = "organization", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._vm = entity_vm
         self._entity_type = entity_type
         self._related_sections: dict[str, RelatedSection] = {}
-        self._image_b64: str = ""
+        self._image_id: int | None = None
+        # Full-size viewer inputs (design D10/task 5.3) — kept in step with
+        # whatever is currently shown in the preview slot, so the viewer
+        # works both for a saved entity and for a freshly picked, not yet
+        # persisted file (no entity row to resolve a path from).
+        self._viewer_original: QPixmap = QPixmap()
+        self._viewer_preview: QPixmap = QPixmap()
         self._extra_specs = _FIELD_SPECS.get(entity_type, [])
         self._has_image_field = any(spec.kind == "image" for spec in self._extra_specs)
         self._extra_widgets: dict[str, MentionTextEdit] = {}
@@ -111,13 +124,14 @@ class EntityCardDialog(QDialog):
             img_col = QVBoxLayout()
             img_col.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-            self.image_label = QLabel()
+            self.image_label = ClickableLabel()
             self.image_label.setFixedSize(280, 280)
             self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.image_label.setStyleSheet(
                 "QLabel { border: 1px solid palette(mid); background: palette(base); }"
             )
             self.image_label.setText("Нет изображения")
+            self.image_label.clicked.connect(self._open_image_viewer)
             img_col.addWidget(self.image_label)
 
             img_btn_row = QHBoxLayout()
@@ -282,26 +296,55 @@ class EntityCardDialog(QDialog):
         if not path:
             return
         try:
-            self._image_b64 = load_and_encode(path, max_size=1000)
-        except ValueError:
+            data = Path(path).read_bytes()
+        except OSError:
+            QMessageBox.warning(self, "Изображение", f"Не удалось прочитать файл: {path}")
             return
-        self._show_preview()
+        pm = QPixmap()
+        if not pm.loadFromData(data) or pm.isNull():
+            QMessageBox.warning(self, "Изображение", "Файл повреждён или не является изображением.")
+            return
+        # Not yet a durable image_id — resolved once the owner's ImageStore.store()
+        # completes (image_picked below) and calls set_stored_image_id().
+        self._image_id = None
+        self._viewer_original = pm  # the picked file itself IS the "original"
+        self._viewer_preview = QPixmap()
+        self._display_pixmap(pm.scaled(
+            280, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        ))
+        self.image_picked.emit(data)
+
+    def set_stored_image_id(self, image_id: int) -> None:
+        """Called by the owner once ``image_picked``'s bytes are persisted."""
+        self._image_id = image_id
 
     def _on_clear_image(self) -> None:
-        self._image_b64 = ""
-        if self._has_image_field:
-            self.image_label.setPixmap(QPixmap())
-            self.image_label.setText("Нет изображения")
-            self.clear_image_btn.setEnabled(False)
+        self._image_id = None
+        self._viewer_original = QPixmap()
+        self._viewer_preview = QPixmap()
+        self._clear_preview()
 
-    def _show_preview(self) -> None:
-        if not self._has_image_field or not self._image_b64:
+    def _open_image_viewer(self) -> None:
+        if not self._has_image_field:
             return
-        pm = base64_to_pixmap(self._image_b64, max_size=280)
-        if not pm.isNull():
-            self.image_label.setPixmap(pm)
-            self.image_label.setText("")
-            self.clear_image_btn.setEnabled(True)
+        ImageViewerDialog(self._viewer_original, self._viewer_preview, parent=self).exec()
+
+    def _display_pixmap(self, pm: QPixmap) -> None:
+        if not self._has_image_field:
+            return
+        if pm.isNull():
+            self._clear_preview()
+            return
+        self.image_label.setPixmap(pm)
+        self.image_label.setText("")
+        self.clear_image_btn.setEnabled(True)
+
+    def _clear_preview(self) -> None:
+        if not self._has_image_field:
+            return
+        self.image_label.setPixmap(QPixmap())
+        self.image_label.setText("Нет изображения")
+        self.clear_image_btn.setEnabled(False)
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -328,11 +371,16 @@ class EntityCardDialog(QDialog):
             value = getattr(entity, name, None)
             widget.setContent(value or "")
 
-        # Image from DB (base64)
-        img_data = getattr(entity, "image", None)
-        if img_data and self._has_image_field:
-            self._image_b64 = img_data
-            self._show_preview()
+        # Image from file storage (design D10) — entity.image_ref is
+        # eager-loaded (lazy="selectin"), so this resolves synchronously.
+        if self._has_image_field:
+            self._image_id = getattr(entity, "image_id", None)
+            self._viewer_original = load_entity_original(entity)
+            # Only needed as the viewer's fallback when the original is
+            # missing/corrupt — loaded at native preview size (≤512px, no
+            # further downscale), not the 280px slot shown in the card.
+            self._viewer_preview = load_entity_preview(entity, slot_size=4096)
+            self._display_pixmap(load_entity_preview(entity, slot_size=280))
 
         # Music URL
         music_url = getattr(entity, "music_url", None)
@@ -366,7 +414,7 @@ class EntityCardDialog(QDialog):
         for name, widget in self._extra_widgets.items():
             data[name] = widget.getContent().strip()
         if self._has_image_field:
-            data["image"] = self._image_b64
+            data["image_id"] = self._image_id
 
         # Related entity changes
         if self._related_sections:

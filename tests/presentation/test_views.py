@@ -271,7 +271,8 @@ class TestGameLauncherDialog:
         with qtbot.waitSignal(w.game_selected, timeout=1000):
             w._on_new()
         assert w.selected_path is not None
-        assert w.selected_path.endswith("Fresh.db")
+        assert w.selected_path.endswith("game.db")
+        assert "Fresh" in w.selected_path
         assert w.list_widget.count() == 1
 
     def test_on_new_duplicate_shows_warning(self, qtbot, mocker):
@@ -959,16 +960,18 @@ class TestEntityCardDialogImage:
         qtbot.addWidget(w)
         w.name_input.setText("Hero")
         data = w.get_data()
-        assert "image" in data
-        assert data["image"] == ""
+        assert "image_id" in data
+        assert data["image_id"] is None
 
-    def test_populate_with_image_b64(self, qtbot):
-        from app.presentation.utils.image_utils import _image_to_base64
-        from PySide6.QtGui import QImage
-        from PySide6.QtCore import Qt
-        img = QImage(10, 10, QImage.Format.Format_RGB32)
-        img.fill(Qt.GlobalColor.blue)
-        b64 = _image_to_base64(img)
+    def test_populate_with_image_id(self, qtbot, monkeypatch):
+        import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
+        from PySide6.QtGui import QPixmap
+
+        fake_pixmap = QPixmap(10, 10)
+        fake_pixmap.fill(Qt.GlobalColor.blue)
+        monkeypatch.setattr(
+            entity_card_dialog_mod, "load_entity_preview", lambda entity, slot_size: fake_pixmap
+        )
 
         w = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(w)
@@ -978,21 +981,21 @@ class TestEntityCardDialogImage:
         entity.end_date = date(1200, 12, 31)
         entity.personality = "Brave"
         entity.tasks = ""
-        entity.image = b64
+        entity.image_id = 7
         entity.description = MagicMock(characteristics="strong", backstory="old")
         entity.items = []
         entity.locations = []
         entity.organizations = []
         w.populate(entity)
-        assert w._image_b64 == b64
+        assert w._image_id == 7
         assert w.clear_image_btn.isEnabled()
 
     def test_clear_image(self, qtbot):
         w = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(w)
-        w._image_b64 = "some_data"
+        w._image_id = 5
         w._on_clear_image()
-        assert w._image_b64 == ""
+        assert w._image_id is None
         assert not w.clear_image_btn.isEnabled()
 
 

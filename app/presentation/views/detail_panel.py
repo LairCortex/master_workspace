@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
     QTabWidget, QVBoxLayout, QWidget,
 )
 
-from app.presentation.utils.image_utils import base64_to_thumbnail
+from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
+from app.presentation.views.clickable_label import ClickableLabel
+from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 
 
 def _truncate(text: str, max_len: int = 120) -> str:
@@ -88,6 +90,10 @@ def _build_summary(entity: Any, entity_type: str) -> str:
 class _EntityItemWidget(QWidget):
     """Custom widget rendered inside a QListWidgetItem: optional thumbnail + name + summary."""
 
+    # Emitted when the thumbnail is clicked — opens the full-size viewer
+    # (design D10/task 5.3). Only wired when a thumbnail is actually shown.
+    image_clicked = Signal()
+
     def __init__(
         self,
         name: str,
@@ -106,10 +112,12 @@ class _EntityItemWidget(QWidget):
         outer.setSpacing(8)
 
         if thumbnail and not thumbnail.isNull():
-            thumb_label = QLabel()
+            thumb_label = ClickableLabel()
             thumb_label.setPixmap(thumbnail)
             thumb_label.setFixedSize(100, 100)
             thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            thumb_label.clicked.connect(self.image_clicked)
             outer.addWidget(thumb_label)
 
         text_col = QVBoxLayout()
@@ -217,13 +225,11 @@ class DetailPanel(QWidget):
             if not isinstance(rating_val, int):
                 rating_val = 1
 
-            # Thumbnail for entities with image
-            thumbnail = None
-            img_b64 = getattr(entity, "image", None)
-            if img_b64 and isinstance(img_b64, str):
-                thumbnail = base64_to_thumbnail(img_b64, size=100)
+            # Thumbnail for entities with an image (file-backed, design D10)
+            thumbnail = load_entity_preview(entity, slot_size=100)
 
             widget = _EntityItemWidget(name, summary, thumbnail=thumbnail, rating=rating_val)
+            widget.image_clicked.connect(lambda e=entity: self._open_image_viewer(e))
             widget.adjustSize()
 
             item = QListWidgetItem()
@@ -239,3 +245,8 @@ class DetailPanel(QWidget):
         data = item.data(256)
         if data and data.get("id"):
             self.entity_clicked.emit(entity_type, data["id"])
+
+    def _open_image_viewer(self, entity: Any) -> None:
+        original = load_entity_original(entity)
+        preview = load_entity_preview(entity, slot_size=4096)
+        ImageViewerDialog(original, preview, parent=self).exec()

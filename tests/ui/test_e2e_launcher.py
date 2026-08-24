@@ -20,9 +20,9 @@ async def test_launcher_create_new_game(qapp, llm_client, tmp_games_dir, tmp_llm
         dialog_input["answer"] = ("Нове Королівство", True)
         dialog.new_button.click()
 
-        # the game file is created in the (temporary) games dir and selected
-        assert dialog.selected_path == str(tmp_games_dir / "Нове Королівство.db")
-        assert (tmp_games_dir / "Нове Королівство.db").exists()
+        # the game catalog dir is created in the (temporary) games dir and selected
+        assert dialog.selected_path == str(tmp_games_dir / "Нове Королівство" / "game.db")
+        assert (tmp_games_dir / "Нове Королівство" / "game.db").exists()
         assert dialog.list_widget.count() == 1  # list refreshed
     finally:
         dialog.close()

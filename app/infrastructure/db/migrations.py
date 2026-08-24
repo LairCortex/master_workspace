@@ -6,9 +6,17 @@ for existing ones.
 """
 from __future__ import annotations
 
+import base64
 import re
+from pathlib import Path
 
-from app.infrastructure.db.models import Base
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.infrastructure.db.models import Base, CharacterModel, LocationModel, OrganizationModel
+from app.infrastructure.images.store import ImageStore
+
+_LEGACY_IMAGE_MODELS = (OrganizationModel, CharacterModel, LocationModel)
 
 
 async def _migrate_nullable_end_dates(conn):
@@ -64,11 +72,53 @@ _MIGRATIONS = [
     ("characters", "music_url", "TEXT"),
     ("items", "music_url", "TEXT"),
     ("locations", "music_url", "TEXT"),
+    ("organizations", "image_id", "INTEGER REFERENCES images(id)"),
+    ("characters", "image_id", "INTEGER REFERENCES images(id)"),
+    ("locations", "image_id", "INTEGER REFERENCES images(id)"),
 ]
 
 
-async def init_db(engine):
-    """Create tables if they don't exist, and migrate missing columns."""
+async def _migrate_legacy_images(engine, image_dir: Path) -> None:
+    """Move legacy base64 images (`image` column) into file storage (design D8).
+
+    One row committed at a time: a crash mid-migration leaves only that row
+    to retry on the next startup (legacy value is still non-NULL until the
+    file + `images` row + FK are all in place). `VACUUM` runs once, only if
+    at least one row was actually migrated.
+    """
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    migrated = 0
+    for model in _LEGACY_IMAGE_MODELS:
+        while True:
+            async with session_factory() as session:
+                result = await session.execute(
+                    select(model)
+                    .where(model.image.isnot(None), model.image != "")
+                    .limit(1)
+                )
+                row = result.scalars().first()
+                if row is None:
+                    break
+                store = ImageStore(session, image_dir)
+                data = base64.b64decode(row.image)
+                row.image_id = await store.store(data)
+                row.image = None
+                await session.commit()
+                migrated += 1
+
+    if migrated:
+        async with engine.connect() as conn:
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.exec_driver_sql("VACUUM")
+
+
+async def init_db(engine, image_dir: Path | str | None = None) -> None:
+    """Create tables if they don't exist, and migrate missing columns/data.
+
+    ``image_dir`` is the game's ``images/`` directory (design D8); when
+    omitted, legacy-base64 migration is skipped — used by schema-only tests
+    and callers with no on-disk game directory to migrate into.
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -85,3 +135,6 @@ async def init_db(engine):
     # Migrate end_date NOT NULL → nullable
     async with engine.begin() as conn:
         await _migrate_nullable_end_dates(conn)
+
+    if image_dir is not None:
+        await _migrate_legacy_images(engine, Path(image_dir))

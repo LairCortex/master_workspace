@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 
 from app.application.services.entity_service import EntityService
 from app.application.services.event_service import EventService
+from app.infrastructure.images.store import ImageStore
 
 
 @dataclass
@@ -33,6 +34,7 @@ class XlsxImportService:
         location_service: EntityService,
         organization_service: EntityService,
         item_service: EntityService,
+        image_store: ImageStore | None = None,
     ) -> None:
         self._event_service = event_service
         self._svc_map: dict[str, EntityService | EventService] = {
@@ -42,6 +44,9 @@ class XlsxImportService:
             "organization": organization_service,
             "item": item_service,
         }
+        # Ingest pipeline for the "image"/"изображение" column (design D11) —
+        # None only in tests that don't exercise that column.
+        self._image_store = image_store
 
     def validate_file(self, entity_type: str, path: str | Path) -> list[str]:
         """Open file, check structure. Returns list of error messages; empty if valid."""
@@ -139,9 +144,9 @@ class XlsxImportService:
                         or self._get_str(row, header_index, "изображение")
                     )
                     if img_path:
-                        b64 = self._load_image_from_path(path.parent, img_path)
-                        if b64:
-                            extra["image"] = b64
+                        image_id = await self._load_image_from_path(path.parent, img_path)
+                        if image_id is not None:
+                            extra["image_id"] = image_id
                         else:
                             result.errors.append(f"Строка {idx}: не удалось загрузить изображение «{img_path}»")
 
@@ -169,8 +174,15 @@ class XlsxImportService:
             progress_callback(total, total)
         return result
 
-    def _load_image_from_path(self, base_dir: Path, cell_value: str) -> str | None:
-        """Resolve path (relative to base_dir or absolute), load image, return base64 or None."""
+    async def _load_image_from_path(self, base_dir: Path, cell_value: str) -> int | None:
+        """Resolve path (relative to base_dir or absolute), ingest via ``ImageStore``.
+
+        Returns the new ``image_id``, or None on any failure (missing file,
+        unsupported extension, undecodable content, no store configured) —
+        the caller turns that into a per-row warning (design D11).
+        """
+        if self._image_store is None:
+            return None
         p = Path(cell_value.strip())
         if not p.is_absolute():
             p = (base_dir / p).resolve()
@@ -180,9 +192,9 @@ class XlsxImportService:
         if suffix not in (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"):
             return None
         try:
-            from app.presentation.utils.image_utils import load_and_encode
-            return load_and_encode(str(p), max_size=1000)
-        except Exception:
+            data = p.read_bytes()
+            return await self._image_store.store(data)
+        except (OSError, ValueError):
             return None
 
     @staticmethod

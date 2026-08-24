@@ -7,14 +7,17 @@ world-snapshot edge cases, and the timeline "+” context menu.
 """
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QDialog, QMenu, QFileDialog
+from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtWidgets import QDialog, QMenu, QFileDialog, QMessageBox
 
+import app.presentation.views.detail_panel as _detail_panel_mod
 import app.presentation.views.timeline_widget as _timeline_mod
-from app.presentation.utils.image_utils import _image_to_base64
+import app.presentation.views.world_snapshot_widget as _world_snapshot_mod
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
@@ -22,11 +25,12 @@ from app.presentation.views.timeline_widget import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget, _colored_circle
 
 
-def _png_b64(size: int = 40) -> str:
-    """A real (valid) PNG as base64 string."""
-    img = QImage(size, size, QImage.Format.Format_RGB32)
-    img.fill(Qt.GlobalColor.red)
-    return _image_to_base64(img)
+def _fake_thumbnail(size: int = 40):
+    """A real (valid, non-null) QPixmap standing in for a resolved preview."""
+    from PySide6.QtGui import QPixmap
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.red)
+    return pm
 
 
 def _temp_png(tmp_path) -> str:
@@ -42,7 +46,8 @@ def _mock_entity(id_, name, **extra):
     e.id = id_
     e.name = name
     e.rating = 1
-    e.image = None
+    e.image_ref = None
+    e.image_id = None
     e.description = MagicMock(characteristics="", backstory="")
     for attr in ("characters", "organizations", "items", "locations"):
         setattr(e, attr, [])
@@ -101,12 +106,15 @@ class TestDetailPanelGaps:
         assert "Связи" in all_text
         assert "1 персонажей" in all_text
 
-    def test_entity_image_renders_thumbnail(self, qtbot):
+    def test_entity_image_renders_thumbnail(self, qtbot, monkeypatch):
         from PySide6.QtWidgets import QLabel
 
+        monkeypatch.setattr(
+            _detail_panel_mod, "load_entity_preview", lambda entity, slot_size: _fake_thumbnail()
+        )
         w = DetailPanel(MagicMock())
         qtbot.addWidget(w)
-        org = _mock_entity(1, "Орг", image=_png_b64())
+        org = _mock_entity(1, "Орг")
         w.show_event(_mock_event(organizations=[org]))
         item_widget = w.org_list.itemWidget(w.org_list.item(0))
         thumbnails = [lab for lab in item_widget.findChildren(QLabel) if lab.pixmap() and not lab.pixmap().isNull()]
@@ -117,6 +125,46 @@ class TestDetailPanelGaps:
         qtbot.addWidget(w)
         w.show_event(_mock_event(end_date=None))
         assert "∞" in w.date_label.text()
+
+    def test_clicking_thumbnail_opens_image_viewer(self, qtbot, monkeypatch):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QMouseEvent
+
+        monkeypatch.setattr(
+            _detail_panel_mod, "load_entity_preview", lambda entity, slot_size: _fake_thumbnail()
+        )
+        monkeypatch.setattr(_detail_panel_mod, "load_entity_original", lambda entity: _fake_thumbnail())
+        opened: list = []
+        monkeypatch.setattr(
+            _detail_panel_mod, "ImageViewerDialog",
+            lambda original, preview, parent=None: opened.append((original, preview)) or MagicMock(),
+        )
+        w = DetailPanel(MagicMock())
+        qtbot.addWidget(w)
+        org = _mock_entity(1, "Орг")
+        w.show_event(_mock_event(organizations=[org]))
+        item_widget = w.org_list.itemWidget(w.org_list.item(0))
+        from app.presentation.views.clickable_label import ClickableLabel
+
+        thumb = item_widget.findChild(ClickableLabel)
+        assert thumb is not None
+        event = QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress, thumb.rect().center(),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+        )
+        thumb.mousePressEvent(event)
+        assert len(opened) == 1
+
+    def test_entities_without_image_have_no_clickable_thumbnail(self, qtbot, monkeypatch):
+        monkeypatch.setattr(_detail_panel_mod, "load_entity_preview", lambda entity, slot_size: QPixmap())
+        w = DetailPanel(MagicMock())
+        qtbot.addWidget(w)
+        org = _mock_entity(1, "Орг")
+        w.show_event(_mock_event(organizations=[org]))
+        item_widget = w.org_list.itemWidget(w.org_list.item(0))
+        from app.presentation.views.clickable_label import ClickableLabel
+
+        assert item_widget.findChild(ClickableLabel) is None
 
 
 # ── WorldSnapshotWidget: items, show-all stats, rating fallback, tooltip ──
@@ -167,8 +215,12 @@ class TestWorldSnapshotGaps:
         node = w.tree.topLevelItem(1).child(0)
         assert node.font(0).bold()
 
-    def test_entity_image_thumbnails_node_icon(self, qtbot):
-        ch = _mock_entity(1, "Герой", image=_png_b64())
+    def test_entity_image_thumbnails_node_icon(self, qtbot, monkeypatch):
+        monkeypatch.setattr(
+            _world_snapshot_mod, "load_entity_preview",
+            lambda entity, slot_size: _fake_thumbnail(size=slot_size),
+        )
+        ch = _mock_entity(1, "Герой")
         ev = _mock_event(characters=[ch])
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
@@ -266,22 +318,41 @@ class TestEntityCardDialogGaps:
         d = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(d)
         path = _temp_png(tmp_path)
+        picked: list[bytes] = []
+        d.image_picked.connect(picked.append)
         with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, ""))):
             d._on_pick_image()
-        assert d._image_b64
+        assert d._image_id is None  # not yet persisted — resolved via image_picked
+        assert picked == [Path(path).read_bytes()]
         assert d.clear_image_btn.isEnabled()
         pm = d.image_label.pixmap()
         assert pm and not pm.isNull()
-        assert d.get_data()["image"] == d._image_b64
+        assert d.get_data()["image_id"] is None
+
+        d.set_stored_image_id(42)
+        assert d.get_data()["image_id"] == 42
+
+    def test_pick_image_unreadable_file_warns(self, qtbot, tmp_path):
+        d = EntityCardDialog(None, entity_type="character")
+        qtbot.addWidget(d)
+        missing = tmp_path / "gone.png"  # never created — read_bytes() raises OSError
+        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(missing), ""))), \
+             patch.object(QMessageBox, "warning") as warn:
+            d._on_pick_image()
+        assert warn.called
+        assert d._image_id is None
+        assert not d.clear_image_btn.isEnabled()
 
     def test_pick_image_invalid_file_keeps_state(self, qtbot, tmp_path):
         d = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(d)
         bad = tmp_path / "bad.png"
         bad.write_text("not an image")
-        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(bad), ""))):
+        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (str(bad), ""))), \
+             patch.object(QMessageBox, "warning") as warn:
             d._on_pick_image()
-        assert d._image_b64 == ""
+        assert warn.called
+        assert d._image_id is None
         assert not d.clear_image_btn.isEnabled()
 
     def test_pick_image_canceled(self, qtbot):
@@ -289,14 +360,82 @@ class TestEntityCardDialogGaps:
         qtbot.addWidget(d)
         with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", ""))):
             d._on_pick_image()
-        assert d._image_b64 == ""
+        assert d._image_id is None
 
-    def test_show_preview_noop_without_image(self, qtbot):
+    def test_display_pixmap_null_clears_preview(self, qtbot):
         d = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(d)
-        d._image_b64 = ""
-        d._show_preview()  # early return — no crash, no preview
+        d._display_pixmap(QPixmap())  # null pixmap — early-clears, no crash
         assert d.image_label.pixmap() is None or d.image_label.pixmap().isNull()
+        assert not d.clear_image_btn.isEnabled()
+
+    def test_display_pixmap_and_clear_preview_noop_without_image_field(self, qtbot):
+        d = EntityCardDialog(None, entity_type="item")  # no image field
+        qtbot.addWidget(d)
+        d._display_pixmap(QPixmap())  # no image_label attribute — must not crash
+        d._clear_preview()
+
+    def test_pick_image_sets_viewer_original(self, qtbot, tmp_path):
+        d = EntityCardDialog(None, entity_type="character")
+        qtbot.addWidget(d)
+        path = _temp_png(tmp_path)
+        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, ""))):
+            d._on_pick_image()
+        assert not d._viewer_original.isNull()
+        assert d._viewer_preview.isNull()
+
+    def test_clear_image_resets_viewer_pixmaps(self, qtbot, tmp_path):
+        d = EntityCardDialog(None, entity_type="character")
+        qtbot.addWidget(d)
+        path = _temp_png(tmp_path)
+        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, ""))):
+            d._on_pick_image()
+        d._on_clear_image()
+        assert d._viewer_original.isNull()
+        assert d._viewer_preview.isNull()
+
+    def test_click_image_label_opens_viewer(self, qtbot, tmp_path, monkeypatch):
+        import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
+
+        opened: list = []
+        monkeypatch.setattr(
+            entity_card_dialog_mod, "ImageViewerDialog",
+            lambda original, preview, parent=None: SimpleNamespace(exec=lambda: opened.append((original, preview))),
+        )
+        d = EntityCardDialog(None, entity_type="character")
+        qtbot.addWidget(d)
+        path = _temp_png(tmp_path)
+        with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, ""))):
+            d._on_pick_image()
+        d._open_image_viewer()
+        assert len(opened) == 1
+
+    def test_open_image_viewer_noop_without_image_field(self, qtbot, monkeypatch):
+        import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
+
+        opened: list = []
+        monkeypatch.setattr(
+            entity_card_dialog_mod, "ImageViewerDialog",
+            lambda *a, **k: opened.append(1),
+        )
+        d = EntityCardDialog(None, entity_type="item")  # no image field
+        qtbot.addWidget(d)
+        d._open_image_viewer()
+        assert opened == []
+
+    def test_populate_sets_viewer_original_and_preview(self, qtbot, monkeypatch):
+        import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
+
+        fake_original = QPixmap(5, 5)
+        fake_original.fill(Qt.GlobalColor.red)
+        monkeypatch.setattr(entity_card_dialog_mod, "load_entity_original", lambda entity: fake_original)
+        monkeypatch.setattr(
+            entity_card_dialog_mod, "load_entity_preview", lambda entity, slot_size: QPixmap(),
+        )
+        d = EntityCardDialog(None, entity_type="character")
+        qtbot.addWidget(d)
+        d.populate(_mock_entity(1, "Герой"))
+        assert d._viewer_original is fake_original
 
     def test_populate_without_end_date_checks_forever(self, qtbot):
         d = EntityCardDialog(None, entity_type="organization")

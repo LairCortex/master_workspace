@@ -69,7 +69,8 @@ class TestCreateGame:
     def test_creates_file(self, games_dir):
         path = create_game("My Campaign")
         assert path.exists()
-        assert path.name == "My Campaign.db"
+        assert path.name == "game.db"
+        assert path.parent.name == "My Campaign"
 
     def test_raises_on_empty_name(self, games_dir):
         with pytest.raises(ValueError):
@@ -157,7 +158,7 @@ class TestImportGame:
         # Import
         imported = import_game(archive)
         assert imported.exists()
-        assert imported.stem == "ImportMe"
+        assert imported.parent.name == "ImportMe"
         assert imported.read_bytes() == b"test db content"
 
     def test_import_raises_on_duplicate(self, games_dir, tmp_path):

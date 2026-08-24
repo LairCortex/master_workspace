@@ -277,6 +277,8 @@ class TestOptionalColumns:
 
 
 class TestImageColumn:
+    """Image column → ImageStore.store() → image_id (design D11, task 6.3)."""
+
     def _png(self, tmp_path: Path, name="art.png") -> Path:
         from PySide6.QtGui import QImage
         p = tmp_path / name
@@ -285,74 +287,116 @@ class TestImageColumn:
         assert img.save(str(p), "PNG")
         return p
 
-    async def test_relative_image_path_loaded(self, tmp_path):
+    def _svc_with_store(self, async_session, tmp_path) -> XlsxImportService:
+        from app.infrastructure.images.store import ImageStore
+
+        store = ImageStore(async_session, tmp_path / "images")
+        return XlsxImportService(
+            DummyEventService(), DummyService(), DummyService(), DummyService(), DummyService(),
+            image_store=store,
+        )
+
+    async def test_relative_image_path_loaded(self, async_session, tmp_path):
         self._png(tmp_path)
         p = _write_xlsx(
             tmp_path / "t.xlsx",
             ["name", "start_date", "image"],
             [["C", "2001-01-01", "art.png"]],
         )
-        svc = _svc()
+        svc = self._svc_with_store(async_session, tmp_path)
         result = await svc.import_file("character", p)
         assert result.created == 1 and not result.errors
-        assert svc._svc_map["character"].created[0]["image"].startswith("iVBOR")
+        assert isinstance(svc._svc_map["character"].created[0]["image_id"], int)
 
-    async def test_absolute_image_path_loaded(self, tmp_path):
+    async def test_absolute_image_path_loaded(self, async_session, tmp_path):
         img = self._png(tmp_path, "abs.png")
         p = _write_xlsx(
             tmp_path / "t.xlsx",
             ["name", "start_date", "image"],
             [["C", "2001-01-01", str(img)]],
         )
-        svc = _svc()
+        svc = self._svc_with_store(async_session, tmp_path)
         result = await svc.import_file("organization", p)
         assert result.created == 1 and not result.errors
-        assert "image" in svc._svc_map["organization"].created[0]
+        assert "image_id" in svc._svc_map["organization"].created[0]
 
-    async def test_alternate_header_изображение(self, tmp_path):
+    async def test_alternate_header_изображение(self, async_session, tmp_path):
         self._png(tmp_path)
         p = _write_xlsx(
             tmp_path / "t.xlsx",
             ["name", "start_date", "изображение"],
             [["C", "2001-01-01", "art.png"]],
         )
-        svc = _svc()
+        svc = self._svc_with_store(async_session, tmp_path)
         result = await svc.import_file("location", p)
         assert result.created == 1 and not result.errors
-        assert "image" in svc._svc_map["location"].created[0]
+        assert "image_id" in svc._svc_map["location"].created[0]
 
-    async def test_missing_image_file_reported(self, tmp_path):
+    async def test_image_file_stored_on_disk_and_deduped(self, async_session, tmp_path):
+        """Two rows pointing at the same bytes dedup to one images row (ImageStore contract)."""
+        from sqlalchemy import func, select
+
+        from app.infrastructure.db.models import ImageModel
+
+        self._png(tmp_path)
+        p = _write_xlsx(
+            tmp_path / "t.xlsx",
+            ["name", "start_date", "image"],
+            [["C1", "2001-01-01", "art.png"], ["C2", "2001-01-01", "art.png"]],
+        )
+        svc = self._svc_with_store(async_session, tmp_path)
+        result = await svc.import_file("character", p)
+        assert result.created == 2 and not result.errors
+        created = svc._svc_map["character"].created
+        assert created[0]["image_id"] == created[1]["image_id"]
+        count = (await async_session.execute(select(func.count()).select_from(ImageModel))).scalar()
+        assert count == 1
+
+    async def test_missing_image_file_reported(self, async_session, tmp_path):
         p = _write_xlsx(
             tmp_path / "t.xlsx",
             ["name", "start_date", "image"],
             [["C", "2001-01-01", "ghost.png"]],
         )
-        svc = _svc()
+        svc = self._svc_with_store(async_session, tmp_path)
         result = await svc.import_file("character", p)
         assert result.created == 1
         assert result.errors == ["Строка 2: не удалось загрузить изображение «ghost.png»"]
-        assert "image" not in svc._svc_map["character"].created[0]
+        assert "image_id" not in svc._svc_map["character"].created[0]
 
-    async def test_unsupported_image_suffix_reported(self, tmp_path):
+    async def test_unsupported_image_suffix_reported(self, async_session, tmp_path):
         (tmp_path / "art.txt").write_text("not an image")
         p = _write_xlsx(
             tmp_path / "t.xlsx",
             ["name", "start_date", "image"],
             [["C", "2001-01-01", "art.txt"]],
         )
-        svc = _svc()
+        svc = self._svc_with_store(async_session, tmp_path)
         result = await svc.import_file("character", p)
         assert result.created == 1
         assert result.errors == ["Строка 2: не удалось загрузить изображение «art.txt»"]
 
-    async def test_corrupt_image_file_reported(self, tmp_path):
+    async def test_corrupt_image_file_reported(self, async_session, tmp_path):
         (tmp_path / "bad.png").write_bytes(b"not a png")
         p = _write_xlsx(
             tmp_path / "t.xlsx",
             ["name", "start_date", "image"],
             [["C", "2001-01-01", "bad.png"]],
         )
-        svc = _svc()
+        svc = self._svc_with_store(async_session, tmp_path)
+        result = await svc.import_file("character", p)
+        assert result.created == 1
+        assert "не удалось загрузить изображение" in result.errors[0]
+
+    async def test_no_image_store_configured_reported(self, tmp_path):
+        """image_store=None (e.g. a caller that never wires one) fails safe, not crashes."""
+        self._png(tmp_path)
+        p = _write_xlsx(
+            tmp_path / "t.xlsx",
+            ["name", "start_date", "image"],
+            [["C", "2001-01-01", "art.png"]],
+        )
+        svc = _svc()  # no image_store
         result = await svc.import_file("character", p)
         assert result.created == 1
         assert "не удалось загрузить изображение" in result.errors[0]

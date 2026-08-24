@@ -6,7 +6,6 @@ ad-hoc schema-migration edge paths and service edge branches.
 """
 from __future__ import annotations
 
-import base64
 import sys
 import zipfile
 from datetime import date
@@ -55,17 +54,6 @@ async def test_llm_viewmodel_json_fallbacks(qapp):
     assert vm.world_prompt == ""
     vm.field_prompts_from_json("{{{not json")
     assert vm.field_prompts == _default_field_prompts()
-
-
-# ── image utils ───────────────────────────────────────────────────────────
-
-def test_base64_to_pixmap_invalid_payloads(qapp):
-    from app.presentation.utils.image_utils import base64_to_pixmap
-
-    # Undecodable base64
-    assert base64_to_pixmap("!!!not-base64!!!").isNull()
-    # Decodable bytes, but not an image
-    assert base64_to_pixmap(base64.b64encode(b"definitely not an image").decode()).isNull()
 
 
 # ── dialogs: guards outside the happy path ────────────────────────────────

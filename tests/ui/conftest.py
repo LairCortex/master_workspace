@@ -136,10 +136,16 @@ async def llm_client():
 async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     """Fully started Application on a fresh temporary game DB.
 
+    Deliberately outside ``tmp_games_dir`` (a sibling of it under ``tmp_path``)
+    so the "current" test game does not show up in the launcher's list —
+    tests that need it listed copy/create it into ``tmp_games_dir`` explicitly.
+
     Yields ``application, window``; teardown closes the window and shuts
     down the application.
     """
-    db_path = tmp_path / "game.db"
+    db_path = tmp_path / "game" / "game.db"
+    db_path.parent.mkdir(parents=True)
+    (db_path.parent / "images").mkdir()
     application = Application(qapp, http=llm_client)
     window = await application.start(str(db_path))
     yield application, window
