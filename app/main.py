@@ -207,7 +207,13 @@ class Application:
         dialog.open()
 
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
-        """Connect mention search and click signals for a dialog's MentionTextEdits."""
+        """Connect mention search and click signals for a dialog's MentionTextEdits.
+
+        Both signals touch the shared ``AsyncSession`` (search / entity load),
+        so they must run through ``ApplicationWiring._spawn`` like every other
+        session-touching task — a bare ``ensure_future`` here would race the
+        session against whatever task the lock is currently serializing.
+        """
         for edit in dialog.get_mention_edits():
             async def _do_search(query, _edit=edit):
                 try:
@@ -219,11 +225,11 @@ class Application:
                     )
 
             edit.mention_search_requested.connect(
-                lambda q, _fn=_do_search: asyncio.ensure_future(_fn(q))
+                lambda q, _fn=_do_search: self._wiring._spawn(_fn(q))
             )
 
         dialog.mention_clicked.connect(
-            lambda t, i: asyncio.ensure_future(on_entity_click_fn(t, i))
+            lambda t, i: self._wiring._spawn(on_entity_click_fn(t, i))
         )
 
     def _get_entity_service(self, entity_type: str) -> EntityService | None:

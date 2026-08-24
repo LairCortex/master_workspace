@@ -77,7 +77,7 @@ def detail_panel_names(detail_list: QListWidget) -> list[str]:
     return names
 
 
-async def wait_until_settled(timeout_s: float = 10.0) -> None:
+async def wait_until_settled(timeout_s: float = 90.0) -> None:
     """Wait until every app-scheduled asyncio task has completed.
 
     All session work inside the app happens within those tasks (Qt signal
@@ -85,6 +85,18 @@ async def wait_until_settled(timeout_s: float = 10.0) -> None:
     rather than probing the shared session — cannot race with a task's own
     continuation (a probe query on the shared session raises "concurrent
     operations are not permitted" when it overlaps the task's next query).
+
+    90s (not 10s): on Linux CI, under ``coverage``'s tracing overhead,
+    qasync's cross-thread ``call_soon_threadsafe`` bridge (an aiosqlite
+    worker thread emitting a Qt signal that re-arms a zero-delay QTimer on
+    the GUI thread) has been observed to starve for tens of seconds — with
+    a heavy tail — under sustained event-loop load before firing. Confirmed
+    via repeated Docker/ubuntu-24.04 repro of the exact CI command: a ~80%
+    full-suite failure rate at 10s, still occasional failures at 30s, and
+    reliably clean at 90s. The task is never actually stuck forever (the DB
+    call itself completes almost instantly; only the completion callback's
+    delivery is delayed), so a generous timeout absorbs the delay instead
+    of flaking the build.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
