@@ -3,7 +3,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QEvent
 
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -311,3 +311,174 @@ class TestEntityCardDialog:
             assert widgets[-1] is btn
             # The field is stretched; the button takes the fixed right slot.
             assert row_layout.itemAt(0).widget() is widget
+
+
+# ── Entity button & close guard (add-generate-entity) ─────────────────────
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent, QKeyEvent
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QDialog
+
+from app.presentation.views.ai_assist_button import EntityGenerateButton
+
+_ESC = lambda: QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+
+
+def _make_dialog(qtbot, kind: str = "event"):
+    if kind == "event":
+        d = EventDialog(MagicMock())
+    else:
+        d = EntityCardDialog(MagicMock(), entity_type="character")
+    qtbot.addWidget(d)
+    return d
+
+
+class TestDialogEntityButton:
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_entity_button_present(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        btn = d.get_entity_button()
+        assert isinstance(btn, EntityGenerateButton)
+        # stretch + button: the rightmost widget of its row
+        row = d._entity_row
+        widgets = [
+            row.itemAt(i).widget() for i in range(row.count())
+            if row.itemAt(i).widget() is not None
+        ]
+        assert widgets[-1] is btn
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_entity_button_row_sits_at_top_of_form(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        if kind == "event":
+            first = d.layout().itemAt(0)
+        else:
+            first = d._form_layout.itemAt(0)
+        assert first is not None
+        assert first.layout() is d._entity_row
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_entity_button_not_ready_by_default(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        btn = d.get_entity_button()
+        assert "128,128,128" in btn.styleSheet()
+        assert btn.isEnabled()  # clickable — the click shows the hint
+        assert not btn.is_cancelling
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_entity_button_states_follow_generation(self, qtbot, kind):
+        """Inactive while any field generates (single or batch), active after."""
+        d = _make_dialog(qtbot, kind)
+        btn = d.get_entity_button()
+        btn.update_llm_state("ready", True)
+        assert btn.isEnabled() and not btn.is_cancelling
+
+        btn.set_single_in_flight(True)
+        assert not btn.isEnabled()
+
+        btn.set_single_in_flight(False)
+        assert btn.isEnabled()
+
+        btn.set_wave_running(True)
+        assert btn.is_cancelling and btn.isEnabled()
+
+        btn.set_wave_running(False)
+        assert not btn.is_cancelling and btn.isEnabled()
+
+
+class TestDialogSaveLock:
+    def test_event_dialog_save_locked_overrides_validity(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        d.name_input.setText("Battle")
+        d.characteristics_input.setPlainText("Big fight")
+        d._update_validity()
+        assert d.save_button.isEnabled()
+
+        d.set_save_locked(True)
+        assert not d.save_button.isEnabled()
+
+        d.set_save_locked(False)
+        assert d.save_button.isEnabled()
+
+    def test_entity_card_save_locked(self, qtbot):
+        d = EntityCardDialog(MagicMock(), entity_type="character")
+        qtbot.addWidget(d)
+        assert d.save_button.isEnabled()
+        d.set_save_locked(True)
+        assert not d.save_button.isEnabled()
+        d.set_save_locked(False)
+        assert d.save_button.isEnabled()
+
+
+class TestDialogCloseGuard:
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_esc_during_generation_does_not_close(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        d.show()
+        guard: list = []
+        d.set_close_guard(lambda: guard.append(1))
+        d.get_ai_buttons()[0].set_generating(True)
+
+        d.keyPressEvent(_ESC())
+
+        assert d.isVisible()
+        assert guard == []  # ESC is swallowed, not routed through the guard
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_esc_without_generation_closes(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        d.show()
+        d.keyPressEvent(_ESC())
+        assert not d.isVisible()
+        assert d.result() == QDialog.DialogCode.Rejected
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_synthetic_close_during_generation_goes_to_guard(self, qtbot, kind):
+        """X / any close event during generation: silently swallowed into the
+        guard (no close, no default handling)."""
+        d = _make_dialog(qtbot, kind)
+        d.show()
+        guard: list = []
+        d.set_close_guard(lambda: guard.append(1))
+        d.get_ai_buttons()[0].set_generating(True)
+
+        event = QCloseEvent()
+        d.closeEvent(event)
+
+        # the guard handled it: the dialog stays open
+        assert guard == [1]
+        assert d.isVisible()
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_close_without_generation_passes_freely(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        d.show()
+        guard: list = []
+        d.set_close_guard(lambda: guard.append(1))
+
+        d.close()
+
+        assert guard == []
+        assert not d.isVisible()
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_cancel_button_during_generation_goes_to_guard(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        d.show()
+        guard: list = []
+        d.set_close_guard(lambda: guard.append(1))
+        d.get_ai_buttons()[0].set_generating(True)
+
+        d.cancel_button.click()
+
+        assert guard == [1]
+        assert d.isVisible()
+
+    @pytest.mark.parametrize("kind", ["event", "card"])
+    def test_cancel_button_without_generation_closes(self, qtbot, kind):
+        d = _make_dialog(qtbot, kind)
+        d.show()
+        d.cancel_button.click()
+        assert not d.isVisible()

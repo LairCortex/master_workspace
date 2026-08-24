@@ -1,10 +1,20 @@
-"""LLM orchestration — prompt assembly and sequential generation queue."""
+"""LLM orchestration — prompt assembly and parallel generation.
+
+Every request runs in its own asyncio task; there is no shared
+sequential queue. Active requests are registered per owner (the host
+dialog, keyed by identity) so cancellation and phase queries are
+scoped to one dialog at a time.
+"""
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
+from typing import Any, Callable
 
 from app.infrastructure.llm.base_provider import BaseLlmProvider
+
+log = logging.getLogger("llm.service")
 
 FIELD_CONFIG: dict[str, list[str]] = {
     "event": ["name", "characteristics", "backstory"],
@@ -30,6 +40,11 @@ ENTITY_LABELS: dict[str, str] = {
     "location": "Локация",
 }
 
+#: Request phase: the request has been (or is being) sent to the LLM.
+PHASE_IN_FLIGHT = "in_flight"
+#: Request phase: between retry attempts, waiting in backoff — not sent.
+PHASE_WAITING = "waiting"
+
 
 @dataclass
 class GenerationRequest:
@@ -40,17 +55,35 @@ class GenerationRequest:
     field_label: str
     current_text: str
     max_tokens: int = 512
-    future: asyncio.Future | None = None
+    #: Owner of the request (the host dialog). Used as an identity key in
+    #: the active-requests registry — two dialogs of the same entity type
+    #: can be open at once (nested cards), so scope is never the field_id.
+    owner: Any = None
+
+
+@dataclass
+class _ActiveGen:
+    """Registry record for one running request."""
+
+    task: asyncio.Task
+    #: PHASE_IN_FLIGHT or PHASE_WAITING; updated by the provider's on_phase hook.
+    phase: str = PHASE_IN_FLIGHT
+
+    def set_phase(self, phase: str) -> None:
+        self.phase = phase
 
 
 class LlmService:
-    """Builds prompts, queues generation requests, delegates to provider."""
+    """Builds prompts and runs generation requests in parallel.
+
+    ``generate_for_field`` schedules one ``asyncio.Task`` per request and
+    awaits its result — requests never wait on a shared queue.
+    """
 
     def __init__(self, provider: BaseLlmProvider) -> None:
         self._provider = provider
-        self._queue: asyncio.Queue[GenerationRequest] = asyncio.Queue()
-        self._worker_task: asyncio.Task | None = None
-        self._active_count = 0
+        #: owner (identity) → {field_id → active request record}
+        self._active: dict[Any, dict[str, _ActiveGen]] = {}
 
     @property
     def provider(self) -> BaseLlmProvider:
@@ -59,18 +92,6 @@ class LlmService:
     @provider.setter
     def provider(self, value: BaseLlmProvider) -> None:
         self._provider = value
-
-    @property
-    def queue_size(self) -> int:
-        return self._queue.qsize() + (1 if self._active_count else 0)
-
-    def start_worker(self) -> None:
-        if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.ensure_future(self._worker_loop())
-
-    def stop_worker(self) -> None:
-        if self._worker_task and not self._worker_task.done():
-            self._worker_task.cancel()
 
     async def generate_for_field(
         self,
@@ -81,9 +102,8 @@ class LlmService:
         field_label: str,
         current_text: str,
         max_tokens: int = 512,
+        owner: Any = None,
     ) -> str:
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[str] = loop.create_future()
         request = GenerationRequest(
             field_id=field_id,
             entity_type=entity_type,
@@ -92,11 +112,34 @@ class LlmService:
             field_label=field_label,
             current_text=current_text,
             max_tokens=max_tokens,
-            future=future,
+            owner=owner,
         )
-        await self._queue.put(request)
-        self.start_worker()
-        return await future
+        task: asyncio.Task[str] = asyncio.ensure_future(self._run(request))
+        return await task
+
+    def cancel_all(self, owner: Any) -> None:
+        """Cancel every active request of the owner (in-flight and backoff-waiting).
+
+        Cancelled tasks die with CancelledError (a BaseException): no result,
+        no error conversion, no generation_finished/generation_error.
+        """
+        for record in list(self._active.get(owner, {}).values()):
+            record.task.cancel()
+
+    def any_in_flight(self, owner: Any) -> bool:
+        """True when the owner has a request already sent (or being sent) to LLM."""
+        return self.count_in_flight(owner) > 0
+
+    def count_in_flight(self, owner: Any) -> int:
+        """Number of owner requests in the in-flight phase (not backoff-waiting)."""
+        return sum(
+            1 for record in self._active.get(owner, {}).values()
+            if record.phase == PHASE_IN_FLIGHT
+        )
+
+    def any_active(self, owner: Any) -> bool:
+        """True when the owner has any active request (any phase)."""
+        return bool(self._active.get(owner))
 
     @staticmethod
     def build_prompts(
@@ -130,32 +173,33 @@ class LlmService:
         user_prompt = "\n".join(parts)
         return system_prompt, user_prompt
 
-    async def _worker_loop(self) -> None:
-        while True:
-            request = await self._queue.get()
-            self._active_count = 1
-            try:
-                system_prompt, user_prompt = self.build_prompts(
-                    request.entity_type,
-                    request.world_prompt,
-                    request.field_prompt,
-                    request.field_label,
-                    request.current_text,
-                )
-                import logging
-                log = logging.getLogger("llm.prompt")
-                log.info("=== SYSTEM PROMPT ===\n%s", system_prompt)
-                log.info("=== USER PROMPT ===\n%s", user_prompt)
-                result = await self._provider.generate(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    max_tokens=request.max_tokens,
-                )
-                if request.future and not request.future.done():
-                    request.future.set_result(result)
-            except Exception as exc:
-                if request.future and not request.future.done():
-                    request.future.set_exception(exc)
-            finally:
-                self._active_count = 0
-                self._queue.task_done()
+    async def _run(self, request: GenerationRequest) -> str:
+        record = _ActiveGen(task=asyncio.current_task())
+        self._active.setdefault(request.owner, {})[request.field_id] = record
+        try:
+            system_prompt, user_prompt = self.build_prompts(
+                request.entity_type,
+                request.world_prompt,
+                request.field_prompt,
+                request.field_label,
+                request.current_text,
+            )
+            log.info("=== SYSTEM PROMPT ===\n%s", system_prompt)
+            log.info("=== USER PROMPT ===\n%s", user_prompt)
+            return await self._provider.generate(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=request.max_tokens,
+                on_phase=record.set_phase,
+            )
+        finally:
+            self._remove(request.owner, request.field_id, record)
+
+    def _remove(self, owner: Any, field_id: str, record: _ActiveGen) -> None:
+        # The record was registered under this owner before the try-block,
+        # so the owner entry always exists here.
+        owner_records = self._active[owner]
+        if owner_records.get(field_id) is record:
+            del owner_records[field_id]
+        if not owner_records:
+            del self._active[owner]

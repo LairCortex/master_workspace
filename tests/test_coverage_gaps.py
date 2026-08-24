@@ -18,7 +18,6 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QDialog
 
-from app.application.services.llm_service import LlmService
 from app.application.services.xlsx_import_service import XlsxImportService
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
@@ -133,29 +132,6 @@ def test_import_game_errors(tmp_path):
         gm.import_game(bad_archive)
 
 
-# ── llm service: worker restart ───────────────────────────────────────────
-
-async def test_llm_service_worker_restart():
-    svc = LlmService(provider=None)  # provider unused until a request arrives
-    svc.start_worker()
-    first = svc._worker_task
-    assert first is not None and not first.done()
-    svc.stop_worker()
-    for _ in range(100):
-        if first.done():
-            break
-        await asyncio.sleep(0.01)
-    assert first.done()
-
-    # Restart after the worker has completed
-    svc.start_worker()
-    assert svc._worker_task is not None and svc._worker_task is not first
-    svc.stop_worker()
-    for _ in range(100):
-        if svc._worker_task.done():
-            break
-        await asyncio.sleep(0.01)
-    assert svc._worker_task.done()
 
 
 # ── search bar: empty results with a short query ──────────────────────────

@@ -16,7 +16,7 @@ async def test_boot_with_injected_mock_client(app, llm_client, tmp_llm_config):
     assert llm_vm.status == llm_vm.STATUS_READY
 
     finished: list[tuple[str, str]] = []
-    llm_vm.generation_finished.connect(lambda fid, text: finished.append((fid, text)))
+    llm_vm.generation_finished.connect(lambda owner, fid, text: finished.append((fid, text)))
     await llm_vm.request_generation("event.name", "event", "name", "Название", "")
     assert finished == [("event.name", "Сгенерированный текст из mock-LLM")]
 

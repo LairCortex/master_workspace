@@ -29,7 +29,6 @@ async def http():
 @pytest.fixture
 def mock_service():
     svc = MagicMock(spec=LlmService)
-    svc.queue_size = 0
     svc.generate_for_field = AsyncMock(return_value="AI text")
     return svc
 
@@ -181,7 +180,7 @@ async def test_request_generation_emits_finished(vm, mock_service, qtbot):
     with qtbot.waitSignal(vm.generation_finished, timeout=1000) as blocker:
         await vm.request_generation("event.name", "event", "name", "Название", "текст")
 
-    assert blocker.args == ["event.name", "AI text"]
+    assert blocker.args == [None, "event.name", "AI text"]
     mock_service.generate_for_field.assert_awaited_once()
     kwargs = mock_service.generate_for_field.await_args.kwargs
     assert kwargs["world_prompt"] == "Мир"
@@ -195,17 +194,15 @@ async def test_request_generation_emits_error(vm, mock_service, qtbot):
     with qtbot.waitSignal(vm.generation_error, timeout=1000) as blocker:
         await vm.request_generation("item.name", "item", "name", "Название", "")
 
-    assert blocker.args == ["item.name", "LLM не настроен"]
+    assert blocker.args == [None, "item.name", "LLM не настроен"]
 
 
-@pytest.mark.asyncio
-async def test_request_generation_queue_signals(vm, mock_service):
+async def test_request_generation_passes_owner_to_service(vm, mock_service):
+    """The dialog-owner is forwarded to the service for scoped cancellation."""
     vm.apply_config(LlmConfig("http://x", "m"))
-    sizes: list[int] = []
-    vm.queue_size_changed.connect(sizes.append)
-    mock_service.queue_size = 1
+    owner = object()
 
-    await vm.request_generation("event.name", "event", "name", "Название", "")
+    await vm.request_generation("event.name", "event", "name", "Название", "", owner=owner)
 
-    assert sizes[0] == 2  # before start: queue_size + 1
-    assert sizes[-1] == 1  # after: queue_size
+    kwargs = mock_service.generate_for_field.await_args.kwargs
+    assert kwargs["owner"] is owner

@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from app.presentation.views.ai_assist_button import AiAssistButton
+from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
 from app.presentation.views.related_section import RelatedSection
@@ -40,6 +40,10 @@ class EventDialog(QDialog):
         self._ai_buttons: list[AiAssistButton] = []
         self._ai_row_layouts: dict[str, QHBoxLayout] = {}
         self._sections: dict[str, RelatedSection] = {}
+        self._entity_row: QHBoxLayout | None = None
+        self._entity_button: EntityGenerateButton | None = None
+        self._save_locked: bool = False
+        self._close_guard: object | None = None
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
@@ -91,6 +95,13 @@ class EventDialog(QDialog):
         self.backstory_input.textChanged.connect(self._update_validity)
         form.addRow("Предыстория *:", self._make_ai_row(self.backstory_input, "backstory"))
 
+        # Top-right corner of the form: the entity generate/cancel button.
+        self._entity_row = QHBoxLayout()
+        self._entity_row.setContentsMargins(0, 0, 0, 0)
+        self._entity_row.addStretch(1)
+        self._entity_button = EntityGenerateButton(self)
+        self._entity_row.addWidget(self._entity_button)
+        layout.addLayout(self._entity_row)
         layout.addLayout(form)
 
         # Entity tabs: name list + «Привязать существующего»/«Создать нового»/«Отвязать».
@@ -112,10 +123,10 @@ class EventDialog(QDialog):
         self.save_button = QPushButton("Сохранить")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._on_save)
-        cancel_button = QPushButton("Отмена")
-        cancel_button.clicked.connect(self.reject)
+        self.cancel_button = QPushButton("Отмена")
+        self.cancel_button.clicked.connect(self._on_cancel_clicked)
         btn_layout.addWidget(self.save_button)
-        btn_layout.addWidget(cancel_button)
+        btn_layout.addWidget(self.cancel_button)
         layout.addLayout(btn_layout)
 
     def populate(self, event: Any) -> None:
@@ -173,7 +184,12 @@ class EventDialog(QDialog):
             start = self.start_date_input.date().toPython()
             end = self.end_date_input.date().toPython()
             valid = valid and end >= start
-        self.save_button.setEnabled(valid)
+        self.save_button.setEnabled(valid and not self._save_locked)
+
+    def set_save_locked(self, locked: bool) -> None:
+        """"Save" is blocked for the whole time any generation is running."""
+        self._save_locked = locked
+        self._update_validity()
 
     def get_data(self) -> dict:
         data = {
@@ -226,8 +242,52 @@ class EventDialog(QDialog):
     def get_ai_buttons(self) -> list[AiAssistButton]:
         return list(self._ai_buttons)
 
-    def reject(self) -> None:
+    def get_entity_button(self) -> EntityGenerateButton:
+        return self._entity_button
+
+    def _is_generation_active(self) -> bool:
         if any(b.is_generating for b in self._ai_buttons):
+            return True
+        return self._entity_button is not None and self._entity_button.is_cancelling
+
+    def set_close_guard(self, fn) -> None:
+        """Wiring-provided callback for the close paths (X / «Отмена»).
+
+        «Отмена» always goes through it; X / close events — only while a
+        generation is active. The wiring's guard decides: outside generation
+        it simply rejects; in flight it may confirm, then cancel + close.
+        """
+        self._close_guard = fn
+
+    def closeEvent(self, event) -> None:
+        if self._is_generation_active() and self._close_guard is not None:
+            event.ignore()
+            self._close_guard()
+            return
+        super().closeEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        # ESC must not close the dialog while a generation is in flight.
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and self._is_generation_active()
+        ):
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    def _on_cancel_clicked(self) -> None:
+        # D5: the guard handles both cases — during a generation it may
+        # confirm and cancel the wave; outside generation it just rejects.
+        if self._close_guard is not None:
+            self._close_guard()
+        else:
+            super().reject()
+
+    def reject(self) -> None:
+        # Safety net for direct reject() calls from outside the close paths.
+        if self._is_generation_active():
             return
         super().reject()
 

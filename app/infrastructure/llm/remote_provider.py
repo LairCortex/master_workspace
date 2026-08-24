@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Callable
 
 import httpx
 
@@ -65,14 +66,24 @@ class RemoteLlmProvider(BaseLlmProvider):
         system_prompt: str,
         user_prompt: str,
         max_tokens: int = 512,
+        on_phase: Callable[[str], None] | None = None,
     ) -> str:
-        return await self._request(system_prompt, user_prompt, max_tokens=max_tokens)
+        return await self._request(system_prompt, user_prompt, max_tokens=max_tokens,
+                                   on_phase=on_phase)
 
-    async def check_connection(self, max_tokens: int = 1) -> str:
+    async def check_connection(self, max_tokens: int = 1, on_phase: Callable[[str], None] | None = None) -> str:
         """Minimal test request (single token); raises LlmError on failure."""
-        return await self._request("Тест подключения.", "Ответь одним словом.", max_tokens=max_tokens)
+        return await self._request("Тест подключения.", "Ответь одним словом.", max_tokens=max_tokens,
+                                   on_phase=on_phase)
 
-    async def _request(self, system_prompt: str, user_prompt: str, *, max_tokens: int) -> str:
+    async def _request(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        max_tokens: int,
+        on_phase: Callable[[str], None] | None = None,
+    ) -> str:
         if not self.is_configured():
             raise LlmError("LLM не настроен. Откройте меню LLM → Настройка LLM…")
 
@@ -95,6 +106,8 @@ class RemoteLlmProvider(BaseLlmProvider):
         error: LlmError | None = None
         response: httpx.Response | None = None
         for attempt in range(MAX_RETRIES + 1):
+            if on_phase is not None:
+                on_phase("in_flight")
             try:
                 response = await self._http.client.post(url, json=payload, headers=headers)
             except httpx.TimeoutException:
@@ -113,11 +126,17 @@ class RemoteLlmProvider(BaseLlmProvider):
             if attempt < MAX_RETRIES:
                 delay = self._backoffs[min(attempt, len(self._backoffs) - 1)]
                 log.info("Retrying LLM request in %.1f s (attempt %d)", delay, attempt + 2)
+                if on_phase is not None:
+                    on_phase("waiting")
                 await asyncio.sleep(delay)
             else:
                 raise error
         assert response is not None
-        return self._extract_content(response.json())
+        try:
+            data = response.json()
+        except ValueError:
+            raise LlmError("LLM вернул некорректный ответ. Попробуйте позже.") from None
+        return self._extract_content(data)
 
     @staticmethod
     def _extract_content(data: dict) -> str:

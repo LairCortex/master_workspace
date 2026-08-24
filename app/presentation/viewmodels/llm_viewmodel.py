@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
@@ -22,9 +23,12 @@ def _default_field_prompts() -> dict[str, dict[str, str]]:
 class LlmViewModel(QObject):
     model_status_changed = Signal(str)
     generation_started = Signal(str)
-    generation_finished = Signal(str, str)
-    generation_error = Signal(str, str)
-    queue_size_changed = Signal(int)
+    #: (owner, field_id, text) / (owner, field_id, reason). The owner (the
+    #: host dialog) is delivered with the signal: every dialog's handlers
+    #: filter on ``owner is dialog``, so a nested card of the same entity
+    #: type (same field_id) cannot receive another dialog's result.
+    generation_finished = Signal(object, str, str)
+    generation_error = Signal(object, str, str)
 
     STATUS_NOT_CONFIGURED = "not_configured"
     STATUS_READY = "ready"
@@ -114,12 +118,12 @@ class LlmViewModel(QObject):
         field_name: str,
         field_label: str,
         current_text: str,
+        owner: Any = None,
     ) -> None:
         log = logging.getLogger(__name__)
 
         field_prompt = self.get_field_prompt(entity_type, field_name)
         self.generation_started.emit(field_id)
-        self.queue_size_changed.emit(self._service.queue_size + 1)
         log.info("Generation requested: %s (prompt=%r)", field_id, field_prompt[:50] if field_prompt else "")
         try:
             result = await self._service.generate_for_field(
@@ -129,14 +133,13 @@ class LlmViewModel(QObject):
                 field_prompt=field_prompt,
                 field_label=field_label,
                 current_text=current_text,
+                owner=owner,
             )
             log.info("Generation finished: %s (%d chars)", field_id, len(result))
-            self.generation_finished.emit(field_id, result)
+            self.generation_finished.emit(owner, field_id, result)
         except Exception as exc:
             log.error("Generation error: %s — %s", field_id, exc)
-            self.generation_error.emit(field_id, str(exc))
-        finally:
-            self.queue_size_changed.emit(self._service.queue_size)
+            self.generation_error.emit(owner, field_id, str(exc))
 
     def world_prompt_to_json(self) -> str:
         return json.dumps(self._world_prompt, ensure_ascii=False)

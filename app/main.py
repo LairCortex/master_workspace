@@ -8,7 +8,7 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
 
 from app.infrastructure.db.database import create_engine, create_session_factory
@@ -303,10 +303,152 @@ class Application:
         dialog.open()
 
     def _wire_ai_buttons(self, dialog) -> None:
-        """Connect AI buttons in a dialog to the LLM ViewModel."""
+        """Connect AI buttons in a dialog to the LLM ViewModel.
+
+        Field buttons trigger single-field generation; the entity button
+        (top-right of the form) starts a parallel wave over all fields and
+        becomes its cancel while the wave runs. At most one wave per
+        dialog at a time; "Save" is locked for the whole generation.
+        """
         if not hasattr(dialog, "get_ai_buttons"):
             return
         llm_vm = self._llm_vm
+        service = self._llm_service
+        get_entity_button = getattr(dialog, "get_entity_button", None)
+        log = logging.getLogger("llm.wire")
+
+        # Per-dialog wave state shared by the field and entity-button handlers.
+        # ``batch`` is None outside a wave, otherwise:
+        #   {"fields": {field_id: (button, field_name, field_label)},
+        #    "pending": set[field_id], "errors": {field_id: reason}}
+        # ``single_field`` — field_id of the in-flight single generation (or None).
+        # ``cancelled_fields`` — fields of a stopped wave: ALL late results/
+        # errors for them are dropped (cancellation is not an error). The
+        # marker stays until a new generation of the same field is started.
+        state: dict = {"batch": None, "single_field": None, "cancelled_fields": set()}
+
+        def _entity_button():
+            return get_entity_button() if get_entity_button is not None else None
+
+        def _any_generating() -> bool:
+            return (
+                any(b.is_generating for b in dialog.get_ai_buttons())
+                or state["batch"] is not None
+                or state["single_field"] is not None
+            )
+
+        def _sync_controls() -> None:
+            lock = getattr(dialog, "set_save_locked", None)
+            if lock is not None:
+                lock(_any_generating())
+            ebtn = _entity_button()
+            if ebtn is not None:
+                ebtn.set_wave_running(state["batch"] is not None)
+                ebtn.set_single_in_flight(
+                    state["batch"] is None and state["single_field"] is not None
+                )
+
+        buttons_by_id = {
+            f"{b.entity_type}.{b.field_name}": b for b in dialog.get_ai_buttons()
+        }
+
+        def _fail_field(field_id: str, err: str) -> None:
+            """Terminal failure of a dialog field (provider error or an
+            unexpected break of request_generation): the single completion
+            path for failures, so the dialog can never be left stuck (no
+            leaked single_field / batch pending); D6: visible warning."""
+            if field_id in state["cancelled_fields"]:
+                return  # late signal for a cancelled field
+            btn = buttons_by_id[field_id]
+            btn.set_generating(False)
+            batch = state["batch"]
+            if batch is not None and field_id in batch["fields"]:
+                batch["errors"][field_id] = err
+                batch["pending"].discard(field_id)
+                if not batch["pending"]:
+                    _finish_wave()
+            else:
+                if state["single_field"] == field_id:
+                    state["single_field"] = None
+                QMessageBox.warning(
+                    dialog,
+                    "AI-ассистент",
+                    f"Не удалось сгенерировать поле «{btn.field_label}»: {err}",
+                )
+                _sync_controls()
+
+        def _launch(btn, field_id: str, et: str, fn: str, fl: str, ct: str) -> None:
+            async def _do():
+                try:
+                    await llm_vm.request_generation(field_id, et, fn, fl, ct, owner=dialog)
+                except Exception as exc:
+                    # request_generation converts provider errors into
+                    # generation_error; this only catches unexpected breaks —
+                    # routed through _fail_field so the dialog never sticks.
+                    log.error("Generation failed: %s — %s", field_id, exc)
+                    _fail_field(field_id, str(exc))
+
+            asyncio.ensure_future(_do())
+
+        def _show_batch_errors(errors: dict, fields: dict) -> None:
+            """One aggregated dialog for the failed fields of a finished wave.
+
+            A shared reason is stated once for the whole list; different
+            reasons are listed per field.
+            """
+            items = [(fields[fid][2], reason) for fid, reason in errors.items()]
+            reasons = {reason for _label, reason in items}
+            if len(reasons) == 1:
+                lines = "\n".join(f"- «{label}»" for label, _reason in items)
+                text = f"Не удалось сгенерировать поля:\n{lines}\n\nПричина: {next(iter(reasons))}"
+            else:
+                lines = "\n".join(f"- «{label}»: {reason}" for label, reason in items)
+                text = f"Не удалось сгенерировать поля:\n{lines}"
+            QMessageBox.warning(dialog, "AI-ассистент", text)
+
+        def _finish_wave() -> None:
+            # Every field resets its own button in the finishing handler
+            # before dropping out of ``pending``, so by the time the counter
+            # reaches zero the whole wave is already unblocked.
+            batch = state["batch"]
+            state["batch"] = None
+            _sync_controls()
+            if batch["errors"]:
+                _show_batch_errors(batch["errors"], batch["fields"])
+
+        def _stop_all_no_error() -> None:
+            """End the wave/single generation without an error dialog: cancel
+            the requests and synchronously reset the buttons; results already
+            written into fields stay there."""
+            batch = state["batch"]
+            stopping: set[str] = set(batch["fields"]) if batch is not None else set()
+            if state["single_field"] is not None:
+                stopping.add(state["single_field"])
+            state["cancelled_fields"] |= stopping
+            state["batch"] = None
+            state["single_field"] = None
+            service.cancel_all(dialog)
+            for btn in dialog.get_ai_buttons():
+                btn.set_generating(False)
+            _sync_controls()
+
+        def _start_wave() -> None:
+            # Reaches here only from the entity button, which emits
+            # batch_requested only when ready and no generation is running.
+            fields: dict[str, tuple] = {}
+            for btn in dialog.get_ai_buttons():
+                field_id = f"{btn.entity_type}.{btn.field_name}"
+                fields[field_id] = (btn, btn.field_name, btn.field_label)
+                # A new wave invalidates the cancellation markers of a previous one.
+                state["cancelled_fields"].discard(field_id)
+                btn.set_generating(True)
+            state["batch"] = {"fields": fields, "pending": set(fields), "errors": {}}
+            _sync_controls()
+            for field_id, (btn, fn, fl) in fields.items():
+                # Existing field text is part of the prompt; the result
+                # overrides it (safe override per spec).
+                _launch(btn, field_id, btn.entity_type, fn, fl, btn.current_text)
+
         for btn in dialog.get_ai_buttons():
             btn.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
             llm_vm.model_status_changed.connect(
@@ -315,33 +457,83 @@ class Application:
 
             def _on_generate(et, fn, fl, ct, _btn=btn):
                 field_id = f"{et}.{fn}"
-                log = logging.getLogger("llm.wire")
+                if _any_generating():
+                    return  # at most one wave per dialog
                 log.info("AI button clicked: %s, label=%s, text=%r", field_id, fl, ct[:50] if ct else "")
+                # A new run invalidates the cancellation marker of a previous wave.
+                state["cancelled_fields"].discard(field_id)
                 _btn.set_generating(True)
-
-                async def _do():
-                    try:
-                        await llm_vm.request_generation(field_id, et, fn, fl, ct)
-                    except Exception as exc:
-                        log.error("Generation failed: %s — %s", field_id, exc)
-                        _btn.set_generating(False)
-
-                asyncio.ensure_future(_do())
+                state["single_field"] = field_id
+                _sync_controls()
+                _launch(_btn, field_id, et, fn, fl, ct)
 
             btn.generate_requested.connect(_on_generate)
 
-            def _on_finished(fid, text, _btn=btn, _et=btn.entity_type, _fn=btn.field_name):
-                expected_id = f"{_et}.{_fn}"
-                if fid == expected_id:
-                    _btn.set_result_text(text)
+            def _on_field_finished(owner, fid, text, _btn=btn, _et=btn.entity_type, _fn=btn.field_name):
+                field_id = f"{_et}.{_fn}"
+                # owner is not dialog → the signal belongs to another (nested)
+                # dialog of the same entity type: its results must not land here.
+                if owner is not dialog or fid != field_id:
+                    return
+                if field_id in state["cancelled_fields"]:
+                    return  # late signal for a cancelled field
+                _btn.set_result_text(text)
+                batch = state["batch"]
+                if batch is not None and field_id in batch["fields"]:
+                    batch["pending"].discard(field_id)
+                    if not batch["pending"]:
+                        _finish_wave()
+                else:
+                    if state["single_field"] == field_id:
+                        state["single_field"] = None
+                    _sync_controls()
 
-            def _on_error(fid, _err, _btn=btn, _et=btn.entity_type, _fn=btn.field_name):
-                expected_id = f"{_et}.{_fn}"
-                if fid == expected_id:
-                    _btn.set_generating(False)
+            def _on_field_error(owner, fid, err, _et=btn.entity_type, _fn=btn.field_name):
+                field_id = f"{_et}.{_fn}"
+                if owner is not dialog or fid != field_id:
+                    return
+                _fail_field(fid, err)
 
-            llm_vm.generation_finished.connect(_on_finished)
-            llm_vm.generation_error.connect(_on_error)
+            llm_vm.generation_finished.connect(_on_field_finished)
+            llm_vm.generation_error.connect(_on_field_error)
+
+        def _close_guard() -> None:
+            """Close path (X / «Отмена») while a generation may be in flight.
+
+            In-flight requests → confirmation with a warning; requests only
+            waiting between retries → silent cancel. Either way the wave is
+            cancelled after the decision (cancellation is not an error).
+            """
+            if not _any_generating():
+                dialog.reject()
+                return
+            in_flight = service.count_in_flight(dialog)
+            if in_flight > 0:
+                answer = QMessageBox.question(
+                    dialog,
+                    "Генерация",
+                    f"Идёт запрос к LLM ({in_flight} полей). Если закрыть, запрос "
+                    f"будет прерван и результат не появится.",
+                    buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    defaultButton=QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+            _stop_all_no_error()
+            dialog.reject()
+
+        set_close_guard = getattr(dialog, "set_close_guard", None)
+        if set_close_guard is not None:
+            set_close_guard(_close_guard)
+
+        ebtn = _entity_button()
+        if ebtn is not None:
+            ebtn.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
+            llm_vm.model_status_changed.connect(
+                lambda _s, _e=ebtn: _e.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
+            )
+            ebtn.batch_requested.connect(_start_wave)
+            ebtn.batch_cancel_requested.connect(_stop_all_no_error)
 
     def _on_llm_setup(self, window) -> None:
         llm_vm = self._llm_vm

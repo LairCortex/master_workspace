@@ -296,8 +296,118 @@ async def test_empty_choices_raises():
         await http.close()
 
 
+@pytest.mark.asyncio
+async def test_malformed_200_body_raises_ru_error():
+    """A 200 with an unparseable body is a provider answer problem, not a
+    retryable one: a plain RU LlmError, no retries."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(200, text="{not-json")
+
+    provider, http = make_provider(handler)
+    try:
+        with pytest.raises(LlmError, match="некорректный ответ"):
+            await provider.generate("s", "u")
+    finally:
+        await http.close()
+
+    assert attempts["n"] == 1
+
+
 def test_base_provider_is_abstract():
     from app.infrastructure.llm.base_provider import BaseLlmProvider
 
     with pytest.raises(TypeError):
         BaseLlmProvider()
+
+
+# --- on_phase hook (design D2 of add-generate-entity) -----------------------
+#
+# The optional hook observes the retry cycle from outside: "in_flight"
+# before every POST, "waiting" before every retry backoff.
+
+
+@pytest.mark.asyncio
+async def test_on_phase_reports_in_flight_before_post_waiting_before_backoff():
+    """503 → 200: the hook sees in_flight, waiting, in_flight."""
+    phases: list[str] = []
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return error_response(503, "unavailable")
+        return ok_response("ok")
+
+    provider, http = make_provider(handler)
+    try:
+        result = await provider.generate("s", "u", on_phase=phases.append)
+    finally:
+        await http.close()
+
+    assert result == "ok"
+    assert calls["n"] == 2
+    assert phases == ["in_flight", "waiting", "in_flight"]
+
+
+@pytest.mark.asyncio
+async def test_on_phase_single_attempt_reports_in_flight_once():
+    phases: list[str] = []
+    provider, http = make_provider(lambda request: ok_response("hi"))
+    try:
+        await provider.generate("s", "u", on_phase=phases.append)
+    finally:
+        await http.close()
+    assert phases == ["in_flight"]
+
+
+@pytest.mark.asyncio
+async def test_on_phase_on_exhausted_retries():
+    """Every attempt reports in_flight; each backoff reports waiting first."""
+    phases: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return error_response(429, "rate limited")
+
+    provider, http = make_provider(handler)
+    try:
+        with pytest.raises(LlmHttpError):
+            await provider.generate("s", "u", on_phase=phases.append)
+    finally:
+        await http.close()
+    # 3 attempts, 2 backoffs in between
+    assert phases == ["in_flight", "waiting", "in_flight", "waiting", "in_flight"]
+
+
+@pytest.mark.asyncio
+async def test_generate_without_phase_hook_is_unchanged():
+    """The hook is optional (default None) and does not alter behavior."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return error_response(503, "unavailable")
+        return ok_response("ok-after-retry")
+
+    provider, http = make_provider(handler)
+    try:
+        result = await provider.generate("s", "u")
+    finally:
+        await http.close()
+    assert result == "ok-after-retry"
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_check_connection_accepts_phase_hook():
+    phases: list[str] = []
+    provider, http = make_provider(lambda request: ok_response("ок"))
+    try:
+        result = await provider.check_connection(on_phase=phases.append)
+    finally:
+        await http.close()
+    assert result == "ок"
+    assert phases == ["in_flight"]
