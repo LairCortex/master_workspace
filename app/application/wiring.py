@@ -7,11 +7,13 @@ data, call the services, and refresh the panels.
 from __future__ import annotations
 
 import asyncio
+from typing import Any, Coroutine
 
 from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.event_service import EventService
 from app.application.services.xlsx_import_service import XlsxImportService
+from app.infrastructure.db.models import DescriptionModel
 from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED_CONFIG
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
@@ -41,6 +43,20 @@ class ApplicationWiring:
         self._search_vm = search_vm
         self._event_dialog_vm = event_dialog_vm
         self._event_service = event_service
+        # Serializes every task spawned below (via ``_spawn``) against the
+        # single shared AsyncSession: SQLAlchemy's AsyncSession does not
+        # support concurrent operations on one connection — two overlapping
+        # tasks racing on it can leave an awaited Future unresolved forever
+        # (an asyncio hang, not a clean "concurrent operations" error), which
+        # is what timed out the E2E suite before this lock covered every
+        # session-touching task uniformly. Acquired exactly once per task in
+        # ``_run_locked``; nested helper coroutines reached via plain
+        # ``await`` (not through ``_spawn``) must never acquire it themselves.
+        self._session_lock = asyncio.Lock()
+        # parent_dialog → [(entity_type, entity_id, description_id)] for
+        # entities created in its popups: flushed but not committed, so they
+        # are explicitly deleted if the parent dialog is rejected.
+        self._popup_created: dict[Any, list[tuple[str, int, int]]] = {}
         self._xlsx_import = XlsxImportService(
             event_service=event_service,
             character_service=app._entity_services["character"],
@@ -48,6 +64,21 @@ class ApplicationWiring:
             organization_service=app._entity_services["organization"],
             item_service=app._entity_services["item"],
         )
+
+    def _spawn(self, coro: Coroutine) -> asyncio.Task:
+        """Schedule ``coro`` as a task serialized against the shared session.
+
+        Every handler in this file that is triggered by a Qt signal must be
+        scheduled through here instead of a bare ``asyncio.ensure_future`` —
+        see ``_session_lock`` above. Nested coroutines called via plain
+        ``await`` from within an already-spawned task run under the same
+        lock for free and must not call this again for themselves.
+        """
+        return asyncio.ensure_future(self._run_locked(coro))
+
+    async def _run_locked(self, coro: Coroutine) -> Any:
+        async with self._session_lock:
+            return await coro
 
     def connect(self) -> None:
         """Connect all signals (called once from Application.start)."""
@@ -69,7 +100,7 @@ class ApplicationWiring:
                 window.detail_panel.clear()
 
         window.timeline_widget.event_selected.connect(
-            lambda idx: asyncio.ensure_future(on_event_selected(idx))
+            lambda idx: self._spawn(on_event_selected(idx))
         )
 
         # Date range filter
@@ -100,7 +131,7 @@ class ApplicationWiring:
                 finally:
                     dlg.close()
 
-            dlg.import_requested.connect(lambda p: asyncio.ensure_future(_do_import(p)))
+            dlg.import_requested.connect(lambda p: self._spawn(_do_import(p)))
 
         window.import_events_action.triggered.connect(
             lambda: asyncio.ensure_future(_run_import("event"))
@@ -141,7 +172,7 @@ class ApplicationWiring:
         # Add event button
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window)
-            asyncio.ensure_future(_load_available_into_dialog(dialog))
+            self._spawn(_load_available_into_dialog(dialog))
             self._app._wire_mentions_for_dialog(dialog, on_entity_click)
             self._app._wire_ai_buttons(dialog)
 
@@ -163,11 +194,13 @@ class ApplicationWiring:
                 await timeline_vm.load_events()
                 window.timeline_widget.update_events(timeline_vm.events)
 
-            dialog.saved.connect(lambda data: asyncio.ensure_future(on_saved(data)))
+            dialog.saved.connect(lambda data: self._spawn(on_saved(data)))
             dialog.create_related_requested.connect(
-                lambda a, t: asyncio.ensure_future(
-                    _open_related_create_dialog(dialog, a, t)
-                )
+                lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
+            )
+            dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+            dialog.rejected.connect(
+                lambda: self._spawn(self._cleanup_popup_entities(dialog))
             )
             dialog.open()
 
@@ -198,13 +231,13 @@ class ApplicationWiring:
                     except Exception:
                         await self._app._session.rollback()
 
-                dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
+                dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
                 dialog.open()
             except Exception:
                 await self._app._session.rollback()
 
         window.timeline_widget.add_entity_requested.connect(
-            lambda t: asyncio.ensure_future(on_add_entity(t))
+            lambda t: self._spawn(on_add_entity(t))
         )
 
         # Edit event (double-click on timeline)
@@ -243,18 +276,20 @@ class ApplicationWiring:
                     await detail_vm.load_details(eid)
                     window.detail_panel.show_event(detail_vm.event)
 
-                dialog.saved.connect(lambda d: asyncio.ensure_future(on_event_updated(d)))
+                dialog.saved.connect(lambda d: self._spawn(on_event_updated(d)))
                 dialog.create_related_requested.connect(
-                    lambda a, t: asyncio.ensure_future(
-                        _open_related_create_dialog(dialog, a, t)
-                    )
+                    lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
+                )
+                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+                dialog.rejected.connect(
+                    lambda: self._spawn(self._cleanup_popup_entities(dialog))
                 )
                 dialog.open()
             except Exception:
                 await self._app._session.rollback()
 
         window.timeline_widget.event_double_clicked.connect(
-            lambda eid: asyncio.ensure_future(on_edit_event(eid))
+            lambda eid: self._spawn(on_edit_event(eid))
         )
 
         # Search
@@ -262,7 +297,7 @@ class ApplicationWiring:
             await search_vm.search(query)
 
         window.search_bar.search_requested.connect(
-            lambda q: asyncio.ensure_future(on_search(q))
+            lambda q: self._spawn(on_search(q))
         )
 
         # Search result click -> open entity card (or select event in timeline)
@@ -274,10 +309,13 @@ class ApplicationWiring:
                         window.timeline_widget.list_widget.setCurrentRow(i)
                         break
             else:
+                # Plain await, not a new spawn: on_search_result's own task
+                # already holds the session lock (see _spawn at the connect
+                # site below), and on_entity_click never acquires it itself.
                 await on_entity_click(entity_type, entity_id)
 
         window.search_bar.result_selected.connect(
-            lambda t, i: asyncio.ensure_future(on_search_result(t, i))
+            lambda t, i: self._spawn(on_search_result(t, i))
         )
 
         # Entity card double-click
@@ -318,12 +356,14 @@ class ApplicationWiring:
                         await detail_vm.load_details(detail_vm.event.id)
                         window.detail_panel.show_event(detail_vm.event)
 
-                dialog.saved.connect(lambda d: asyncio.ensure_future(on_entity_saved(d)))
+                dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
 
                 dialog.create_related_requested.connect(
-                    lambda a, t: asyncio.ensure_future(
-                        _open_related_create_dialog(dialog, a, t)
-                    )
+                    lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
+                )
+                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+                dialog.rejected.connect(
+                    lambda: self._spawn(self._cleanup_popup_entities(dialog))
                 )
 
                 dialog.open()
@@ -342,7 +382,9 @@ class ApplicationWiring:
             self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
             self._app._wire_ai_buttons(sub_dialog)
 
-            # Fill the popup's own related sections so «Привязать существующего» works inside.
+            # Fill the popup's own related sections so «Привязать существующего»
+            # works inside. Plain awaits: this runs inside the task already
+            # spawned (locked) at the connect site that scheduled us.
             for cfg in _RELATED_CONFIG.get(entity_type, []):
                 rel_svc = self._app._get_entity_service(cfg["entity_type"])
                 if rel_svc:
@@ -356,25 +398,38 @@ class ApplicationWiring:
                     return
                 chars_text = sub_data.pop("characteristics", "")
                 backstory_text = sub_data.pop("backstory", "")
-                new_entity = await sub_svc.create_entity(
-                    characteristics=chars_text,
-                    backstory=backstory_text,
-                    **sub_data,
-                )
-                await self._app._session.flush()
-                for attr, change in related_changes.items():
-                    # Pre-load the collection (link-only sync must not lazy-load).
-                    await self._app._session.refresh(new_entity, attribute_names=[attr])
-                    await sub_svc.sync_related(
-                        new_entity, attr, set(change.get("current_ids", []))
+                try:
+                    new_entity = await sub_svc.create_entity(
+                        characteristics=chars_text,
+                        backstory=backstory_text,
+                        **sub_data,
                     )
+                    await self._app._session.flush()
+                    for attr, change in related_changes.items():
+                        current_ids = change.get("current_ids", [])
+                        if not current_ids:
+                            continue
+                        # Pre-load the collection (link-only sync must not lazy-load).
+                        await self._app._session.refresh(new_entity, attribute_names=[attr])
+                        await sub_svc.sync_related(new_entity, attr, set(current_ids))
+                except Exception as exc:  # noqa: BLE001
+                    # Roll back the partial state (description row, failed
+                    # entity) so the shared session is left usable, and notify.
+                    await self._app._session.rollback()
+                    QMessageBox.critical(
+                        self._window, "Ошибка создания сущности", str(exc)
+                    )
+                    return
                 parent_dialog.add_related_entity(attr_name, new_entity)
+                self._popup_created.setdefault(parent_dialog, []).append(
+                    (entity_type, new_entity.id, new_entity.description_id)
+                )
 
-            sub_dialog.saved.connect(lambda d: asyncio.ensure_future(on_sub_saved(d)))
+            sub_dialog.saved.connect(lambda d: self._spawn(on_sub_saved(d)))
             sub_dialog.open()
 
         window.detail_panel.entity_clicked.connect(
-            lambda t, i: asyncio.ensure_future(on_entity_click(t, i))
+            lambda t, i: self._spawn(on_entity_click(t, i))
         )
 
         # World snapshot — date query
@@ -386,10 +441,31 @@ class ApplicationWiring:
             window.world_snapshot.populate(events, target_date)
 
         window.world_snapshot.snapshot_requested.connect(
-            lambda d: asyncio.ensure_future(on_snapshot_requested(d))
+            lambda d: self._spawn(on_snapshot_requested(d))
         )
 
         # World snapshot — entity double-click (reuse on_entity_click)
         window.world_snapshot.entity_clicked.connect(
-            lambda t, i: asyncio.ensure_future(on_entity_click(t, i))
+            lambda t, i: self._spawn(on_entity_click(t, i))
         )
+
+    async def _cleanup_popup_entities(self, parent_dialog) -> None:
+        """Delete popup-created rows when the parent dialog is rejected.
+
+        Popup saves only flush (no commit): without this cleanup the flushed
+        rows (entities, their descriptions, M2M links) sit pending in the
+        shared session and ride any later commit, persisting entities the
+        user cancelled.
+        """
+        pending = self._popup_created.pop(parent_dialog, [])
+        if not pending:
+            return
+        for entity_type, entity_id, description_id in pending:
+            service = self._app._get_entity_service(entity_type)
+            entity = await service.get_entity(entity_id)
+            if entity is not None:
+                await self._app._session.delete(entity)
+            description = await self._app._session.get(DescriptionModel, description_id)
+            if description is not None:
+                await self._app._session.delete(description)
+        await self._app._session.flush()
