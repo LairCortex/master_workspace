@@ -3,8 +3,11 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QDate, QEvent
+from PySide6.QtCore import QDate, QEvent, Qt
+from PySide6.QtGui import QCloseEvent, QKeyEvent
+from PySide6.QtWidgets import QDialog
 
+from app.presentation.views.ai_assist_button import EntityGenerateButton
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 
@@ -315,14 +318,8 @@ class TestEntityCardDialog:
 
 # ── Entity button & close guard (add-generate-entity) ─────────────────────
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent, QKeyEvent
-from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog
-
-from app.presentation.views.ai_assist_button import EntityGenerateButton
-
-_ESC = lambda: QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+def _esc() -> QKeyEvent:
+    return QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
 
 
 def _make_dialog(qtbot, kind: str = "event"):
@@ -421,7 +418,7 @@ class TestDialogCloseGuard:
         d.set_close_guard(lambda: guard.append(1))
         d.get_ai_buttons()[0].set_generating(True)
 
-        d.keyPressEvent(_ESC())
+        d.keyPressEvent(_esc())
 
         assert d.isVisible()
         assert guard == []  # ESC is swallowed, not routed through the guard
@@ -430,7 +427,7 @@ class TestDialogCloseGuard:
     def test_esc_without_generation_closes(self, qtbot, kind):
         d = _make_dialog(qtbot, kind)
         d.show()
-        d.keyPressEvent(_ESC())
+        d.keyPressEvent(_esc())
         assert not d.isVisible()
         assert d.result() == QDialog.DialogCode.Rejected
 

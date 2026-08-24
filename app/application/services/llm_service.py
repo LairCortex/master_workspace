@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from app.infrastructure.llm.base_provider import BaseLlmProvider
 

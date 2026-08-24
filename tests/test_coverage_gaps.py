@@ -6,7 +6,6 @@ ad-hoc schema-migration edge paths and service edge branches.
 """
 from __future__ import annotations
 
-import asyncio
 import base64
 import sys
 import zipfile
