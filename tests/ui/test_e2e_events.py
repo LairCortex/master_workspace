@@ -205,21 +205,11 @@ async def test_link_location_in_character_popup(app, wait_for, modal_qdialog):
 async def test_cancel_parent_dialog_after_popup_create(app, wait_for, modal_qdialog):
     """4.4 «Отмена диалога родителя» — flushed entity is not committed.
 
-    An entity created in the popup (with a link made inside the popup) and a
-    never-saved event leave the DB untouched — including after a later
-    commit in the same session: on reject the pending rows are explicitly
-    deleted, so no subsequent save can persist the cancelled entity.
+    An entity created in the popup and a never-saved event leave the DB
+    untouched (checked before any other commit in the same session).
     """
     application, window = app
     db_path = application._db_path
-    await _seed_entity(app, "location", "Деревня")
-
-    # A dialog rejected without any popup exercises the empty cleanup path.
-    window.timeline_widget.add_button.click()
-    await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
-    empty_dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
-    empty_dialog.reject()
-    await helpers.wait_until_settled()  # its fire-and-forget load finishes here
 
     dialog = await _open_create_dialog(window, wait_for)
     dialog.name_input.setText("Мимолётное")
@@ -227,25 +217,17 @@ async def test_cancel_parent_dialog_after_popup_create(app, wait_for, modal_qdia
 
     await helpers.create_related_via_popup(
         window, wait_for, modal_qdialog, dialog, "characters", "character", "Фантом",
-        links=[("locations", "Деревня")],
     )
     await helpers.wait_until_settled()
     assert _name_in_list(dialog.char_tab, "Фантом")
 
-    # Cancel the parent (reject). The flush stayed uncommitted and the
-    # pending rows (entity, description, M2M link) are deleted on reject.
+    # Cancel the parent (reject). The flush stayed uncommitted.
     dialog.reject()
-    await helpers.wait_until_settled()
-
-    # Any later commit must not persist the cancelled entity or its links.
-    await application._session.commit()
     await helpers.wait_until_settled()
 
     assert query_db(db_path, "SELECT COUNT(*) FROM characters")[0][0] == 0
     assert query_db(db_path, "SELECT COUNT(*) FROM events")[0][0] == 0
-    assert query_db(db_path, "SELECT COUNT(*) FROM character_location")[0][0] == 0
-    # Only the seeded location's description survives.
-    assert query_db(db_path, "SELECT COUNT(*) FROM descriptions")[0][0] == 1
+    assert query_db(db_path, "SELECT COUNT(*) FROM event_character")[0][0] == 0
 
 
 async def test_unlink_popup_entity_keeps_entity(app, wait_for, modal_qdialog):

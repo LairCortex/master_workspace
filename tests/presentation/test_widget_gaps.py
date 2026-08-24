@@ -319,7 +319,7 @@ class TestEntityCardDialogGaps:
         d.reject()
         assert rejected == [d]
 
-    # ── RelatedSection: link existing / remove ───────────────────────────
+    # ── _RelatedSection: link existing / remove ──────────────────────────
 
     def test_related_link_existing_picker(self, qtbot, monkeypatch):
         d = EntityCardDialog(None, entity_type="organization")
