@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
     export_requested = Signal()
     month_settings_requested = Signal()
     llm_setup_requested = Signal()
+    character_sheet_list_requested = Signal()
 
     def __init__(
         self,
@@ -124,6 +125,12 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(self.import_organizations_action)
         self.import_items_action = QAction("Импорт предметов из .xlsx…", self)
         settings_menu.addAction(self.import_items_action)
+
+        # Чар-листы
+        sheet_menu = menu_bar.addMenu("Чар-листы")
+        self.character_sheets_action = QAction("Открыть чар-листы…", self)
+        self.character_sheets_action.triggered.connect(self.character_sheet_list_requested.emit)
+        sheet_menu.addAction(self.character_sheets_action)
 
         # LLM
         llm_menu = menu_bar.addMenu("LLM")

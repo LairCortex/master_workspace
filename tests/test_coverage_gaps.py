@@ -163,6 +163,29 @@ def test_main_window_path_helpers(tmp_path, monkeypatch):
     assert mw._docs_dir() == tmp_path / "lonely" / "deeper" / "_internal" / "docs"
 
 
+# ── sheet_pdf fonts dir: dev + frozen ──────────────────────────────────────
+
+def test_sheet_pdf_fonts_dir_dev_and_frozen(tmp_path, monkeypatch):
+    from app.infrastructure.pdf import sheet_pdf
+
+    # Dev mode: fonts live next to the source tree
+    assert sheet_pdf._fonts_dir() == Path(sheet_pdf.__file__).resolve().parent / "fonts"
+
+    # Frozen (PyInstaller): fonts bundled under _internal next to the executable
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    exe = tmp_path / "bundle" / "nri-manager"
+    monkeypatch.setattr(sys, "executable", str(exe), raising=False)
+    rel = Path("app") / "infrastructure" / "pdf" / "fonts"
+    internal = tmp_path / "bundle" / "_internal" / rel
+    internal.mkdir(parents=True)
+    assert sheet_pdf._fonts_dir() == internal
+
+    # Frozen fallback: no fonts anywhere near a lonely executable
+    exe2 = tmp_path / "lonely" / "nri-manager"
+    monkeypatch.setattr(sys, "executable", str(exe2), raising=False)
+    assert sheet_pdf._fonts_dir() == tmp_path / "lonely" / "_internal" / rel
+
+
 # ── xlsx import edge branches ─────────────────────────────────────────────
 
 class _FakeWs:

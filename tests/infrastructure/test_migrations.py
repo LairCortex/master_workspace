@@ -10,7 +10,7 @@ from app.infrastructure.db.migrations import init_db
 
 ALL_TABLES = {
     "descriptions", "events", "organizations", "characters", "items",
-    "locations", "ratings", "game_settings",
+    "locations", "ratings", "game_settings", "character_sheets",
     "event_organization", "event_character", "event_item", "event_location",
     "organization_character", "organization_item", "organization_location",
     "character_item", "character_location", "character_rating",

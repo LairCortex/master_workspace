@@ -17,7 +17,11 @@ a = Analysis(
     ["app/main.py"],
     pathex=[],
     binaries=[],
-    datas=[("docs", "docs")],
+    datas=[
+        ("docs", "docs"),
+        # character-sheet PDF export embeds these TTFs at runtime (sheet_pdf)
+        ("app/infrastructure/pdf/fonts", "app/infrastructure/pdf/fonts"),
+    ],
     hiddenimports=[
         "aiosqlite",
         "sqlalchemy.dialects.sqlite.aiosqlite",
@@ -25,6 +29,11 @@ a = Analysis(
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
+        # reportlab: most submodules come in via the static app import chain,
+        # these two are loaded dynamically / need explicit collection
+        "reportlab",
+        "reportlab.lib.fonts",
+        "reportlab.lib.rl_accel",
     ],
     hookspath=[],
     hooksconfig={},
@@ -76,7 +85,7 @@ if sys.platform == "darwin":
         icon=None,
         bundle_identifier="com.nri.scenario-manager",
         info_plist={
-            "CFBundleShortVersionString": "0.16.0",
+            "CFBundleShortVersionString": "0.17.0",
             "NSHighResolutionCapable": True,
         },
     )

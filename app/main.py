@@ -22,12 +22,14 @@ from app.infrastructure.repositories.organization_repository import Organization
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
 from app.infrastructure.repositories.location_repository import LocationRepository
+from app.infrastructure.repositories.character_sheet_repository import CharacterSheetRepository
 from app.infrastructure.db.models import DescriptionModel
 
 from app.application.services.event_service import EventService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.application.services.llm_service import LlmService
+from app.application.services.character_sheet_service import CharacterSheetService
 from app.application.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
@@ -49,6 +51,8 @@ from app.presentation.views.main_window import MainWindow
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
+from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
+from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 
 class Application:
     """Wires up DI and manages the application lifecycle."""
@@ -76,6 +80,10 @@ class Application:
         # Entity service catalog — built once per game in start()
         self._entity_services: dict[str, EntityService] = {}
         self._wiring: ApplicationWiring | None = None
+        # Character sheets: per-game service + open windows (design D7)
+        self._sheet_service: CharacterSheetService | None = None
+        self._sheet_list: CharacterSheetListDialog | None = None
+        self._sheet_editor: CharacterSheetEditorDialog | None = None
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window.
@@ -127,6 +135,7 @@ class Application:
             item=item_repo,
             location=loc_repo,
         )
+        self._sheet_service = CharacterSheetService(CharacterSheetRepository(self._session))
 
         # ViewModels
         timeline_vm = TimelineViewModel(event_service)
@@ -175,6 +184,9 @@ class Application:
             lambda: self._on_llm_setup(window)
         )
 
+        # Character sheets menu
+        window.character_sheet_list_requested.connect(self._on_character_sheets)
+
         # Initial load
         await timeline_vm.load_events()
         window.timeline_widget.update_events(timeline_vm.events)
@@ -211,6 +223,8 @@ class Application:
 
     async def _on_switch_game(self) -> None:
         """Show launcher, switch to selected game."""
+        if not await self._close_sheet_windows():
+            return  # the user cancelled closing a dirty character sheet
         dialog = GameLauncherDialog(parent=self._window)
 
         async def _do_switch(path: str):
@@ -219,6 +233,50 @@ class Application:
 
         dialog.game_selected.connect(lambda p: asyncio.ensure_future(_do_switch(p)))
         dialog.open()
+
+    def _on_character_sheets(self) -> None:
+        """Open the character sheet list dialog (task 7.2)."""
+        dialog = CharacterSheetListDialog(self._sheet_service, parent=self._window)
+        self._sheet_list = dialog
+
+        def _on_open(sheet_id: int) -> None:
+            editor = CharacterSheetEditorDialog(
+                self._sheet_service, sheet_id=sheet_id, parent=self._window,
+            )
+            self._sheet_editor = editor
+            editor.open()
+
+        dialog.open_requested.connect(_on_open)
+        dialog.open()
+
+    async def _close_sheet_windows(self) -> bool:
+        """Close open character sheet windows before a game switch.
+
+        A dirty editor gets one ask (save / discard / cancel); cancel aborts
+        the switch. Returns False if the user cancelled.
+        """
+        editor = self._sheet_editor
+        if editor is not None and editor.isVisible():
+            if editor.vm.dirty:
+                answer = QMessageBox.question(
+                    editor,
+                    "Смена игры",
+                    "В чар-листе есть несохранённые изменения. Сохранить их?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if answer == QMessageBox.StandardButton.Cancel:
+                    return False
+                if answer == QMessageBox.StandardButton.Yes and not await editor.vm.save():
+                    return False  # save failed: the old game must be left intact
+            editor.force_close()
+            self._sheet_editor = None
+        dialog = self._sheet_list
+        if dialog is not None and dialog.isVisible():
+            dialog.close()
+            self._sheet_list = None
+        return True
 
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
         """Connect mention search and click signals for a dialog's MentionTextEdits.
@@ -637,6 +695,10 @@ class Application:
             if self._http is not self._http_injected:
                 await self._http.close()
         self._http = None
+        # Character sheet windows died with the window; drop stale references
+        self._sheet_service = None
+        self._sheet_list = None
+        self._sheet_editor = None
 
 
 def main():  # pragma: no cover — entry point: a second QApplication cannot be
