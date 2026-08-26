@@ -277,22 +277,6 @@ class LocationModel(Base):
     )
 
 
-class CharacterSheetModel(Base):
-    """Character sheet template (design D1): one row per template.
-
-    ``pages`` holds the whole page/field tree as a JSON string (the domain
-    ``SheetTemplate.to_dict()``); the document is read/written in one piece.
-    """
-    __tablename__ = "character_sheets"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    orientation: Mapped[str] = mapped_column(String(16), nullable=False)
-    pages: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-
-
 class GameSettingsModel(Base):
     __tablename__ = "game_settings"
 
