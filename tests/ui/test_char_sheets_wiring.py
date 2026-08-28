@@ -1,0 +1,407 @@
+"""Wiring of the character-sheet windows into the app (tasks 7.1/7.2).
+
+Full Application on the temporary game DB: menu → list, list → editor,
+single-editor rule with dirty-prompt, game switch with dirty-prompt,
+rename propagation from the list to the open editor.
+"""
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+from app.domain.entities.character_sheet import EMPTY_PAGES_JSON
+from app.domain.enums.field_type import FieldType
+from app.presentation.views.character_sheet.editor_dialog import (
+    CharacterSheetEditorDialog,
+)
+from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
+from app.presentation.views.game_launcher_dialog import GameLauncherDialog
+
+from tests.ui import helpers
+from tests.ui.conftest import query_db
+
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+def _editors(qtop) -> list[CharacterSheetEditorDialog]:
+    """Visible editor dialogs (a closed QDialog stays in topLevelWidgets, hidden)."""
+    return [w for w in qtop if isinstance(w, CharacterSheetEditorDialog) and w.isVisible()]
+
+
+def _visible_list_dialogs(qtop) -> list[CharacterSheetListDialog]:
+    return [w for w in qtop if isinstance(w, CharacterSheetListDialog) and w.isVisible()]
+
+
+async def open_list(app, wait_for) -> CharacterSheetListDialog:
+    application, window = app
+    window.char_sheets_action.trigger()
+    await wait_for(lambda: application._sheet_list_dialog is not None)
+    return application._sheet_list_dialog
+
+
+def create_via_list(list_dlg: CharacterSheetListDialog, dialog_input, name: str) -> None:
+    dialog_input["answer"] = (name, True)
+    list_dlg.create_button.click()
+
+
+def _editor_name(application) -> str:
+    editor = application._sheet_editor
+    if editor is None or editor.view_model.template is None:
+        return ""
+    return editor.view_model.template.name
+
+
+async def wait_editor(app, wait_for, name: str) -> CharacterSheetEditorDialog:
+    application, _window = app
+    await wait_for(lambda: _editor_name(application) == name)
+    return application._sheet_editor
+
+
+def make_dirty(editor: CharacterSheetEditorDialog) -> str:
+    fid = editor.view_model.place(FieldType.LABEL, 30.0, 30.0)
+    assert editor.view_model.dirty
+    return fid
+
+
+def question_yes(monkeypatch) -> list[list[str]]:
+    """Replace the QMessageBox.question stub with an affirmative one."""
+    calls: list[list[str]] = []
+
+    def fake_yes(parent, title, text, *args, **kwargs):
+        calls.append([title, text])
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_yes))
+    return calls
+
+
+def question_no(monkeypatch) -> list[list[str]]:
+    calls: list[list[str]] = []
+
+    def fake_no(parent, title, text, *args, **kwargs):
+        calls.append([title, text])
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_no))
+    return calls
+
+
+async def make_second_game(tmp_games_dir) -> str:
+    path_b = tmp_games_dir / "beta" / "game.db"
+    path_b.parent.mkdir(parents=True, exist_ok=True)
+    path_b.touch()
+    return str(path_b)
+
+
+# ── 7.1: menu ───────────────────────────────────────────────────────────────
+
+async def test_menu_action_exists_and_opens_list(app, wait_for):
+    """«Чар-листы» menu action exists, opens the list, retrigger raises the same dialog."""
+    application, window = app
+    assert window.char_sheets_action.text() == "Чар-листы…"
+
+    window.char_sheets_action.trigger()
+    await wait_for(lambda: application._sheet_list_dialog is not None)
+    list_dlg = application._sheet_list_dialog
+    assert list_dlg.isVisible()
+
+    assert len(_visible_list_dialogs(QApplication.instance().topLevelWidgets())) == 1
+
+    # Second trigger — the same dialog, not a second one.
+    window.char_sheets_action.trigger()
+    await wait_for(lambda: True, timeout_s=0.1)
+    assert application._sheet_list_dialog is list_dlg
+    assert len(_visible_list_dialogs(QApplication.instance().topLevelWidgets())) == 1
+
+
+# ── create → clean editor ──────────────────────────────────────────────────
+
+async def test_create_via_list_opens_clean_editor(app, dialog_input, wait_for):
+    application, _window = app
+
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Иван")
+    editor = await wait_editor(app, wait_for, "Иван")
+
+    template = editor.view_model.template
+    assert template.name == "Иван"
+    assert len(template.pages) == 1
+    assert template.pages[0].fields == []
+    assert not editor.view_model.dirty
+    assert editor.windowTitle() == "Иван"
+
+    rows = query_db(application._db_path, "SELECT name, pages FROM character_sheets")
+    assert [r[0] for r in rows] == ["Иван"]
+    assert rows[0][1] == EMPTY_PAGES_JSON
+
+
+# ── one editor: dirty prompt on open/create of another ─────────────────────
+
+async def test_opening_second_sheet_with_dirty_editor_is_rejected(app, dialog_input, message_boxes, wait_for, qtbot):
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+
+    create_via_list(list_dlg, dialog_input, "A")
+    editor_a = await wait_editor(app, wait_for, "A")
+    make_dirty(editor_a)
+
+    # message_boxes stub answers question with the default button (No).
+    create_via_list(list_dlg, dialog_input, "B")
+    await wait_for(lambda: len(message_boxes) >= 1)
+    qtbot.wait(50)  # give the flow time to (incorrectly) proceed
+
+    assert application._sheet_editor is editor_a
+    assert editor_a.view_model.dirty
+    assert any(kind == "question" for kind, _t, _x in message_boxes)
+    qtop = QApplication.instance().topLevelWidgets()
+    assert len(_editors(qtop)) == 1
+
+
+async def test_opening_second_sheet_with_dirty_editor_confirm_closes_without_saving(app, dialog_input, wait_for, monkeypatch):
+    application, _window = app
+    calls = question_yes(monkeypatch)
+    list_dlg = await open_list(app, wait_for)
+
+    create_via_list(list_dlg, dialog_input, "A")
+    editor_a = await wait_editor(app, wait_for, "A")
+    fid = make_dirty(editor_a)
+    editor_a.view_model.set_content(fid, "черновик")
+
+    create_via_list(list_dlg, dialog_input, "B")
+    editor_b = await wait_editor(app, wait_for, "B")
+
+    assert editor_b is not editor_a
+    assert not editor_b.view_model.dirty
+    # A is closed without update_pages (its C++ object may already be deleted)
+    assert application._sheet_editor is not editor_a
+    assert len(_editors(QApplication.instance().topLevelWidgets())) == 1
+    assert len(calls) == 1  # exactly one dirty prompt
+
+    rows = query_db(application._db_path, "SELECT pages FROM character_sheets WHERE name = 'A'")
+    assert rows == [(EMPTY_PAGES_JSON,)]  # draft lost, DB unchanged
+
+
+# ── game switch with a dirty editor ─────────────────────────────────────────
+
+async def test_switch_game_with_dirty_editor_reject_keeps_game(app, dialog_input, tmp_games_dir, wait_for, monkeypatch):
+    application, window = app
+    calls = question_no(monkeypatch)
+
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "A")
+    editor_a = await wait_editor(app, wait_for, "A")
+    make_dirty(editor_a)
+
+    path_b = await make_second_game(tmp_games_dir)
+
+    window.switch_game_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
+    launcher = window.findChildren(GameLauncherDialog)[0]
+    beta = next(
+        launcher.list_widget.item(i)
+        for i in range(launcher.list_widget.count())
+        if "beta" in launcher.list_widget.item(i).text()
+    )
+    helpers.select_item(launcher.list_widget, beta)
+    launcher.open_button.click()
+    assert launcher.selected_path == path_b
+
+    await wait_for(lambda: len(calls) >= 1)  # dirty prompt shown and answered No
+
+    assert application._window is window  # not switched
+    assert application._sheet_editor is editor_a  # editor survived
+    assert editor_a.view_model.dirty
+    assert "Несохранённые" in calls[0][0]
+
+
+async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(app, dialog_input, tmp_games_dir, wait_for, monkeypatch):
+    application, window = app
+    old_db = application._db_path
+    calls = question_yes(monkeypatch)
+
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "A")
+    editor_a = await wait_editor(app, wait_for, "A")
+    fid = make_dirty(editor_a)
+    editor_a.view_model.set_content(fid, "черновик")
+
+    path_b = await make_second_game(tmp_games_dir)
+
+    window.switch_game_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
+    launcher = window.findChildren(GameLauncherDialog)[0]
+    beta = next(
+        launcher.list_widget.item(i)
+        for i in range(launcher.list_widget.count())
+        if "beta" in launcher.list_widget.item(i).text()
+    )
+    helpers.select_item(launcher.list_widget, beta)
+    launcher.open_button.click()
+
+    await wait_for(lambda: application._window is not window and "beta" in application._window.windowTitle())
+
+    assert not list_dlg.isVisible()  # list closed
+    assert application._sheet_editor is None  # editor_a closed and forgotten
+    assert len(_editors(QApplication.instance().topLevelWidgets())) == 0  # no editor visible
+    assert application._sheet_list_dialog is None
+    assert len(calls) == 1
+
+    rows = query_db(old_db, "SELECT pages FROM character_sheets WHERE name = 'A'")
+    assert rows == [(EMPTY_PAGES_JSON,)]  # draft lost, DB unchanged
+
+
+# ── rename from the list reaches the open editor ────────────────────────────
+
+async def test_rename_in_list_updates_open_editor_title(app, dialog_input, wait_for):
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+
+    create_via_list(list_dlg, dialog_input, "A")
+    editor_a = await wait_editor(app, wait_for, "A")
+    make_dirty(editor_a)
+
+    dialog_input["answer"] = ("Александр", True)
+    list_dlg.rename_button.click()
+    await wait_for(lambda: editor_a.windowTitle() == "Александр")
+
+    assert editor_a.view_model.dirty  # a rename is not a layout edit
+    rows = query_db(application._db_path, "SELECT name FROM character_sheets")
+    assert [r[0] for r in rows] == ["Александр"]
+
+
+# ── corrupt template: rejected at open, no editor left around ───────────────
+
+async def test_corrupt_template_not_opened(app, message_boxes, wait_for):
+    application, window = app
+    # a row with malformed pages JSON (written outside the app) must not open
+    conn = sqlite3.connect(application._db_path)
+    conn.execute(
+        "INSERT INTO character_sheets (name, schema_version, orientation, pages, "
+        "created_at, updated_at) VALUES ('Повреждённый', 1, 'portrait', 'not json', "
+        "datetime('now'), datetime('now'))"
+    )
+    conn.commit()
+    conn.close()
+
+    list_dlg = await open_list(app, wait_for)
+    await wait_for(lambda: list_dlg.list_widget.count() == 1)
+    list_dlg.list_widget.setCurrentRow(0)
+    list_dlg.open_button.click()
+
+    await wait_for(lambda: any(k == "critical" for k, _t, _x in message_boxes))
+    assert application._sheet_editor is None, "a corrupt sheet must not be opened"
+    _k, _t, text = next((k, t, x) for k, t, x in message_boxes if k == "critical")
+    assert "поврежд" in text  # RU user-facing message
+
+
+# ── editor closed mid-load must not leave a stale "open" mark in the list ───
+
+async def test_editor_closed_during_load_does_not_mark_sheet_open(
+    app, dialog_input, wait_for, monkeypatch, qtbot
+):
+    application, _window = app
+    real_load = CharacterSheetEditorDialog.load
+
+    async def close_while_loading(self):
+        await asyncio.sleep(0.2)
+        self.close()
+        await real_load(self)
+
+    monkeypatch.setattr(CharacterSheetEditorDialog, "load", close_while_loading)
+
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "A")
+    await wait_for(lambda: list_dlg.list_widget.count() == 1)
+    # let the whole (slow) open flow settle
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        qtbot.wait(1)
+
+    assert application._sheet_editor is None
+    assert not any(
+        isinstance(w, CharacterSheetEditorDialog) and w.isVisible()
+        for w in QApplication.instance().topLevelWidgets()
+    )
+    # the list must NOT keep treating the closed sheet as open (delete allowed)
+    list_dlg.list_widget.setCurrentRow(0)
+    assert list_dlg.delete_button.isEnabled()
+    assert list_dlg._open_sheet_id is None
+
+
+# ── a closed editor window is actually destroyed, not just hidden ───────────
+
+async def test_forgotten_editor_window_is_destroyed(app, dialog_input, wait_for, qtbot):
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "A")
+    editor = await wait_editor(app, wait_for, "A")
+    assert editor.view_model.template is not None  # fully loaded
+
+    editor.close()  # clean close, no prompt
+    await wait_for(lambda: application._sheet_editor is None)
+    qtbot.wait(100)  # process the queued deleteLater
+
+    qtop = QApplication.instance().topLevelWidgets()
+    assert [w for w in qtop if isinstance(w, CharacterSheetEditorDialog)] == [], (
+        "closed editors must not linger as hidden top-level widgets"
+    )
+
+
+# ── templates are scoped to a game: switching games changes the list ────────
+
+async def test_games_have_their_own_sheet_lists(
+    app, dialog_input, tmp_games_dir, wait_for, qtbot
+):
+    application, window = app
+    old_db = application._db_path
+
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "ТолькоА")
+    editor = await wait_editor(app, wait_for, "ТолькоА")
+    editor.close()
+    await wait_for(lambda: application._sheet_editor is None)
+
+    path_b = await make_second_game(tmp_games_dir)
+    window.switch_game_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
+    launcher = window.findChildren(GameLauncherDialog)[0]
+    beta = next(
+        launcher.list_widget.item(i)
+        for i in range(launcher.list_widget.count())
+        if "beta" in launcher.list_widget.item(i).text()
+    )
+    helpers.select_item(launcher.list_widget, beta)
+    launcher.open_button.click()
+    assert launcher.selected_path == path_b
+
+    await wait_for(
+        lambda: application._window is not window
+        and "beta" in application._window.windowTitle()
+    )
+    new_window = application._window
+
+    new_window.char_sheets_action.trigger()
+    await wait_for(lambda: application._sheet_list_dialog is not None)
+    list_b = application._sheet_list_dialog
+    # let the list refresh land (an empty list before refresh would pass vacuously)
+    for _ in range(30):
+        await asyncio.sleep(0.02)
+        qtbot.wait(1)
+    assert list_b is not list_dlg
+    assert list_b.list_widget.count() == 0, "game B has none of game A templates"
+    assert query_db(old_db, "SELECT name FROM character_sheets") == [("ТолькоА",)]
+
+
+# ── DI: the sheet service owns the game ImageStore (design D6) ──────────────
+
+async def test_sheet_service_wired_with_game_image_store(app, wait_for):
+    """The sheet service must hold the game's ImageStore: only then are the
+    sheet-page image references (pages JSON) GC'd after a save/delete commits
+    (design D6). Without it, cleared/replaced/deleted sheet images are never
+    freed in the running app."""
+    application, _window = app
+    assert application._image_store is not None
+    assert application._sheet_service is not None
+    assert application._sheet_service._image_store is application._image_store

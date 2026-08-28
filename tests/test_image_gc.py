@@ -176,6 +176,32 @@ class TestStartupGc:
         assert org.image_id is None
 
     @pytest.mark.asyncio
+    async def test_row_without_original_drops_leftover_preview_too(
+        self, qapp, async_session: AsyncSession, image_dir,
+    ):
+        """Original missing while the preview survives on disk: the preview is
+        an orphan the moment the row is dropped, so it must go in the same
+        pass — a leftover would only be cleaned on the next startup, breaking
+        the «repeated runs do not change the storage» invariant."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        org = await _make_org(async_session, image_id)
+        await async_session.commit()
+
+        row = await async_session.get(ImageModel, image_id)
+        prev = preview_path(image_dir, row.sha256)
+        assert prev.exists()
+        original_path(image_dir, row.sha256, row.ext).unlink()
+
+        await store.startup_gc()
+
+        assert await async_session.get(ImageModel, image_id) is None
+        assert not prev.exists()
+
+        await store.startup_gc()  # second run: state unchanged
+        assert not prev.exists()
+
+    @pytest.mark.asyncio
     async def test_missing_preview_is_regenerated(self, qapp, async_session: AsyncSession, image_dir):
         store = ImageStore(async_session, image_dir)
         image_id = await store.store(_png_bytes())

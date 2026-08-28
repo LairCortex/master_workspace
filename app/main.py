@@ -28,6 +28,10 @@ from app.application.services.event_service import EventService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.application.services.llm_service import LlmService
+from app.application.services.character_sheet_service import (
+    CharacterSheetError,
+    CharacterSheetService,
+)
 from app.application.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
@@ -49,6 +53,11 @@ from app.presentation.views.main_window import MainWindow
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
+from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
+from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
+from app.infrastructure.repositories.character_sheet_repository import (
+    CharacterSheetRepository,
+)
 
 class Application:
     """Wires up DI and manages the application lifecycle."""
@@ -76,6 +85,10 @@ class Application:
         # Entity service catalog — built once per game in start()
         self._entity_services: dict[str, EntityService] = {}
         self._wiring: ApplicationWiring | None = None
+        # Character-sheet windows (D6): at most one list + one editor per game
+        self._sheet_service: CharacterSheetService | None = None
+        self._sheet_list_dialog: CharacterSheetListDialog | None = None
+        self._sheet_editor: CharacterSheetEditorDialog | None = None
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window.
@@ -85,6 +98,7 @@ class Application:
         on) → schema + legacy-image migration → restore the storage
         invariant (``startup_gc``) → build layers → show the window.
         """
+        self._close_sheet_windows()
         db_path = str(ensure_game_directory(db_path))
         self._db_path = db_path
         db_url = get_db_url(db_path)
@@ -175,6 +189,17 @@ class Application:
             lambda: self._on_llm_setup(window)
         )
 
+        # Character-sheet menu (D6): one service per game, repo→service DI.
+        # The ImageStore is required: the service GCs the sheet-page image
+        # references (pages JSON) after a save/delete commits (design D6) —
+        # without it the files of cleared/deleted sheet images are never
+        # removed in the running app.
+        self._sheet_service = CharacterSheetService(
+            CharacterSheetRepository(self._session),
+            image_store=self._image_store,
+        )
+        window.char_sheets_requested.connect(self._on_char_sheets)
+
         # Initial load
         await timeline_vm.load_events()
         window.timeline_widget.update_events(timeline_vm.events)
@@ -212,13 +237,147 @@ class Application:
     async def _on_switch_game(self) -> None:
         """Show launcher, switch to selected game."""
         dialog = GameLauncherDialog(parent=self._window)
-
-        async def _do_switch(path: str):
-            await self.shutdown()
-            await self.start(path)
-
-        dialog.game_selected.connect(lambda p: asyncio.ensure_future(_do_switch(p)))
+        dialog.game_selected.connect(lambda p: asyncio.ensure_future(self._on_game_selected(p)))
         dialog.open()
+
+    async def _on_game_selected(self, path: str) -> None:
+        """Game switch with the character-sheet windows (D6).
+
+        A dirty editor is closed only after an explicit confirm, and then
+        without ``update_pages``; the list closes unconditionally. Declining
+        the prompt aborts the switch (the launcher stays open).
+        """
+        if self._sheet_editor is not None and self._sheet_editor.view_model.dirty:
+            answer = QMessageBox.question(
+                self._window,
+                "Несохранённые изменения",
+                "В макете чар-листа есть несохранённые правки. Сменить игру и "
+                "закрыть редактор без сохранения?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._close_sheet_windows()
+        await self.shutdown()
+        await self.start(path)
+
+    # -- character sheets (D6) ------------------------------------------------
+
+    def _close_sheet_windows(self) -> None:
+        """Close the list and the editor without prompts (app shutdown / game switch)."""
+        if self._sheet_list_dialog is not None:
+            self._sheet_list_dialog.close()
+            self._sheet_list_dialog = None
+        if self._sheet_editor is not None:
+            self._sheet_editor.force_close()
+            self._sheet_editor = None
+
+    def _on_char_sheets(self) -> None:
+        """Show (or create) the non-modal sheet list window."""
+        if self._sheet_list_dialog is None:
+            dialog = CharacterSheetListDialog(
+                self._sheet_service, parent=self._window,
+                run_locked=self._wiring.run_locked,
+            )
+            dialog.open_requested.connect(self._on_sheet_open)
+            dialog.renamed.connect(self._on_sheet_renamed)
+            self._sheet_list_dialog = dialog
+        self._sheet_list_dialog.show()
+        self._sheet_list_dialog.raise_()
+        self._sheet_list_dialog.activateWindow()
+        # Session-touching: go through the wiring's session lock like all others.
+        self._wiring._spawn(self._sheet_list_refresh())
+
+    async def _sheet_list_refresh(self) -> None:
+        dialog = self._sheet_list_dialog
+        if dialog is None:
+            return
+        try:
+            await dialog.refresh()
+        except Exception as exc:  # app already shut down under this task
+            logging.getLogger("app.main").debug("character-sheet list refresh skipped: %s", exc)
+            return
+        if self._sheet_list_dialog is not dialog:
+            return
+        sheet_id = None
+        if self._sheet_editor is not None:
+            sheet_id = self._sheet_editor.view_model.sheet_id
+        dialog.set_open_sheet_id(sheet_id)
+
+    def _on_sheet_open(self, sheet_id: int) -> None:
+        self._wiring._spawn(self._open_sheet(sheet_id))
+
+    async def _open_sheet(self, sheet_id: int) -> None:
+        """Open one editor (D6): a dirty current editor is closed only after confirm."""
+        if self._sheet_editor is not None:
+            if self._sheet_editor.view_model.dirty:
+                answer = QMessageBox.question(
+                    self._window,
+                    "Несохранённые изменения",
+                    "В текущем макете есть несохранённые правки. Закрыть без сохранения "
+                    "и открыть новый шаблон?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                # The confirm above already asked the user — close without the
+                # editor's own dirty prompt.
+                self._sheet_editor.force_close()
+            else:
+                self._sheet_editor.close()
+            self._sheet_editor = None
+        editor = CharacterSheetEditorDialog(
+            self._sheet_service, sheet_id, parent=self._window,
+            run_locked=self._wiring.run_locked,
+            image_store=self._image_store,
+        )
+        self._sheet_editor = editor
+        # A closed window must not keep its stale reference (D6 single editor).
+        editor.finished.connect(lambda _r, _e=editor: self._forget_editor(_e))
+        editor.show()
+        try:
+            await editor.load()
+        except CharacterSheetError as exc:
+            # A corrupt template must not be opened (spec): drop the editor and report.
+            if self._sheet_editor is editor:
+                self._sheet_editor = None
+            editor.force_close()  # template is None -> no dirty prompt
+            QMessageBox.critical(self._window, "Чар-листы", str(exc))
+            if self._sheet_list_dialog is not None:
+                self._sheet_list_dialog.set_open_sheet_id(None)
+            return
+        except Exception as exc:  # session gone (app shut down mid-load): just drop
+            logging.getLogger("app.main").debug("character-sheet load aborted: %s", exc)
+            if self._sheet_editor is editor:
+                self._sheet_editor = None
+            editor.force_close()  # template is None -> no dirty prompt
+            return
+        # Only mark the sheet open if this editor is still the current one:
+        # if the window was closed while load was in flight, ``finished``
+        # already ran ``_forget_editor`` (clearing the mark), and re-applying
+        # it here would leave a stale "open" flag on a closed sheet.
+        if self._sheet_list_dialog is not None and self._sheet_editor is editor:
+            self._sheet_list_dialog.set_open_sheet_id(editor.view_model.sheet_id)
+
+    def _on_sheet_renamed(self, sheet_id: int, name: str) -> None:
+        """External rename (D5): update the open editor's title, dirty untouched."""
+        if self._sheet_editor is not None and self._sheet_editor.view_model.sheet_id == sheet_id:
+            self._sheet_editor.set_name(name)
+
+    def _forget_editor(self, editor) -> None:
+        """Drop the reference once the editor window is actually closed.
+
+        Also queue the C++ teardown: the dialog is a child of the main window,
+        so without ``deleteLater`` every closed editor would linger as a hidden
+        top-level widget (with its QGraphicsScene) until the app shuts down.
+        """
+        if self._sheet_editor is editor:
+            self._sheet_editor = None
+        if self._sheet_list_dialog is not None:
+            self._sheet_list_dialog.set_open_sheet_id(None)
+        editor.deleteLater()
 
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
         """Connect mention search and click signals for a dialog's MentionTextEdits.
@@ -620,6 +779,7 @@ class Application:
         await self._session.commit()
 
     async def shutdown(self) -> None:
+        self._close_sheet_windows()
         if self._session:
             await self._session.close()
             self._session = None

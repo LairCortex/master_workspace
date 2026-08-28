@@ -303,3 +303,23 @@ class RatingModel(Base):
     locations: Mapped[list[LocationModel]] = relationship(
         secondary=location_rating, back_populates="ratings", lazy="selectin",
     )
+
+
+class CharacterSheetModel(Base):
+    """A character-sheet template (epic A1).
+
+    One row per sheet. ``name`` is unique per game DB. ``pages`` holds the
+    single-page layout as a JSON array (``[{"fields": [...]}]``) — see the
+    domain ``SheetTemplate`` for the shape. New tables reach existing DBs via
+    ``create_all`` in ``init_db()`` (no ALTER of existing tables required).
+    """
+
+    __tablename__ = "character_sheets"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    orientation: Mapped[str] = mapped_column(String(16), nullable=False, default="portrait", server_default="portrait")
+    pages: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

@@ -17,7 +17,11 @@ a = Analysis(
     ["app/main.py"],
     pathex=[],
     binaries=[],
-    datas=[("docs", "docs")],
+    datas=[
+        ("docs", "docs"),
+        ("app/presentation/views/character_sheet/fonts",
+         "app/presentation/views/character_sheet/fonts"),
+    ],
     hiddenimports=[
         "aiosqlite",
         "sqlalchemy.dialects.sqlite.aiosqlite",

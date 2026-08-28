@@ -77,6 +77,16 @@ class ApplicationWiring:
         """
         return asyncio.ensure_future(self._run_locked(coro))
 
+    def run_locked(self, coro: Coroutine) -> asyncio.Task:
+        """Public ``_spawn`` for widgets living outside this wiring.
+
+        The character-sheet dialogs start their flows with a bare
+        ``asyncio.ensure_future`` (their UI is not ours); their
+        session-touching steps must still go through the session lock, so the
+        application passes this callable to them as ``run_locked``.
+        """
+        return self._spawn(coro)
+
     async def _run_locked(self, coro: Coroutine) -> Any:
         async with self._session_lock:
             return await coro

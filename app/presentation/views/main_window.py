@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
     export_requested = Signal()
     month_settings_requested = Signal()
     llm_setup_requested = Signal()
+    char_sheets_requested = Signal()
 
     def __init__(
         self,
@@ -106,6 +107,12 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("Экспорт игры…", self)
         self.export_action.triggered.connect(self.export_requested.emit)
         file_menu.addAction(self.export_action)
+
+        # Чар-листы
+        char_sheets_menu = menu_bar.addMenu("Чар-листы")
+        self.char_sheets_action = QAction("Чар-листы…", self)
+        self.char_sheets_action.triggered.connect(self.char_sheets_requested.emit)
+        char_sheets_menu.addAction(self.char_sheets_action)
 
         # Настройки
         settings_menu = menu_bar.addMenu("Настройки")

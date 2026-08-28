@@ -18,7 +18,14 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.db.models import CharacterModel, ImageModel, LocationModel, OrganizationModel
+from app.domain.entities.character_sheet import iter_sheet_image_ids, null_sheet_image_ids
+from app.infrastructure.db.models import (
+    CharacterModel,
+    CharacterSheetModel,
+    ImageModel,
+    LocationModel,
+    OrganizationModel,
+)
 from app.infrastructure.images.paths import PREVIEW_SUFFIX, original_path, preview_path
 from app.infrastructure.images.preview import generate_preview
 
@@ -120,15 +127,32 @@ class ImageStore:
 
     # ── Refcount / GC (design D6) ────────────────────────────────────────
 
+    async def _sheet_refcount(self, image_id: int) -> int:
+        """Count sheet-page image fields referencing ``image_id`` (D6).
+
+        Sheet fields reference ``images`` only through the ``pages`` JSON
+        (no FK column), so refcount must scan every template's layout.
+        Each field counts as a separate reference: clearing one of two
+        fields on the same image must not delete the still-referenced file.
+        """
+        result = await self._session.execute(select(CharacterSheetModel.pages))
+        total = 0
+        for (pages_json,) in result.all():
+            total += iter_sheet_image_ids(pages_json).count(image_id)
+        return total
+
     async def refcount(self, image_id: int) -> int:
-        """Count how many entities across organizations/characters/locations
-        reference ``image_id`` (design D3: one COUNT, not per-table checks)."""
+        """Count every referrer of ``image_id``: entities across
+        organizations/characters/locations (one COUNT each) plus sheet-page
+        image fields (design D3 + D6: a file is deletable only when nothing
+        — entities or sheets — references it anymore)."""
         total = 0
         for model in _REFERRING_MODELS:
             result = await self._session.execute(
                 select(func.count()).select_from(model).where(model.image_id == image_id)
             )
             total += result.scalar() or 0
+        total += await self._sheet_refcount(image_id)
         return total
 
     async def gc_after_commit(self, *old_image_ids: int | None) -> None:
@@ -183,6 +207,11 @@ class ImageStore:
             prev = preview_path(self._image_dir, row.sha256)
 
             if not orig.exists():
+                # The preview (if present) becomes an orphan file once the row
+                # is gone: drop it here, in the same pass — a leftover would
+                # only be removed on the next startup and would break the
+                # "repeated runs do not change the storage" invariant.
+                self._safe_unlink(prev)
                 await self._null_references(row.id)
                 await self._session.delete(row)
                 continue
@@ -201,10 +230,17 @@ class ImageStore:
         await self._session.commit()
 
     async def _null_references(self, image_id: int) -> None:
+        """Clear every reference to ``image_id``: entity FKs (SET NULL via
+        UPDATE) and sheet-page image fields inside the ``pages`` JSON
+        (design D6) — so nothing dangles after the row is dropped."""
         for model in _REFERRING_MODELS:
             await self._session.execute(
                 update(model).where(model.image_id == image_id).values(image_id=None)
             )
+        result = await self._session.execute(select(CharacterSheetModel))
+        for row in result.scalars().all():
+            if image_id in iter_sheet_image_ids(row.pages):
+                row.pages = null_sheet_image_ids(row.pages, image_id)
 
     def _cleanup_tmp_files(self) -> None:
         if not self._image_dir.exists():
