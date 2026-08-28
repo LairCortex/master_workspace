@@ -22,7 +22,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QLineEdit,
     QPlainTextEdit,
+    QRubberBand,
     QWidget,
 )
 
@@ -53,6 +54,7 @@ from app.domain.entities.character_sheet import (
 )
 from app.domain.enums.field_type import FieldType
 from app.presentation.viewmodels.character_sheet_viewmodel import (
+    SNAP_PT,
     TOOL_POINTER,
     CharacterSheetViewModel,
     field_type_for_tool,
@@ -76,6 +78,9 @@ _LINE_COLOR = QColor(60, 60, 60)
 _CHECK_COLOR = QColor(30, 110, 190)
 _IMAGE_PLACEHOLDER = QColor(150, 150, 150)
 _TEXT_INSET = 2.0
+_RUBBER_THRESHOLD_PX = 4
+_GRID_COLOR = QColor(210, 218, 228)
+_HANDLE_PT = 8.0
 
 _font_registered = False
 
@@ -142,6 +147,8 @@ class SheetFieldItem(QGraphicsRectItem):
         self.selected: bool = False
         self.setPen(self._normal_pen())
         self._pixmap: QPixmap | None = None
+        self._show_handles = False
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     # -- data --------------------------------------------------------------
 
@@ -171,7 +178,14 @@ class SheetFieldItem(QGraphicsRectItem):
         if flag == self.selected:
             return
         self.selected = flag
+        self._show_handles = flag
         self.setPen(QPen(_SELECTED_COLOR, 1.5) if flag else self._normal_pen())
+        self.update()
+
+    def set_show_handles(self, flag: bool) -> None:
+        if flag == self._show_handles:
+            return
+        self._show_handles = flag
         self.update()
 
     # -- drawing -----------------------------------------------------------
@@ -205,10 +219,7 @@ class SheetFieldItem(QGraphicsRectItem):
             painter.setPen(self.pen())
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.rect())
-            if self._has_text():
-                text = f.content
-                if not text:
-                    return
+            if self._has_text() and f.content:
                 painter.setPen(QPen(_TEXT_COLOR))
                 painter.setFont(self.font())
                 painter.drawText(
@@ -216,8 +227,18 @@ class SheetFieldItem(QGraphicsRectItem):
                         _TEXT_INSET, _TEXT_INSET, -_TEXT_INSET, -_TEXT_INSET
                     ),
                     self._text_flags(),
-                    text,
+                    f.content,
                 )
+        if self._show_handles:
+            self._paint_handles(painter)
+
+    def _paint_handles(self, painter: QPainter) -> None:
+        painter.setBrush(QBrush(_SELECTED_COLOR))
+        painter.setPen(QPen(QColor("white"), 0.5))
+        r = self.rect()
+        half = _HANDLE_PT / 2
+        for pt in (r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()):
+            painter.drawRect(QRectF(pt.x() - half, pt.y() - half, _HANDLE_PT, _HANDLE_PT))
 
     def _paint_line(self, painter: QPainter) -> None:
         """Axis line: thickness is the smaller side (w > h → horizontal,
@@ -270,6 +291,32 @@ class SheetFieldItem(QGraphicsRectItem):
                 painter.drawPixmap(pos, scaled)
 
 
+class PageSheetItem(QGraphicsRectItem):
+    """One A4 sheet in the tape; draws the snap grid when the VM flag is on."""
+
+    def __init__(self, rect: QRectF, vm: CharacterSheetViewModel) -> None:
+        super().__init__(rect)
+        self._vm = vm
+        self.setPen(_PAGE_FRAME)
+        self.setBrush(QBrush(QColor("white")))
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def paint(self, painter: QPainter, option, widget: QWidget | None = None) -> None:
+        super().paint(painter, option, widget)
+        if not self._vm.snap_enabled:
+            return
+        r = self.rect()
+        painter.setPen(QPen(_GRID_COLOR, 0))
+        x = r.left()
+        while x <= r.right() + 0.01:
+            painter.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            x += SNAP_PT
+        y = r.top()
+        while y <= r.bottom() + 0.01:
+            painter.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+            y += SNAP_PT
+
+
 class CharacterSheetCanvas(QGraphicsView):
     """The editor canvas: the vertical tape of pages + field items, all driven
     by the ViewModel."""
@@ -292,11 +339,17 @@ class CharacterSheetCanvas(QGraphicsView):
         self._vm = vm
         self._image_store = image_store
         self._items: dict[str, SheetFieldItem] = {}
-        self._page_items: list[QGraphicsRectItem] = []
+        self._page_items: list[PageSheetItem] = []
         self._selected_item: SheetFieldItem | None = None
         self._drag_fid: str | None = None
         self._grab_dx = 0.0
         self._grab_dy = 0.0
+        self._rubber: QRubberBand | None = None
+        self._rubber_origin: QPoint | None = None
+        self._rubber_additive: bool = False
+        self._pending_clear: bool = False
+        self._resize_corner: str | None = None
+        self._resize_start: tuple[float, float, float, float] | None = None
         self._fitted = False
         self._last_fit_scale: float | None = None  # the settle guard, see below
         self._visible_page: int = -1
@@ -313,6 +366,7 @@ class CharacterSheetCanvas(QGraphicsView):
         vm.field_props_changed.connect(self._on_field_data_changed)
         vm.selection_changed.connect(self._on_selection_changed)
         vm.inline_changed.connect(self._on_inline_changed)
+        vm.snap_changed.connect(self._on_snap_changed)
 
         self.verticalScrollBar().valueChanged.connect(self._update_visible_page)
         self.horizontalScrollBar().valueChanged.connect(self._update_visible_page)
@@ -424,10 +478,9 @@ class CharacterSheetCanvas(QGraphicsView):
 
         for i in range(n):
             _, oy = page_origin(i, page_h)
-            page_item = scene.addRect(
-                0, oy, page_w, page_h, _PAGE_FRAME, QBrush(QColor("white"))
-            )
+            page_item = PageSheetItem(QRectF(0, oy, page_w, page_h), self._vm)
             page_item.setZValue(0)
+            scene.addItem(page_item)
             self._page_items.append(page_item)
 
         for page_idx, page in enumerate(template.pages):
@@ -436,6 +489,7 @@ class CharacterSheetCanvas(QGraphicsView):
         if not self._fitted and self._viewport_size()[0] > 0:
             self.fit_width()
         self._update_visible_page()
+        self._sync_handle_vis()
 
     def _add_item(self, field: SheetField, page_index: int, field_index: int) -> None:
         item = SheetFieldItem(field)
@@ -443,7 +497,7 @@ class CharacterSheetCanvas(QGraphicsView):
         _, oy = page_origin(page_index, page_h)
         item.setPos(0.0, oy)
         item.setZValue(page_index * 10000 + field_index + 1)
-        item.set_selected(field.id == self._vm.selection)
+        item.set_selected(field.id in self._vm.selected_ids)
         self._items[field.id] = item
         self.scene().addItem(item)
         if field.type is FieldType.IMAGE and field.image_id is not None:
@@ -491,13 +545,23 @@ class CharacterSheetCanvas(QGraphicsView):
             self._sync_inline_widget()
 
     def _on_selection_changed(self, field_id) -> None:
-        if self._selected_item is not None:
-            self._selected_item.set_selected(False)
-            self._selected_item = None
-        item = self._items.get(field_id) if field_id is not None else None
-        if item is not None:
-            self._selected_item = item
-            item.set_selected(True)
+        ids = set(self._vm.selected_ids)
+        single = len(ids) == 1 and self._vm.inline_field_id is None
+        self._selected_item = None
+        for fid, item in self._items.items():
+            on = fid in ids
+            item.set_selected(on)
+            item.set_show_handles(single and on)
+            if fid == field_id:
+                self._selected_item = item
+
+    def _on_snap_changed(self, _enabled: bool) -> None:
+        for page_item in self._page_items:
+            page_item.update()
+
+    @property
+    def grid_visible(self) -> bool:
+        return self._vm.snap_enabled and bool(self._page_items)
 
     # -- image loading (best effort; needs a running loop, i.e. the app) -----
 
@@ -561,10 +625,101 @@ class CharacterSheetCanvas(QGraphicsView):
         return scene_to_page(scene_pos.x(), scene_pos.y(), page_w, page_h, n)
 
     def _field_at(self, scene_pos) -> str | None:
+        selected_hits: list[SheetFieldItem] = []
+        for field_id in self._vm.selected_ids:
+            item = self._items.get(field_id)
+            if item is not None and item.sceneBoundingRect().contains(scene_pos):
+                selected_hits.append(item)
+        if selected_hits:
+            return max(selected_hits, key=lambda i: i.zValue()).field_id
         item = self.scene().itemAt(scene_pos, QTransform())
         if isinstance(item, SheetFieldItem):
             return item.field_id
         return None
+
+    def _handle_at(self, scene_pos) -> str | None:
+        if len(self._vm.selected_ids) != 1 or self._vm.inline_field_id is not None:
+            return None
+        item = self._items.get(self._vm.selected_ids[0])
+        if item is None:
+            return None
+        r = item.rect()
+        points = {
+            "nw": item.mapToScene(r.topLeft()),
+            "ne": item.mapToScene(r.topRight()),
+            "sw": item.mapToScene(r.bottomLeft()),
+            "se": item.mapToScene(r.bottomRight()),
+        }
+        half = _HANDLE_PT / 2
+        for corner, pt in points.items():
+            box = QRectF(pt.x() - half, pt.y() - half, _HANDLE_PT, _HANDLE_PT)
+            if box.contains(scene_pos):
+                return corner
+        return None
+
+    def handle_count(self) -> int:
+        if len(self._vm.selected_ids) != 1 or self._vm.inline_field_id is not None:
+            return 0
+        if self._items.get(self._vm.selected_ids[0]) is None:
+            return 0
+        return 4
+
+    def _sync_handle_vis(self) -> None:
+        show = (
+            len(self._vm.selected_ids) == 1
+            and self._vm.inline_field_id is None
+        )
+        selected = set(self._vm.selected_ids)
+        for fid, item in self._items.items():
+            item.set_show_handles(show and fid in selected)
+
+    def visible_page_center(self, page_index: int) -> tuple[float, float]:
+        """Page-local center of the viewport ∩ page (else the page center)."""
+        template = self._vm.template
+        if template is None:
+            return (PAGE_WIDTH_PT / 2, PAGE_HEIGHT_PT / 2)
+        page_w, page_h = template.page_size
+        if not 0 <= page_index < len(template.pages):
+            return (page_w / 2, page_h / 2)
+        _, oy = page_origin(page_index, page_h)
+        page_rect = QRectF(0.0, oy, page_w, page_h)
+        top_left = self.mapToScene(0, 0)
+        bottom_right = self.mapToScene(*self._viewport_size())
+        view_rect = QRectF(top_left, bottom_right).normalized()
+        inter = page_rect.intersected(view_rect)
+        if inter.isEmpty():
+            return (page_w / 2, page_h / 2)
+        return (inter.center().x(), inter.center().y() - oy)
+
+    def _viewport_pos(self, event) -> QPoint:
+        return event.position().toPoint()
+
+    def _apply_handle_resize(self, scene_pos) -> None:
+        if self._resize_corner is None or self._resize_start is None:
+            return
+        fid = self._vm.selection
+        if fid is None:
+            return
+        page_idx = self._vm.page_of(fid)
+        if page_idx is None:
+            return
+        _page_w, page_h, _n = self._template_size()
+        _, oy = page_origin(page_idx, page_h)
+        lx = scene_pos.x()
+        ly = scene_pos.y() - oy
+        x, y, w, h = self._resize_start
+        corner = self._resize_corner
+        if "e" in corner:
+            w = lx - x
+        if "s" in corner:
+            h = ly - y
+        if "w" in corner:
+            w = x + w - lx
+            x = lx
+        if "n" in corner:
+            h = y + h - ly
+            y = ly
+        self._vm.resize(fid, x, y, w, h)
 
     def _start_drag(self, field_id: str, scene_pos) -> None:
         field = self._vm.template.get_field(field_id) if self._vm.template else None
@@ -591,6 +746,7 @@ class CharacterSheetCanvas(QGraphicsView):
             if field_type is not None and hit is not None:
                 self._vm.place(field_type, hit[1], hit[2], page_index=hit[0])
             # clicking a gutter with a place tool places nothing (spec)
+            event.accept()
             return
 
         field_id = self._field_at(pos)
@@ -599,28 +755,107 @@ class CharacterSheetCanvas(QGraphicsView):
             if field_id == inline_fid:
                 return  # press on the field being edited: the widget owns it
             self._commit_inline_close()  # commit (apply number if due), continue
+        corner = self._handle_at(pos)
+        if corner is not None:
+            field = self._vm.template.get_field(self._vm.selected_ids[0])
+            if field is not None:
+                self._resize_corner = corner
+                self._resize_start = (field.x, field.y, field.w, field.h)
+                self._vm.begin_gesture()
+            event.accept()
+            return
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         if field_id is not None:
-            self._vm.select(field_id)
-            self._start_drag(field_id, pos)
+            if shift:
+                self._vm.toggle_select(field_id)
+            elif field_id in self._vm.selected_ids:
+                self._start_drag(field_id, pos)
+            else:
+                self._vm.select(field_id)
+                self._start_drag(field_id, pos)
         else:
-            self._vm.select(None)
+            self._rubber_origin = self._viewport_pos(event)
+            self._rubber_additive = shift
+            self._pending_clear = True
+            if not shift:
+                self._vm.select(None)
+        event.accept()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if self._drag_fid is not None and self._vm.inline_field_id is None:
+        if self._resize_corner is not None and self._resize_start is not None:
             pos = self.mapToScene(event.position().toPoint())
-            self._vm.drag_move(
-                self._drag_fid, pos.x(), pos.y(), self._grab_dx, self._grab_dy
-            )
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self._vm.set_snap_override(False if shift else None)
+            self._apply_handle_resize(pos)
+        elif self._drag_fid is not None and self._vm.inline_field_id is None:
+            pos = self.mapToScene(event.position().toPoint())
+            shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self._vm.set_snap_override(False if shift else None)
+            if len(self._vm.selected_ids) > 1:
+                self._vm.drag_move_selection(
+                    pos.x(), pos.y(), self._grab_dx, self._grab_dy,
+                    ref_id=self._drag_fid,
+                )
+            else:
+                self._vm.drag_move(
+                    self._drag_fid, pos.x(), pos.y(), self._grab_dx, self._grab_dy
+                )
+        elif self._rubber_origin is not None:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                super().mouseMoveEvent(event)
+                return
+            pos = self._viewport_pos(event)
+            dist = (pos - self._rubber_origin).manhattanLength()
+            if dist > _RUBBER_THRESHOLD_PX:
+                self._pending_clear = False
+                if self._rubber is None:
+                    self._rubber = QRubberBand(
+                        QRubberBand.Shape.Rectangle, self.viewport()
+                    )
+                self._rubber.setGeometry(QRect(self._rubber_origin, pos).normalized())
+                self._rubber.show()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if self._drag_fid is not None and event.button() == Qt.MouseButton.LeftButton:
+        if self._resize_corner is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._vm.end_gesture()
+            self._vm.set_snap_override(None)
+            self._resize_corner = None
+            self._resize_start = None
+        elif self._drag_fid is not None and event.button() == Qt.MouseButton.LeftButton:
             pos = self.mapToScene(event.position().toPoint())
-            self._vm.commit_drag(
-                self._drag_fid, pos.x(), pos.y(), self._grab_dx, self._grab_dy
-            )
+            if len(self._vm.selected_ids) > 1:
+                self._vm.commit_drag_selection(
+                    pos.x(), pos.y(), self._grab_dx, self._grab_dy,
+                    ref_id=self._drag_fid,
+                )
+            else:
+                self._vm.commit_drag(
+                    self._drag_fid, pos.x(), pos.y(), self._grab_dx, self._grab_dy
+                )
+            self._vm.set_snap_override(None)
+        elif (
+            self._rubber is not None
+            and self._rubber.isVisible()
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
+            view_rect = self._rubber.geometry()
+            scene_rect = self.mapToScene(view_rect).boundingRect()
+            hit_ids = [
+                fid for fid, item in self._items.items()
+                if item.sceneBoundingRect().intersects(scene_rect)
+            ]
+            self._vm.select_ids(hit_ids, additive=self._rubber_additive)
+            self._rubber.hide()
+        elif self._pending_clear:
+            self._vm.select(None)
         self._drag_fid = None
+        self._rubber_origin = None
+        self._pending_clear = False
+        if self._rubber is not None:
+            self._rubber.hide()
+        event.accept()
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
@@ -661,6 +896,7 @@ class CharacterSheetCanvas(QGraphicsView):
         """Open/close the inline editor widget on the canvas (design D3)."""
         if self._inline_widget is not None:
             self._close_inline_widget()
+        self._sync_handle_vis()
         if field_id is None:
             return
         item = self._items.get(field_id)
@@ -816,8 +1052,8 @@ class CharacterSheetCanvas(QGraphicsView):
     def keyPressEvent(self, event) -> None:
         if self._vm.inline_field_id is None:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-                if self._vm.selection is not None:
-                    self._vm.remove(self._vm.selection)
+                if self._vm.selected_ids:
+                    self._vm.remove_selection()
                     return
             if event.key() == Qt.Key_Escape:
                 self._vm.select(None)

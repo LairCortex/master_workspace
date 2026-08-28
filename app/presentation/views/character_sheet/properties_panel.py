@@ -17,7 +17,7 @@ A-playable per-type sections (design D3):
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEvent, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -186,17 +186,33 @@ class SheetPropertiesPanel(QWidget):
             FieldType.LINE: self._decor_section,
         }
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.addLayout(grid)
-        outer.addWidget(QLabel("Свойства:", self))
+        self.snap_check = QCheckBox("Привязка к сетке", self)
+        self.bring_front_button = QPushButton("На передний план", self)
+        self.send_back_button = QPushButton("На задний план", self)
+
+        self._field_box = QWidget(self)
+        field_layout = QVBoxLayout(self._field_box)
+        field_layout.setContentsMargins(0, 0, 0, 0)
+        field_layout.addLayout(grid)
+        field_layout.addWidget(QLabel("Свойства:", self._field_box))
         self.current_section: QWidget | None = None
         for section in dict.fromkeys(self._sections.values()):
-            outer.addWidget(section)
+            section.setParent(self._field_box)
+            field_layout.addWidget(section)
             section.hide()  # a section shows only while its type is selected
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.addWidget(self.snap_check)
+        z_row = QHBoxLayout()
+        z_row.addWidget(self.bring_front_button)
+        z_row.addWidget(self.send_back_button)
+        outer.addLayout(z_row)
+        outer.addWidget(self._field_box)
 
         # -- VM → panel --------------------------------------------------------
         vm.selection_changed.connect(self._on_selection)
+        vm.selection_changed.connect(self._sync_z_buttons)
         vm.field_geometry_changed.connect(self._on_geometry)
         vm.field_content_changed.connect(self._on_content_changed)
         vm.field_font_changed.connect(self._on_font_changed)
@@ -236,7 +252,49 @@ class SheetPropertiesPanel(QWidget):
             lambda: self._vm.set_image_id(self._fid, None) if self._fid else None
         )
 
+        self.snap_check.toggled.connect(vm.set_snap_enabled)
+        vm.snap_changed.connect(self._sync_snap_check)
+        self.bring_front_button.clicked.connect(vm.bring_to_front)
+        self.send_back_button.clicked.connect(vm.send_to_back)
+        self._sync_z_buttons()
+
+        for spin in (
+            self.x_spin, self.y_spin, self.w_spin, self.h_spin, self.font_spin,
+            self.min_spin, self.max_spin,
+        ):
+            spin.editingFinished.connect(self._end_edit)
+        self.number_edit.editingFinished.connect(self._end_edit)
+        self.content_edit.installEventFilter(self)
+
         self._show_field(vm.selection)
+
+    def isEnabled(self) -> bool:
+        return self._field_box.isEnabled()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.content_edit and event.type() == QEvent.Type.FocusOut:
+            self._end_edit()
+        return super().eventFilter(obj, event)
+
+    def _begin_edit(self) -> None:
+        if not self._syncing:
+            self._vm.begin_edit()
+
+    def _end_edit(self) -> None:
+        if not self._syncing:
+            self._vm.end_edit()
+
+    def _sync_snap_check(self, enabled: bool) -> None:
+        self.snap_check.blockSignals(True)
+        try:
+            self.snap_check.setChecked(enabled)
+        finally:
+            self.snap_check.blockSignals(False)
+
+    def _sync_z_buttons(self, _fid=None) -> None:
+        has_sel = bool(self._vm.selected_ids)
+        self.bring_front_button.setEnabled(has_sel)
+        self.send_back_button.setEnabled(has_sel)
 
     # -- data ----------------------------------------------------------------
 
@@ -301,7 +359,7 @@ class SheetPropertiesPanel(QWidget):
 
     def _show_field(self, fid) -> None:
         self._fid = fid if fid is not None else None
-        self.setEnabled(self._fid is not None)
+        self._field_box.setEnabled(self._fid is not None)
         field = self._field()
         if field is None:
             if self.current_section is not None:
@@ -418,38 +476,44 @@ class SheetPropertiesPanel(QWidget):
     def _on_removed(self, fid) -> None:
         if fid == self._fid:
             self._fid = None
-            self.setEnabled(False)
+            self._field_box.setEnabled(False)
 
     # -- panel → VM: geometry --------------------------------------------------
 
     def _on_x(self, value: float) -> None:
         field = self._field()
         if field is not None:
+            self._begin_edit()
             self._vm.move(self._fid, value, field.y)
 
     def _on_y(self, value: float) -> None:
         field = self._field()
         if field is not None:
+            self._begin_edit()
             self._vm.move(self._fid, field.x, value)
 
     def _on_w(self, value: float) -> None:
         field = self._field()
         if field is not None:
+            self._begin_edit()
             self._vm.resize(self._fid, field.x, field.y, value, field.h)
 
     def _on_h(self, value: float) -> None:
         field = self._field()
         if field is not None:
+            self._begin_edit()
             self._vm.resize(self._fid, field.x, field.y, field.w, value)
 
     def _on_font(self, value: float) -> None:
         if self._fid is not None:
+            self._begin_edit()
             self._vm.set_font_size(self._fid, value)
 
     def _on_content(self) -> None:
         if self._fid is not None and not self._syncing:
             field = self._field()
             if field is not None and field.type in _CONTENT_EDIT_TYPES:
+                self._begin_edit()
                 self._vm.set_content(self._fid, self.content_edit.toPlainText())
 
     # -- panel → VM: number ------------------------------------------------------

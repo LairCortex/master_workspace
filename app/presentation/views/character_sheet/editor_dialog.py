@@ -18,12 +18,14 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMenuBar,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -106,6 +108,34 @@ class CharacterSheetEditorDialog(QDialog):
         self.save_button = QPushButton("Сохранить", self)
         self.save_button.clicked.connect(lambda: asyncio.ensure_future(self.save()))
 
+        self.snap_check = self.properties_panel.snap_check
+        self.bring_front_button = self.properties_panel.bring_front_button
+        self.send_back_button = self.properties_panel.send_back_button
+
+        self._menu_bar = QMenuBar(self)
+        self.edit_menu = self._menu_bar.addMenu("Правка")
+        self.undo_action = QAction("Отменить", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self._vm.undo)
+        self.redo_action = QAction("Повторить", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self._vm.redo)
+        self.copy_action = QAction("Копировать", self)
+        self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self.copy_action.triggered.connect(self._vm.copy)
+        self.paste_action = QAction("Вставить", self)
+        self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_action.triggered.connect(self._on_paste)
+        self.duplicate_action = QAction("Дублировать", self)
+        self.duplicate_action.setShortcut(QKeySequence("Ctrl+D"))
+        self.duplicate_action.triggered.connect(self._vm.duplicate)
+        for action in (
+            self.undo_action, self.redo_action, self.copy_action,
+            self.paste_action, self.duplicate_action,
+        ):
+            self.edit_menu.addAction(action)
+        self._sync_edit_actions()
+
         top = QHBoxLayout()
         top.addWidget(QLabel("Ориентация:", self))
         top.addWidget(self.orientation_combo)
@@ -125,6 +155,7 @@ class CharacterSheetEditorDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
+        layout.setMenuBar(self._menu_bar)
         layout.addLayout(top)
         layout.addLayout(body, 1)
         layout.addLayout(bottom)
@@ -143,6 +174,9 @@ class CharacterSheetEditorDialog(QDialog):
         # image field: double-click on the canvas or the panel button
         self.canvas.image_field_double_clicked.connect(self._pick_image)
         self.properties_panel.image_pick_requested.connect(self._pick_image)
+        self._vm.history_changed.connect(self._sync_edit_actions)
+        self._vm.selection_changed.connect(lambda _fid: self._sync_edit_actions())
+        self._vm.clipboard_changed.connect(self._sync_edit_actions)
 
     # -- data -----------------------------------------------------------------
 
@@ -222,6 +256,9 @@ class CharacterSheetEditorDialog(QDialog):
             vm.pages_changed,
             vm.current_page_changed,
             vm.orientation_changed,
+            vm.history_changed,
+            vm.snap_changed,
+            vm.clipboard_changed,
         )
         for sig in signals:
             try:
@@ -271,6 +308,20 @@ class CharacterSheetEditorDialog(QDialog):
 
     def _on_visible_page(self, index: int) -> None:
         self._vm.set_current_page(index)
+
+    def _on_paste(self) -> None:
+        center = self.canvas.visible_page_center(self._vm.current_page_index)
+        self._vm.paste(visible_center=center)
+
+    def _sync_edit_actions(self) -> None:
+        self.undo_action.setEnabled(self._vm.can_undo)
+        self.redo_action.setEnabled(self._vm.can_redo)
+        has_sel = bool(self._vm.selected_ids)
+        self.copy_action.setEnabled(has_sel)
+        self.duplicate_action.setEnabled(has_sel)
+        self.paste_action.setEnabled(self._vm.has_clipboard)
+        self.bring_front_button.setEnabled(has_sel)
+        self.send_back_button.setEnabled(has_sel)
 
     def _pick_image(self, field_id: str) -> None:
         """File dialog first (sync UI), then the ingest on the loop (D6/D3:

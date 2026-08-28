@@ -255,13 +255,15 @@ def test_overlap_click_selects_later_placed(canvas, vm, qtbot):
     # z-order: the later-placed one is on top
     assert b_item.zValue() > a_item.zValue()
 
-    # first select A on a non-overlapping spot
-    _click(canvas, 104, 104, qtbot)
-    assert vm.selection == a
-
-    # click into the overlap → the later-placed (top) field B wins
+    vm.select(None)
     _click(canvas, 130, 110, qtbot)
     assert vm.selection == b
+
+    # already-selected field under the overlap: move that field, not the top one
+    _click(canvas, 104, 104, qtbot)
+    assert vm.selection == a
+    _click(canvas, 130, 110, qtbot)
+    assert vm.selection == a
 
 
 def test_click_empty_page_clears_selection(canvas, vm, qtbot):
@@ -1250,3 +1252,108 @@ def test_properties_panel_bounds_follow_orientation(canvas, vm, panel, qtbot):
     qtbot.wait(10)
     assert panel.x_spin.maximum() == PAGE_WIDTH_PT
     assert panel.y_spin.maximum() == PAGE_HEIGHT_PT
+
+
+# ── A-editor: rubber band + snap grid ──────────────────────────────────────
+
+def _press_drag_release_mod(canvas, qtbot, from_scene, to_scene, modifier=Qt.KeyboardModifier.NoModifier) -> None:
+    p0 = canvas.mapFromScene(QPointF(*from_scene))
+    p1 = canvas.mapFromScene(QPointF(*to_scene))
+    QTest.mousePress(canvas.viewport(), Qt.MouseButton.LeftButton, modifier, p0)
+    qtbot.wait(1)
+    QTest.mouseMove(canvas.viewport(), pos=p1)
+    qtbot.wait(1)
+    QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.LeftButton, modifier, p1)
+    qtbot.wait(1)
+
+
+def test_rubber_band_from_empty_selects_intersections(canvas, vm, qtbot):
+    a = vm.place(FieldType.LABEL, 100.0, 100.0)
+    b = vm.place(FieldType.TEXT, 200.0, 200.0)
+    c = vm.place(FieldType.TEXT, 400.0, 400.0)
+    vm.select(None)
+
+    _press_drag_release_mod(canvas, qtbot, (90.0, 90.0), (280.0, 230.0))
+
+    assert set(vm.selected_ids) == {a, b}
+    assert c not in vm.selected_ids
+
+
+def test_rubber_band_without_shift_replaces(canvas, vm, qtbot):
+    a = vm.place(FieldType.LABEL, 100.0, 100.0)
+    b = vm.place(FieldType.TEXT, 200.0, 200.0)
+    c = vm.place(FieldType.TEXT, 400.0, 400.0)
+    vm.select(a)
+
+    _press_drag_release_mod(canvas, qtbot, (190.0, 190.0), (330.0, 230.0))
+
+    assert set(vm.selected_ids) == {b}
+
+
+def test_shift_rubber_band_adds(canvas, vm, qtbot):
+    a = vm.place(FieldType.LABEL, 100.0, 100.0)
+    b = vm.place(FieldType.TEXT, 200.0, 200.0)
+    c = vm.place(FieldType.TEXT, 400.0, 400.0)
+    vm.select(a)
+
+    _press_drag_release_mod(
+        canvas, qtbot, (190.0, 190.0), (330.0, 230.0),
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    assert set(vm.selected_ids) == {a, b}
+
+
+def test_press_on_selected_starts_move_not_rubber(canvas, vm, qtbot):
+    a = vm.place(FieldType.LABEL, 100.0, 100.0)
+    b = vm.place(FieldType.TEXT, 300.0, 300.0)
+    vm.select(a)
+    before = (vm.template.get_field(a).x, vm.template.get_field(a).y)
+
+    _press_drag_release_mod(canvas, qtbot, (110.0, 109.0), (180.0, 160.0))
+
+    f = vm.template.get_field(a)
+    assert (f.x, f.y) != before
+    assert vm.selected_ids == [a]
+    assert b not in vm.selected_ids
+
+
+def test_snap_grid_visible_only_when_enabled(canvas, vm):
+    assert canvas.grid_visible is False
+    vm.set_snap_enabled(True)
+    assert canvas.grid_visible is True
+    vm.set_snap_enabled(False)
+    assert canvas.grid_visible is False
+
+
+def test_resize_handles_only_when_exactly_one_selected(canvas, vm):
+    a = vm.place(FieldType.LABEL, 100.0, 100.0)
+    assert canvas.handle_count() == 4
+    b = vm.place(FieldType.TEXT, 300.0, 300.0)
+    vm.select_ids([a, b])
+    assert canvas.handle_count() == 0
+    vm.select(a)
+    assert canvas.handle_count() == 4
+
+
+def test_resize_handle_drag_changes_size(canvas, vm, qtbot):
+    fid = vm.place(FieldType.TEXT, 150.0, 150.0)
+    before = (vm.template.get_field(fid).w, vm.template.get_field(fid).h)
+    _press_drag_release_mod(canvas, qtbot, (270.0, 168.0), (310.0, 200.0))
+    f = vm.template.get_field(fid)
+    assert f.w > before[0] and f.h > before[1]
+
+
+def test_inline_refused_when_multiple_selected(canvas, vm, qtbot):
+    a = vm.place(FieldType.TEXT, 100.0, 100.0)
+    b = vm.place(FieldType.LABEL, 300.0, 300.0)
+    vm.select_ids([a, b])
+    vm.open_inline(a)
+    assert vm.inline_field_id is None
+    assert canvas.inline_edit() is None
+
+
+def test_visible_page_center_is_in_page(canvas, vm):
+    cx, cy = canvas.visible_page_center(0)
+    assert 0 <= cx <= PAGE_WIDTH_PT
+    assert 0 <= cy <= PAGE_HEIGHT_PT

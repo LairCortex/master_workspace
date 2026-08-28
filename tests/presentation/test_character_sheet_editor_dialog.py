@@ -12,6 +12,7 @@ import json
 import time
 
 import pytest
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.application.services.character_sheet_service import CharacterSheetService
@@ -233,3 +234,59 @@ async def test_set_name_before_load_is_noop(qtbot, service, row):
     d.close()
     d.deleteLater()
     qtbot.wait(1)
+
+
+# ── A-editor: Правка menu + snap / z-order ─────────────────────────────────
+
+async def test_edit_menu_standard_shortcuts(dlg):
+    titles = [a.text() for a in dlg.edit_menu.actions() if not a.isSeparator()]
+    assert titles == [
+        "Отменить", "Повторить", "Копировать", "Вставить", "Дублировать",
+    ]
+    assert dlg.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
+    assert dlg.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
+    assert dlg.copy_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Copy)
+    assert dlg.paste_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Paste)
+    assert dlg.duplicate_action.shortcut() == QKeySequence("Ctrl+D")
+
+
+async def test_copy_enables_paste_action(dlg):
+    assert dlg.paste_action.isEnabled() is False
+    vm = dlg.view_model
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    vm.select(fid)
+    dlg.copy_action.trigger()
+    assert dlg.paste_action.isEnabled() is True
+
+
+async def test_panel_content_is_one_undo_step(dlg, qtbot):
+    vm = dlg.view_model
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    await vm.save()
+    panel = dlg.properties_panel
+    vm.select(fid)
+    panel.content_edit.setPlainText("а")
+    panel.content_edit.setPlainText("аб")
+    panel.content_edit.setPlainText("абв")
+    panel.content_edit.clearFocus()
+    qtbot.wait(10)
+    vm.undo()
+    assert vm.template.get_field(fid).content == ""
+
+
+async def test_snap_toggle_and_z_order_buttons(dlg):
+    vm = dlg.view_model
+    assert dlg.snap_check is not None
+    assert dlg.snap_check.isChecked() is False
+    assert vm.snap_enabled is False
+
+    dlg.snap_check.setChecked(True)
+    assert vm.snap_enabled is True
+
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 20.0, 20.0)
+    vm.select(a)
+    dlg.bring_front_button.click()
+    assert [f.id for f in vm.template.page.fields] == [b, a]
+    dlg.send_back_button.click()
+    assert [f.id for f in vm.template.page.fields] == [a, b]

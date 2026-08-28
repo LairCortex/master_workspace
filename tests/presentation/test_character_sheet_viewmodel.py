@@ -723,3 +723,349 @@ async def test_unloaded_vm_page_mutators_are_noop(service):
     assert fid == ""
     assert vm.page_count == 0
     assert vm.template is None
+
+
+# ── A-editor: undo / redo (D1) ─────────────────────────────────────────────
+
+UNDO_STACK_LIMIT = 50
+
+
+async def test_undo_after_move_restores_position_and_stays_dirty(vm):
+    fid = vm.place(FieldType.TEXT, 50.0, 50.0)
+    vm.move(fid, 111.0, 222.0)
+    assert (vm.template.get_field(fid).x, vm.template.get_field(fid).y) == (111.0, 222.0)
+
+    assert vm.can_undo is True
+    vm.undo()
+
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (50.0, 50.0)
+    assert vm.dirty is True
+
+
+async def test_save_does_not_clear_undo_stack(vm):
+    fid = vm.place(FieldType.TEXT, 50.0, 50.0)
+    await vm.save()
+    vm.move(fid, 111.0, 222.0)
+    await vm.save()
+    assert vm.dirty is False
+    assert vm.can_undo is True
+
+    vm.undo()
+
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (50.0, 50.0)
+    assert vm.dirty is True
+
+
+async def test_redo_cleared_by_new_operation(vm):
+    fid = vm.place(FieldType.TEXT, 50.0, 50.0)
+    vm.move(fid, 111.0, 222.0)
+    vm.undo()
+    assert vm.can_redo is True
+
+    vm.move(fid, 80.0, 90.0)
+
+    assert vm.can_redo is False
+    vm.redo()
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (80.0, 90.0)
+
+
+async def test_undo_stack_capped_at_50(vm):
+    fid = vm.place(FieldType.LABEL, 10.0, 10.0)
+    for i in range(UNDO_STACK_LIMIT + 1):
+        vm.move(fid, 10.0 + i, 10.0)
+
+    for _ in range(UNDO_STACK_LIMIT):
+        assert vm.can_undo is True
+        vm.undo()
+    assert vm.can_undo is False
+    f = vm.template.get_field(fid)
+    assert f.y == 10.0
+    assert f.x == 10.0
+
+
+async def test_load_and_reload_clear_undo_stack(vm, service):
+    fid = vm.place(FieldType.TEXT, 50.0, 50.0)
+    vm.move(fid, 111.0, 222.0)
+    assert vm.can_undo is True
+
+    await vm.reload()
+    assert vm.can_undo is False
+    assert vm.can_redo is False
+
+    other = await service.create("Другой")
+    await vm.load(other.id)
+    assert vm.can_undo is False
+    assert vm.can_redo is False
+
+
+async def test_inline_commit_is_one_undo_step(vm):
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    vm.set_content(fid, "до")
+    await vm.save()
+
+    vm.open_inline(fid)
+    vm.set_content(fid, "а")
+    vm.set_content(fid, "аб")
+    vm.set_content(fid, "абв")
+    vm.commit_inline()
+
+    vm.undo()
+    assert vm.template.get_field(fid).content == "до"
+
+
+async def test_cancel_inline_does_not_push_undo(vm):
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    await vm.save()
+    assert vm.can_undo is True  # the place
+
+    vm.open_inline(fid)
+    vm.set_content(fid, "черновик")
+    vm.cancel_inline()
+
+    assert vm.template.get_field(fid).content == ""
+    vm.undo()
+    assert vm.template.get_field(fid) is None
+    assert vm.can_undo is False
+
+
+# ── A-editor: multiselect (D2) ─────────────────────────────────────────────
+
+async def test_click_replace_and_shift_toggle_selected_ids(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 50.0, 50.0)
+    c = vm.place(FieldType.TEXT, 90.0, 90.0)
+    assert vm.selected_ids == [c]
+
+    vm.select(a)
+    assert vm.selected_ids == [a]
+    assert vm.selection == a
+
+    vm.toggle_select(b)
+    assert vm.selected_ids == [a, b]
+
+    vm.toggle_select(a)
+    assert vm.selected_ids == [b]
+    assert vm.selection == b
+
+    vm.select(c)
+    assert vm.selected_ids == [c]
+
+
+async def test_select_ids_replaces_or_adds(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 50.0, 50.0)
+    c = vm.place(FieldType.TEXT, 90.0, 90.0)
+    vm.select(a)
+
+    vm.select_ids([b, c])
+    assert vm.selected_ids == [b, c]
+
+    vm.select_ids([a], additive=True)
+    assert vm.selected_ids == [b, c, a]
+
+
+async def test_move_selection_one_delta_clamps_each(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)   # 72x18
+    b = vm.place(FieldType.TEXT, 50.0, 50.0)    # 120x18
+    vm.select_ids([a, b])
+
+    vm.move_selection(10.0, 0.0)
+
+    assert (vm.template.get_field(a).x, vm.template.get_field(a).y) == (20.0, 10.0)
+    assert (vm.template.get_field(b).x, vm.template.get_field(b).y) == (60.0, 50.0)
+
+    vm.move_selection(PAGE_WIDTH_PT, 0.0)
+    assert vm.template.get_field(a).x == PAGE_WIDTH_PT - 72.0
+    assert vm.template.get_field(b).x == PAGE_WIDTH_PT - 120.0
+
+
+async def test_move_selection_relocates_through_gutter(vm):
+    a = vm.place(FieldType.TEXT, 100.0, 100.0)
+    vm.add_page(after_index=0)
+    b = vm.place(FieldType.LABEL, 40.0, 40.0, page_index=1)
+    vm.select_ids([a, b])
+
+    drop_x, drop_y = 200.0, PAGE_HEIGHT_PT + GUTTER_PT + 50.0
+    vm.commit_drag_selection(drop_x, drop_y, grab_dx=5.0, grab_dy=9.0)
+
+    assert vm.page_of(a) == 1
+    assert vm.page_of(b) == 1
+
+
+async def test_delete_selection_removes_all(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 50.0, 50.0)
+    vm.select_ids([a, b])
+
+    assert vm.remove_selection() is True
+    assert vm.template.page.fields == []
+    assert vm.selected_ids == []
+    assert vm.selection is None
+
+
+async def test_resize_refused_unless_exactly_one_selected(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 50.0, 50.0)
+    vm.select_ids([a, b])
+
+    assert vm.resize(a, 5.0, 5.0, 40.0, 20.0) is False
+    fa, fb = vm.template.get_field(a), vm.template.get_field(b)
+    assert (fa.w, fa.h) == (72.0, 18.0)
+    assert (fb.w, fb.h) == (120.0, 18.0)
+
+    vm.select(a)
+    assert vm.resize(a, 5.0, 5.0, 40.0, 20.0) is True
+    assert (vm.template.get_field(a).w, vm.template.get_field(a).h) == (40.0, 20.0)
+
+
+# ── A-editor: snap (D3) ────────────────────────────────────────────────────
+
+async def test_snap_off_by_default_and_not_in_template_json(vm):
+    assert vm.snap_enabled is False
+    fid = vm.place(FieldType.LABEL, 11.0, 13.0)
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (11.0, 13.0)
+    pages = vm.template.to_pages_json()
+    assert "snap" not in pages
+    vm.set_snap_enabled(True)
+    assert "snap" not in vm.template.to_pages_json()
+
+
+async def test_snap_rounds_place_and_move(vm):
+    vm.set_snap_enabled(True)
+    fid = vm.place(FieldType.LABEL, 11.0, 13.0)
+    f = vm.template.get_field(fid)
+    assert f.x % 4 == 0 and f.y % 4 == 0
+    assert (f.x, f.y) == (12.0, 12.0)
+    assert (f.w, f.h) == (72.0, 18.0)
+
+    vm.move(fid, 21.0, 23.0)
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (20.0, 24.0)
+    assert (f.w, f.h) == (72.0, 18.0)
+
+
+async def test_shift_gesture_no_snap_on_first_move(vm):
+    vm.set_snap_enabled(True)
+    fid = vm.place(FieldType.LABEL, 12.0, 12.0)
+    vm.set_snap_override(False)
+    vm.drag_move(fid, 21.0, 23.0, 0.0, 0.0)
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (21.0, 23.0)
+    vm.end_gesture()
+
+
+async def test_shift_disables_snap_for_gesture(vm):
+    vm.set_snap_enabled(True)
+    fid = vm.place(FieldType.LABEL, 12.0, 12.0)
+    vm.begin_gesture(snap_override=False)
+    vm.move(fid, 21.0, 23.0)
+    vm.end_gesture()
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (21.0, 23.0)
+
+
+# ── A-editor: z-order (D4) ─────────────────────────────────────────────────
+
+async def test_bring_to_front_and_send_to_back(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 20.0, 20.0)
+    c = vm.place(FieldType.TEXT, 30.0, 30.0)
+    vm.select(a)
+    vm.bring_to_front()
+    assert [f.id for f in vm.template.page.fields] == [b, c, a]
+
+    vm.send_to_back()
+    assert [f.id for f in vm.template.page.fields] == [a, b, c]
+
+
+async def test_z_order_set_per_page_one_undo(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 20.0, 20.0)
+    vm.add_page(after_index=0)
+    c = vm.place(FieldType.LABEL, 10.0, 10.0, page_index=1)
+    d = vm.place(FieldType.TEXT, 20.0, 20.0, page_index=1)
+    vm.select_ids([a, c])
+    vm.bring_to_front()
+    assert [f.id for f in vm.template.pages[0].fields] == [b, a]
+    assert [f.id for f in vm.template.pages[1].fields] == [d, c]
+
+    vm.undo()
+    assert [f.id for f in vm.template.pages[0].fields] == [a, b]
+    assert [f.id for f in vm.template.pages[1].fields] == [c, d]
+    assert vm.can_redo is True
+    vm.place(FieldType.RECT, 5.0, 5.0)
+    assert vm.can_redo is False
+
+
+# ── A-editor: duplicate / clipboard (D5) ───────────────────────────────────
+
+async def test_duplicate_new_id_offset_same_page_same_image(vm):
+    fid = vm.place(FieldType.IMAGE, 20.0, 20.0)
+    vm.set_image_id(fid, 7)
+    vm.select(fid)
+
+    copies = vm.duplicate()
+    assert len(copies) == 1
+    copy_id = copies[0]
+    assert copy_id != fid
+    src, dst = vm.template.get_field(fid), vm.template.get_field(copy_id)
+    assert (dst.x, dst.y) == (28.0, 28.0)
+    assert (dst.w, dst.h) == (src.w, src.h)
+    assert dst.type is src.type
+    assert dst.image_id == 7
+    assert vm.page_of(copy_id) == vm.page_of(fid) == 0
+    assert vm.selected_ids == [copy_id]
+
+
+async def test_duplicate_set_keeps_relative_offsets(vm):
+    a = vm.place(FieldType.LABEL, 10.0, 10.0)
+    b = vm.place(FieldType.TEXT, 30.0, 40.0)
+    vm.select_ids([a, b])
+    copies = vm.duplicate()
+    assert len(copies) == 2
+    ca, cb = vm.template.get_field(copies[0]), vm.template.get_field(copies[1])
+    assert abs(ca.x - 18.0) < 1e-6 and abs(ca.y - 18.0) < 1e-6
+    assert abs(cb.x - 38.0) < 1e-6 and abs(cb.y - 48.0) < 1e-6
+
+
+async def test_paste_uses_visible_center_when_given(vm):
+    fid = vm.place(FieldType.TEXT, 40.0, 60.0)
+    vm.select(fid)
+    vm.copy()
+    vm.add_page(after_index=0)
+    pasted = vm.paste(visible_center=(100.0, 80.0))
+    f = vm.template.get_field(pasted[0])
+    assert abs(f.x - (100.0 - f.w / 2)) < 1.0
+    assert abs(f.y - (80.0 - f.h / 2)) < 1.0
+
+
+async def test_paste_lands_on_current_rail_page(vm):
+    fid = vm.place(FieldType.TEXT, 40.0, 60.0)
+    vm.select(fid)
+    vm.copy()
+    vm.add_page(after_index=0)
+    assert vm.current_page_index == 1
+
+    pasted = vm.paste()
+    assert len(pasted) == 1
+    assert vm.page_of(pasted[0]) == 1
+    f = vm.template.get_field(pasted[0])
+    page_w, page_h = vm.template.page_size
+    assert abs(f.x - (page_w - f.w) / 2) < 1.0
+    assert abs(f.y - (page_h - f.h) / 2) < 1.0
+
+
+async def test_copy_does_not_touch_system_clipboard(vm, qapp):
+    from PySide6.QtWidgets import QApplication
+
+    clip = QApplication.clipboard()
+    clip.setText("сторонняя строка")
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    vm.set_content(fid, "макет")
+    vm.select(fid)
+    vm.copy()
+    assert clip.text() == "сторонняя строка"

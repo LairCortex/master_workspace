@@ -270,3 +270,45 @@ async def test_v1_sheet_open_and_save_writes_version_2(app, dialog_input, wait_f
     data = json.loads(pages)
     assert data[0].get("name") == "Страница 1"
     assert data[0]["fields"][0]["id"] == "v1field"
+
+
+# ── A-editor: rubber-band two fields → duplicate → undo → save ─────────────
+
+async def test_marquee_duplicate_undo_save(app, dialog_input, wait_for, qtbot):
+    application, window = app
+
+    window.char_sheets_action.trigger()
+    await wait_for(lambda: application._sheet_list_dialog is not None)
+    list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
+    dialog_input["answer"] = ("Макет", True)
+    list_dlg.create_button.click()
+    editor = await wait_editor(app, wait_for, "Макет")
+    qtbot.wait(50)
+
+    editor.palette.label_button.click()
+    _click_canvas(editor, 100.0, 100.0)
+    await wait_for(lambda: editor.canvas.item_count() == 1)
+    editor.palette.text_button.click()
+    _click_canvas(editor, 200.0, 200.0)
+    await wait_for(lambda: editor.canvas.item_count() == 2)
+
+    _drag_canvas(editor, (90.0, 90.0), (330.0, 230.0), qtbot)
+    await wait_for(lambda: len(editor.view_model.selected_ids) == 2)
+
+    ids_before = [f.id for f in editor.view_model.template.page.fields]
+    editor.duplicate_action.trigger()
+    await wait_for(lambda: editor.canvas.item_count() == 4)
+    assert len(editor.view_model.template.page.fields) == 4
+
+    editor.undo_action.trigger()
+    await wait_for(lambda: editor.canvas.item_count() == 2)
+    assert [f.id for f in editor.view_model.template.page.fields] == ids_before
+
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+    row = query_db(
+        application._db_path,
+        "SELECT pages FROM character_sheets WHERE name = 'Макет'",
+    )[0][0]
+    saved = json.loads(row)
+    assert [f["id"] for f in saved[0]["fields"]] == ids_before
