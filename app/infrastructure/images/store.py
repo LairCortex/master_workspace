@@ -19,8 +19,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.entities.character_sheet import iter_sheet_image_ids, null_sheet_image_ids
+from app.domain.entities.character_sheet_instance import (
+    iter_instance_image_ids,
+    null_instance_image_ids,
+)
 from app.infrastructure.db.models import (
     CharacterModel,
+    CharacterSheetInstanceModel,
     CharacterSheetModel,
     ImageModel,
     LocationModel,
@@ -141,11 +146,17 @@ class ImageStore:
             total += iter_sheet_image_ids(pages_json).count(image_id)
         return total
 
+    async def _instance_refcount(self, image_id: int) -> int:
+        """Count instance-value image_ids referencing ``image_id`` (D6)."""
+        result = await self._session.execute(select(CharacterSheetInstanceModel.values))
+        total = 0
+        for (values_json,) in result.all():
+            total += iter_instance_image_ids(values_json).count(image_id)
+        return total
+
     async def refcount(self, image_id: int) -> int:
-        """Count every referrer of ``image_id``: entities across
-        organizations/characters/locations (one COUNT each) plus sheet-page
-        image fields (design D3 + D6: a file is deletable only when nothing
-        — entities or sheets — references it anymore)."""
+        """Count every referrer of ``image_id``: entities plus sheet-page
+        image fields plus instance values."""
         total = 0
         for model in _REFERRING_MODELS:
             result = await self._session.execute(
@@ -153,6 +164,7 @@ class ImageStore:
             )
             total += result.scalar() or 0
         total += await self._sheet_refcount(image_id)
+        total += await self._instance_refcount(image_id)
         return total
 
     async def gc_after_commit(self, *old_image_ids: int | None) -> None:
@@ -241,6 +253,10 @@ class ImageStore:
         for row in result.scalars().all():
             if image_id in iter_sheet_image_ids(row.pages):
                 row.pages = null_sheet_image_ids(row.pages, image_id)
+        result = await self._session.execute(select(CharacterSheetInstanceModel))
+        for row in result.scalars().all():
+            if image_id in iter_instance_image_ids(row.values):
+                row.values = null_instance_image_ids(row.values, image_id)
 
     def _cleanup_tmp_files(self) -> None:
         if not self._image_dir.exists():

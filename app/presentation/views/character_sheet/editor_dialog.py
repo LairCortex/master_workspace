@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
@@ -73,6 +74,8 @@ class CharacterSheetEditorDialog(QDialog):
     is not safe for concurrent tasks). Unit tests pass nothing and the
     coroutines run bare.
     """
+
+    saved = Signal()
 
     def __init__(
         self,
@@ -217,11 +220,14 @@ class CharacterSheetEditorDialog(QDialog):
             await self._run_locked(self._vm.save())
         except CharacterSheetError as exc:
             QMessageBox.warning(self, "Чар-листы", str(exc))
+            return
         except Exception as exc:
             log.error("character-sheet save failed: %s", exc, exc_info=True)
             QMessageBox.critical(
                 self, "Ошибка", f"Не удалось сохранить шаблон: {exc}"
             )
+            return
+        self.saved.emit()
 
     def force_close(self) -> None:
         """Close without the dirty prompt (application shutdown / game switch)."""

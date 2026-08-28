@@ -32,6 +32,10 @@ from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
 )
+from app.application.services.character_sheet_instance_service import (
+    CharacterSheetInstanceError,
+    CharacterSheetInstanceService,
+)
 from app.application.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
@@ -54,9 +58,13 @@ from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
+from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
+)
+from app.infrastructure.repositories.character_sheet_instance_repository import (
+    CharacterSheetInstanceRepository,
 )
 
 class Application:
@@ -85,10 +93,12 @@ class Application:
         # Entity service catalog — built once per game in start()
         self._entity_services: dict[str, EntityService] = {}
         self._wiring: ApplicationWiring | None = None
-        # Character-sheet windows (D6): at most one list + one editor per game
+        # Character-sheet windows (D6/D4): at most one list + one editor + one fill
         self._sheet_service: CharacterSheetService | None = None
+        self._instance_service: CharacterSheetInstanceService | None = None
         self._sheet_list_dialog: CharacterSheetListDialog | None = None
         self._sheet_editor: CharacterSheetEditorDialog | None = None
+        self._sheet_fill: CharacterSheetFillDialog | None = None
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window.
@@ -194,9 +204,14 @@ class Application:
         # references (pages JSON) after a save/delete commits (design D6) —
         # without it the files of cleared/deleted sheet images are never
         # removed in the running app.
+        inst_repo = CharacterSheetInstanceRepository(self._session)
         self._sheet_service = CharacterSheetService(
             CharacterSheetRepository(self._session),
             image_store=self._image_store,
+            instance_repo=inst_repo,
+        )
+        self._instance_service = CharacterSheetInstanceService(
+            inst_repo, self._sheet_service, image_store=self._image_store,
         )
         window.char_sheets_requested.connect(self._on_char_sheets)
 
@@ -258,6 +273,17 @@ class Application:
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if self._sheet_fill is not None and self._sheet_fill.view_model.dirty:
+            answer = QMessageBox.question(
+                self._window,
+                "Несохранённые изменения",
+                "В заполненном листе есть несохранённые правки. Сменить игру и "
+                "закрыть лист без сохранения?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._close_sheet_windows()
         await self.shutdown()
         await self.start(path)
@@ -272,6 +298,9 @@ class Application:
         if self._sheet_editor is not None:
             self._sheet_editor.force_close()
             self._sheet_editor = None
+        if self._sheet_fill is not None:
+            self._sheet_fill.force_close()
+            self._sheet_fill = None
 
     def _on_char_sheets(self) -> None:
         """Show (or create) the non-modal sheet list window."""
@@ -279,9 +308,12 @@ class Application:
             dialog = CharacterSheetListDialog(
                 self._sheet_service, parent=self._window,
                 run_locked=self._wiring.run_locked,
+                instance_service=self._instance_service,
             )
             dialog.open_requested.connect(self._on_sheet_open)
+            dialog.open_instance_requested.connect(self._on_instance_open)
             dialog.renamed.connect(self._on_sheet_renamed)
+            dialog.instance_renamed.connect(self._on_instance_renamed)
             self._sheet_list_dialog = dialog
         self._sheet_list_dialog.show()
         self._sheet_list_dialog.raise_()
@@ -304,6 +336,10 @@ class Application:
         if self._sheet_editor is not None:
             sheet_id = self._sheet_editor.view_model.sheet_id
         dialog.set_open_sheet_id(sheet_id)
+        instance_id = None
+        if self._sheet_fill is not None:
+            instance_id = self._sheet_fill.view_model.instance_id
+        dialog.set_open_instance_id(instance_id)
 
     def _on_sheet_open(self, sheet_id: int) -> None:
         self._wiring._spawn(self._open_sheet(sheet_id))
@@ -336,6 +372,7 @@ class Application:
         self._sheet_editor = editor
         # A closed window must not keep its stale reference (D6 single editor).
         editor.finished.connect(lambda _r, _e=editor: self._forget_editor(_e))
+        editor.saved.connect(lambda _e=editor: self._on_design_saved(_e))
         editor.show()
         try:
             await editor.load()
@@ -366,6 +403,101 @@ class Application:
         if self._sheet_editor is not None and self._sheet_editor.view_model.sheet_id == sheet_id:
             self._sheet_editor.set_name(name)
 
+    def _on_instance_open(self, instance_id: int) -> None:
+        self._wiring._spawn(self._open_fill(instance_id))
+
+    async def _open_fill(self, instance_id: int) -> None:
+        """Open one Fill window (D4): dirty current Fill is closed only after confirm."""
+        if self._sheet_fill is not None:
+            current_id = self._sheet_fill.view_model.instance_id
+            if current_id is None:
+                current_id = self._sheet_fill._instance_id
+            if current_id == instance_id:
+                self._sheet_fill.show()
+                self._sheet_fill.raise_()
+                self._sheet_fill.activateWindow()
+                return
+            if self._sheet_fill.view_model.dirty:
+                answer = QMessageBox.question(
+                    self._window,
+                    "Несохранённые изменения",
+                    "В текущем листе есть несохранённые правки. Закрыть без сохранения "
+                    "и открыть другой лист?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                self._sheet_fill.force_close()
+            else:
+                self._sheet_fill.close()
+            self._sheet_fill = None
+        fill = CharacterSheetFillDialog(
+            self._instance_service,
+            self._sheet_service,
+            instance_id,
+            parent=self._window,
+            run_locked=self._wiring.run_locked,
+            image_store=self._image_store,
+            character_service=self._entity_services.get("character"),
+        )
+        self._sheet_fill = fill
+        fill.finished.connect(lambda _r, _f=fill: self._forget_fill(_f))
+        fill.binding_changed.connect(
+            lambda: self._wiring._spawn(self._refresh_character_cards())
+        )
+        fill.show()
+        try:
+            await fill.load()
+        except (CharacterSheetError, CharacterSheetInstanceError) as exc:
+            if self._sheet_fill is fill:
+                self._sheet_fill = None
+            fill.force_close()
+            QMessageBox.critical(self._window, "Чар-листы", str(exc))
+            if self._sheet_list_dialog is not None:
+                self._sheet_list_dialog.set_open_instance_id(None)
+            return
+        except Exception as exc:
+            logging.getLogger("app.main").debug("character-sheet fill load aborted: %s", exc)
+            if self._sheet_fill is fill:
+                self._sheet_fill = None
+            fill.force_close()
+            return
+        if self._sheet_list_dialog is not None and self._sheet_fill is fill:
+            self._sheet_list_dialog.set_open_instance_id(fill.view_model.instance_id)
+
+    def _on_instance_renamed(self, instance_id: int, name: str) -> None:
+        if self._sheet_fill is not None and self._sheet_fill.view_model.instance_id == instance_id:
+            self._sheet_fill.set_name(name)
+
+    def _on_design_saved(self, editor) -> None:
+        fill = self._sheet_fill
+        if fill is None or self._wiring is None:
+            return
+        if fill.view_model.template_id != editor.view_model.sheet_id:
+            return
+        self._wiring._spawn(self._reload_fill_after_design(editor))
+
+    async def _reload_fill_after_design(self, editor) -> None:
+        fill = self._sheet_fill
+        if fill is None or editor is None:
+            return
+        if fill.view_model.template_id != editor.view_model.sheet_id:
+            return
+        try:
+            await fill.view_model.reload_layout()
+        except Exception as exc:
+            logging.getLogger("app.main").debug(
+                "fill reload_layout after design save skipped: %s", exc
+            )
+
+    def _forget_fill(self, fill) -> None:
+        if self._sheet_fill is fill:
+            self._sheet_fill = None
+        if self._sheet_list_dialog is not None:
+            self._sheet_list_dialog.set_open_instance_id(None)
+        fill.deleteLater()
+
     def _forget_editor(self, editor) -> None:
         """Drop the reference once the editor window is actually closed.
 
@@ -378,6 +510,21 @@ class Application:
         if self._sheet_list_dialog is not None:
             self._sheet_list_dialog.set_open_sheet_id(None)
         editor.deleteLater()
+
+    async def _refresh_character_cards(self) -> None:
+        window = self._window
+        svc = self._instance_service
+        if window is None or svc is None:
+            return
+        from app.presentation.views.entity_card_dialog import EntityCardDialog
+        for card in window.findChildren(EntityCardDialog):
+            if card.entity_type != "character":
+                continue
+            eid = card.populated_entity_id
+            if eid is None:
+                continue
+            inst = await svc.get_by_character_id(eid)
+            card.set_character_sheet_available(inst is not None)
 
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
         """Connect mention search and click signals for a dialog's MentionTextEdits.

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, String, Table, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -321,5 +321,31 @@ class CharacterSheetModel(Base):
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     orientation: Mapped[str] = mapped_column(String(16), nullable=False, default="portrait", server_default="portrait")
     pages: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class CharacterSheetInstanceModel(Base):
+    """A filled character-sheet instance of the current game (epic B).
+
+    ``name`` is unique per game DB. ``template_id`` is immutable after create
+    (ON DELETE RESTRICT: a template with instances cannot be dropped).
+    ``character_id`` is optional and unique among non-NULL values; SQLite
+    allows several NULLs so unbound sheets do not collide. ``values`` is the
+    JSON object ``{field_id: value}``.
+    """
+
+    __tablename__ = "character_sheet_instances"
+    __table_args__ = (UniqueConstraint("character_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    template_id: Mapped[int] = mapped_column(
+        ForeignKey("character_sheets.id", ondelete="RESTRICT"), nullable=False
+    )
+    character_id: Mapped[int | None] = mapped_column(
+        ForeignKey("characters.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    values: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

@@ -85,11 +85,13 @@ class EntityCardDialog(QDialog):
     # ImageStore.store() and reports the result back via set_stored_image_id
     # (design D4: ImageStore is the single ingest pipeline, not the dialog).
     image_picked = Signal(bytes)
+    open_character_sheet_requested = Signal()
 
     def __init__(self, entity_vm, entity_type: str = "organization", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._vm = entity_vm
         self._entity_type = entity_type
+        self._populated_entity_id: int | None = None
         self._related_sections: dict[str, RelatedSection] = {}
         self._image_id: int | None = None
         # Full-size viewer inputs (design D10/task 5.3) — kept in step with
@@ -254,6 +256,10 @@ class EntityCardDialog(QDialog):
 
         # Buttons
         btn_layout = QHBoxLayout()
+        self.open_sheet_button = QPushButton("Открыть чар-лист")
+        self.open_sheet_button.hide()
+        self.open_sheet_button.clicked.connect(self.open_character_sheet_requested.emit)
+        btn_layout.addWidget(self.open_sheet_button)
         btn_layout.addStretch()
         self.save_button = QPushButton("Сохранить")
         self.save_button.clicked.connect(self._on_save)
@@ -262,6 +268,19 @@ class EntityCardDialog(QDialog):
         btn_layout.addWidget(self.save_button)
         btn_layout.addWidget(self.cancel_button)
         root_layout.addLayout(btn_layout)
+
+    def set_character_sheet_available(self, available: bool) -> None:
+        self.open_sheet_button.setVisible(
+            self._entity_type == "character" and available
+        )
+
+    @property
+    def entity_type(self) -> str:
+        return self._entity_type
+
+    @property
+    def populated_entity_id(self) -> int | None:
+        return self._populated_entity_id
 
     def _set_music_url(self, url: str) -> None:
         self._music_url = url.strip()
@@ -349,6 +368,7 @@ class EntityCardDialog(QDialog):
     # ── Public API ─────────────────────────────────────────────────────────
 
     def populate(self, entity: Any) -> None:
+        self._populated_entity_id = getattr(entity, "id", None)
         self.name_input.setText(getattr(entity, "name", ""))
         rating_val = getattr(entity, "rating", 1)
         if isinstance(rating_val, int):

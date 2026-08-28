@@ -258,6 +258,18 @@ def dialog_input(monkeypatch) -> dict[str, Any]:
 
 
 @pytest.fixture
+def dialog_item(monkeypatch) -> dict[str, Any]:
+    """Stub QInputDialog.getItem; tests set ``dialog_item["answer"] = (text, ok)``."""
+    state: dict[str, Any] = {"answer": ("", False)}
+
+    def fake_get_item(*args: Any, **kwargs: Any) -> tuple[str, bool]:
+        return state["answer"]
+
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(fake_get_item))
+    return state
+
+
+@pytest.fixture
 def wait_for(qtbot):
     """Deterministic async wait with a fixed timeout (coroutine: ``await wait_for(cond)``).
 

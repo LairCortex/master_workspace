@@ -508,6 +508,24 @@ class TestEntityCardDialogGaps:
         section._on_remove()  # nothing selected — safe no-op
         assert section.get_current_ids() == []
 
+    def test_character_sheet_button_hidden_until_available(self, qtbot):
+        d = EntityCardDialog(None, entity_type="character")
+        qtbot.addWidget(d)
+        d.show()
+        assert not d.open_sheet_button.isVisible()
+        d.set_character_sheet_available(True)
+        assert d.open_sheet_button.isVisible()
+        assert d.open_sheet_button.text() == "Открыть чар-лист"
+        d.set_character_sheet_available(False)
+        assert not d.open_sheet_button.isVisible()
+
+    def test_item_card_does_not_show_character_sheet_button(self, qtbot):
+        d = EntityCardDialog(None, entity_type="item")
+        qtbot.addWidget(d)
+        d.show()
+        d.set_character_sheet_available(True)
+        assert not d.open_sheet_button.isVisible()
+
 
 # ── EventDialog: date validity, endless, reject-while-generating ──────────
 

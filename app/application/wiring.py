@@ -354,6 +354,29 @@ class ApplicationWiring:
             lambda t, i: self._spawn(on_search_result(t, i))
         )
 
+        async def _wire_open_character_sheet(dialog, entity_type, entity_id):
+            if entity_type != "character":
+                return
+            svc = self._app._instance_service
+            if svc is None:
+                return
+
+            async def _refresh_button():
+                inst = await svc.get_by_character_id(entity_id)
+                dialog.set_character_sheet_available(inst is not None)
+
+            async def _open_bound_sheet():
+                inst = await svc.get_by_character_id(entity_id)
+                if inst is None:
+                    dialog.set_character_sheet_available(False)
+                    return
+                self._app._on_instance_open(inst.id)
+
+            dialog.open_character_sheet_requested.connect(
+                lambda: self._spawn(_open_bound_sheet())
+            )
+            await _refresh_button()
+
         # Entity card double-click
         async def on_entity_click(entity_type, entity_id):
             try:
@@ -398,6 +421,7 @@ class ApplicationWiring:
                 dialog.create_related_requested.connect(
                     lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
                 )
+                await _wire_open_character_sheet(dialog, entity_type, entity_id)
                 dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
                 dialog.rejected.connect(
                     lambda: self._spawn(self._cleanup_popup_entities(dialog))

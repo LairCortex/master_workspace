@@ -16,6 +16,7 @@ from app.domain.enums.field_type import FieldType
 from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
+from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 
@@ -405,3 +406,234 @@ async def test_sheet_service_wired_with_game_image_store(app, wait_for):
     assert application._image_store is not None
     assert application._sheet_service is not None
     assert application._sheet_service._image_store is application._image_store
+    assert application._instance_service is not None
+    assert application._instance_service._image_store is application._image_store
+    assert application._sheet_service._instance_repo is not None
+
+
+# ── B: Design + Fill windows (task 7.3) ─────────────────────────────────────
+
+def _fills(qtop) -> list[CharacterSheetFillDialog]:
+    return [w for w in qtop if isinstance(w, CharacterSheetFillDialog) and w.isVisible()]
+
+
+def _fill_name(application) -> str:
+    fill = application._sheet_fill
+    if fill is None or fill.view_model.template is None:
+        return ""
+    return fill.view_model.name
+
+
+async def wait_fill(app, wait_for, name: str) -> CharacterSheetFillDialog:
+    application, _window = app
+    await wait_for(lambda: _fill_name(application) == name)
+    return application._sheet_fill
+
+
+def create_instance_via_list(
+    list_dlg: CharacterSheetListDialog,
+    dialog_item,
+    dialog_input,
+    template_name: str,
+    instance_name: str,
+) -> None:
+    list_dlg.tabs.setCurrentIndex(1)
+    dialog_item["answer"] = (template_name, True)
+    dialog_input["answer"] = (instance_name, True)
+    list_dlg.create_button.click()
+
+
+async def test_design_and_fill_same_template_open_together(
+    app, dialog_input, dialog_item, wait_for,
+):
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    editor = await wait_editor(app, wait_for, "Макет")
+    editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
+    fill = await wait_fill(app, wait_for, "Лист")
+
+    assert editor.isVisible()
+    assert fill.isVisible()
+    assert application._sheet_editor is editor
+    assert application._sheet_fill is fill
+    qtop = QApplication.instance().topLevelWidgets()
+    assert len(_editors(qtop)) == 1
+    assert len(_fills(qtop)) == 1
+
+
+async def test_reopening_same_instance_raises_existing_fill(
+    app, dialog_input, dialog_item, wait_for,
+):
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    await wait_editor(app, wait_for, "Макет")
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
+    fill = await wait_fill(app, wait_for, "Лист")
+
+    list_dlg.tabs.setCurrentIndex(1)
+    list_dlg.instance_list.setCurrentRow(0)
+    list_dlg.open_button.click()
+    await wait_for(lambda: True, timeout_s=0.2)
+
+    application, _window = app
+    assert application._sheet_fill is fill
+    assert fill.isVisible()
+    assert len(_fills(QApplication.instance().topLevelWidgets())) == 1
+
+
+async def test_second_fill_dirty_prompt_rejected(
+    app, dialog_input, dialog_item, message_boxes, wait_for, qtbot,
+):
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    editor = await wait_editor(app, wait_for, "Макет")
+    fid = editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист1")
+    fill1 = await wait_fill(app, wait_for, "Лист1")
+    fill1.view_model.set_text(fid, "черновик")
+    assert fill1.view_model.dirty
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист2")
+    await wait_for(lambda: len(message_boxes) >= 1)
+    qtbot.wait(50)
+
+    assert application._sheet_fill is fill1
+    assert fill1.view_model.dirty
+    assert any(kind == "question" for kind, _t, _x in message_boxes)
+    assert len(_fills(QApplication.instance().topLevelWidgets())) == 1
+
+
+async def test_second_fill_dirty_prompt_confirm_opens_other(
+    app, dialog_input, dialog_item, wait_for, monkeypatch,
+):
+    application, _window = app
+    calls = question_yes(monkeypatch)
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    editor = await wait_editor(app, wait_for, "Макет")
+    fid = editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист1")
+    fill1 = await wait_fill(app, wait_for, "Лист1")
+    fill1.view_model.set_text(fid, "черновик")
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист2")
+    fill2 = await wait_fill(app, wait_for, "Лист2")
+
+    assert fill2 is not fill1
+    assert application._sheet_fill is fill2
+    assert not fill2.view_model.dirty
+    assert len(_fills(QApplication.instance().topLevelWidgets())) == 1
+    assert len(calls) == 1
+    assert editor.isVisible()
+
+
+async def test_save_design_reloads_fill_layout_dirty_does_not_stream(
+    app, dialog_input, dialog_item, wait_for,
+):
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    editor = await wait_editor(app, wait_for, "Макет")
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
+    fill = await wait_fill(app, wait_for, "Лист")
+
+    fid = editor.view_model.place(FieldType.LABEL, 40.0, 40.0)
+    assert editor.view_model.dirty
+    assert fill.view_model.template.get_field(fid) is None
+
+    editor.save_button.click()
+    await wait_for(lambda: fill.view_model.template.get_field(fid) is not None)
+    assert not editor.view_model.dirty
+
+
+async def test_character_card_opens_bound_fill(
+    app, dialog_input, dialog_item, wait_for,
+):
+    from datetime import date
+
+    from app.presentation.views.entity_card_dialog import EntityCardDialog
+
+    application, window = app
+    char = await application._entity_services["character"].create_entity(
+        name="Герой",
+        characteristics="",
+        backstory="",
+        start_date=date(1300, 1, 1),
+        end_date=None,
+    )
+    await application._session.commit()
+
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    await wait_editor(app, wait_for, "Макет")
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
+    fill = await wait_fill(app, wait_for, "Лист")
+    await application._instance_service.bind_character(fill.view_model.instance_id, char.id)
+    fill.force_close()
+    await wait_for(lambda: application._sheet_fill is None)
+
+    window.detail_panel.entity_clicked.emit("character", char.id)
+    await wait_for(
+        lambda: any(
+            isinstance(w, EntityCardDialog) and w.isVisible()
+            for w in window.findChildren(EntityCardDialog)
+        )
+    )
+    card = next(
+        w for w in window.findChildren(EntityCardDialog)
+        if w.isVisible()
+    )
+    assert card.open_sheet_button.isVisible()
+    card.open_sheet_button.click()
+    fill2 = await wait_fill(app, wait_for, "Лист")
+    assert fill2.view_model.character_id == char.id
+
+
+async def test_switch_game_with_dirty_fill_reject_keeps_game(
+    app, dialog_input, dialog_item, tmp_games_dir, wait_for, monkeypatch,
+):
+    application, window = app
+    calls = question_no(monkeypatch)
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    editor = await wait_editor(app, wait_for, "Макет")
+    fid = editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
+    fill = await wait_fill(app, wait_for, "Лист")
+    fill.view_model.set_text(fid, "черновик")
+    assert fill.view_model.dirty
+
+    path_b = await make_second_game(tmp_games_dir)
+    window.switch_game_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
+    launcher = window.findChildren(GameLauncherDialog)[0]
+    beta = next(
+        launcher.list_widget.item(i)
+        for i in range(launcher.list_widget.count())
+        if "beta" in launcher.list_widget.item(i).text()
+    )
+    helpers.select_item(launcher.list_widget, beta)
+    launcher.open_button.click()
+    await wait_for(lambda: len(calls) >= 1)
+
+    assert application._window is window
+    assert application._sheet_fill is fill
+    assert fill.view_model.dirty
+    assert "Несохранённые" in calls[0][0]

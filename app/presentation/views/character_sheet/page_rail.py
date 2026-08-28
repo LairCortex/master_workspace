@@ -36,10 +36,12 @@ class PageRail(QWidget):
     page_selected = Signal(int)
 
     def __init__(self, vm: CharacterSheetViewModel,
-                 parent: QWidget | None = None) -> None:
+                 parent: QWidget | None = None,
+                 navigation_only: bool = False) -> None:
         super().__init__(parent)
         self._vm = vm
         self._renaming = False
+        self._navigation_only = navigation_only
 
         self.pages_list = QListWidget(self)
         self.pages_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -71,12 +73,17 @@ class PageRail(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         layout.addWidget(self.pages_list, 1)
-        row = QHBoxLayout()
-        buttons = [self.up_button, self.down_button, self.delete_button, self.add_button]
-        for b in buttons:
-            b.setMinimumHeight(26)
-            row.addWidget(b)
-        layout.addLayout(row)
+        if navigation_only:
+            self.pages_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            for b in (self.up_button, self.down_button, self.delete_button, self.add_button):
+                b.hide()
+        else:
+            row = QHBoxLayout()
+            buttons = [self.up_button, self.down_button, self.delete_button, self.add_button]
+            for b in buttons:
+                b.setMinimumHeight(26)
+                row.addWidget(b)
+            layout.addLayout(row)
 
         vm.pages_changed.connect(self._rebuild)
         vm.template_changed.connect(self._rebuild)
@@ -114,6 +121,8 @@ class PageRail(QWidget):
             self.pages_list.scrollToItem(self.pages_list.item(index))
 
     def _sync_controls(self) -> None:
+        if self._navigation_only:
+            return
         n = self.pages_list.count()
         has = self.pages_list.currentRow() >= 0
         self.up_button.setEnabled(n > 1 and has)
@@ -133,6 +142,8 @@ class PageRail(QWidget):
 
     def _on_item_changed(self, item) -> None:
         """Inline-edit commit: apply the new name, or restore the stored one."""
+        if self._navigation_only:
+            return
         index = self.pages_list.row(item)
         template = self._vm.template
         if template is None or not 0 <= index < len(template.pages):

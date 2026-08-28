@@ -105,6 +105,63 @@ async def test_templates_survive_nri_roundtrip(tmp_path, monkeypatch):
     assert _rows(imported) == original
 
 
+async def test_instances_survive_nri_roundtrip(tmp_path, monkeypatch):
+    from app.application.services.character_sheet_instance_service import (
+        CharacterSheetInstanceService,
+    )
+    from app.infrastructure.repositories.character_sheet_instance_repository import (
+        CharacterSheetInstanceRepository,
+    )
+
+    monkeypatch.setattr(
+        "app.infrastructure.db.game_manager.get_games_dir",
+        lambda: tmp_path / "games",
+    )
+
+    db_path = create_game("Листы")
+    engine = create_engine(get_db_url(db_path))
+    factory = create_session_factory(engine)
+    try:
+        await init_db(engine, image_dir=db_path.parent / "images")
+        session = factory()
+        try:
+            service = CharacterSheetService(CharacterSheetRepository(session))
+            row = await service.create("Иван")
+            template = await service.load(row.id)
+            field = template.add_field(FieldType.TEXT, (40.0, 40.0))
+            field.content = "default"
+            await service.update_pages(row.id, template)
+            inst_svc = CharacterSheetInstanceService(
+                CharacterSheetInstanceRepository(session), service
+            )
+            inst = await inst_svc.create("Лист Ивана", row.id)
+            await inst_svc.update_values(inst.id, {field.id: "Пётр"})
+        finally:
+            await session.close()
+    finally:
+        await engine.dispose()
+
+    before = _instance_rows(db_path)
+    assert [r[0] for r in before] == ["Лист Ивана"]
+
+    dest = tmp_path / "листы.nri"
+    export_game(str(db_path), dest)
+    delete_game(str(db_path))
+    imported = import_game(dest)
+    assert _instance_rows(imported) == before
+
+
+def _instance_rows(db_path) -> list[tuple]:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        return conn.execute(
+            'SELECT name, template_id, character_id, "values" '
+            "FROM character_sheet_instances ORDER BY name"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 # ── A-playable: an image field on a sheet page (design D6) ─────────────────
 
 

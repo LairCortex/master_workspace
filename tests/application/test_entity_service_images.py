@@ -170,14 +170,18 @@ class TestNoOpPaths:
             BaseRepository(async_session, DescriptionModel),
         )  # image_store=None
         org = await _make_org(async_session, None)
+        img = ImageModel(
+            sha256="a" * 64, ext="png", width=1, height=1, size_bytes=1,
+        )
+        async_session.add(img)
         await async_session.commit()
 
         result = await svc.update_entity_with_relations(
             org.id,
-            field_data={"image_id": 999},
+            field_data={"image_id": img.id},
             characteristics="c",
             backstory="b",
             related_changes={},
         )
         assert result is not None
-        assert result.image_id == 999
+        assert result.image_id == img.id

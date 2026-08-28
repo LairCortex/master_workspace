@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
@@ -33,11 +34,13 @@ from PySide6.QtGui import (
     QTransform,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QGraphicsProxyWidget,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QRubberBand,
     QWidget,
@@ -148,6 +151,8 @@ class SheetFieldItem(QGraphicsRectItem):
         self.setPen(self._normal_pen())
         self._pixmap: QPixmap | None = None
         self._show_handles = False
+        self._display_text: str | None = None
+        self._checked: bool | None = None
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
     # -- data --------------------------------------------------------------
@@ -188,6 +193,21 @@ class SheetFieldItem(QGraphicsRectItem):
         self._show_handles = flag
         self.update()
 
+    def set_fill_display(self, text: str | None, checked: bool | None = None) -> None:
+        self._display_text = text
+        self._checked = checked
+        self.update()
+
+    def _shown_text(self) -> str:
+        if self._display_text is not None:
+            return self._display_text
+        return self._field.content
+
+    def _is_checked(self) -> bool:
+        if self._checked is not None:
+            return self._checked
+        return self._field.content == "true"
+
     # -- drawing -----------------------------------------------------------
 
     @staticmethod
@@ -219,7 +239,7 @@ class SheetFieldItem(QGraphicsRectItem):
             painter.setPen(self.pen())
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.rect())
-            if self._has_text() and f.content:
+            if self._has_text() and self._shown_text():
                 painter.setPen(QPen(_TEXT_COLOR))
                 painter.setFont(self.font())
                 painter.drawText(
@@ -227,7 +247,7 @@ class SheetFieldItem(QGraphicsRectItem):
                         _TEXT_INSET, _TEXT_INSET, -_TEXT_INSET, -_TEXT_INSET
                     ),
                     self._text_flags(),
-                    f.content,
+                    self._shown_text(),
                 )
         if self._show_handles:
             self._paint_handles(painter)
@@ -257,7 +277,7 @@ class SheetFieldItem(QGraphicsRectItem):
         painter.setPen(self.pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(self.rect())
-        if self._field.content == "true":
+        if self._is_checked():
             painter.setPen(QPen(_CHECK_COLOR, 2.0))
             r = self.rect()
             painter.drawLine(
@@ -326,7 +346,7 @@ class CharacterSheetCanvas(QGraphicsView):
     image_field_double_clicked = Signal(str)  # ask the owner to pick a file
 
     def __init__(self, vm: CharacterSheetViewModel, parent: QWidget | None = None,
-                 image_store=None) -> None:
+                 image_store=None, fill_mode: bool = False) -> None:
         super().__init__(parent)
         register_sheet_font()
 
@@ -338,6 +358,7 @@ class CharacterSheetCanvas(QGraphicsView):
 
         self._vm = vm
         self._image_store = image_store
+        self._fill_mode = fill_mode
         self._items: dict[str, SheetFieldItem] = {}
         self._page_items: list[PageSheetItem] = []
         self._selected_item: SheetFieldItem | None = None
@@ -355,6 +376,8 @@ class CharacterSheetCanvas(QGraphicsView):
         self._visible_page: int = -1
         self._inline_proxy: QGraphicsProxyWidget | None = None
         self._inline_widget: QWidget | None = None
+        self._dropdown_menu: QMenu | None = None
+        self._fill_click_at: dict[str, float] = {}
 
         vm.template_changed.connect(self._rebuild)
         vm.pages_changed.connect(self._rebuild)
@@ -367,6 +390,8 @@ class CharacterSheetCanvas(QGraphicsView):
         vm.selection_changed.connect(self._on_selection_changed)
         vm.inline_changed.connect(self._on_inline_changed)
         vm.snap_changed.connect(self._on_snap_changed)
+        if fill_mode and hasattr(vm, "values_changed"):
+            vm.values_changed.connect(self._on_fill_values_changed)
 
         self.verticalScrollBar().valueChanged.connect(self._update_visible_page)
         self.horizontalScrollBar().valueChanged.connect(self._update_visible_page)
@@ -459,7 +484,13 @@ class CharacterSheetCanvas(QGraphicsView):
     def item_count(self) -> int:
         return len(self._items)
 
+    @property
+    def dropdown_menu(self) -> QMenu | None:
+        return self._dropdown_menu
+
     def _rebuild(self) -> None:
+        if self._inline_widget is not None:
+            self._close_inline_widget()
         scene = self.scene()
         for page_item in self._page_items:
             scene.removeItem(page_item)
@@ -498,16 +529,38 @@ class CharacterSheetCanvas(QGraphicsView):
         item.setPos(0.0, oy)
         item.setZValue(page_index * 10000 + field_index + 1)
         item.set_selected(field.id in self._vm.selected_ids)
+        if self._fill_mode:
+            item.set_show_handles(False)
+            self._apply_fill_display(item)
         self._items[field.id] = item
         self.scene().addItem(item)
-        if field.type is FieldType.IMAGE and field.image_id is not None:
-            self._schedule_image_load(field.id, field.image_id)
+        image_id = self._image_id_of(field)
+        if field.type is FieldType.IMAGE and image_id is not None:
+            self._schedule_image_load(field.id, image_id)
 
     def _remove_item(self, item: SheetFieldItem) -> None:
         self.scene().removeItem(item)
         self._items.pop(item.field_id, None)
         if self._selected_item is item:
             self._selected_item = None
+
+    def _image_id_of(self, field: SheetField) -> int | None:
+        if self._fill_mode and hasattr(self._vm, "display_value"):
+            value = self._vm.display_value(field.id)
+            return value if isinstance(value, int) and not isinstance(value, bool) else None
+        return field.image_id
+
+    def _apply_fill_display(self, item: SheetFieldItem) -> None:
+        field = item.field
+        if not hasattr(self._vm, "display_value"):
+            return
+        value = self._vm.display_value(field.id)
+        if field.type is FieldType.CHECKBOX:
+            item.set_fill_display(None, bool(value))
+        elif field.type is FieldType.IMAGE:
+            item.set_fill_display(None, None)
+        else:
+            item.set_fill_display("" if value is None else str(value))
 
     def _on_field_added(self, field_id: str) -> None:
         template = self._vm.template
@@ -540,9 +593,28 @@ class CharacterSheetCanvas(QGraphicsView):
     def _on_field_data_changed(self, field_id: str) -> None:
         item = self._items.get(field_id)
         if item is not None:
+            if self._fill_mode:
+                self._apply_fill_display(item)
+                if item.field.type is FieldType.IMAGE:
+                    image_id = self._image_id_of(item.field)
+                    if image_id is not None:
+                        self._schedule_image_load(field_id, image_id)
+                    else:
+                        item.set_pixmap(None)
             item.update()
         if self._inline_widget is not None and field_id == self._vm.inline_field_id:
             self._sync_inline_widget()
+
+    def _on_fill_values_changed(self) -> None:
+        for fid, item in self._items.items():
+            self._apply_fill_display(item)
+            if item.field.type is FieldType.IMAGE:
+                image_id = self._image_id_of(item.field)
+                if image_id is not None:
+                    self._schedule_image_load(fid, image_id)
+                else:
+                    item.set_pixmap(None)
+            item.update()
 
     def _on_selection_changed(self, field_id) -> None:
         ids = set(self._vm.selected_ids)
@@ -551,7 +623,7 @@ class CharacterSheetCanvas(QGraphicsView):
         for fid, item in self._items.items():
             on = fid in ids
             item.set_selected(on)
-            item.set_show_handles(single and on)
+            item.set_show_handles(single and on and not self._fill_mode)
             if fid == field_id:
                 self._selected_item = item
 
@@ -581,7 +653,8 @@ class CharacterSheetCanvas(QGraphicsView):
             log.debug("sheet image load skipped: %s", exc)
             return
         item = self._items.get(field_id)
-        if item is None or item.field.image_id != image_id:
+        expected = self._image_id_of(item.field) if item is not None else None
+        if item is None or expected != image_id:
             return  # the field went away (or was re-pointed) meanwhile
         if path is None or not path.exists():
             item.set_pixmap(None)
@@ -740,6 +813,11 @@ class CharacterSheetCanvas(QGraphicsView):
             return
         pos = self.mapToScene(event.position().toPoint())
 
+        if self._fill_mode:
+            self._fill_press(pos, event)
+            event.accept()
+            return
+
         if self._vm.tool != TOOL_POINTER:
             field_type = field_type_for_tool(self._vm.tool)
             hit = self._page_hit(pos)
@@ -782,7 +860,79 @@ class CharacterSheetCanvas(QGraphicsView):
         event.accept()
         super().mousePressEvent(event)
 
+    def _fill_press(self, pos, event=None) -> None:
+        field_id = self._field_at(pos)
+        inline_fid = self._vm.inline_field_id
+        if inline_fid is not None:
+            if field_id == inline_fid:
+                return
+            self._commit_inline_close()
+        if field_id is None:
+            self._vm.select(None)
+            return
+        field = self._vm.template.get_field(field_id) if self._vm.template else None
+        if field is None:
+            return
+        self._vm.select(field_id)
+        is_dbl = False
+        if event is not None:
+            is_dbl = bool(
+                event.flags() & Qt.MouseEventFlag.MouseEventCreatedDoubleClick
+            )
+        now = time.monotonic()
+        app = QApplication.instance()
+        interval_ms = (
+            app.styleHints().mouseDoubleClickInterval() if app is not None else 400
+        )
+        interval = interval_ms / 1000.0
+        last = self._fill_click_at.get(field_id)
+        if last is not None and (now - last) < interval:
+            is_dbl = True
+        if field.type is FieldType.CHECKBOX:
+            if is_dbl:
+                return
+            self._fill_click_at[field_id] = now
+            self._vm.toggle_checkbox(field_id)
+        elif field.type in (FieldType.TEXT, FieldType.TEXTAREA, FieldType.NUMBER):
+            self._vm.open_inline(field_id)
+        elif field.type is FieldType.DROPDOWN:
+            self._popup_dropdown(field, pos)
+        elif field.type is FieldType.IMAGE:
+            if is_dbl:
+                return
+            self._fill_click_at[field_id] = now
+            self.image_field_double_clicked.emit(field_id)
+
+    def _popup_dropdown(self, field: SheetField, scene_pos) -> None:
+        if self._dropdown_menu is not None:
+            self._dropdown_menu.close()
+            self._dropdown_menu.deleteLater()
+            self._dropdown_menu = None
+        menu = QMenu(self)
+        current = (
+            self._vm.display_value(field.id)
+            if hasattr(self._vm, "display_value")
+            else field.content
+        )
+        options = list(field.options)
+        if isinstance(current, str) and current and current not in options:
+            orphan = menu.addAction(current)
+            orphan.setEnabled(False)
+            menu.addSeparator()
+        for opt in options:
+            action = menu.addAction(opt)
+            action.triggered.connect(
+                lambda _c=False, o=opt, fid=field.id: self._vm.set_dropdown(fid, o)
+            )
+        self._dropdown_menu = menu
+        view_pos = self.mapFromScene(scene_pos)
+        global_pos = self.viewport().mapToGlobal(view_pos)
+        menu.popup(global_pos)
+
     def mouseMoveEvent(self, event) -> None:
+        if self._fill_mode:
+            super().mouseMoveEvent(event)
+            return
         if self._resize_corner is not None and self._resize_start is not None:
             pos = self.mapToScene(event.position().toPoint())
             shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -818,6 +968,10 @@ class CharacterSheetCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._fill_mode:
+            event.accept()
+            super().mouseReleaseEvent(event)
+            return
         if self._resize_corner is not None and event.button() == Qt.MouseButton.LeftButton:
             self._vm.end_gesture()
             self._vm.set_snap_override(None)
@@ -859,6 +1013,9 @@ class CharacterSheetCanvas(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
+        if self._fill_mode:
+            event.accept()
+            return
         if event.button() != Qt.MouseButton.LeftButton:
             super().mouseDoubleClickEvent(event)
             return
@@ -908,10 +1065,11 @@ class CharacterSheetCanvas(QGraphicsView):
         else:  # label, text, number — single line
             widget = QLineEdit()
         widget.setFont(sheet_font(field.font_size))
+        initial = self._inline_initial_text(field)
         if isinstance(widget, QPlainTextEdit):
-            widget.setPlainText(field.content)
+            widget.setPlainText(initial)
         else:
-            widget.setText(field.content)
+            widget.setText(initial)
         # label/text/textarea write live (one buffer); number commits on
         # Enter / close — an invalid value must not leak into the field
         if field.type is not FieldType.NUMBER:
@@ -935,6 +1093,12 @@ class CharacterSheetCanvas(QGraphicsView):
         widget.setFocus()
         self._inline_proxy = proxy
 
+    def _inline_initial_text(self, field: SheetField) -> str:
+        if self._fill_mode and hasattr(self._vm, "display_value"):
+            value = self._vm.display_value(field.id)
+            return "" if value is None else str(value)
+        return field.content
+
     def _on_inline_text_changed(self, field_id: str) -> None:
         """The inline widget is the single live buffer while editing: every
         keystroke lands in the VM (the same line the panel and the item read)."""
@@ -956,7 +1120,7 @@ class CharacterSheetCanvas(QGraphicsView):
             field = self._vm.template.get_field(field_id) if self._vm.template else None
             if field is not None:
                 widget.blockSignals(True)
-                widget.setText(field.content)
+                widget.setText(self._inline_initial_text(field))
                 widget.blockSignals(False)
                 widget.selectAll()
 
@@ -988,9 +1152,9 @@ class CharacterSheetCanvas(QGraphicsView):
         widget.blockSignals(True)
         try:
             if isinstance(widget, QPlainTextEdit):
-                widget.setPlainText(field.content)
+                widget.setPlainText(self._inline_initial_text(field))
             else:
-                widget.setText(field.content)
+                widget.setText(self._inline_initial_text(field))
             widget.setFont(sheet_font(field.font_size))
         finally:
             widget.blockSignals(False)
@@ -1050,6 +1214,15 @@ class CharacterSheetCanvas(QGraphicsView):
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event) -> None:
+        if self._fill_mode:
+            if (
+                event.key() == Qt.Key_Escape
+                and self._vm.inline_field_id is None
+            ):
+                self._vm.select(None)
+                return
+            super().keyPressEvent(event)
+            return
         if self._vm.inline_field_id is None:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 if self._vm.selected_ids:

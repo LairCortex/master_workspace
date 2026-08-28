@@ -80,15 +80,25 @@ class UnknownFieldTypeError(CharacterSheetError):
 EMPTY_NAME_ERROR: str = "Имя шаблона не может быть пустым"
 
 
+class TemplateHasInstancesError(CharacterSheetError):
+    def __init__(self, sheet_id: int) -> None:
+        super().__init__(
+            f"Шаблон чар-листа {sheet_id} нельзя удалить: на него ссылаются заполненные листы"
+        )
+        self.sheet_id = sheet_id
+
+
 class CharacterSheetService:
     def __init__(
         self,
         repo: CharacterSheetRepository,
         image_store: ImageStore | None = None,
+        instance_repo=None,
     ) -> None:
         self._repo = repo
         self._session = repo._session
         self._image_store = image_store
+        self._instance_repo = instance_repo
 
     # -- listing -----------------------------------------------------------
 
@@ -194,14 +204,22 @@ class CharacterSheetService:
     async def delete(self, sheet_id: int) -> bool:
         """Delete a template, then GC its image fields (design D6).
 
-        The row deletion commits first; files are removed only after that and
-        only if no other referrer (entity or another sheet) still holds them.
+        A template with filled instances cannot be deleted (RESTRICT + explicit
+        count check). The row deletion commits first; files are removed only
+        after that and only if no other referrer still holds them.
         """
         row = await self._repo.get_by_id(sheet_id)
         if row is None:
             return False
+        if self._instance_repo is not None:
+            if await self._instance_repo.count_by_template(sheet_id) > 0:
+                raise TemplateHasInstancesError(sheet_id)
         image_ids = iter_sheet_image_ids(row.pages)
-        deleted = await self._repo.delete(sheet_id)
+        try:
+            deleted = await self._repo.delete(sheet_id)
+        except IntegrityError:
+            await self._session.rollback()
+            raise TemplateHasInstancesError(sheet_id) from None
         if deleted:
             await self._session.commit()
             if self._image_store is not None:

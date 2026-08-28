@@ -312,3 +312,65 @@ async def test_marquee_duplicate_undo_save(app, dialog_input, wait_for, qtbot):
     )[0][0]
     saved = json.loads(row)
     assert [f["id"] for f in saved[0]["fields"]] == ids_before
+
+
+async def test_instance_fill_survives_save_and_reopen(
+    app, dialog_input, dialog_item, wait_for, qtbot,
+):
+    application, window = app
+    window.char_sheets_action.trigger()
+    await wait_for(lambda: application._sheet_list_dialog is not None)
+    list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
+    dialog_input["answer"] = ("Макет", True)
+    list_dlg.create_button.click()
+    editor = await wait_editor(app, wait_for, "Макет")
+    qtbot.wait(50)
+
+    editor.palette.text_button.click()
+    _click_canvas(editor, 100.0, 100.0)
+    await wait_for(lambda: editor.canvas.item_count() == 1)
+    text_id = editor.view_model.selection
+    editor.properties_panel.content_edit.setPlainText("Иван")
+    await wait_for(
+        lambda: editor.view_model.template.get_field(text_id).content == "Иван"
+    )
+    editor.save_button.click()
+    await wait_for(lambda: not editor.view_model.dirty)
+    editor.close()
+    await wait_for(lambda: application._sheet_editor is None)
+
+    list_dlg.tabs.setCurrentIndex(1)
+    dialog_item["answer"] = ("Макет", True)
+    dialog_input["answer"] = ("Лист", True)
+    list_dlg.create_button.click()
+    await wait_for(
+        lambda: application._sheet_fill is not None
+        and application._sheet_fill.view_model.template is not None
+        and application._sheet_fill.view_model.name == "Лист"
+    )
+    fill = application._sheet_fill
+    field = fill.view_model.template.get_field(text_id)
+    assert field is not None, text_id
+    assert fill.view_model.set_text(text_id, "Пётр") is True
+    assert fill.view_model.dirty
+    fill.save_button.click()
+    await wait_for(lambda: not fill.view_model.dirty)
+    fill.close()
+    await wait_for(lambda: application._sheet_fill is None)
+
+    list_dlg.tabs.setCurrentIndex(1)
+    list_dlg.instance_list.setCurrentRow(0)
+    list_dlg.open_button.click()
+    await wait_for(
+        lambda: application._sheet_fill is not None
+        and application._sheet_fill.view_model.template is not None
+    )
+    fill2 = application._sheet_fill
+    assert fill2.view_model.display_value(text_id) == "Пётр"
+    rows = query_db(
+        application._db_path,
+        'SELECT name, "values" FROM character_sheet_instances',
+    )
+    assert rows[0][0] == "Лист"
+    assert json.loads(rows[0][1])[text_id] == "Пётр"
+
