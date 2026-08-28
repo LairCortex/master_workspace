@@ -26,9 +26,11 @@
 - `mork_borg.json` — то же.
 - `catalog.py` — `Preset(id, title, license_text, json_name)`.
 
-`nri_manager.spec` `datas` включает этот каталог (рядом с шрифтом A1). Чтение через `importlib.resources` / путь рядом с пакетом, не HTTP.
+`nri_manager.spec` `datas` включает оба JSON пресетов явным списком файлов (рядом с шрифтом A1; каталогом не копируем, чтобы `__pycache__` не попал в бандль — модули каталога так или иначе в PYZ). Чтение через `importlib.resources` / путь рядом с пакетом, не HTTP. Тест `tests/test_spec_presets_bundle.py` держит `datas` в синхроне с каталогом (риск «PyInstaller не упаковал JSON»).
 
 Альтернатива: захардкодить геометрию в Python — отвергнута (макет правят как JSON, тесты сравнивают с файлом).
+
+Исключение слоёв (зафиксировано, чтобы не ловить заново в ревью): `CharacterSheetService` (application) импортирует `PresetCatalog` из `app/presentation/views/character_sheet/presets/` — обратно относительно AGENTS.md. Разрешено намеренно: каталог не знает Qt (чистые dataclass + pathlib), и его расположение в `presets/` рядом с бандл-файлами экономит второй путь к JSON.
 
 ### D2. Стабильные id в файле, копия as-is
 

@@ -503,3 +503,85 @@ async def test_open_rename_disabled_without_selection(inst_dlg, qtbot):
     assert not d.open_button.isEnabled()
     assert not d.rename_button.isEnabled()
 
+
+# ── create from preset (add-character-sheet-c) ───────────────────────────────
+
+import json
+
+from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
+
+
+async def test_preset_button_visible_only_on_templates_tab(inst_dlg, qtbot):
+    d, *_ = inst_dlg
+    d.tabs.setCurrentIndex(0)
+    qtbot.wait(1)
+    assert d.preset_button.isVisibleTo(d)
+    d.tabs.setCurrentIndex(1)
+    qtbot.wait(1)
+    assert not d.preset_button.isVisibleTo(d)
+
+
+async def _open_preset_dialog(d, qtbot):
+    d.preset_button.click()
+    await pump(qtbot, lambda: d.preset_dialog is not None and d.preset_dialog.isVisible())
+    return d.preset_dialog
+
+
+async def test_create_from_preset_adds_row_and_opens_design(inst_dlg, qtbot, boxes):
+    d, sheet_svc, _ = inst_dlg
+    opened: list[int] = []
+    d.open_requested.connect(opened.append)
+    await d.refresh()
+    assert d.list_widget.count() == 0
+
+    preset = await _open_preset_dialog(d, qtbot)
+    assert preset.preset_list.count() == 2
+    assert preset.name_edit.text() == "Fate Core"   # title substituted by default
+
+    preset.ok_button.click()
+    await pump(qtbot, lambda: d.list_widget.count() == 1 and opened)
+
+    assert d.list_widget.item(0).text() == "Fate Core"
+    row = await sheet_svc._repo.get_by_name("Fate Core")
+    assert row is not None
+    assert opened == [row.id]   # the app opens the new template's Design
+    assert json.loads(row.pages) == json.loads(PresetCatalog().load_pages("fate_core"))
+    await pump(qtbot, lambda: d.preset_dialog is None)  # closed and dropped
+
+
+async def test_create_from_preset_name_conflict_rejected(inst_dlg, boxes, qtbot):
+    d, sheet_svc, _ = inst_dlg
+    opened: list[int] = []
+    d.open_requested.connect(opened.append)
+    await sheet_svc.create("Mörk Borg")
+    await d.refresh()
+
+    preset = await _open_preset_dialog(d, qtbot)
+    preset.preset_list.setCurrentRow(1)  # Mörk Borg
+    qtbot.wait(1)
+    assert preset.name_edit.text() == "Mörk Borg"
+
+    preset.ok_button.click()
+    await pump(qtbot, lambda: any("уже существует" in text for _, _, text in boxes))
+
+    assert opened == []
+    assert [r.name for r in await sheet_svc.list_sheets()] == ["Mörk Borg"]
+    assert preset.isVisible()  # stays open — the user can rename and retry
+    preset.cancel_button.click()
+    await pump(qtbot, lambda: not preset.isVisible())
+
+
+async def test_preset_cancel_keeps_list_unchanged(inst_dlg, qtbot):
+    d, sheet_svc, _ = inst_dlg
+    opened: list[int] = []
+    d.open_requested.connect(opened.append)
+    await d.refresh()
+
+    preset = await _open_preset_dialog(d, qtbot)
+    preset.cancel_button.click()
+    await pump(qtbot, lambda: not preset.isVisible())
+
+    assert d.list_widget.count() == 0
+    assert opened == []
+    assert len(await sheet_svc.list_sheets()) == 0
+

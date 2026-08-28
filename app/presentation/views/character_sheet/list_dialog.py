@@ -37,6 +37,9 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
     TemplateHasInstancesError,
 )
+from app.presentation.views.character_sheet.preset_dialog import (
+    CharacterSheetPresetDialog,
+)
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +56,15 @@ class CharacterSheetListDialog(QDialog):
     wrapped in ``run_locked`` — the application's session lock, since the
     shared AsyncSession must not be used by concurrent tasks. The dialog's own
     UI (modal pickers, selection) is not session work and stays outside it.
-    ``refresh()`` itself does NOT lock; its caller provides the lock.
+
+    ``refresh()`` itself does NOT lock; its caller provides the lock — either
+    explicitly (``await self._run_locked(self.refresh())``, the dialog's own
+    flows) or because the calling task already runs under the application's
+    session lock (the app opens the list through ``_wiring._spawn``, which
+    holds the lock for the whole task). Never wrap ``refresh()`` in
+    ``run_locked`` from a task that already holds the lock: the
+    ``asyncio.Lock`` is not reentrant, the inner task would wait on the outer
+    one forever (a hang, not an error).
     """
 
     open_requested = Signal(int)
@@ -86,13 +97,17 @@ class CharacterSheetListDialog(QDialog):
         self.tabs.addTab(self.list_widget, "Шаблоны")
         self.tabs.addTab(self.instance_list, "Листы")
 
+        self._preset_dialog: CharacterSheetPresetDialog | None = None
+
         self.create_button = QPushButton("Создать", self)
+        self.preset_button = QPushButton("Создать из пресета…", self)
         self.open_button = QPushButton("Открыть", self)
         self.rename_button = QPushButton("Переименовать", self)
         self.delete_button = QPushButton("Удалить", self)
         self.close_button = QPushButton("Закрыть", self)
 
         self.create_button.clicked.connect(lambda: self._spawn(self._create_current()))
+        self.preset_button.clicked.connect(self._open_preset_dialog)
         self.open_button.clicked.connect(lambda: self._spawn(self._open_current()))
         self.rename_button.clicked.connect(lambda: self._spawn(self._rename_current()))
         self.delete_button.clicked.connect(lambda: self._spawn(self._delete_current()))
@@ -103,6 +118,7 @@ class CharacterSheetListDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.create_button)
+        buttons.addWidget(self.preset_button)
         buttons.addWidget(self.open_button)
         buttons.addWidget(self.rename_button)
         buttons.addWidget(self.delete_button)
@@ -136,6 +152,11 @@ class CharacterSheetListDialog(QDialog):
         self._open_instance_id = instance_id
         self._sync_actions_enabled()
 
+    @property
+    def preset_dialog(self) -> CharacterSheetPresetDialog | None:
+        """The open «Создать из пресета…» dialog (or None)."""
+        return self._preset_dialog
+
     def _on_instances_tab(self) -> bool:
         return self.tabs.currentIndex() == 1
 
@@ -162,6 +183,8 @@ class CharacterSheetListDialog(QDialog):
         self._sync_actions_enabled()
 
     def _sync_actions_enabled(self) -> None:
+        # «Создать из пресета…» is an action of the «Шаблоны» tab only (spec).
+        self.preset_button.setVisible(not self._on_instances_tab())
         if self._on_instances_tab():
             instance_id = self._selected_instance_id()
             has = instance_id is not None
@@ -244,6 +267,38 @@ class CharacterSheetListDialog(QDialog):
         await self._run_locked(self.refresh())
         self._refresh_selection(row.id)
         self.open_requested.emit(row.id)
+
+    def _open_preset_dialog(self) -> None:
+        """Show the non-modal preset picker (a child of this dialog)."""
+        if self._preset_dialog is not None and self._preset_dialog.isVisible():
+            self._preset_dialog.raise_()
+            self._preset_dialog.activateWindow()
+            return
+        dialog = CharacterSheetPresetDialog(
+            self._service, parent=self, run_locked=self._run_locked,
+        )
+        dialog.created.connect(self._on_preset_created)
+        dialog.finished.connect(
+            lambda _result, _d=dialog: self._preset_dialog_finished(_d)
+        )
+        self._preset_dialog = dialog
+        dialog.show()
+
+    def _preset_dialog_finished(self, dialog: CharacterSheetPresetDialog) -> None:
+        if self._preset_dialog is dialog:
+            self._preset_dialog = None
+        dialog.deleteLater()
+
+    def _on_preset_created(self, sheet_id: int) -> None:
+        self._spawn(self._preset_created_flow(sheet_id))
+
+    async def _preset_created_flow(self, sheet_id: int) -> None:
+        # The snapshot is a regular template: refresh, select the new row and
+        # let the application open its Design (``open_requested`` carries the
+        # usual dirty-confirm rules for an already-open editor).
+        await self._run_locked(self.refresh())
+        self._refresh_selection(sheet_id)
+        self.open_requested.emit(sheet_id)
 
     async def open_sheet(self) -> None:
         sheet_id = self._selected_id()

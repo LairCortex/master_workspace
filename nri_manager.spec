@@ -9,7 +9,6 @@ The result is a directory-based bundle in dist/nri_manager/
 """
 
 import sys
-from pathlib import Path
 
 block_cipher = None
 
@@ -17,10 +16,18 @@ a = Analysis(
     ["app/main.py"],
     pathex=[],
     binaries=[],
+    # The preset layouts ship as an explicit file list (not a directory copy)
+    # so that no stray files (e.g. __pycache__) end up in the bundle; the
+    # catalog's .py modules are already part of the PYZ archive. Keep in sync
+    # with PresetCatalog.list() (checked by tests/test_spec_presets_bundle.py).
     datas=[
         ("docs", "docs"),
         ("app/presentation/views/character_sheet/fonts",
          "app/presentation/views/character_sheet/fonts"),
+        ("app/presentation/views/character_sheet/presets/fate_core.json",
+         "app/presentation/views/character_sheet/presets"),
+        ("app/presentation/views/character_sheet/presets/mork_borg.json",
+         "app/presentation/views/character_sheet/presets"),
     ],
     hiddenimports=[
         "aiosqlite",

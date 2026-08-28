@@ -12,8 +12,9 @@ type is never handed out as a layout; page operations in the model
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import pytest
 
@@ -22,6 +23,7 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
     CorruptSheetError,
     NameConflictError,
+    PresetBundleError,
     SheetNotFoundError,
     UnknownFieldTypeError,
 )
@@ -30,8 +32,13 @@ from app.domain.entities.character_sheet import (
     FieldType,
     SheetTemplate,
 )
-from app.infrastructure.db.models import CharacterSheetModel
+from app.infrastructure.db.database import create_engine as app_create_engine
+from app.infrastructure.db.models import Base, CharacterSheetModel
 from app.infrastructure.repositories.character_sheet_repository import CharacterSheetRepository
+from app.presentation.views.character_sheet.presets.catalog import (
+    PRESETS_DIR,
+    PresetCatalog,
+)
 
 
 class TestCreate:
@@ -443,3 +450,107 @@ class TestPageModel:
 
         reloaded = await svc.load(row.id)
         assert [p.name for p in reloaded.pages] == ["Вторая", "Страница 1"]
+
+
+# ── C: create_from_preset — a bundle snapshot as a regular template (D2/D4) ──
+
+
+class TestCreateFromPreset:
+    async def test_writes_named_template_with_preset_pages(self, async_session: AsyncSession):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        row = await svc.create_from_preset("fate_core", "Fate Core")
+
+        assert row.id is not None
+        assert row.name == "Fate Core"
+        assert row.schema_version == 2
+        assert row.orientation == "portrait"
+        # pages are copied as-is from the bundle (stable field ids, no regen)
+        stored = json.loads(row.pages)
+        preset_pages = json.loads(PresetCatalog().load_pages("fate_core"))
+        assert stored == preset_pages
+        assert len(stored) == 1 and stored[0]["name"] == "Страница 1"
+        assert stored[0]["fields"]  # the preset's layout, not an empty page
+
+        loaded = await svc.load(row.id)
+        assert len(loaded.pages) == 1
+        assert loaded.page.fields
+
+    async def test_custom_name(self, async_session: AsyncSession):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        row = await svc.create_from_preset("mork_borg", "Мой Мёрк")
+        assert row.name == "Мой Мёрк"
+        preset_pages = json.loads(PresetCatalog().load_pages("mork_borg"))
+        assert json.loads(row.pages) == preset_pages
+
+    async def test_name_conflict_rejected_keeps_db(self, async_session: AsyncSession):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        await svc.create("Fate Core")
+        with pytest.raises(NameConflictError):
+            await svc.create_from_preset("fate_core", "Fate Core")
+        rows = await svc.list_sheets()
+        assert [r.name for r in rows] == ["Fate Core"]
+
+    async def test_blank_name_rejected(self, async_session: AsyncSession):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        with pytest.raises(ValueError):
+            await svc.create_from_preset("fate_core", "   ")
+        assert len(await svc.list_sheets()) == 0
+
+    async def test_unknown_preset_id_rejected(self, async_session: AsyncSession):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        with pytest.raises(CharacterSheetError):
+            await svc.create_from_preset("dnd5e", "Любое имя")
+        assert len(await svc.list_sheets()) == 0
+
+    async def test_missing_bundle_file_is_a_bundle_error(
+        self, async_session: AsyncSession, monkeypatch
+    ):
+        # A broken bundle (file not shipped) must give a RU user-facing
+        # error, never a raw FileNotFoundError.
+        def broken_load_pages(self, preset_id: str) -> str:
+            raise FileNotFoundError(preset_id)
+
+        monkeypatch.setattr(PresetCatalog, "load_pages", broken_load_pages)
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        with pytest.raises(PresetBundleError) as exc_info:
+            await svc.create_from_preset("fate_core", "Fate Core")
+        assert "отсутствует" in str(exc_info.value)
+        assert len(await svc.list_sheets()) == 0
+
+    async def test_bundle_file_is_not_modified_by_insert(self, async_session: AsyncSession):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        path = PRESETS_DIR / "fate_core.json"
+        before = path.read_bytes()
+        await svc.create_from_preset("fate_core", "Копия")
+        assert path.read_bytes() == before
+
+    async def test_copy_lives_only_in_current_game_db(self, async_session: AsyncSession, tmp_path: Path):
+        # spec scenario «Вторая игра не видит чужую копию»: a second game
+        # (another DB) has no trace of the copy.
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        await svc.create_from_preset("fate_core", "Fate Core")
+
+        db_path = tmp_path / "other_game" / "game.db"
+        db_path.parent.mkdir()
+        other_engine = app_create_engine(f"sqlite+aiosqlite:///{db_path}")
+        try:
+            async with other_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            factory = async_sessionmaker(
+                other_engine, class_=AsyncSession, expire_on_commit=False
+            )
+            async with factory() as other_session:
+                other_svc = CharacterSheetService(
+                    CharacterSheetRepository(other_session)
+                )
+                assert await other_svc.list_sheets() == []
+        finally:
+            await other_engine.dispose()

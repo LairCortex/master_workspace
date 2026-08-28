@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import time
 from pathlib import Path
 
@@ -89,18 +88,16 @@ _font_registered = False
 
 
 def _font_path() -> Path:
-    """Locate the bundled TTF in both the dev tree and a PyInstaller bundle."""
-    candidates = [Path(__file__).parent / "fonts" / "DejaVuSans.ttf"]
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        candidates.append(
-            Path(meipass) / "app" / "presentation" / "views"
-            / "character_sheet" / "fonts" / "DejaVuSans.ttf"
-        )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return candidates[0]
+    """The bundled TTF lives next to this module.
+
+    Same layout as the dev tree holds in the PyInstaller bundle: the app ships
+    as a directory bundle and the compiled module's ``__file__`` resolves
+    inside it right next to the ``datas``-shipped ``fonts/`` directory
+    (verified in a real bundle: ``Path(__file__).resolve().parent ==
+    Path(sys._MEIPASS)/<module path>``), so no separate ``_MEIPASS`` lookup is
+    needed.
+    """
+    return Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
 
 
 def register_sheet_font() -> None:

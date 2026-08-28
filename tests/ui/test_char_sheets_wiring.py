@@ -394,8 +394,51 @@ async def test_games_have_their_own_sheet_lists(
     assert list_b.list_widget.count() == 0, "game B has none of game A templates"
     assert query_db(old_db, "SELECT name FROM character_sheets") == [("ТолькоА",)]
 
+# ── list refresh on open touches the session under the app lock ────────────
+
+
+async def test_list_refresh_on_open_runs_under_the_session_lock(
+    app, wait_for, monkeypatch
+):
+    """Regression (review #12): the refresh performed when the list is opened
+    queries the shared AsyncSession, so it must run while the application's
+    session lock is held.
+
+    ``list_dialog.refresh()`` deliberately does NOT lock itself — its caller
+    provides the lock. The application-level caller ``_on_char_sheets``
+    satisfies that by spawning ``_sheet_list_refresh`` through
+    ``_wiring._spawn``, which holds the lock for the whole task; the plain
+    ``await dialog.refresh()`` inside it inherits the lock by design.
+    Do not "fix" it by wrapping ``refresh()`` in ``run_locked`` there: the
+    ``asyncio.Lock`` is not reentrant, so the inner task would wait on the
+    outer one forever (a hang, not an error).
+    """
+    application, window = app
+
+    orig_list_sheets = application._sheet_service.list_sheets
+    lock_states: list[bool] = []
+
+    # A function set on the instance attribute is NOT bound (no self passed);
+    # ``orig_list_sheets`` is already bound, so it is called bare below.
+    async def list_sheets_spy(*args, **kwargs):
+        lock_states.append(application._wiring._session_lock.locked())
+        return await orig_list_sheets(*args, **kwargs)
+
+    monkeypatch.setattr(
+        application._sheet_service, "list_sheets", list_sheets_spy
+    )
+
+    window.char_sheets_action.trigger()
+    await wait_for(lambda: len(lock_states) >= 1)
+
+    assert lock_states, "list_sheets was not called when the list opened"
+    assert all(lock_states), (
+        f"the list refresh touched the session without the lock: {lock_states}"
+    )
+
 
 # ── DI: the sheet service owns the game ImageStore (design D6) ──────────────
+
 
 async def test_sheet_service_wired_with_game_image_store(app, wait_for):
     """The sheet service must hold the game's ImageStore: only then are the
@@ -637,3 +680,70 @@ async def test_switch_game_with_dirty_fill_reject_keeps_game(
     assert application._sheet_fill is fill
     assert fill.view_model.dirty
     assert "Несохранённые" in calls[0][0]
+
+
+# ── C: «Создать из пресета…» over a dirty Design of another template ────────
+
+
+async def _open_preset_dialog(list_dlg: CharacterSheetListDialog, wait_for):
+    list_dlg.preset_button.click()
+    await wait_for(
+        lambda: list_dlg.preset_dialog is not None
+        and list_dlg.preset_dialog.isVisible()
+    )
+    return list_dlg.preset_dialog
+
+
+async def test_preset_over_dirty_design_reject_keeps_editor(
+    app, dialog_input, message_boxes, wait_for, qtbot,
+):
+    """Spec «сначала спросить»: the snapshot is created, but its Design is
+    opened only after the dirty editor is closed (here: the user rejects)."""
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "А")
+    editor_a = await wait_editor(app, wait_for, "А")
+    make_dirty(editor_a)
+
+    preset = await _open_preset_dialog(list_dlg, wait_for)
+    preset.ok_button.click()  # «Fate Core» (the default row)
+
+    # message_boxes stub answers the dirty prompt with the default button (No).
+    await wait_for(lambda: any(k == "question" for k, _t, _x in message_boxes))
+    qtbot.wait(50)  # give the flow time to (incorrectly) proceed
+
+    assert application._sheet_editor is editor_a  # A is still the editor
+    assert editor_a.view_model.dirty
+    qtop = QApplication.instance().topLevelWidgets()
+    assert len(_editors(qtop)) == 1
+    # the snapshot itself is a regular template now; the list shows both
+    # (name-sorted: Latin «F…» before Cyrillic «А…»)
+    names = [
+        list_dlg.list_widget.item(i).text()
+        for i in range(list_dlg.list_widget.count())
+    ]
+    assert names == ["Fate Core", "А"]
+
+
+async def test_preset_over_dirty_design_confirm_closes_without_saving(
+    app, dialog_input, wait_for, monkeypatch,
+):
+    application, _window = app
+    calls = question_yes(monkeypatch)
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "А")
+    editor_a = await wait_editor(app, wait_for, "А")
+    fid = make_dirty(editor_a)
+    editor_a.view_model.set_content(fid, "черновик")
+
+    preset = await _open_preset_dialog(list_dlg, wait_for)
+    preset.ok_button.click()  # «Fate Core» (the default row)
+    editor_fc = await wait_editor(app, wait_for, "Fate Core")
+
+    assert editor_fc is not editor_a
+    assert not editor_fc.view_model.dirty  # the snapshot opens clean
+    assert application._sheet_editor is editor_fc
+    assert len(_editors(QApplication.instance().topLevelWidgets())) == 1
+    assert len(calls) == 1  # exactly one dirty prompt
+    rows = query_db(application._db_path, "SELECT pages FROM character_sheets WHERE name = 'А'")
+    assert rows == [(EMPTY_PAGES_JSON,)]  # draft lost, DB unchanged

@@ -25,6 +25,13 @@ dist/
 # PyInstaller
 *.log
 
+# Local secrets (LLM API keys)
+*.pem
+
+# Local agent/tooling state
+.kilo/
+.kilocode/
+
 # IDE
 .cursor/
 .idea/

@@ -1357,3 +1357,21 @@ def test_visible_page_center_is_in_page(canvas, vm):
     cx, cy = canvas.visible_page_center(0)
     assert 0 <= cx <= PAGE_WIDTH_PT
     assert 0 <= cy <= PAGE_HEIGHT_PT
+
+
+# ── bundled font: layout next to the module (review #10) ────────────────────
+
+
+def test_font_lives_next_to_the_canvas_module():
+    """The only supported layout is ``fonts/`` next to ``canvas.py`` — true for
+    the dev tree and for the PyInstaller onedir bundle (verified against a real
+    bundle: ``__file__`` resolves inside it, so ``_MEIPASS`` adds nothing). If a
+    bundle layout appears where the font is not next to the module, this fails
+    and the ``_font_path`` resolution must be revisited."""
+    from pathlib import Path
+
+    from app.presentation.views.character_sheet import canvas as canvas_mod
+
+    path = canvas_mod._font_path()
+    assert path.is_file()
+    assert path.parent == Path(canvas_mod.__file__).resolve().parent / "fonts"

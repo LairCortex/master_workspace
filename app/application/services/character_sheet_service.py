@@ -17,6 +17,12 @@ A-playable (design D3): create writes ``schema_version 2`` with one page
 «Страница 1»; v1 rows load without loss and the next save writes v2; a field
 type outside the closed catalog -> UnknownFieldTypeError (the sheet does not
 open, the database is left untouched).
+
+C (design D2/D4): ``create_from_preset`` inserts a bundled preset as a
+snapshot — the same INSERT as ``create`` but with the preset's ready ``pages``
+JSON copied as-is (stable field ids). After the copy the template is fully
+independent: the bundle file is only ever read, and app updates never rewrite
+an already-copied layout.
 """
 from __future__ import annotations
 
@@ -38,6 +44,7 @@ from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
+from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
 
 
 class CharacterSheetError(Exception):
@@ -88,17 +95,41 @@ class TemplateHasInstancesError(CharacterSheetError):
         self.sheet_id = sheet_id
 
 
+class PresetNotFoundError(CharacterSheetError):
+    def __init__(self, preset_id: str) -> None:
+        super().__init__(f"Пресет «{preset_id}» не найден")
+        self.preset_id = preset_id
+
+
+class PresetCorruptError(CharacterSheetError):
+    def __init__(self, preset_id: str) -> None:
+        super().__init__(
+            f"Макет пресета «{preset_id}» повреждён и не может быть скопирован"
+        )
+        self.preset_id = preset_id
+
+
+class PresetBundleError(CharacterSheetError):
+    """A bundled preset file is missing from the installed application."""
+
+    def __init__(self, preset_id: str) -> None:
+        super().__init__(f"Файл пресета «{preset_id}» отсутствует в приложении")
+        self.preset_id = preset_id
+
+
 class CharacterSheetService:
     def __init__(
         self,
         repo: CharacterSheetRepository,
         image_store: ImageStore | None = None,
         instance_repo=None,
+        preset_catalog: PresetCatalog | None = None,
     ) -> None:
         self._repo = repo
         self._session = repo._session
         self._image_store = image_store
         self._instance_repo = instance_repo
+        self._preset_catalog = preset_catalog or PresetCatalog()
 
     # -- listing -----------------------------------------------------------
 
@@ -122,6 +153,56 @@ class CharacterSheetService:
                 schema_version=SCHEMA_VERSION,
                 orientation=ORIENTATION_PORTRAIT,
                 pages=EMPTY_PAGES_JSON,
+            )
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            raise NameConflictError(name) from None
+        return row
+
+    async def create_from_preset(
+        self, preset_id: str, name: str
+    ) -> CharacterSheetModel:
+        """Insert a bundle preset as a regular template snapshot (design D2/D4).
+
+        Same name rules as ``create``: blank name -> ValueError, a taken name
+        -> NameConflictError. The preset's ``pages`` JSON is copied as-is
+        (stable field ids, no regeneration) with portrait orientation. After
+        the INSERT the template is fully independent of the bundle: the
+        bundle file is only ever read here, and later saves/deletes behave
+        exactly like for any other template.
+        """
+        name = name.strip()
+        if not name:
+            raise ValueError(EMPTY_NAME_ERROR)
+        try:
+            preset = self._preset_catalog.get(preset_id)
+        except KeyError:
+            raise PresetNotFoundError(preset_id) from None
+        try:
+            pages_json = self._preset_catalog.load_pages(preset.id)
+        except OSError:
+            # A broken bundle (missing file) must not surface as a raw
+            # FileNotFoundError to the user.
+            raise PresetBundleError(preset.id) from None
+        # A corrupt bundle layout must never reach the DB as a template.
+        try:
+            SheetTemplate.from_pages_json(
+                pages_json,
+                name=name,
+                orientation=ORIENTATION_PORTRAIT,
+                schema_version=SCHEMA_VERSION,
+            )
+        except ValueError as exc:
+            raise PresetCorruptError(preset.id) from exc
+        if await self._repo.get_by_name(name) is not None:
+            raise NameConflictError(name)
+        try:
+            row = await self._repo.create(
+                name=name,
+                schema_version=SCHEMA_VERSION,
+                orientation=ORIENTATION_PORTRAIT,
+                pages=pages_json,
             )
             await self._session.commit()
         except IntegrityError:

@@ -322,6 +322,11 @@ class Application:
         self._wiring._spawn(self._sheet_list_refresh())
 
     async def _sheet_list_refresh(self) -> None:
+        # Runs inside the task spawned by ``_wiring._spawn`` above, which
+        # holds the session lock for the whole task — that is how this caller
+        # satisfies ``refresh()``'s "its caller provides the lock" contract.
+        # Do NOT wrap ``dialog.refresh()`` in ``run_locked`` here: the lock
+        # is not reentrant (review #12).
         dialog = self._sheet_list_dialog
         if dialog is None:
             return

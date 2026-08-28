@@ -1,0 +1,768 @@
+[
+  {
+    "name": "Страница 1",
+    "fields": [
+      {
+        "id": "939a16db-3e64-57f0-9d28-caaac2ec166b",
+        "type": "label",
+        "x": 30.0,
+        "y": 22.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Портрет"
+      },
+      {
+        "id": "ab927643-683e-5e4b-8105-6cafd9f79a12",
+        "type": "image",
+        "x": 30.0,
+        "y": 42.0,
+        "w": 96.0,
+        "h": 96.0,
+        "font_size": 10.0,
+        "content": "",
+        "image_id": null
+      },
+      {
+        "id": "eb4ad3de-faff-5d77-8251-716fdf1b9b9b",
+        "type": "label",
+        "x": 150.0,
+        "y": 22.0,
+        "w": 40.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Имя"
+      },
+      {
+        "id": "d15debc8-5192-5a7b-b017-abab218fe413",
+        "type": "text",
+        "x": 150.0,
+        "y": 42.0,
+        "w": 385.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "758dd6c5-0abb-5812-a761-da0fcdd64033",
+        "type": "label",
+        "x": 150.0,
+        "y": 68.0,
+        "w": 80.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Обновление"
+      },
+      {
+        "id": "e567f646-ae7b-544d-9a75-6349a5239cd5",
+        "type": "number",
+        "x": 150.0,
+        "y": 88.0,
+        "w": 72.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "7775d716-f544-5f3a-8d54-d9da8f337f2b",
+        "type": "label",
+        "x": 30.0,
+        "y": 152.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Описание"
+      },
+      {
+        "id": "2e3bff61-bd4d-56c4-ac1e-381a77ffaf10",
+        "type": "textarea",
+        "x": 30.0,
+        "y": 172.0,
+        "w": 505.0,
+        "h": 56.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "6f65d215-5407-565f-a9ff-019b1ff9fae3",
+        "type": "label",
+        "x": 30.0,
+        "y": 238.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Аспекты"
+      },
+      {
+        "id": "ff390792-d705-5178-bc82-a137ef730db1",
+        "type": "label",
+        "x": 30.0,
+        "y": 260.0,
+        "w": 110.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Высокая концепция"
+      },
+      {
+        "id": "587c9879-0ea3-5e0e-ac3f-79b99af4c22d",
+        "type": "text",
+        "x": 150.0,
+        "y": 260.0,
+        "w": 385.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "ef23f66f-c7aa-5dda-880c-642dc61a212a",
+        "type": "label",
+        "x": 30.0,
+        "y": 282.0,
+        "w": 110.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Проблема"
+      },
+      {
+        "id": "0f909616-65ae-5796-8f79-d0130d5f6398",
+        "type": "text",
+        "x": 150.0,
+        "y": 282.0,
+        "w": 385.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "538168c7-96b5-5499-9e39-7b416d26ca11",
+        "type": "label",
+        "x": 30.0,
+        "y": 304.0,
+        "w": 110.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Аспект 1"
+      },
+      {
+        "id": "91e29af4-077a-5910-87cf-0dc09c252265",
+        "type": "text",
+        "x": 150.0,
+        "y": 304.0,
+        "w": 385.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "b337e3a1-416d-5ccc-b74e-bfe72537e36c",
+        "type": "label",
+        "x": 30.0,
+        "y": 326.0,
+        "w": 110.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Аспект 2"
+      },
+      {
+        "id": "76beda33-62d7-595a-a66c-3b6bddbcc8f6",
+        "type": "text",
+        "x": 150.0,
+        "y": 326.0,
+        "w": 385.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "0427d366-d2f8-541b-a7f8-32093a514ff9",
+        "type": "label",
+        "x": 30.0,
+        "y": 348.0,
+        "w": 110.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Аспект 3"
+      },
+      {
+        "id": "b5786446-f541-5ad2-a116-cf49de67f276",
+        "type": "text",
+        "x": 150.0,
+        "y": 348.0,
+        "w": 385.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "407f4b1e-3378-59b0-a6a8-bd445b2d317c",
+        "type": "label",
+        "x": 30.0,
+        "y": 376.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Навыки"
+      },
+      {
+        "id": "9d5ccd37-cf0c-5e37-9c9d-6076d7b479f3",
+        "type": "label",
+        "x": 30.0,
+        "y": 400.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Атлетика"
+      },
+      {
+        "id": "8b9bfe65-842c-5425-be07-06e3322ad3a2",
+        "type": "number",
+        "x": 152.0,
+        "y": 400.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "70994235-cd64-5e80-afcc-f47729804af8",
+        "type": "label",
+        "x": 30.0,
+        "y": 422.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Взлом"
+      },
+      {
+        "id": "c48b5c7a-e48f-5f1f-a927-59b88d8d3ea5",
+        "type": "number",
+        "x": 152.0,
+        "y": 422.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "133b188f-68fc-5876-a8ed-528afc43beb9",
+        "type": "label",
+        "x": 30.0,
+        "y": 444.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Связи"
+      },
+      {
+        "id": "032b61a1-c398-52b1-b7a3-6438e41798e3",
+        "type": "number",
+        "x": 152.0,
+        "y": 444.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "2c6fe0a3-9217-5bdd-8b29-c5adaebe4830",
+        "type": "label",
+        "x": 30.0,
+        "y": 466.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Ремесло"
+      },
+      {
+        "id": "7dbfe407-9d67-512f-adc1-e010d5a50fa3",
+        "type": "number",
+        "x": 152.0,
+        "y": 466.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "8d07caa0-f835-5958-ad4c-bbab87e022dd",
+        "type": "label",
+        "x": 30.0,
+        "y": 488.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Обман"
+      },
+      {
+        "id": "2ebb8584-d373-56e9-8c9e-780ed8a34285",
+        "type": "number",
+        "x": 152.0,
+        "y": 488.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "b17ba957-3084-5826-97f2-e3ca37b6bb87",
+        "type": "label",
+        "x": 30.0,
+        "y": 510.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Вождение"
+      },
+      {
+        "id": "0180b067-b72f-54b1-b160-1a3ec4ba4b51",
+        "type": "number",
+        "x": 152.0,
+        "y": 510.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "248e5cd8-6964-5013-bd50-5fbd527fce43",
+        "type": "label",
+        "x": 30.0,
+        "y": 532.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Эмпатия"
+      },
+      {
+        "id": "bf9f5bc6-1e20-580b-93da-74a14f94dfd8",
+        "type": "number",
+        "x": 152.0,
+        "y": 532.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "a8b95a2d-e5f0-5a46-9666-27df89ff5243",
+        "type": "label",
+        "x": 30.0,
+        "y": 554.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Бой"
+      },
+      {
+        "id": "b930e3a5-a625-533b-a6a8-57b0b43c5a36",
+        "type": "number",
+        "x": 152.0,
+        "y": 554.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "91ae6a68-c492-5878-91bb-187415fcb3a6",
+        "type": "label",
+        "x": 30.0,
+        "y": 576.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Расследование"
+      },
+      {
+        "id": "76d0d6b9-d06b-5452-82e8-69515094d1c0",
+        "type": "number",
+        "x": 152.0,
+        "y": 576.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "cf8f93d4-7399-5cb7-8f95-cbd507d08f9c",
+        "type": "label",
+        "x": 310.0,
+        "y": 400.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Знания"
+      },
+      {
+        "id": "25bf4645-6dbb-5a15-88cb-223ecc12907c",
+        "type": "number",
+        "x": 432.0,
+        "y": 400.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "47378fdb-e6f1-5e64-81d2-9259287ef193",
+        "type": "label",
+        "x": 310.0,
+        "y": 422.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Внимание"
+      },
+      {
+        "id": "f35b6773-9288-52ae-b506-343a2aea3b86",
+        "type": "number",
+        "x": 432.0,
+        "y": 422.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "74714f53-0194-59c7-bc95-1231a24fac67",
+        "type": "label",
+        "x": 310.0,
+        "y": 444.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Телосложение"
+      },
+      {
+        "id": "0bbc39aa-cbd0-5d2b-9556-d3bc7ecdd976",
+        "type": "number",
+        "x": 432.0,
+        "y": 444.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "c6365c8b-9420-5347-9a42-21c9c0f8720c",
+        "type": "label",
+        "x": 310.0,
+        "y": 466.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Провокация"
+      },
+      {
+        "id": "0e1b61dd-9f50-5e4e-8d69-aedcce371045",
+        "type": "number",
+        "x": 432.0,
+        "y": 466.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "d145a32c-b21b-5cda-8e67-571dc2b6624d",
+        "type": "label",
+        "x": 310.0,
+        "y": 488.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Общение"
+      },
+      {
+        "id": "0ed78654-9f7f-5260-a375-4ac3e0d8aa19",
+        "type": "number",
+        "x": 432.0,
+        "y": 488.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "d2956af8-b57b-50e0-b9a1-9cfe630cae72",
+        "type": "label",
+        "x": 310.0,
+        "y": 510.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Ресурсы"
+      },
+      {
+        "id": "e8bd8853-20cd-54d9-8125-1471cfdafe38",
+        "type": "number",
+        "x": 432.0,
+        "y": 510.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "dc307fe1-ad7d-5497-8a93-d153159e7eee",
+        "type": "label",
+        "x": 310.0,
+        "y": 532.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Стрельба"
+      },
+      {
+        "id": "3fcb64dd-4468-5d6e-8001-0ebce3362af7",
+        "type": "number",
+        "x": 432.0,
+        "y": 532.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "00eee76c-7a99-512a-9214-b49c9048bd63",
+        "type": "label",
+        "x": 310.0,
+        "y": 554.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Скрытность"
+      },
+      {
+        "id": "bad026f8-567b-521e-a5be-d6a0693872f6",
+        "type": "number",
+        "x": 432.0,
+        "y": 554.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "967a9a31-2baf-53fd-a337-165e6b7739e6",
+        "type": "label",
+        "x": 310.0,
+        "y": 576.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Воля"
+      },
+      {
+        "id": "f1157ea0-ddd3-5bb3-a630-4d3ce8937f4c",
+        "type": "number",
+        "x": 432.0,
+        "y": 576.0,
+        "w": 56.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "614abd94-66ee-5506-a933-5a39a6d75a19",
+        "type": "label",
+        "x": 30.0,
+        "y": 604.0,
+        "w": 50.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Трюки"
+      },
+      {
+        "id": "acffed44-bd96-5858-8a88-baa10b5875a0",
+        "type": "textarea",
+        "x": 30.0,
+        "y": 624.0,
+        "w": 505.0,
+        "h": 52.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "cd400f9d-d8f3-59a9-99fa-0be38ebbe24f",
+        "type": "label",
+        "x": 30.0,
+        "y": 690.0,
+        "w": 110.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Физический стресс"
+      },
+      {
+        "id": "003ed1cd-57c9-5d22-920e-d34dca1ae7fc",
+        "type": "checkbox",
+        "x": 150.0,
+        "y": 690.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "b09bfa98-5de2-5528-bd6b-d1d5b217db38",
+        "type": "checkbox",
+        "x": 178.0,
+        "y": 690.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "8af0ca00-2e21-5417-aea3-4ad0cd2a1546",
+        "type": "checkbox",
+        "x": 206.0,
+        "y": 690.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "26267b3c-fa5a-5603-9cf8-4167566db5c6",
+        "type": "checkbox",
+        "x": 234.0,
+        "y": 690.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "be0ab725-6f9f-504b-84c2-81bbe2977dd3",
+        "type": "label",
+        "x": 30.0,
+        "y": 716.0,
+        "w": 120.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Ментальный стресс"
+      },
+      {
+        "id": "03d663ca-2e1c-505a-9c01-3faf9509eeb9",
+        "type": "checkbox",
+        "x": 150.0,
+        "y": 716.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "b623926b-a504-5b3a-9f16-c27ecca9c70d",
+        "type": "checkbox",
+        "x": 178.0,
+        "y": 716.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "c70b2362-bf3b-50e2-83a8-ebb5977bd978",
+        "type": "checkbox",
+        "x": 206.0,
+        "y": 716.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "d112a209-764c-5dd3-839b-40325146674d",
+        "type": "checkbox",
+        "x": 234.0,
+        "y": 716.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "db674e72-2016-5322-a3ac-2dd407fc596f",
+        "type": "label",
+        "x": 310.0,
+        "y": 684.0,
+        "w": 80.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Последствия"
+      },
+      {
+        "id": "f20619af-114f-5318-b724-80d32468494d",
+        "type": "label",
+        "x": 310.0,
+        "y": 706.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Лёгкое"
+      },
+      {
+        "id": "6f42febd-a148-582b-a45c-28372bcf68a8",
+        "type": "text",
+        "x": 370.0,
+        "y": 706.0,
+        "w": 165.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "f028bb7f-ed38-51fd-994a-2b7e770263ab",
+        "type": "label",
+        "x": 310.0,
+        "y": 728.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Умеренное"
+      },
+      {
+        "id": "d50d8a50-0c9c-5b50-bf7d-fb0a4c9496ed",
+        "type": "text",
+        "x": 370.0,
+        "y": 728.0,
+        "w": 165.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "9cb98ac2-7f3d-58c4-bcc1-14e31b91800e",
+        "type": "label",
+        "x": 310.0,
+        "y": 750.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Тяжёлое"
+      },
+      {
+        "id": "d43986ef-dce4-5a0c-b460-6ae4ae683c55",
+        "type": "text",
+        "x": 370.0,
+        "y": 750.0,
+        "w": 165.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "2cfb0621-115f-5b2a-a74d-85b15396e0b1",
+        "type": "label",
+        "x": 30.0,
+        "y": 776.0,
+        "w": 535.0,
+        "h": 58.0,
+        "font_size": 10.0,
+        "content": "This work is based on Fate Core System and Fate Accelerated Edition (found at https://www.faterpg.com/), products of Evil Hat Productions, LLC, developed, authored, and edited by Leonard Balsera, Brian Engard, Jeremy Keller, Ryan Macklin, Mike Olson, Clark Valentine, Amanda Valentine, Fred Hicks, and Rob Donoghue, and licensed for our use under the Creative Commons Attribution 3.0 Unported license (https://creativecommons.org/licenses/by/3.0/)."
+      }
+    ]
+  }
+]

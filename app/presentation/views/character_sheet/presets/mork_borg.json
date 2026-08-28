@@ -1,0 +1,338 @@
+[
+  {
+    "name": "Страница 1",
+    "fields": [
+      {
+        "id": "e62ef457-f384-520c-80b9-844e91cd2002",
+        "type": "label",
+        "x": 30.0,
+        "y": 22.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Портрет"
+      },
+      {
+        "id": "505f4924-8aa0-53ca-927d-646928558b7e",
+        "type": "image",
+        "x": 30.0,
+        "y": 42.0,
+        "w": 96.0,
+        "h": 96.0,
+        "font_size": 10.0,
+        "content": "",
+        "image_id": null
+      },
+      {
+        "id": "b1b4b7b8-0da8-5ee7-90e5-015b4b84b24b",
+        "type": "label",
+        "x": 150.0,
+        "y": 22.0,
+        "w": 40.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Имя"
+      },
+      {
+        "id": "05ad74b4-47b2-5b5e-8ae4-2728095deaa2",
+        "type": "text",
+        "x": 150.0,
+        "y": 42.0,
+        "w": 385.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "9b1146e5-b9c4-5156-8406-f98c0094a6d7",
+        "type": "label",
+        "x": 150.0,
+        "y": 68.0,
+        "w": 130.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Класс / Предыстория"
+      },
+      {
+        "id": "1867b114-d030-5929-9c1d-7aa7248be08c",
+        "type": "text",
+        "x": 150.0,
+        "y": 88.0,
+        "w": 385.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "2f076485-f00d-5ef4-bfb7-4b7f411e4685",
+        "type": "label",
+        "x": 30.0,
+        "y": 160.0,
+        "w": 100.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Характеристики"
+      },
+      {
+        "id": "2c70b7fd-4160-5ec2-b538-c1451c690061",
+        "type": "label",
+        "x": 30.0,
+        "y": 186.0,
+        "w": 90.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Сила"
+      },
+      {
+        "id": "ab647d41-8ff1-5205-b9ab-4904644b8dee",
+        "type": "number",
+        "x": 125.0,
+        "y": 186.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "48827b30-9924-5c8d-bc38-af33365c55ed",
+        "type": "label",
+        "x": 30.0,
+        "y": 210.0,
+        "w": 90.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Ловкость"
+      },
+      {
+        "id": "ae18407e-fc14-5d6b-a913-60de0588deed",
+        "type": "number",
+        "x": 125.0,
+        "y": 210.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "81340f7c-dcfd-550b-8080-9c84fd133dc9",
+        "type": "label",
+        "x": 30.0,
+        "y": 234.0,
+        "w": 90.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Присутствие"
+      },
+      {
+        "id": "bd20fdf7-0479-51d4-91de-0e74e9dcbe69",
+        "type": "number",
+        "x": 125.0,
+        "y": 234.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "0100289d-a2be-5091-8b9e-59f0900b8a24",
+        "type": "label",
+        "x": 30.0,
+        "y": 258.0,
+        "w": 90.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Стойкость"
+      },
+      {
+        "id": "ad4ff62b-7693-5204-9033-3c84d49a3d1d",
+        "type": "number",
+        "x": 125.0,
+        "y": 258.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "e6bd5e02-faf8-5c35-8549-0b4e120a21a3",
+        "type": "label",
+        "x": 240.0,
+        "y": 186.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Серебро"
+      },
+      {
+        "id": "6092460c-def7-5e3a-a35e-a6849f8cf28d",
+        "type": "number",
+        "x": 305.0,
+        "y": 186.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "5d2acd16-db37-5e65-b000-5370170cab65",
+        "type": "label",
+        "x": 240.0,
+        "y": 210.0,
+        "w": 80.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "HP (текущие)"
+      },
+      {
+        "id": "bb026e14-44dc-5f45-82bb-10f95c9b23e3",
+        "type": "number",
+        "x": 325.0,
+        "y": 210.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "beebeb12-2f1b-586a-b530-0435c02a488d",
+        "type": "label",
+        "x": 240.0,
+        "y": 234.0,
+        "w": 80.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "HP (максимум)"
+      },
+      {
+        "id": "5b2a6a52-46fd-562a-be28-764fea2b4336",
+        "type": "number",
+        "x": 325.0,
+        "y": 234.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "24b14182-6be0-570e-9809-45bd9ca64d83",
+        "type": "label",
+        "x": 30.0,
+        "y": 290.0,
+        "w": 70.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Знамения"
+      },
+      {
+        "id": "bd2a6555-d8ba-5f04-a9ed-4f607c141370",
+        "type": "checkbox",
+        "x": 30.0,
+        "y": 312.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "90c787d6-49dc-5e69-af81-345551a15017",
+        "type": "checkbox",
+        "x": 60.0,
+        "y": 312.0,
+        "w": 18.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": "false"
+      },
+      {
+        "id": "0c96312b-6351-564b-937e-fbb9db32f01f",
+        "type": "label",
+        "x": 30.0,
+        "y": 350.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Оружие"
+      },
+      {
+        "id": "cca1917f-7274-57ef-9fd9-cfe4e144d878",
+        "type": "text",
+        "x": 30.0,
+        "y": 370.0,
+        "w": 505.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "707ec829-131e-5e95-9cf5-63dee3f82696",
+        "type": "label",
+        "x": 30.0,
+        "y": 400.0,
+        "w": 60.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Броня"
+      },
+      {
+        "id": "a3255551-a198-5286-b30c-c0848cb59d4d",
+        "type": "text",
+        "x": 30.0,
+        "y": 420.0,
+        "w": 505.0,
+        "h": 18.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "f85f7840-c86e-5018-ac0b-7411d8c65731",
+        "type": "label",
+        "x": 30.0,
+        "y": 454.0,
+        "w": 80.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Снаряжение"
+      },
+      {
+        "id": "5d5c83e8-d4db-523d-8356-c901e3a58315",
+        "type": "textarea",
+        "x": 30.0,
+        "y": 474.0,
+        "w": 505.0,
+        "h": 140.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "74664aa7-a896-59b1-a043-dd18d77c295d",
+        "type": "label",
+        "x": 30.0,
+        "y": 628.0,
+        "w": 80.0,
+        "h": 16.0,
+        "font_size": 10.0,
+        "content": "Способности"
+      },
+      {
+        "id": "414e1888-c0b6-5c47-81a2-e4d45955a091",
+        "type": "textarea",
+        "x": 30.0,
+        "y": 648.0,
+        "w": 505.0,
+        "h": 90.0,
+        "font_size": 10.0,
+        "content": ""
+      },
+      {
+        "id": "5b1d0eb7-aef1-5d57-a022-4af9c7159324",
+        "type": "label",
+        "x": 30.0,
+        "y": 750.0,
+        "w": 535.0,
+        "h": 86.0,
+        "font_size": 10.0,
+        "content": "НРИ Сценарий Менеджер is an independent production by НРИ Сценарий Менеджер and is not affiliated with Ockult Örtmästare Games or Stockholm Kartell. It is published under the MÖRK BORG Third Party License.\n\nMÖRK BORG is ©2019 Ockult Örtmästare Games and Stockholm Kartell."
+      }
+    ]
+  }
+]
