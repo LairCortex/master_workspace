@@ -466,7 +466,12 @@ async def test_http_unexpected_errors_and_table_host_status(async_session: Async
         assert img_bad.status in (400, 200)
         img_token = await client.post(
             "/api/image",
-            data=b"--x\r\nContent-Disposition: form-data; name=\"field_id\"\r\n\r\nf\r\n--x\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\nnotimg\r\n--x--\r\n",
+            data=(
+                b"--x\r\nContent-Disposition: form-data; name=\"field_id\"\r\n"
+                b"\r\nf\r\n--x\r\nContent-Disposition: form-data; name=\"file\"; "
+                b"filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\n"
+                b"notimg\r\n--x--\r\n"
+            ),
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "multipart/form-data; boundary=x",

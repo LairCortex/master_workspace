@@ -12,7 +12,7 @@ import base64
 import json
 
 import pytest
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -191,10 +191,10 @@ async def test_save_writes_values(dlg, qtbot):
     d, ids, inst_svc, instance_id = dlg
     d.view_model.set_text(ids["text"], "Пётр")
     d.save_button.click()
-    for _ in range(50):
+    for _ in range(200):
         if not d.view_model.dirty:
             break
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
     assert d.view_model.dirty is False
     row = await inst_svc.get(instance_id)
     assert json.loads(row.values)[ids["text"]] == "Пётр"

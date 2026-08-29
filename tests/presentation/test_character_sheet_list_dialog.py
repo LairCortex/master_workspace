@@ -7,21 +7,27 @@ the buttons and pumped.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import pytest
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
 
+from app.application.services.character_sheet_instance_service import (
+    CharacterSheetInstanceService,
+)
 from app.application.services.character_sheet_service import (
-    CharacterSheetError,
     CharacterSheetService,
-    NameConflictError,
 )
 from app.domain.entities.character_sheet import EMPTY_PAGES_JSON
+from app.infrastructure.repositories.character_sheet_instance_repository import (
+    CharacterSheetInstanceRepository,
+)
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
+from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
 
 
 @pytest.fixture(scope="session")
@@ -226,7 +232,7 @@ async def test_delete_refused_keeps_sheet(dlg, service, dialog_input, confirm, q
 
 async def test_delete_of_open_sheet_is_unavailable(dlg, service, dialog_input, qtbot):
     opened = await create_via_service(service, "Открыт")
-    other = await create_via_service(service, "Другой")
+    await create_via_service(service, "Другой")
     await dlg.refresh()
     dlg.set_open_sheet_id(opened.id)
 
@@ -351,13 +357,6 @@ async def test_delete_service_error_keeps_row(dlg, service, boxes, confirm, qtbo
 
 
 # ── tabs / instances (add-character-sheet-b) ────────────────────────────────
-
-from app.application.services.character_sheet_instance_service import (
-    CharacterSheetInstanceService,
-)
-from app.infrastructure.repositories.character_sheet_instance_repository import (
-    CharacterSheetInstanceRepository,
-)
 
 
 @pytest.fixture
@@ -522,10 +521,6 @@ async def test_open_rename_disabled_without_selection(inst_dlg, qtbot):
 
 
 # ── create from preset (add-character-sheet-c) ───────────────────────────────
-
-import json
-
-from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
 
 
 async def test_preset_button_visible_only_on_templates_tab(inst_dlg, qtbot):

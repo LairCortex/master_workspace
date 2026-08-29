@@ -17,7 +17,6 @@ import pytest
 
 from app.domain.entities.character_sheet import (
     DEFAULT_FONT_SIZE,
-    EMPTY_PAGES_JSON,
     GUTTER_PT,
     MIN_FIELD_W,
     MIN_FIELD_H,
@@ -470,6 +469,11 @@ class TestFromPagesJsonDegenerate:
                 '[{"fields": [{"id": 1}]}]', name="X", schema_version=2
             )
 
+    def test_non_valueerror_in_field_is_wrapped(self):
+        pages = json.dumps([{"name": "P", "fields": [{"id": "a", "type": "label"}]}])
+        with pytest.raises(ValueError, match="invalid character-sheet pages"):
+            SheetTemplate.parse_template(pages, name="X", schema_version=2)
+
 
 # ── v1 / v2 parser (A-playable, design D3) ──────────────────────────────────
 
@@ -650,6 +654,9 @@ class TestSheetImageIdHelpers:
 
     def test_iter_garbage_json_yields_nothing(self):
         assert iter_sheet_image_ids("not json") == []
+
+    def test_iter_non_array_json_yields_nothing(self):
+        assert iter_sheet_image_ids("{}") == []
 
     def test_null_helper_clears_only_matching_fields(self):
         pages = [

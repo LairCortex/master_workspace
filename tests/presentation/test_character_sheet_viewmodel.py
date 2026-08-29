@@ -13,7 +13,6 @@ relocation (drag, drop on another sheet, drop in the gutter).
 from __future__ import annotations
 
 import pytest
-import pytest_asyncio
 from PySide6.QtWidgets import QApplication
 
 from app.application.services.character_sheet_service import CharacterSheetService
@@ -33,6 +32,7 @@ from app.presentation.viewmodels.character_sheet_viewmodel import (
     TOOL_PLACE_LABEL,
     TOOL_PLACE_TEXT,
     TOOL_PLACE_TEXTAREA,
+    UNDO_STACK_LIMIT,
     CharacterSheetViewModel,
     field_type_for_tool,
 )
@@ -554,7 +554,7 @@ async def test_set_orientation_clamps_fields_without_scaling(vm, qtbot):
 
 
 async def test_set_orientation_same_value_is_noop(vm, qtbot):
-    fid = vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm.place(FieldType.LABEL, 10.0, 10.0)
     pages = []
     vm.pages_changed.connect(lambda: pages.append(1))
     await vm.save()
@@ -566,7 +566,7 @@ async def test_set_orientation_same_value_is_noop(vm, qtbot):
 
 
 async def test_switch_back_to_portrait_clamps_wide_fields(vm):
-    w, h = PAGE_HEIGHT_PT, PAGE_WIDTH_PT  # landscape size
+    w, _h = PAGE_HEIGHT_PT, PAGE_WIDTH_PT  # landscape size
     fid = vm.place(FieldType.LABEL, w - 80.0, 10.0)  # near the right edge…
     # …of the portrait page (portrait width < w), i.e. clamped on place
     before_portrait_w = vm.template.get_field(fid).w
@@ -726,8 +726,6 @@ async def test_unloaded_vm_page_mutators_are_noop(service):
 
 
 # ── A-editor: undo / redo (D1) ─────────────────────────────────────────────
-
-UNDO_STACK_LIMIT = 50
 
 
 async def test_undo_after_move_restores_position_and_stays_dirty(vm):
@@ -1108,3 +1106,88 @@ async def test_clearing_a_bound_is_one_undo_step(vm):
     vm.set_max_value(fid, None)
     vm.undo()
     assert vm.template.get_field(fid).max_value == 10.0
+
+
+async def test_resize_unknown_selected_id_is_false(vm):
+    vm._selected_ids = ["ghost"]
+    assert vm.resize("ghost", 0.0, 0.0, 40.0, 20.0) is False
+
+
+async def test_remove_returns_false_when_remove_field_fails(vm):
+    fid = vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm._template.remove_field = lambda _id: False  # type: ignore[method-assign]
+    assert vm.remove(fid) is False
+
+
+async def test_remove_page_out_of_range_when_multiple_pages(vm):
+    vm.add_page(after_index=0)
+    assert vm.remove_page(99) is False
+    assert vm.page_count == 2
+
+
+async def test_rename_page_value_error_is_false(vm):
+    def boom(_index, _name):
+        raise ValueError("x")
+
+    vm._template.rename_page = boom  # type: ignore[method-assign]
+    assert vm.rename_page(0, "Другое") is False
+
+
+async def test_redo_caps_undo_stack(vm):
+    vm.place(FieldType.LABEL, 10.0, 10.0)
+    snap = vm._layout_snapshot()
+    vm._undo_stack = [snap] * UNDO_STACK_LIMIT
+    vm._redo_stack = [snap]
+    vm.redo()
+    assert len(vm._undo_stack) == UNDO_STACK_LIMIT
+
+
+async def test_begin_gesture_caps_undo_stack(vm):
+    vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm._undo_stack = [vm._layout_snapshot()] * UNDO_STACK_LIMIT
+    vm.begin_gesture()
+    assert len(vm._undo_stack) == UNDO_STACK_LIMIT
+
+
+async def test_commit_drag_selection_skips_missing_and_empty_origins(vm):
+    vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm._selected_ids = ["ghost"]
+    vm.commit_drag_selection(10.0, 10.0, 0.0, 0.0)
+
+
+async def test_drag_move_selection_missing_ref_is_noop(vm):
+    vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm._selected_ids = ["ghost"]
+    vm.drag_move_selection(20.0, 30.0, 0.0, 0.0)
+
+
+async def test_drag_move_selection_other_page_holds(vm):
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    parked = (vm.template.get_field(fid).x, vm.template.get_field(fid).y)
+    vm.add_page(after_index=0)
+    vm.select(fid)
+    vm.drag_move_selection(20.0, PAGE_HEIGHT_PT + GUTTER_PT + 50.0, 0.0, 0.0)
+    assert (vm.template.get_field(fid).x, vm.template.get_field(fid).y) == parked
+
+
+async def test_drag_move_selection_skips_missing_member(vm):
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    vm.select_ids([fid, "ghost"])
+    vm.drag_move_selection(30.0, 40.0, 0.0, 0.0)
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (30.0, 40.0)
+
+
+async def test_copy_skips_missing_selection(vm):
+    fid = vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm.select_ids([fid, "ghost"])
+    vm.copy()
+    assert vm.has_clipboard is True
+
+
+async def test_duplicate_skips_missing_selection(vm):
+    fid = vm.place(FieldType.LABEL, 10.0, 10.0)
+    vm.select_ids([fid, "ghost"])
+    copies = vm.duplicate()
+    assert len(copies) == 1
+    assert copies[0] != fid

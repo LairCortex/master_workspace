@@ -48,7 +48,6 @@ from app.domain.entities.character_sheet import (
     ORIENTATION_LANDSCAPE,
     ORIENTATION_PORTRAIT,
     SheetField,
-    SheetPage,
     SheetTemplate,
     clamp_rect,
     page_origin,

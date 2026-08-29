@@ -195,6 +195,28 @@ class TestBind:
         assert (await repo.get_by_id(a.id)).character_id == char.id
         assert (await repo.get_by_id(b.id)).character_id is None
 
+    async def test_bind_integrity_error_reraise_when_character_free(
+        self, async_session: AsyncSession
+    ):
+        sheet_svc, inst_svc, _repo = await _services(async_session)
+        tid, _ = await _template_with_fields(sheet_svc)
+        row = await inst_svc.create("A", tid)
+        char_repo = CharacterRepository(async_session)
+        char = await char_repo.create(name="P", start_date=date(1300, 1, 1))
+        await async_session.commit()
+
+        orig_commit = inst_svc._session.commit
+
+        async def boom():
+            raise IntegrityError("UPDATE", {}, Exception("fk"))
+
+        inst_svc._session.commit = boom  # type: ignore[method-assign]
+        try:
+            with pytest.raises(IntegrityError):
+                await inst_svc.bind_character(row.id, char.id)
+        finally:
+            inst_svc._session.commit = orig_commit  # type: ignore[method-assign]
+
     async def test_unbind(self, async_session: AsyncSession):
         sheet_svc, inst_svc, repo = await _services(async_session)
         tid, _ = await _template_with_fields(sheet_svc)

@@ -15,7 +15,6 @@ from sqlalchemy.exc import IntegrityError
 
 from app.application.services.character_sheet_service import (
     CharacterSheetService,
-    SheetNotFoundError,
 )
 from app.domain.entities.character_sheet_instance import defaults_map, iter_instance_image_ids
 from app.infrastructure.db.models import CharacterSheetInstanceModel

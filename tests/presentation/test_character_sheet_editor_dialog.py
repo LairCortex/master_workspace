@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 
 import pytest
 from PySide6.QtGui import QKeySequence
@@ -177,7 +176,7 @@ async def test_close_dirty_no_confirmation_keeps_window(dlg, service, confirm, q
     row = await service._repo.get_by_id(vm.sheet_id)
     pages_before = row.pages
 
-    fid = vm.place(FieldType.TEXT, 50, 60)   # dirty
+    vm.place(FieldType.TEXT, 50, 60)   # dirty
     confirm["answer"] = QMessageBox.StandardButton.No
     dlg.close()
     qtbot.wait(10)

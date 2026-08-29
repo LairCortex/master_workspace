@@ -9,17 +9,19 @@ and built-in DejaVu Sans with Cyrillic (no family picker).
 """
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import pytest
-from PySide6.QtCore import QPointF, QPoint, QRectF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import (
-    QBrush,
     QColor,
     QImage,
+    QMouseEvent,
     QPainter,
-    QPen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QButtonGroup, QFontComboBox, QLabel, QToolButton
+from PySide6.QtWidgets import QApplication, QFontComboBox, QToolButton
 
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.domain.entities.character_sheet import (
@@ -81,6 +83,18 @@ def canvas(qtbot, vm):
     # Deterministic teardown: destroy the C++ view (and scene) while the VM is
     # still alive — otherwise the deferred deletion lands in the next Qt pump
     # with a dead VM and the Python GC can destroy a still-owned wrapper.
+    view.close()
+    view.deleteLater()
+    qtbot.wait(50)
+
+
+@pytest.fixture
+def fill_canvas(qtbot, vm):
+    view = CharacterSheetCanvas(vm, fill_mode=True)
+    view.resize(800, 1010)
+    view.show()
+    view.fit_width()
+    yield view
     view.close()
     view.deleteLater()
     qtbot.wait(50)
@@ -292,7 +306,7 @@ def test_delete_key_removes_selected(canvas, vm, qtbot):
 
 
 def test_backspace_removes_selected(canvas, vm, qtbot):
-    a = vm.place(FieldType.LABEL, 100, 100)
+    vm.place(FieldType.LABEL, 100, 100)
     canvas.setFocus()
     canvas.activateWindow()
     qtbot.keyClick(canvas, Qt.Key_Backspace)
@@ -310,7 +324,7 @@ def test_delete_without_selection_does_nothing(canvas, vm, qtbot):
 
 
 def test_esc_clears_selection(canvas, vm, qtbot):
-    a = vm.place(FieldType.LABEL, 100, 100)
+    vm.place(FieldType.LABEL, 100, 100)
     canvas.setFocus()
     canvas.activateWindow()
     qtbot.keyClick(canvas, Qt.Key_Escape)
@@ -322,7 +336,7 @@ def test_esc_clears_selection(canvas, vm, qtbot):
 
 def test_tape_layout_and_scene_rect(canvas2):
     """Two A4 pages in one scene, stacked with the GUTTER_PT gap (D1)."""
-    from app.domain.entities.character_sheet import GUTTER_PT, tape_height
+    from app.domain.entities.character_sheet import GUTTER_PT
 
     page_w, page_h = PAGE_WIDTH_PT, PAGE_HEIGHT_PT
     scene = canvas2.scene()
@@ -406,7 +420,7 @@ def test_ctrl_wheel_zoom_clamped(canvas2, qtbot):
 # ── open: fit the page WIDTH, first page on top (design D2) ────────────────
 
 def test_fit_width_on_open_first_page_top_second_by_scroll(canvas2):
-    vp_w, vp_h = canvas2.viewport().width(), canvas2.viewport().height()
+    vp_w, _vp_h = canvas2.viewport().width(), canvas2.viewport().height()
     # the sheet width equals the canvas area width (the tape, not the page)
     left = canvas2.mapFromScene(QPointF(0, 0)).x()
     right = canvas2.mapFromScene(QPointF(PAGE_WIDTH_PT, 0)).x()
@@ -584,7 +598,7 @@ def test_cyrillic_renders_and_font_is_dejavu(canvas, vm, qtbot):
     item = canvas.item_for(fid)
     assert item.font().family() == SHEET_FONT_FAMILY
 
-    f = vm.template.get_field(fid)
+    vm.template.get_field(fid)
     img = _render_scene(canvas)
     rect = item.rect()
     dark = False
@@ -661,7 +675,7 @@ def test_doubleclick_opens_inline_editing(canvas, vm, qtbot):
 
 
 def test_doubleclick_opens_multiline_editor_for_textarea(canvas, vm, qtbot):
-    fid = vm.place(FieldType.TEXTAREA, 100, 100)
+    vm.place(FieldType.TEXTAREA, 100, 100)
     _dclick(canvas, 110, 110, qtbot)
     edit = canvas.inline_edit()
     assert isinstance(edit, QPlainTextEdit)
@@ -1303,7 +1317,7 @@ def test_rubber_band_from_empty_selects_intersections(canvas, vm, qtbot):
 def test_rubber_band_without_shift_replaces(canvas, vm, qtbot):
     a = vm.place(FieldType.LABEL, 100.0, 100.0)
     b = vm.place(FieldType.TEXT, 200.0, 200.0)
-    c = vm.place(FieldType.TEXT, 400.0, 400.0)
+    vm.place(FieldType.TEXT, 400.0, 400.0)
     vm.select(a)
 
     _press_drag_release_mod(canvas, qtbot, (190.0, 190.0), (330.0, 230.0))
@@ -1314,7 +1328,7 @@ def test_rubber_band_without_shift_replaces(canvas, vm, qtbot):
 def test_shift_rubber_band_adds(canvas, vm, qtbot):
     a = vm.place(FieldType.LABEL, 100.0, 100.0)
     b = vm.place(FieldType.TEXT, 200.0, 200.0)
-    c = vm.place(FieldType.TEXT, 400.0, 400.0)
+    vm.place(FieldType.TEXT, 400.0, 400.0)
     vm.select(a)
 
     _press_drag_release_mod(
@@ -1413,3 +1427,262 @@ def test_font_lives_next_to_the_canvas_module():
     path = canvas_mod._font_path()
     assert path.is_file()
     assert path.parent == Path(canvas_mod.__file__).resolve().parent / "fonts"
+
+
+# ── remaining canvas.py branch coverage ─────────────────────────────────────
+
+def test_scroll_to_page_guards(canvas, vm):
+    canvas.scroll_to_page(-1)
+    canvas.scroll_to_page(99)
+    vm._template = None
+    canvas.scroll_to_page(0)
+
+
+def test_rebuild_closes_inline_and_empty_template(canvas, vm, qtbot):
+    vm.place(FieldType.TEXT, 100, 100)
+    _dclick(canvas, 110, 109, qtbot)
+    assert canvas.inline_edit() is not None
+    canvas._rebuild()
+    assert canvas.inline_edit() is None
+    vm._template = None
+    canvas._rebuild()
+
+
+def test_on_field_added_without_template(canvas, vm):
+    vm._template = None
+    canvas._on_field_added("ghost")
+
+
+def test_fill_image_data_changed_clears_pixmap(fill_canvas, vm):
+    fid = vm.place(FieldType.IMAGE, 40, 40)
+    fill_canvas._on_field_data_changed(fid)
+
+
+def test_schedule_image_load_without_running_loop(canvas, monkeypatch):
+    canvas._image_store = object()
+
+    def _no_loop():
+        raise RuntimeError("no loop")
+
+    monkeypatch.setattr(asyncio, "get_running_loop", _no_loop)
+    canvas._schedule_image_load("f", 1)
+
+
+async def test_load_image_store_error_and_missing_file(canvas, vm):
+    class Boom:
+        async def original_file_path(self, image_id):
+            raise RuntimeError("session gone")
+
+    canvas._image_store = Boom()
+    await canvas._load_image("x", 1)
+
+    fid = vm.place(FieldType.IMAGE, 20, 20)
+    vm.template.get_field(fid).image_id = 7
+
+    class Missing:
+        async def original_file_path(self, image_id):
+            return None
+
+    canvas._image_store = Missing()
+    await canvas._load_image(fid, 7)
+
+    class GonePath:
+        async def original_file_path(self, image_id):
+            return Path("/definitely/missing/sheet-image.png")
+
+    canvas._image_store = GonePath()
+    await canvas._load_image(fid, 7)
+
+
+def test_update_visible_page_skips_no_horizontal_overlap(canvas):
+    from unittest.mock import patch
+
+    def fake_map(self, *args, **kwargs):
+        x = args[0] if args else 0
+        if x == 0:
+            return QPointF(PAGE_WIDTH_PT + 10, 10)
+        return QPointF(PAGE_WIDTH_PT + 200, PAGE_HEIGHT_PT - 10)
+
+    with patch.object(CharacterSheetCanvas, "mapToScene", fake_map):
+        canvas._update_visible_page()
+
+
+def test_handle_at_and_count_when_selected_item_missing(canvas, vm):
+    fid = vm.place(FieldType.LABEL, 100, 100)
+    canvas._items.pop(fid)
+    assert canvas.handle_count() == 0
+    assert canvas._handle_at(QPointF(110, 109)) is None
+
+
+def test_visible_page_center_invalid_index(canvas, vm):
+    page_w, page_h = vm.template.page_size
+    assert canvas.visible_page_center(-1) == (page_w / 2, page_h / 2)
+
+
+def test_visible_page_center_without_template(canvas, vm):
+    vm._template = None
+    assert canvas.visible_page_center(0) == (PAGE_WIDTH_PT / 2, PAGE_HEIGHT_PT / 2)
+
+
+def test_visible_page_center_empty_intersection(canvas2, vm2, monkeypatch):
+    page_w, page_h = vm2.template.page_size
+    monkeypatch.setattr(canvas2, "_viewport_size", lambda: (0, 0))
+    assert canvas2.visible_page_center(1) == (page_w / 2, page_h / 2)
+
+
+def test_apply_handle_resize_guards_and_nw(canvas, vm):
+    canvas._apply_handle_resize(QPointF(0, 0))
+    canvas._resize_corner = "se"
+    canvas._resize_start = (10.0, 10.0, 40.0, 20.0)
+    vm.select(None)
+    canvas._apply_handle_resize(QPointF(30, 30))
+
+    fid = vm.place(FieldType.TEXT, 150, 150)
+    canvas._resize_corner = "se"
+    canvas._resize_start = (150.0, 150.0, 120.0, 18.0)
+    vm.template.remove_field(fid)
+    canvas._apply_handle_resize(QPointF(200, 200))
+
+    nw = vm.place(FieldType.TEXT, 160, 160)
+    f = vm.template.get_field(nw)
+    canvas._resize_corner = "nw"
+    canvas._resize_start = (f.x, f.y, f.w, f.h)
+    canvas._apply_handle_resize(QPointF(f.x - 12, f.y - 8))
+    moved = vm.template.get_field(nw)
+    assert moved.x <= f.x and moved.y <= f.y
+
+
+def test_shift_click_toggles_selection(canvas, vm, qtbot):
+    a = vm.place(FieldType.LABEL, 100, 100)
+    b = vm.place(FieldType.TEXT, 300, 300)
+    vm.select(a)
+    view_pos = canvas.mapFromScene(QPointF(310, 309))
+    qtbot.mouseClick(
+        canvas.viewport(), Qt.LeftButton, Qt.KeyboardModifier.ShiftModifier, view_pos
+    )
+    assert set(vm.selected_ids) == {a, b}
+
+
+def test_multi_select_drag_moves_selection(canvas, vm, qtbot):
+    a = vm.place(FieldType.LABEL, 100, 100)
+    b = vm.place(FieldType.TEXT, 300, 300)
+    vm.select_ids([a, b])
+    ax = vm.template.get_field(a).x
+    _press_drag_release_mod(canvas, qtbot, (110.0, 109.0), (180.0, 160.0))
+    assert vm.template.get_field(a).x != ax
+    assert set(vm.selected_ids) == {a, b}
+
+
+def test_rubber_move_without_left_button(canvas):
+    canvas._rubber_origin = QPoint(10, 10)
+    ev = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(20, 20),
+        QPointF(20, 20),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    canvas.mouseMoveEvent(ev)
+
+
+def test_fill_press_same_inline_returns(fill_canvas, vm):
+    fid = vm.place(FieldType.TEXT, 100, 100)
+    pos = fill_canvas.item_for(fid).sceneBoundingRect().center()
+    fill_canvas._fill_press(pos)
+    assert vm.inline_field_id == fid
+    fill_canvas._fill_press(pos)
+    assert vm.inline_field_id == fid
+
+
+def test_fill_press_missing_template_field(fill_canvas, vm):
+    fid = vm.place(FieldType.TEXT, 100, 100)
+    pos = fill_canvas.item_for(fid).sceneBoundingRect().center()
+    vm._template = None
+    fill_canvas._fill_press(pos)
+
+
+def test_fill_image_click_emits_once_per_interval(fill_canvas, vm, qtbot):
+    fid = vm.place(FieldType.IMAGE, 80, 80)
+    got = []
+    fill_canvas.image_field_double_clicked.connect(got.append)
+    _click(fill_canvas, 90, 90, qtbot)
+    _click(fill_canvas, 90, 90, qtbot)
+    assert got == [fid]
+
+
+def test_popup_dropdown_closes_previous_and_orphan(canvas, vm):
+    fid = vm.place(FieldType.DROPDOWN, 100, 100)
+    field = vm.template.get_field(fid)
+    field.options = ["меч"]
+    field.content = "устаревшее"
+    pos = QPointF(110, 109)
+    canvas._popup_dropdown(field, pos)
+    assert canvas.dropdown_menu is not None
+    canvas._popup_dropdown(field, pos)
+    menu = canvas.dropdown_menu
+    assert menu is not None
+    texts = [a.text() for a in menu.actions() if a.text()]
+    assert "устаревшее" in texts
+    menu.close()
+
+
+def test_mouse_double_click_guards(canvas, vm, qtbot):
+    QTest.mouseDClick(canvas.viewport(), Qt.MouseButton.RightButton, pos=QPoint(40, 40))
+    _dclick(canvas, 500, 500, qtbot)
+    fid = vm.place(FieldType.TEXT, 100, 100)
+    vm.template.remove_field(fid)
+    _dclick(canvas, 110, 109, qtbot)
+
+
+def test_fill_double_click_is_swallowed(fill_canvas, qtbot):
+    _dclick(fill_canvas, 200, 200, qtbot)
+
+
+def test_checkbox_doubleclick_commits_other_inline(canvas, vm, qtbot):
+    text = vm.place(FieldType.TEXT, 100, 100)
+    vm.place(FieldType.CHECKBOX, 300, 300)
+    _dclick(canvas, 110, 109, qtbot)
+    canvas.inline_edit().setText("черновик")
+    _dclick(canvas, 309, 309, qtbot)
+    assert vm.inline_field_id is None
+    assert vm.template.get_field(text).content == "черновик"
+
+
+def test_commit_number_inline_guard_and_click_away(canvas, vm, qtbot):
+    canvas._commit_number_inline("absent")
+    fid = vm.place(FieldType.NUMBER, 100, 100)
+    _dclick(canvas, 110, 109, qtbot)
+    canvas._commit_number_inline("other")
+    canvas.inline_edit().setText("12")
+    _click(canvas, 500, 500, qtbot)
+    assert vm.inline_field_id is None
+    assert vm.template.get_field(fid).content == "12"
+
+
+def test_close_inline_widget_when_cpp_already_gone(canvas):
+    from shiboken6 import delete
+    from PySide6.QtWidgets import QGraphicsProxyWidget, QWidget
+
+    widget = QWidget()
+    proxy = QGraphicsProxyWidget()
+    canvas._inline_widget = widget
+    canvas._inline_proxy = proxy
+    delete(widget)
+    delete(proxy)
+    canvas._close_inline_widget()
+    assert canvas.inline_edit() is None
+
+
+def test_fill_escape_clears_selection(fill_canvas, vm, qtbot):
+    fid = vm.place(FieldType.LABEL, 40, 40)
+    vm.select(fid)
+    fill_canvas.setFocus()
+    qtbot.keyClick(fill_canvas, Qt.Key_Escape)
+    assert vm.selection is None
+
+
+def test_wheel_zero_angle_is_ignored(canvas, qtbot):
+    before = canvas.transform().m11()
+    _wheel(canvas, qtbot, 0)
+    assert canvas.transform().m11() == before

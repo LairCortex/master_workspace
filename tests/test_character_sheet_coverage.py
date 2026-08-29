@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QInputDialog,
+    QMessageBox,
+)
 from sqlalchemy.exc import IntegrityError
 
 from app.application.services.character_sheet_instance_service import (
@@ -28,6 +34,7 @@ from app.domain.entities.character_sheet import (
     GUTTER_PT,
     ORIENTATION_PORTRAIT,
     PAGE_HEIGHT_PT,
+    PAGE_WIDTH_PT,
     SheetPage,
     SheetTemplate,
     _opt_image_id,
@@ -61,11 +68,13 @@ from app.presentation.views.character_sheet.editor_dialog import (
 )
 from app.presentation.views.character_sheet.fill_dialog import (
     CharacterSheetFillDialog,
-    FillPropertiesPanel,
 )
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 from app.presentation.views.character_sheet.page_rail import PageRail
 from app.presentation.views.character_sheet.palette import SheetPalette
+from app.presentation.views.character_sheet.preset_dialog import (
+    CharacterSheetPresetDialog,
+)
 from app.presentation.views.character_sheet.properties_panel import SheetPropertiesPanel
 
 
@@ -345,8 +354,8 @@ async def test_fill_dialog_and_panels(async_session, qapp, monkeypatch, tmp_path
     row = await sheet_svc.create("Шаблон")
     template = await sheet_svc.load(row.id)
     text = template.add_field(FieldType.TEXT, (10.0, 10.0))
-    ta = template.add_field(FieldType.TEXTAREA, (10.0, 40.0))
-    num = template.add_field(FieldType.NUMBER, (10.0, 100.0))
+    template.add_field(FieldType.TEXTAREA, (10.0, 40.0))
+    template.add_field(FieldType.NUMBER, (10.0, 100.0))
     await sheet_svc.update_pages(row.id, template)
     inst = await inst_svc.create("Лист", row.id)
     d = CharacterSheetFillDialog(inst_svc, sheet_svc, inst.id)
@@ -596,3 +605,323 @@ async def test_store_nulls_instance_image(async_session, tmp_path, qapp):
     await async_session.commit()
     await async_session.refresh(inst)
     assert json.loads(inst.values)["img"] is None
+
+
+async def test_fill_dialog_remaining_branches(
+    async_session, qapp, monkeypatch, tmp_path
+):
+    sheet_repo = CharacterSheetRepository(async_session)
+    inst_repo = CharacterSheetInstanceRepository(async_session)
+    sheet_svc = CharacterSheetService(sheet_repo, instance_repo=inst_repo)
+    inst_svc = CharacterSheetInstanceService(inst_repo, sheet_svc)
+    row = await sheet_svc.create("Ветки заполнения")
+    template = await sheet_svc.load(row.id)
+    text = template.add_field(FieldType.TEXT, (10.0, 10.0))
+    number = template.add_field(FieldType.NUMBER, (10.0, 40.0))
+    checkbox = template.add_field(FieldType.CHECKBOX, (10.0, 70.0))
+    image = template.add_field(FieldType.IMAGE, (10.0, 100.0))
+    await sheet_svc.update_pages(row.id, template)
+    inst = await inst_svc.create("Лист веток", row.id)
+
+    class Store:
+        async def store(self, data):
+            assert data == b"image"
+            return 91
+
+    d = CharacterSheetFillDialog(
+        inst_svc, sheet_svc, inst.id, image_store=Store()
+    )
+    await d.load()
+    panel = d.properties_panel
+    panel._fid = number.id
+    panel.text_edit.setText("12")
+    panel._commit_text()
+    panel._fid = text.id
+    panel.text_edit.setText("текст")
+    panel._commit_text()
+    panel._fid = checkbox.id
+    panel._commit_checkbox(True)
+    picked = []
+    panel.image_pick_requested.disconnect(d._pick_image)
+    panel.image_pick_requested.connect(picked.append)
+    panel._fid = image.id
+    panel._pick()
+    assert picked == [image.id]
+    d.view_model.set_image(image.id, 5)
+    panel._clear_image()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+    )
+    await d._store_and_set_image(image.id, str(tmp_path / "missing.png"))
+    path = tmp_path / "image.bin"
+    path.write_bytes(b"image")
+    await d._store_and_set_image(image.id, str(path))
+    assert d.view_model.display_value(image.id) == 91
+    await d._store_and_set_image("missing", str(path))
+
+    class BrokenCharacters:
+        async def get_all(self):
+            raise RuntimeError("characters failed")
+
+    d._character_service = BrokenCharacters()
+    await d._bind_character()
+
+    class Characters:
+        def __init__(self, rows):
+            self._rows = rows
+
+        async def get_all(self):
+            return self._rows
+
+    d._character_service = Characters([])
+    await d._bind_character()
+    character = SimpleNamespace(id=7, name="Герой")
+    d._character_service = Characters([character])
+    monkeypatch.setattr(
+        QInputDialog, "getItem", staticmethod(lambda *a, **k: ("", False))
+    )
+    await d._bind_character()
+    monkeypatch.setattr(
+        QInputDialog, "getItem", staticmethod(lambda *a, **k: ("Нет", True))
+    )
+    await d._bind_character()
+    monkeypatch.setattr(
+        QInputDialog, "getItem", staticmethod(lambda *a, **k: ("Герой", True))
+    )
+
+    async def bind_expected(_character_id):
+        raise CharacterSheetInstanceError("bind expected")
+
+    monkeypatch.setattr(d.view_model, "bind_character", bind_expected)
+    await d._bind_character()
+
+    async def bind_unexpected(_character_id):
+        raise RuntimeError("bind unexpected")
+
+    monkeypatch.setattr(d.view_model, "bind_character", bind_unexpected)
+    await d._bind_character()
+
+    d.view_model._character_id = 7
+
+    async def unbind_expected():
+        raise CharacterSheetInstanceError("unbind expected")
+
+    monkeypatch.setattr(d.view_model, "unbind_character", unbind_expected)
+    await d._unbind_character()
+
+    async def unbind_unexpected():
+        raise RuntimeError("unbind unexpected")
+
+    monkeypatch.setattr(d.view_model, "unbind_character", unbind_unexpected)
+    await d._unbind_character()
+
+    real_vm = d._vm
+    signal = MagicMock()
+    signal.disconnect.side_effect = TypeError
+    d._vm = SimpleNamespace(
+        dirty_changed=signal,
+        template_changed=signal,
+        values_changed=signal,
+        field_content_changed=signal,
+        field_props_changed=signal,
+        selection_changed=signal,
+        inline_changed=signal,
+        pages_changed=signal,
+        current_page_changed=signal,
+        history_changed=signal,
+    )
+    d._teardown_vm_links()
+    d._vm = real_vm
+    d.force_close()
+
+
+async def test_list_dialog_remaining_branches(async_session, qapp, monkeypatch):
+    sheet_repo = CharacterSheetRepository(async_session)
+    inst_repo = CharacterSheetInstanceRepository(async_session)
+    sheet_svc = CharacterSheetService(sheet_repo, instance_repo=inst_repo)
+    inst_svc = CharacterSheetInstanceService(inst_repo, sheet_svc)
+    d = CharacterSheetListDialog(sheet_svc, instance_service=inst_svc)
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+    )
+
+    assert d._selected_instance_name() is None
+    await d.open_sheet()
+    await d.rename_sheet()
+    await d.open_instance()
+    await d.rename_instance()
+
+    template = await sheet_svc.create("Шаблон веток")
+    await d.refresh()
+    monkeypatch.setattr(
+        QInputDialog, "getItem", staticmethod(lambda *a, **k: ("Нет", True))
+    )
+    await d.create_instance()
+    monkeypatch.setattr(
+        QInputDialog,
+        "getItem",
+        staticmethod(lambda *a, **k: (template.name, True)),
+    )
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False))
+    )
+    await d.create_instance()
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("  ", True))
+    )
+    await d.create_instance()
+
+    instance = await inst_svc.create("Лист", template.id)
+    await d.refresh()
+    d.tabs.setCurrentIndex(1)
+    d.instance_list.setCurrentRow(0)
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False))
+    )
+    await d.rename_instance()
+
+    async def rename_broken(_instance_id, _name):
+        raise RuntimeError("rename failed")
+
+    monkeypatch.setattr(inst_svc, "rename", rename_broken)
+    monkeypatch.setattr(
+        QInputDialog, "getText", staticmethod(lambda *a, **k: ("Новое", True))
+    )
+    await d.rename_instance()
+
+    d.set_open_instance_id(instance.id)
+    await d.delete_instance()
+    d.set_open_instance_id(None)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+    )
+    await d.delete_instance()
+
+    async def delete_broken(_instance_id):
+        raise RuntimeError("delete failed")
+
+    monkeypatch.setattr(inst_svc, "delete", delete_broken)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    await d.delete_instance()
+    d.close()
+
+
+async def test_page_rail_remaining_guards(async_session, qapp):
+    service = CharacterSheetService(CharacterSheetRepository(async_session))
+    row = await service.create("Рейка веток")
+    vm = CharacterSheetViewModel(service)
+    await vm.load(row.id)
+    navigation = PageRail(vm, navigation_only=True)
+    navigation._on_item_changed(navigation.pages_list.item(0))
+
+    rail = PageRail(vm)
+    item = rail.pages_list.item(0)
+    real_template = vm._template
+    vm._template = None
+    rail._on_item_changed(item)
+    rail.pages_list.setCurrentRow(0)
+    rail._delete_page()
+    vm._template = real_template
+    rail._on_item_changed(item)
+    rail.pages_list.setCurrentRow(-1)
+    rail._delete_page()
+    rail.pages_list.setCurrentRow(0)
+    rail._delete_page()
+
+
+async def test_preset_dialog_remaining_branches(
+    async_session, qapp, monkeypatch
+):
+    service = CharacterSheetService(CharacterSheetRepository(async_session))
+    d = CharacterSheetPresetDialog(service)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
+    )
+    d._on_preset_changed(-1)
+    d.preset_list.setCurrentRow(-1)
+    await d._on_ok()
+    d.preset_list.setCurrentRow(0)
+
+    async def broken(_preset_id, _name):
+        raise RuntimeError("preset failed")
+
+    monkeypatch.setattr(service, "create_from_preset", broken)
+    await d._on_ok()
+    d._show_error(RuntimeError("show failed"))
+    d.close()
+
+
+async def test_properties_panel_remaining_guards(async_session, qapp):
+    service = CharacterSheetService(CharacterSheetRepository(async_session))
+    row = await service.create("Свойства веток")
+    vm = CharacterSheetViewModel(service)
+    await vm.load(row.id)
+    text_id = vm.place(FieldType.TEXT, 10, 10)
+    number_id = vm.place(FieldType.NUMBER, 10, 40)
+    checkbox_id = vm.place(FieldType.CHECKBOX, 10, 70)
+    dropdown_id = vm.place(FieldType.DROPDOWN, 10, 100)
+    vm.set_options(dropdown_id, ["a", "b"])
+    panel = SheetPropertiesPanel(vm)
+
+    panel.eventFilter(panel.content_edit, QFocusEvent(QEvent.Type.FocusOut))
+    real_template = vm._template
+    vm._template = None
+    assert panel._page_bounds() == (PAGE_WIDTH_PT, PAGE_HEIGHT_PT)
+    vm._template = real_template
+
+    panel._visible_section(FieldType.TEXT)
+    panel._visible_section(FieldType.NUMBER)
+    panel._fid = "missing"
+    panel._sync_section(FieldType.TEXT)
+    panel._on_props_changed("missing")
+
+    panel._fid = None
+    panel._on_number_commit()
+    panel._on_bound()
+    panel._on_checkbox_toggled(False)
+    panel._on_option_add()
+
+    panel._fid = text_id
+    panel._on_number_commit()
+    panel._on_bound()
+    panel._on_checkbox_toggled(False)
+
+    panel._fid = number_id
+    panel._sync_section(FieldType.NUMBER)
+    panel._on_bound()
+
+    panel._fid = checkbox_id
+    panel._sync_section(FieldType.CHECKBOX)
+    panel._on_checkbox_toggled(False)
+
+    panel._fid = None
+    panel._on_option_remove()
+    panel._fid = dropdown_id
+    panel._sync_section(FieldType.DROPDOWN)
+    panel.options_list.setCurrentRow(0)
+    panel._on_option_remove()
+    panel.options_list.setCurrentRow(-1)
+    panel._on_option_move(-1)

@@ -46,7 +46,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.domain.entities.character_sheet import (
-    GUTTER_PT,
     PAGE_HEIGHT_PT,
     PAGE_WIDTH_PT,
     SheetField,

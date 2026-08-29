@@ -185,7 +185,7 @@ class TestStartupGc:
         the «repeated runs do not change the storage» invariant."""
         store = ImageStore(async_session, image_dir)
         image_id = await store.store(_png_bytes())
-        org = await _make_org(async_session, image_id)
+        await _make_org(async_session, image_id)
         await async_session.commit()
 
         row = await async_session.get(ImageModel, image_id)

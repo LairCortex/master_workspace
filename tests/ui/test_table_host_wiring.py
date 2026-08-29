@@ -263,7 +263,6 @@ async def test_table_host_none_guards(app):
 async def test_dirty_fill_yes_starts_table(
     app, dialog_input, dialog_item, wait_for, monkeypatch
 ):
-    from PySide6.QtWidgets import QMessageBox
 
     application, window = app
     application._table_host.set_http(None)

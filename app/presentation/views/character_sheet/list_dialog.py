@@ -35,7 +35,6 @@ from app.application.services.character_sheet_instance_service import (
 from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
-    TemplateHasInstancesError,
 )
 from app.presentation.views.character_sheet.preset_dialog import (
     CharacterSheetPresetDialog,

@@ -7,7 +7,6 @@ undo stack 50, save does not clear, inline commit is one step.
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -17,7 +16,7 @@ from app.application.services.character_sheet_instance_service import (
 )
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.domain.entities.character_sheet import FieldType
-from app.domain.entities.character_sheet_instance import display_fields, resolve_display
+from app.domain.entities.character_sheet_instance import display_fields
 from app.infrastructure.repositories.character_sheet_instance_repository import (
     CharacterSheetInstanceRepository,
 )

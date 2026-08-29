@@ -24,6 +24,7 @@ from app.application.services.character_sheet_service import (
     CorruptSheetError,
     NameConflictError,
     PresetBundleError,
+    PresetCorruptError,
     SheetNotFoundError,
     UnknownFieldTypeError,
 )
@@ -530,6 +531,33 @@ class TestCreateFromPreset:
         before = path.read_bytes()
         await svc.create_from_preset("fate_core", "Копия")
         assert path.read_bytes() == before
+
+    async def test_corrupt_bundle_pages_rejected(
+        self, async_session: AsyncSession, monkeypatch
+    ):
+        def corrupt_pages(self, preset_id: str) -> str:
+            return '{"not": "a pages array"}'
+
+        monkeypatch.setattr(PresetCatalog, "load_pages", corrupt_pages)
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        with pytest.raises(PresetCorruptError):
+            await svc.create_from_preset("fate_core", "Fate Core")
+        assert len(await svc.list_sheets()) == 0
+
+    async def test_create_from_preset_integrity_conflict_raises_name_conflict(
+        self, async_session: AsyncSession
+    ):
+        repo = CharacterSheetRepository(async_session)
+        svc = CharacterSheetService(repo)
+        await svc.create("Fate Core")
+
+        async def hidden(name):
+            return None
+
+        repo.get_by_name = hidden  # type: ignore[method-assign]
+        with pytest.raises(NameConflictError):
+            await svc.create_from_preset("fate_core", "Fate Core")
 
     async def test_copy_lives_only_in_current_game_db(self, async_session: AsyncSession, tmp_path: Path):
         # spec scenario «Вторая игра не видит чужую копию»: a second game

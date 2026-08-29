@@ -45,8 +45,6 @@ from app.domain.entities.character_sheet import (
 )
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
-
-log = logging.getLogger(__name__)
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     CharacterSheetViewModel,
 )
@@ -56,6 +54,8 @@ from app.presentation.views.character_sheet.palette import SheetPalette
 from app.presentation.views.character_sheet.properties_panel import (
     SheetPropertiesPanel,
 )
+
+log = logging.getLogger(__name__)
 
 _PALETTE_WIDTH = 120
 _RAIL_WIDTH = 160

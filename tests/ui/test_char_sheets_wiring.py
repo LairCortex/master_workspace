@@ -160,7 +160,9 @@ async def test_opening_second_sheet_with_dirty_editor_is_rejected(app, dialog_in
     assert len(_editors(qtop)) == 1
 
 
-async def test_opening_second_sheet_with_dirty_editor_confirm_closes_without_saving(app, dialog_input, wait_for, monkeypatch):
+async def test_opening_second_sheet_with_dirty_editor_confirm_closes_without_saving(
+    app, dialog_input, wait_for, monkeypatch
+):
     application, _window = app
     calls = question_yes(monkeypatch)
     list_dlg = await open_list(app, wait_for)
@@ -217,7 +219,9 @@ async def test_switch_game_with_dirty_editor_reject_keeps_game(app, dialog_input
     assert "Несохранённые" in calls[0][0]
 
 
-async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(app, dialog_input, tmp_games_dir, wait_for, monkeypatch):
+async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(
+    app, dialog_input, tmp_games_dir, wait_for, monkeypatch
+):
     application, window = app
     old_db = application._db_path
     calls = question_yes(monkeypatch)
@@ -228,7 +232,7 @@ async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(app, 
     fid = make_dirty(editor_a)
     editor_a.view_model.set_content(fid, "черновик")
 
-    path_b = await make_second_game(tmp_games_dir)
+    await make_second_game(tmp_games_dir)
 
     window.switch_game_action.trigger()
     await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
@@ -663,7 +667,7 @@ async def test_switch_game_with_dirty_fill_reject_keeps_game(
     fill.view_model.set_text(fid, "черновик")
     assert fill.view_model.dirty
 
-    path_b = await make_second_game(tmp_games_dir)
+    await make_second_game(tmp_games_dir)
     window.switch_game_action.trigger()
     await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
     launcher = window.findChildren(GameLauncherDialog)[0]
