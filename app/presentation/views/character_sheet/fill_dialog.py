@@ -222,10 +222,12 @@ class CharacterSheetFillDialog(QDialog):
         run_locked: Callable[[Coroutine], Awaitable] | None = None,
         image_store: ImageStore | None = None,
         character_service=None,
+        read_only: bool = False,
     ) -> None:
         super().__init__(parent)
         self._instance_id = instance_id
         self._vm = CharacterSheetFillViewModel(instance_service, sheet_service)
+        self._vm.set_read_only(read_only)
         self._force_closing = False
         self._closing = False
         self._run_locked = run_locked or _run_now
@@ -243,6 +245,7 @@ class CharacterSheetFillDialog(QDialog):
         )
         self.properties_panel = FillPropertiesPanel(self._vm, self)
         self.properties_panel.setFixedWidth(_PANEL_WIDTH)
+        self.properties_panel.setEnabled(not read_only)
 
         self.save_button = QPushButton("Сохранить", self)
         self.save_button.clicked.connect(lambda: asyncio.ensure_future(self.save()))
@@ -287,6 +290,27 @@ class CharacterSheetFillDialog(QDialog):
         self.canvas.image_field_double_clicked.connect(self._pick_image)
         self.properties_panel.image_pick_requested.connect(self._pick_image)
         self._vm.history_changed.connect(self._sync_edit_actions)
+        if read_only:
+            self.save_button.hide()
+            self.bind_button.hide()
+            self.unbind_button.hide()
+            self._menu_bar.hide()
+
+    def set_read_only(self, value: bool) -> None:
+        self._vm.set_read_only(value)
+        self.properties_panel.setEnabled(not value)
+        self.save_button.setVisible(not value)
+        self.bind_button.setVisible(not value)
+        self.unbind_button.setVisible(not value)
+        self._menu_bar.setVisible(not value)
+        if not value:
+            self._sync_bind_buttons()
+        self._sync_edit_actions()
+        self.canvas.update()
+
+    async def load_instance(self, instance_id: int) -> None:
+        self._instance_id = instance_id
+        await self.load()
 
     @property
     def view_model(self) -> CharacterSheetFillViewModel:
@@ -364,6 +388,8 @@ class CharacterSheetFillDialog(QDialog):
         self.redo_action.setEnabled(self._vm.can_redo)
 
     def _pick_image(self, field_id: str) -> None:
+        if self._vm.read_only:
+            return
         path, _ = QFileDialog.getOpenFileName(
             self, "Выберите изображение", "", _IMAGE_FILTER
         )

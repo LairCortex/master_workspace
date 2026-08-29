@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Стол</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div id="landing">
+    <h1>Стол</h1>
+    <label>PIN <input id="pin" type="text" inputmode="numeric" maxlength="4" autocomplete="off"></label>
+    <label>Имя <input id="name" type="text" maxlength="80" autocomplete="off"></label>
+    <p id="status"></p>
+    <ul id="seats"></ul>
+  </div>
+  <div id="sheet" hidden>
+    <div id="toolbar">
+      <span id="player-name"></span>
+      <button type="button" id="leave">Выйти</button>
+      <button type="button" id="zoom-out" aria-label="Мельче">−</button>
+      <button type="button" id="zoom-in" aria-label="Крупнее">+</button>
+    </div>
+    <div id="viewport">
+      <div id="tape"></div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

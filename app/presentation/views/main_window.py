@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
     month_settings_requested = Signal()
     llm_setup_requested = Signal()
     char_sheets_requested = Signal()
+    table_host_requested = Signal()
 
     def __init__(
         self,
@@ -113,6 +114,9 @@ class MainWindow(QMainWindow):
         self.char_sheets_action = QAction("Чар-листы…", self)
         self.char_sheets_action.triggered.connect(self.char_sheets_requested.emit)
         char_sheets_menu.addAction(self.char_sheets_action)
+        self.table_host_action = QAction("Стол…", self)
+        self.table_host_action.triggered.connect(self.table_host_requested.emit)
+        char_sheets_menu.addAction(self.table_host_action)
 
         # Настройки
         settings_menu = menu_bar.addMenu("Настройки")

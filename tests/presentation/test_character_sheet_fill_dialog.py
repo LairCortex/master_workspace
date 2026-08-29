@@ -390,3 +390,40 @@ def test_character_choice_labels_disambiguate_duplicate_names():
     labels = character_choice_labels(chars)
     assert labels == [("Герой (#1)", 1), ("Герой (#2)", 2), ("Маг", 3)]
 
+
+async def test_read_only_fill_does_not_open_inline(qtbot, services):
+    sheet_svc, inst_svc = services
+    instance_id, ids = await _seed(sheet_svc, inst_svc)
+    d = CharacterSheetFillDialog(inst_svc, sheet_svc, instance_id, read_only=True)
+    await d.load()
+    d.show()
+    qtbot.addWidget(d)
+    assert d.view_model.read_only
+    assert not d.save_button.isVisible()
+    d._pick_image(ids["img"])
+    _click_field(d, ids["text"], qtbot)
+    assert d.view_model.inline_field_id is None
+    other = await inst_svc.create("Другой", (await sheet_svc.list_sheets())[0].id)
+    await d.load_instance(other.id)
+    assert d.view_model.instance_id == other.id
+    d.force_close()
+
+
+async def test_set_read_only_restores_writable_ui(qtbot, services):
+    sheet_svc, inst_svc = services
+    instance_id, _ids = await _seed(sheet_svc, inst_svc)
+    d = CharacterSheetFillDialog(inst_svc, sheet_svc, instance_id, read_only=True)
+    await d.load()
+    d.show()
+    qtbot.addWidget(d)
+    assert not d.save_button.isVisible()
+    d.set_read_only(False)
+    assert d.view_model.read_only is False
+    assert d.save_button.isVisible()
+    assert d.bind_button.isVisible()
+    d.set_read_only(True)
+    assert d.view_model.read_only is True
+    assert not d.save_button.isVisible()
+    d.force_close()
+
+

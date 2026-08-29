@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 import json
+import math
 
 from PySide6.QtCore import QObject, Signal
 
@@ -53,6 +54,7 @@ class CharacterSheetFillViewModel(QObject):
         self._current_page: int = 0
         self._undo_stack: list[dict[str, Any]] = []
         self._redo_stack: list[dict[str, Any]] = []
+        self._read_only: bool = False
 
     # -- state --------------------------------------------------------------
 
@@ -115,6 +117,15 @@ class CharacterSheetFillViewModel(QObject):
     @property
     def snap_enabled(self) -> bool:
         return False
+
+    @property
+    def read_only(self) -> bool:
+        return self._read_only
+
+    def set_read_only(self, value: bool) -> None:
+        self._read_only = bool(value)
+        if self._read_only and self._inline_id is not None:
+            self.cancel_inline()
 
     def page_of(self, field_id: str) -> int | None:
         if self._template is None:
@@ -219,6 +230,8 @@ class CharacterSheetFillViewModel(QObject):
         self.current_page_changed.emit(index)
 
     def open_inline(self, field_id: str) -> None:
+        if self._read_only:
+            return
         field = self._field(field_id)
         if field is None or self._inline_id == field_id:
             return
@@ -263,6 +276,8 @@ class CharacterSheetFillViewModel(QObject):
     # -- value mutators -----------------------------------------------------
 
     def set_text(self, field_id: str, text: str) -> bool:
+        if self._read_only:
+            return False
         field = self._field(field_id)
         if field is None or field.type not in (FieldType.TEXT, FieldType.TEXTAREA):
             return False
@@ -275,6 +290,8 @@ class CharacterSheetFillViewModel(QObject):
         return True
 
     def toggle_checkbox(self, field_id: str) -> bool:
+        if self._read_only:
+            return False
         field = self._field(field_id)
         if field is None or field.type is not FieldType.CHECKBOX:
             return False
@@ -286,6 +303,8 @@ class CharacterSheetFillViewModel(QObject):
         return True
 
     def set_number(self, field_id: str, text: str) -> bool:
+        if self._read_only:
+            return False
         field = self._field(field_id)
         if field is None or field.type is not FieldType.NUMBER:
             return False
@@ -294,6 +313,8 @@ class CharacterSheetFillViewModel(QObject):
             try:
                 value = float(normalized)
             except ValueError:
+                return False
+            if not math.isfinite(value):
                 return False
             if field.min_value is not None and value < field.min_value:
                 return False
@@ -309,6 +330,8 @@ class CharacterSheetFillViewModel(QObject):
         return True
 
     def set_dropdown(self, field_id: str, option: str) -> bool:
+        if self._read_only:
+            return False
         field = self._field(field_id)
         if field is None or field.type is not FieldType.DROPDOWN:
             return False
@@ -323,6 +346,8 @@ class CharacterSheetFillViewModel(QObject):
         return True
 
     def set_image(self, field_id: str, image_id: int | None) -> bool:
+        if self._read_only:
+            return False
         field = self._field(field_id)
         if field is None or field.type is not FieldType.IMAGE:
             return False
@@ -366,6 +391,13 @@ class CharacterSheetFillViewModel(QObject):
         self._refresh_dirty()
 
     # -- internals ----------------------------------------------------------
+
+    def apply_remote_value(self, field_id: str, value: Any) -> None:
+        self._values[field_id] = value
+        self._saved_values[field_id] = value
+        self.field_content_changed.emit(field_id)
+        self.values_changed.emit()
+        self._refresh_dirty()
 
     def _field(self, field_id: str) -> SheetField | None:
         if self._template is None:

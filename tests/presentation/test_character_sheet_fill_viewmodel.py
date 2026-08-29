@@ -28,6 +28,7 @@ from app.presentation.viewmodels.character_sheet_fill_viewmodel import (
     UNDO_STACK_LIMIT,
     CharacterSheetFillViewModel,
 )
+from app.presentation.viewmodels.character_sheet_viewmodel import TOOL_POINTER
 
 
 @pytest.fixture(scope="session")
@@ -115,6 +116,8 @@ class TestMutators:
         before = vm.display_value(ids["num"])
         assert vm.set_number(ids["num"], "99") is False
         assert vm.set_number(ids["num"], "abc") is False
+        assert vm.set_number(ids["num"], "nan") is False
+        assert vm.set_number(ids["num"], "inf") is False
         assert vm.display_value(ids["num"]) == before
 
     async def test_set_dropdown(self, loaded):
@@ -257,4 +260,106 @@ class TestBind:
         await vm.unbind_character()
         assert vm.character_id is None
         assert (await inst_svc.get(instance_id)).character_id is None
+
+
+class TestReadOnly:
+    async def test_read_only_blocks_mutations_and_inline(self, loaded):
+        vm, ids, *_ = loaded
+        vm.open_inline(ids["text"])
+        vm.set_read_only(True)
+        assert vm.read_only
+        assert vm.inline_field_id is None
+        assert vm.set_text(ids["text"], "Пётр") is False
+        assert vm.display_value(ids["text"]) == "Иван"
+        vm.open_inline(ids["text"])
+        assert vm.inline_field_id is None
+        assert vm.toggle_checkbox(ids["chk"]) is False
+        assert vm.set_number(ids["num"], "1") is False
+        assert vm.set_dropdown(ids["dd"], "орк") is False
+        assert vm.set_image(ids["img"], 1) is False
+        vm.apply_remote_value(ids["text"], "с стола")
+        assert vm.display_value(ids["text"]) == "с стола"
+        assert vm.dirty is False
+
+
+class TestProtocolAndEdges:
+    def test_unloaded_protocol(self, services):
+        sheet_svc, inst_svc = services
+        vm = CharacterSheetFillViewModel(inst_svc, sheet_svc)
+        assert vm.template_id is None
+        assert vm.tool == TOOL_POINTER
+        assert vm.snap_enabled is False
+        assert vm.selected_ids == []
+        assert vm.page_of("x") is None
+        assert vm.display_value("x") is None
+        assert vm.displayed_fields() == []
+        assert vm.set_content("x", "t") is False
+        assert vm.apply_number("x", "1") is False
+        vm.set_name("n")
+        assert vm.name == "n"
+        vm.select("a")
+        vm.select("a")
+        vm.set_current_page(3)
+        vm.open_inline("x")
+        vm.commit_inline()
+        vm.cancel_inline()
+        vm.undo()
+        vm.redo()
+
+    async def test_unloaded_async_noops(self, services):
+        sheet_svc, inst_svc = services
+        vm = CharacterSheetFillViewModel(inst_svc, sheet_svc)
+        await vm.save()
+        await vm.reload()
+        await vm.reload_layout()
+        await vm.bind_character(1)
+        await vm.unbind_character()
+
+    async def test_loaded_protocol_and_edges(self, loaded):
+        vm, ids, *_ = loaded
+        assert vm.template_id is not None
+        assert vm.tool == TOOL_POINTER
+        assert vm.page_of(ids["text"]) == 0
+        assert vm.displayed_fields()
+        assert vm.display_value("nope") is None
+        assert vm.set_content(ids["text"], "Пётр") is True
+        assert vm.set_content(ids["text"], "Пётр") is False
+        assert vm.set_text(ids["chk"], "x") is False
+        assert vm.apply_number(ids["num"], "2") is True
+        assert vm.set_number(ids["num"], "2") is True
+        assert vm.set_number(ids["num"], "") is True
+        assert vm.set_number("nope", "1") is False
+        assert vm.set_number(ids["num"], "-1") is False
+        vm.select(ids["text"])
+        vm.select(ids["text"])
+        vm.set_current_page(0)
+        vm.open_inline("missing")
+        vm.open_inline(ids["chk"])
+        vm.open_inline(ids["text"])
+        vm.open_inline(ids["text"])
+        vm.commit_inline()
+        vm.cancel_inline()
+        vm.open_inline(ids["text"])
+        vm.set_text(ids["text"], "черновик")
+        vm.cancel_inline()
+        assert vm.toggle_checkbox("nope") is False
+        assert vm.set_dropdown("nope", "x") is False
+        assert vm.set_dropdown(ids["dd"], "эльф") is False
+        assert vm.set_image("nope", 1) is False
+        assert vm.set_image(ids["img"], 3) is True
+        assert vm.set_image(ids["img"], 3) is False
+        vm.set_text(ids["text"], "а")
+        vm.undo()
+        vm.redo()
+        vm.redo()
+        vm.open_inline(ids["text"])
+        vm.redo()
+        vm.undo()
+        vm._undo_stack = [dict(vm.values) for _ in range(UNDO_STACK_LIMIT)]
+        vm._redo_stack = [dict(vm.values)]
+        vm.redo()
+        vm.open_inline(ids["text"])
+        vm.set_text(ids["text"], "шаг")
+        vm._undo_stack = [dict(vm.values) for _ in range(UNDO_STACK_LIMIT)]
+        vm.commit_inline()
 

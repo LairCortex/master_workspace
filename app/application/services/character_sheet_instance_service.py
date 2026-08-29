@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from sqlalchemy.exc import IntegrityError
 
@@ -52,6 +52,14 @@ class CharacterAlreadyBoundError(CharacterSheetInstanceError):
 EMPTY_INSTANCE_NAME_ERROR: str = "Имя листа не может быть пустым"
 
 
+class SeatedInstanceError(CharacterSheetInstanceError):
+    def __init__(self, instance_id: int) -> None:
+        super().__init__(
+            "Нельзя удалить лист, пока он в посадке открытого стола"
+        )
+        self.instance_id = instance_id
+
+
 class CharacterSheetInstanceService:
     def __init__(
         self,
@@ -63,6 +71,10 @@ class CharacterSheetInstanceService:
         self._session = repo._session
         self._sheet_service = sheet_service
         self._image_store = image_store
+        self._is_seated: Callable[[int], bool] | None = None
+
+    def set_seating_guard(self, is_seated: Callable[[int], bool] | None) -> None:
+        self._is_seated = is_seated
 
     async def list_instances(self) -> Sequence[CharacterSheetInstanceModel]:
         rows = await self._repo.get_all()
@@ -128,6 +140,8 @@ class CharacterSheetInstanceService:
         return row
 
     async def delete(self, instance_id: int) -> bool:
+        if self._is_seated is not None and self._is_seated(instance_id):
+            raise SeatedInstanceError(instance_id)
         row = await self._repo.get_by_id(instance_id)
         if row is None:
             return False

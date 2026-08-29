@@ -471,6 +471,23 @@ async def test_delete_open_instance_unavailable(inst_dlg, qtbot):
     assert not d.delete_button.isEnabled()
 
 
+async def test_delete_seated_instance_unavailable(inst_dlg, qtbot):
+    d, sheet_svc, inst_svc = inst_dlg
+    t = await sheet_svc.create("Шаблон")
+    row = await inst_svc.create("За столом", t.id)
+    await d.refresh()
+    d.tabs.setCurrentIndex(1)
+    d.set_seated_ids({row.id})
+    d.instance_list.setCurrentRow(0)
+    d._sync_delete_enabled()
+    assert not d.delete_button.isEnabled()
+    await d.delete_instance()
+    assert await inst_svc._repo.get_by_id(row.id) is not None
+    d.set_seated_ids(None)
+    d._sync_delete_enabled()
+    assert d.delete_button.isEnabled()
+
+
 async def test_delete_template_with_instances_unavailable(inst_dlg, qtbot):
     d, sheet_svc, inst_svc = inst_dlg
     t = await sheet_svc.create("Шаблон")

@@ -20,6 +20,7 @@ from app.application.services.character_sheet_instance_service import (
     CharacterAlreadyBoundError,
     CharacterSheetInstanceService,
     InstanceNameConflictError,
+    SeatedInstanceError,
 )
 from app.application.services.character_sheet_service import (
     CharacterSheetService,
@@ -153,6 +154,25 @@ class TestDelete:
     async def test_delete_missing_returns_false(self, async_session: AsyncSession):
         _, inst_svc, _ = await _services(async_session)
         assert await inst_svc.delete(999) is False
+
+    async def test_delete_seated_while_host_running_rejected(
+        self, async_session: AsyncSession
+    ):
+        from app.application.services.table_host_service import TableHostService
+
+        sheet_svc, inst_svc, repo = await _services(async_session)
+        tid, _ = await _template_with_fields(sheet_svc)
+        row = await inst_svc.create("За столом", tid)
+        host = TableHostService(inst_svc, sheet_svc)
+        inst_svc.set_seating_guard(host.is_seated)
+        host.seat(row.id)
+        await host.start()
+        with pytest.raises(SeatedInstanceError):
+            await inst_svc.delete(row.id)
+        assert await repo.get_by_id(row.id) is not None
+        await host.stop()
+        assert await inst_svc.delete(row.id) is True
+        assert await repo.get_by_id(row.id) is None
 
 
 class TestBind:

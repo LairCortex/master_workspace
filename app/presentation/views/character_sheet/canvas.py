@@ -858,6 +858,10 @@ class CharacterSheetCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def _fill_press(self, pos, event=None) -> None:
+        if getattr(self._vm, "read_only", False):
+            field_id = self._field_at(pos)
+            self._vm.select(field_id)
+            return
         field_id = self._field_at(pos)
         inline_fid = self._vm.inline_field_id
         if inline_fid is not None:

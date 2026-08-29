@@ -84,6 +84,7 @@ class CharacterSheetListDialog(QDialog):
         self._instance_service = instance_service
         self._open_sheet_id: int | None = None
         self._open_instance_id: int | None = None
+        self._seated_ids: set[int] = set()
         self._instance_counts: dict[int, int] = {}
         self._run_locked = run_locked or _run_now
 
@@ -152,6 +153,10 @@ class CharacterSheetListDialog(QDialog):
         self._open_instance_id = instance_id
         self._sync_actions_enabled()
 
+    def set_seated_ids(self, instance_ids: set[int] | None) -> None:
+        self._seated_ids = set(instance_ids or ())
+        self._sync_actions_enabled()
+
     @property
     def preset_dialog(self) -> CharacterSheetPresetDialog | None:
         """The open «Создать из пресета…» dialog (or None)."""
@@ -191,7 +196,9 @@ class CharacterSheetListDialog(QDialog):
             self.open_button.setEnabled(has)
             self.rename_button.setEnabled(has)
             self.delete_button.setEnabled(
-                has and instance_id != self._open_instance_id
+                has
+                and instance_id != self._open_instance_id
+                and instance_id not in self._seated_ids
             )
             return
         sheet_id = self._selected_id()
@@ -448,6 +455,8 @@ class CharacterSheetListDialog(QDialog):
             return
         instance_id = self._selected_instance_id()
         if instance_id is None or instance_id == self._open_instance_id:
+            return
+        if instance_id in self._seated_ids:
             return
         name = self._selected_instance_name() or ""
         answer = QMessageBox.question(

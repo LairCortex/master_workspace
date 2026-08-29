@@ -36,6 +36,11 @@ from app.application.services.character_sheet_instance_service import (
     CharacterSheetInstanceError,
     CharacterSheetInstanceService,
 )
+from app.application.services.table_host_service import (
+    EmptySeatingError,
+    PortBusyError,
+    TableHostService,
+)
 from app.application.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
@@ -60,6 +65,8 @@ from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
+from app.presentation.views.table_host.panel import TableHostPanel
+from app.infrastructure.table_host.http import TableHostHttp, create_table_host_app
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
@@ -99,6 +106,8 @@ class Application:
         self._sheet_list_dialog: CharacterSheetListDialog | None = None
         self._sheet_editor: CharacterSheetEditorDialog | None = None
         self._sheet_fill: CharacterSheetFillDialog | None = None
+        self._table_host: TableHostService | None = None
+        self._table_host_panel: TableHostPanel | None = None
 
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window.
@@ -213,7 +222,17 @@ class Application:
         self._instance_service = CharacterSheetInstanceService(
             inst_repo, self._sheet_service, image_store=self._image_store,
         )
+        self._table_host = TableHostService(
+            self._instance_service,
+            self._sheet_service,
+            image_store=self._image_store,
+        )
+        self._table_host.set_http(TableHostHttp(create_table_host_app(self._table_host)))
+        self._instance_service.set_seating_guard(self._table_host.is_seated)
+        self._table_host.subscribe_values(self._on_host_values)
+        self._table_host.subscribe_occupancy(self._sync_list_seated)
         window.char_sheets_requested.connect(self._on_char_sheets)
+        window.table_host_requested.connect(self._on_table_host)
 
         # Initial load
         await timeline_vm.load_events()
@@ -284,6 +303,8 @@ class Application:
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        if self._table_host is not None and self._table_host.is_running:
+            await self._table_host.stop()
         self._close_sheet_windows()
         await self.shutdown()
         await self.start(path)
@@ -301,6 +322,9 @@ class Application:
         if self._sheet_fill is not None:
             self._sheet_fill.force_close()
             self._sheet_fill = None
+        if self._table_host_panel is not None:
+            self._table_host_panel.close()
+            self._table_host_panel = None
 
     def _on_char_sheets(self) -> None:
         """Show (or create) the non-modal sheet list window."""
@@ -320,6 +344,96 @@ class Application:
         self._sheet_list_dialog.activateWindow()
         # Session-touching: go through the wiring's session lock like all others.
         self._wiring._spawn(self._sheet_list_refresh())
+
+    def _on_table_host(self) -> None:
+        if self._table_host is None or self._window is None:
+            return
+        if self._table_host_panel is None:
+            panel = TableHostPanel(self._table_host, parent=self._window)
+            panel.start_requested.connect(
+                lambda: self._wiring._spawn(self._start_table())
+            )
+            panel.stop_requested.connect(
+                lambda: self._wiring._spawn(self._stop_table())
+            )
+            panel.player_selected.connect(self._on_host_player_selected)
+            self._table_host_panel = panel
+        self._table_host_panel.show()
+        self._table_host_panel.raise_()
+        self._table_host_panel.activateWindow()
+        self._wiring._spawn(self._refresh_table_host_panel())
+
+    async def _refresh_table_host_panel(self) -> None:
+        panel = self._table_host_panel
+        host = self._table_host
+        inst = self._instance_service
+        if panel is None or host is None or inst is None:
+            return
+        rows = [(row.id, row.name) for row in await inst.list_instances()]
+        panel.set_instances(rows)
+        panel.sync_running()
+
+    async def _start_table(self) -> None:
+        host = self._table_host
+        panel = self._table_host_panel
+        if host is None or panel is None:
+            return
+        if self._sheet_fill is not None and self._sheet_fill.view_model.dirty:
+            answer = QMessageBox.question(
+                self._window,
+                "Несохранённые изменения",
+                "В заполненном листе есть несохранённые правки. Открыть стол и "
+                "закрыть лист без сохранения?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._sheet_fill.force_close()
+            self._sheet_fill = None
+        elif self._sheet_fill is not None and not self._sheet_fill.view_model.read_only:
+            self._sheet_fill.force_close()
+            self._sheet_fill = None
+        host.set_seating(panel.checked_seat_ids())
+        try:
+            await host.start(panel.selected_port())
+        except (EmptySeatingError, PortBusyError, OSError) as exc:
+            panel.show_start_error(exc)
+            return
+        panel.sync_running()
+        self._sync_list_seated()
+        if self._sheet_fill is not None:
+            self._sheet_fill.set_read_only(True)
+
+    async def _stop_table(self) -> None:
+        host = self._table_host
+        if host is None:
+            return
+        await host.stop()
+        if self._table_host_panel is not None:
+            self._table_host_panel.sync_running()
+        if self._sheet_fill is not None:
+            self._sheet_fill.set_read_only(False)
+        self._sync_list_seated()
+
+    def _sync_list_seated(self) -> None:
+        dialog = self._sheet_list_dialog
+        host = self._table_host
+        if dialog is None:
+            return
+        if host is not None and host.is_running:
+            dialog.set_seated_ids(host.seated_ids)
+        else:
+            dialog.set_seated_ids(set())
+
+    def _on_host_player_selected(self, instance_id: int) -> None:
+        self._wiring._spawn(self._open_fill(instance_id))
+
+    def _on_host_values(self, instance_id: int, field_id: str, value) -> None:
+        fill = self._sheet_fill
+        if fill is None or fill.view_model.instance_id != instance_id:
+            return
+        fill.view_model.apply_remote_value(field_id, value)
 
     async def _sheet_list_refresh(self) -> None:
         # Runs inside the task spawned by ``_wiring._spawn`` above, which
@@ -345,6 +459,7 @@ class Application:
         if self._sheet_fill is not None:
             instance_id = self._sheet_fill.view_model.instance_id
         dialog.set_open_instance_id(instance_id)
+        self._sync_list_seated()
 
     def _on_sheet_open(self, sheet_id: int) -> None:
         self._wiring._spawn(self._open_sheet(sheet_id))
@@ -413,6 +528,7 @@ class Application:
 
     async def _open_fill(self, instance_id: int) -> None:
         """Open one Fill window (D4): dirty current Fill is closed only after confirm."""
+        read_only = bool(self._table_host is not None and self._table_host.is_running)
         if self._sheet_fill is not None:
             current_id = self._sheet_fill.view_model.instance_id
             if current_id is None:
@@ -421,6 +537,17 @@ class Application:
                 self._sheet_fill.show()
                 self._sheet_fill.raise_()
                 self._sheet_fill.activateWindow()
+                return
+            if read_only:
+                try:
+                    await self._sheet_fill.load_instance(instance_id)
+                except (CharacterSheetError, CharacterSheetInstanceError) as exc:
+                    QMessageBox.critical(self._window, "Чар-листы", str(exc))
+                    return
+                if self._sheet_list_dialog is not None:
+                    self._sheet_list_dialog.set_open_instance_id(
+                        self._sheet_fill.view_model.instance_id
+                    )
                 return
             if self._sheet_fill.view_model.dirty:
                 answer = QMessageBox.question(
@@ -445,6 +572,7 @@ class Application:
             run_locked=self._wiring.run_locked,
             image_store=self._image_store,
             character_service=self._entity_services.get("character"),
+            read_only=read_only,
         )
         self._sheet_fill = fill
         fill.finished.connect(lambda _r, _f=fill: self._forget_fill(_f))
@@ -477,11 +605,15 @@ class Application:
 
     def _on_design_saved(self, editor) -> None:
         fill = self._sheet_fill
-        if fill is None or self._wiring is None:
+        wiring = self._wiring
+        if wiring is None:
             return
-        if fill.view_model.template_id != editor.view_model.sheet_id:
+        if fill is not None and fill.view_model.template_id == editor.view_model.sheet_id:
+            wiring._spawn(self._reload_fill_after_design(editor))
             return
-        self._wiring._spawn(self._reload_fill_after_design(editor))
+        host = self._table_host
+        if host is not None and host.is_running:
+            wiring._spawn(host.broadcast_layout(editor.view_model.sheet_id))
 
     async def _reload_fill_after_design(self, editor) -> None:
         fill = self._sheet_fill
@@ -495,6 +627,9 @@ class Application:
             logging.getLogger("app.main").debug(
                 "fill reload_layout after design save skipped: %s", exc
             )
+        host = self._table_host
+        if host is not None and host.is_running:
+            await host.broadcast_layout(editor.view_model.sheet_id)
 
     def _forget_fill(self, fill) -> None:
         if self._sheet_fill is fill:
@@ -931,7 +1066,10 @@ class Application:
         await self._session.commit()
 
     async def shutdown(self) -> None:
+        if self._table_host is not None and self._table_host.is_running:
+            await self._table_host.stop()
         self._close_sheet_windows()
+        self._table_host = None
         if self._session:
             await self._session.close()
             self._session = None
