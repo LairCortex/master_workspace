@@ -37,10 +37,13 @@ from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
 )
+from app.domain.character_sheet_pdf import write_sheet_pdf
 from app.domain.entities.character_sheet import (
     ORIENTATION_LANDSCAPE,
     ORIENTATION_PORTRAIT,
+    SheetTemplate,
 )
+from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
 
 log = logging.getLogger(__name__)
@@ -59,6 +62,13 @@ _RAIL_WIDTH = 160
 _PANEL_WIDTH = 260
 
 _IMAGE_FILTER = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
+
+
+def _safe_disconnect(sig) -> None:
+    try:
+        sig.disconnect()
+    except (TypeError, RuntimeError):
+        pass
 
 
 async def _run_now(coro: Coroutine) -> Any:
@@ -110,6 +120,10 @@ class CharacterSheetEditorDialog(QDialog):
 
         self.save_button = QPushButton("Сохранить", self)
         self.save_button.clicked.connect(lambda: asyncio.ensure_future(self.save()))
+        self.export_pdf_button = QPushButton("Экспорт в PDF…", self)
+        self.export_pdf_button.clicked.connect(
+            lambda: asyncio.ensure_future(self.export_pdf())
+        )
 
         self.snap_check = self.properties_panel.snap_check
         self.bring_front_button = self.properties_panel.bring_front_button
@@ -154,6 +168,7 @@ class CharacterSheetEditorDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
+        bottom.addWidget(self.export_pdf_button)
         bottom.addWidget(self.save_button)
 
         layout = QVBoxLayout(self)
@@ -229,6 +244,45 @@ class CharacterSheetEditorDialog(QDialog):
             return
         self.saved.emit()
 
+    async def export_pdf(self) -> None:
+        """Picker + write of the current canvas (including unsaved edits)."""
+        template = self._vm.template
+        if template is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт в PDF", f"{template.name}.pdf", "PDF (*.pdf)"
+        )
+        if not path:
+            return
+        images = await self._run_locked(self._collect_image_bytes(template))
+        try:
+            write_sheet_pdf(template, Path(path), images)
+        except OSError as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось записать PDF: {exc}")
+
+    async def _collect_image_bytes(self, template: SheetTemplate) -> dict[int, bytes]:
+        store = self._image_store
+        out: dict[int, bytes] = {}
+        if store is None:
+            return out
+        ids = {
+            field.image_id
+            for page in template.pages
+            for field in page.fields
+            if field.type is FieldType.IMAGE and field.image_id is not None
+        }
+        for image_id in ids:
+            path = await store.original_file_path(image_id)
+            if path is None:
+                path = await store.preview_file_path(image_id)
+            if path is None:
+                continue
+            try:
+                out[image_id] = Path(path).read_bytes()
+            except OSError:
+                continue
+        return out
+
     def force_close(self) -> None:
         """Close without the dirty prompt (application shutdown / game switch)."""
         self._force_closing = True
@@ -267,10 +321,7 @@ class CharacterSheetEditorDialog(QDialog):
             vm.clipboard_changed,
         )
         for sig in signals:
-            try:
-                sig.disconnect()
-            except (TypeError, RuntimeError):
-                pass  # already disconnected / nothing connected
+            _safe_disconnect(sig)
 
     def closeEvent(self, event) -> None:
         if (

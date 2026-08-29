@@ -10,7 +10,7 @@ import asyncio
 import time
 
 import pytest
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
 
 from app.application.services.character_sheet_service import (
     CharacterSheetError,
@@ -601,4 +601,9 @@ async def test_preset_cancel_keeps_list_unchanged(inst_dlg, qtbot):
     assert d.list_widget.count() == 0
     assert opened == []
     assert len(await sheet_svc.list_sheets()) == 0
+
+
+async def test_list_dialog_has_no_pdf_export(dlg):
+    texts = [b.text() for b in dlg.findChildren(QPushButton)]
+    assert "Экспорт в PDF…" not in texts
 

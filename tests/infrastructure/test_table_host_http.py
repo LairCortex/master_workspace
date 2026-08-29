@@ -354,3 +354,14 @@ def test_web_client_has_leave_clear_pinch_and_seat_poll():
     assert "captureDrafts" in js or "draft" in js.lower()
 
 
+def test_web_client_inherits_defaults_and_keeps_orphan_option():
+    """The web Fill joins values the same way the master's Fill does: a missing
+    key inherits the template default (image included) and an option dropped
+    from the template stays visible."""
+    js = (web_static_dir() / "app.js").read_text(encoding="utf-8")
+    assert "hasOwnProperty" in js               # missing key ≠ null value
+    assert "field.image_id" in js               # image default comes from layout
+    assert "disabled = true" in js              # the orphan option is not pickable
+    assert "indexOf(stored) === -1" in js
+
+

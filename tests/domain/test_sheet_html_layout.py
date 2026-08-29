@@ -46,3 +46,16 @@ def test_html_layout_includes_dropdown_options_and_number_bounds():
     assert by_id[dd.id]["options"] == ["эльф", "орк"]
     assert by_id[num.id]["min"] == 0.0
     assert by_id[num.id]["max"] == 10.0
+
+
+def test_html_layout_carries_image_default():
+    """The web Fill inherits the template default when the map has no key —
+    for an image that default is ``image_id``, so the layout must carry it."""
+    template = SheetTemplate(name="Макет")
+    with_file = template.add_field(FieldType.IMAGE, (10.0, 10.0))
+    with_file.image_id = 7
+    empty = template.add_field(FieldType.IMAGE, (10.0, 200.0))
+    layout = html_layout(template)
+    by_id = {item["id"]: item for page in layout["pages"] for item in page["fields"]}
+    assert by_id[with_file.id]["image_id"] == 7
+    assert by_id[empty.id]["image_id"] is None

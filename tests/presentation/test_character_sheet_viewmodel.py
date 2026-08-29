@@ -968,6 +968,18 @@ async def test_shift_disables_snap_for_gesture(vm):
     assert (f.x, f.y) == (21.0, 23.0)
 
 
+async def test_shift_disables_snap_while_placing(vm):
+    """Placing is a gesture too: Shift keeps the click point unrounded (D3)."""
+    vm.set_snap_enabled(True)
+    fid = vm.place(FieldType.LABEL, 11.0, 13.0, snap_override=False)
+    f = vm.template.get_field(fid)
+    assert (f.x, f.y) == (11.0, 13.0)
+    # the override is per-gesture: the next placement snaps again
+    other = vm.place(FieldType.LABEL, 11.0, 13.0)
+    g = vm.template.get_field(other)
+    assert (g.x, g.y) == (12.0, 12.0)
+
+
 # ── A-editor: z-order (D4) ─────────────────────────────────────────────────
 
 async def test_bring_to_front_and_send_to_back(vm):
@@ -1069,3 +1081,30 @@ async def test_copy_does_not_touch_system_clipboard(vm, qapp):
     vm.select(fid)
     vm.copy()
     assert clip.text() == "сторонняя строка"
+
+
+# ── A-playable: optional number bounds ─────────────────────────────────────
+
+async def test_number_bounds_are_optional_and_clearable(vm):
+    fid = vm.place(FieldType.NUMBER, 10.0, 10.0)
+    assert vm.set_min_value(fid, 0.0) is True
+    assert vm.set_max_value(fid, 10.0) is True
+
+    assert vm.set_max_value(fid, None) is True
+    assert vm.template.get_field(fid).max_value is None
+    assert vm.set_max_value(fid, None) is False   # already unbounded
+
+    assert vm.set_min_value(fid, None) is True
+    assert vm.template.get_field(fid).min_value is None
+    # unbounded again: a value that used to be out of range is accepted
+    assert vm.apply_number(fid, "12,5") is True
+    assert vm.template.get_field(fid).content == "12.5"
+
+
+async def test_clearing_a_bound_is_one_undo_step(vm):
+    fid = vm.place(FieldType.NUMBER, 10.0, 10.0)
+    vm.set_max_value(fid, 10.0)
+    vm.set_min_value(fid, None)                   # no-op: already unbounded
+    vm.set_max_value(fid, None)
+    vm.undo()
+    assert vm.template.get_field(fid).max_value == 10.0

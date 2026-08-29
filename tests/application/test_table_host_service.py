@@ -354,6 +354,61 @@ class TestImageAndLayout:
         assert any(m.get("type") == "layout" for m in ws.messages)
         assert host._layout_version >= 1
 
+    async def test_template_image_default_is_served_without_instance_key(
+        self, async_session: AsyncSession, tmp_path, qapp
+    ):
+        """A field added to the template after the sheet was created has no key
+        in the map: the web Fill must inherit the template's own picture."""
+        from app.infrastructure.images.store import ImageStore
+
+        sheet_svc, inst_svc, _host = await _services(async_session)
+        store = ImageStore(async_session, tmp_path / "images")
+        inst_svc._image_store = store
+        host = TableHostService(inst_svc, sheet_svc, image_store=store)
+        row = await sheet_svc.create("Шаблон")
+        inst = await inst_svc.create("Лист", row.id)
+        image_id = await store.store(_PNG_1PX)
+        template = await sheet_svc.load(row.id)
+        img = template.add_field(FieldType.IMAGE, (10.0, 10.0))
+        img.image_id = image_id
+        await sheet_svc.update_pages(row.id, template)
+        host.seat(inst.id)
+        await host.start()
+        token = await host.join(host.pin, "Вася", inst.id)
+
+        sheet = await host.get_sheet(token)
+        assert img.id not in sheet["values"]
+        by_id = {
+            item["id"]: item
+            for page in sheet["layout"]["pages"]
+            for item in page["fields"]
+        }
+        assert by_id[img.id]["image_id"] == image_id
+        path = await host.preview_path(token, image_id)
+        assert path is not None and path.exists()
+
+    async def test_preview_path_refuses_foreign_template_image(
+        self, async_session: AsyncSession, tmp_path, qapp
+    ):
+        from app.infrastructure.images.store import ImageStore
+
+        sheet_svc, inst_svc, _host = await _services(async_session)
+        store = ImageStore(async_session, tmp_path / "images")
+        host = TableHostService(inst_svc, sheet_svc, image_store=store)
+        mine = await sheet_svc.create("Мой")
+        other = await sheet_svc.create("Чужой")
+        foreign_id = await store.store(_PNG_1PX)
+        other_template = await sheet_svc.load(other.id)
+        foreign = other_template.add_field(FieldType.IMAGE, (10.0, 10.0))
+        foreign.image_id = foreign_id
+        await sheet_svc.update_pages(other.id, other_template)
+        inst = await inst_svc.create("Лист", mine.id)
+        host.seat(inst.id)
+        await host.start()
+        token = await host.join(host.pin, "Вася", inst.id)
+
+        assert await host.preview_path(token, foreign_id) is None
+
 
 @pytest.fixture(scope="session")
 def qapp():

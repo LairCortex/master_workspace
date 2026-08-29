@@ -56,6 +56,10 @@ def html_layout(template: SheetTemplate) -> dict:
             if field.type is FieldType.NUMBER:
                 item["min"] = field.min_value
                 item["max"] = field.max_value
+            if field.type is FieldType.IMAGE:
+                # the template default the web client inherits when the
+                # instance map has no key for this field (spec: value join)
+                item["image_id"] = field.image_id
             fields.append(item)
         pages.append({
             "name": page.name,

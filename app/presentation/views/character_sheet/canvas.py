@@ -819,7 +819,15 @@ class CharacterSheetCanvas(QGraphicsView):
             field_type = field_type_for_tool(self._vm.tool)
             hit = self._page_hit(pos)
             if field_type is not None and hit is not None:
-                self._vm.place(field_type, hit[1], hit[2], page_index=hit[0])
+                no_snap = (
+                    False
+                    if event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                    else None
+                )
+                self._vm.place(
+                    field_type, hit[1], hit[2],
+                    page_index=hit[0], snap_override=no_snap,
+                )
             # clicking a gutter with a place tool places nothing (spec)
             event.accept()
             return

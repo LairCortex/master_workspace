@@ -320,13 +320,15 @@ class CharacterSheetViewModel(QObject):
         return self._template.page_of(field_id)
 
     def place(self, field_type: FieldType, x: float, y: float,
-              page_index: int | None = None) -> str:
+              page_index: int | None = None,
+              snap_override: bool | None = None) -> str:
         """Place one field (top-left at the click point, clamped) and select it.
 
         ``page_index`` defaults to the current page (the canvas resolves the
-        clicked sheet under the cursor). Returns the new field id, or ``""``
-        when nothing was placed (no template loaded yet — the canvas can be
-        clickable during ``load``).
+        clicked sheet under the cursor). ``snap_override`` suppresses the grid
+        for this placement only (Shift held on the click, design D3). Returns
+        the new field id, or ``""`` when nothing was placed (no template loaded
+        yet — the canvas can be clickable during ``load``).
         """
         if self._template is None:
             return ""
@@ -335,7 +337,13 @@ class CharacterSheetViewModel(QObject):
         page_index = max(0, min(page_index, len(self._template.pages) - 1))
         self._checkpoint()
         field = self._template.add_field(field_type, (x, y), page_index=page_index)
-        self._snap_field_geometry(field, snap_size=False)
+        previous_override = self._snap_override
+        if snap_override is not None:
+            self._snap_override = snap_override
+        try:
+            self._snap_field_geometry(field, snap_size=False)
+        finally:
+            self._snap_override = previous_override
         self._selected_ids = [field.id]
         if self._tool != TOOL_POINTER:
             self._tool = TOOL_POINTER
@@ -479,8 +487,16 @@ class CharacterSheetViewModel(QObject):
     def _set_number_bound(self, field_id: str, attr: str,
                           value: float | None) -> bool:
         field = self._field(field_id)
-        if field is None or field.type is not FieldType.NUMBER or value is None:
+        if field is None or field.type is not FieldType.NUMBER:
             return False
+        if value is None:
+            if getattr(field, attr) is None:
+                return False
+            self._checkpoint()
+            setattr(field, attr, None)
+            self.field_props_changed.emit(field_id)
+            self._refresh_dirty()
+            return True
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return False
         value = float(value)

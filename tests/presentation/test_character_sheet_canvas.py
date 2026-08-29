@@ -883,6 +883,27 @@ def test_panel_number_comma_minmax_validation(canvas, vm, panel):
     assert panel.number_edit.text() == "1.5"
 
 
+def test_panel_number_bounds_can_be_unchecked(canvas, vm, panel):
+    """min/max are optional: unchecking clears the bound instead of snapping back."""
+    fid = vm.place(FieldType.NUMBER, 100, 100)
+    vm.select(fid)
+
+    panel.max_check.setChecked(True)
+    panel.max_spin.setValue(8.0)
+    panel.min_check.setChecked(True)
+    panel.min_spin.setValue(2.0)
+    assert (vm.template.get_field(fid).min_value,
+            vm.template.get_field(fid).max_value) == (2.0, 8.0)
+
+    panel.max_check.setChecked(False)
+    assert vm.template.get_field(fid).max_value is None
+    assert panel.max_check.isChecked() is False
+
+    panel.min_check.setChecked(False)
+    assert vm.template.get_field(fid).min_value is None
+    assert panel.min_check.isChecked() is False
+
+
 def test_panel_number_min_above_max_is_refused(canvas, vm, panel):
     fid = vm.place(FieldType.NUMBER, 100, 100)
     vm.select(fid)
@@ -1324,6 +1345,23 @@ def test_snap_grid_visible_only_when_enabled(canvas, vm):
     assert canvas.grid_visible is True
     vm.set_snap_enabled(False)
     assert canvas.grid_visible is False
+
+
+def test_shift_click_places_without_snap(canvas, vm, qtbot):
+    """Shift suppresses the grid for the placing gesture as it does for a drag."""
+    from app.presentation.viewmodels.character_sheet_viewmodel import TOOL_PLACE_LABEL
+
+    vm.set_snap_enabled(True)
+    vm.set_tool(TOOL_PLACE_LABEL)
+    view_pos = canvas.mapFromScene(QPointF(11.0, 13.0))
+    qtbot.mouseClick(
+        canvas.viewport(), Qt.LeftButton, Qt.KeyboardModifier.ShiftModifier, view_pos
+    )
+
+    fid = vm.selected_ids[0]
+    f = vm.template.get_field(fid)
+    assert (round(f.x), round(f.y)) == (11, 13)
+    assert vm.snap_enabled is True          # the toggle itself is untouched
 
 
 def test_resize_handles_only_when_exactly_one_selected(canvas, vm):

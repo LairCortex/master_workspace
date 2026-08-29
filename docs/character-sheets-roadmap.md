@@ -1,10 +1,10 @@
 # Дорожная карта: чар-листы
 
-Эпик не входит в пользовательский релиз, пока нет **D1**. D1 (стол в LAN) — change `add-character-sheet-d1`. После D1 отдельно: телефон открывает тот же HTML; софт-AP. В `main` вливаем по кускам: меню видно, в CHANGELOG пометка «незавершено».
+Все куски эпика (A1 → P) реализованы и влиты; их changes лежат в архиве. После D1 отдельными кусками: телефон открывает тот же HTML; софт-AP. В `main` вливаем по кускам: меню видно, в CHANGELOG пометка «незавершено».
 
 NRI-0007 (канвас + PDF скоупом) не воскрешаем.
 
-Текущие срезы (порядок apply): [`add-character-sheet-a1`](../openspec/changes/add-character-sheet-a1/), [`add-character-sheet-a-playable`](../openspec/changes/add-character-sheet-a-playable/), [`add-character-sheet-a-editor`](../openspec/changes/add-character-sheet-a-editor/), [`add-character-sheet-b`](../openspec/changes/add-character-sheet-b/), [`add-character-sheet-c`](../openspec/changes/add-character-sheet-c/), [`add-character-sheet-d1`](../openspec/changes/add-character-sheet-d1/).
+Архив срезов (порядок apply): [`a1`](../openspec/changes/archive/2026-08-28-add-character-sheet-a1/), [`a-playable`](../openspec/changes/archive/2026-08-28-add-character-sheet-a-playable/), [`a-editor`](../openspec/changes/archive/2026-08-28-add-character-sheet-a-editor/), [`b`](../openspec/changes/archive/2026-08-28-add-character-sheet-b/), [`c`](../openspec/changes/archive/2026-08-28-add-character-sheet-c/), [`d1`](../openspec/changes/archive/2026-08-29-add-character-sheet-d1/), [`p`](../openspec/changes/archive/2026-08-29-add-character-sheet-p/).
 
 ## Куски (порядок)
 
@@ -12,11 +12,11 @@ NRI-0007 (канвас + PDF скоупом) не воскрешаем.
 |---|---|---|---|
 | 1 | **A1** | Тонкий канвас: 1 книжная A4, 3 типа (подпись / однострочное / многострочное), сохранить в `game.db` | влито — `add-character-sheet-a1` |
 | 2 | **A-playable** | Страницы без лимита (лента как Word + рейка) + каталог типов + тесты на каждый тип. Не удобство редактора | влито — `add-character-sheet-a-playable` |
-| 3 | **A-editor** | Undo, мультиселект, snap, z-order, duplicate/paste. Последний редактор эпика | готово — план `add-character-sheet-a-editor` |
-| 4 | **B** | Экземпляр в игре; Fill на канвасе; до хоста заполняет мастер | готово — план `add-character-sheet-b` |
-| 5 | **C** | Движок пресетов + Fate Core + Mörk Borg (свои макеты, RU, 1 страница) | готово — план `add-character-sheet-c` |
-| 6 | **D1** | Хост в LAN: браузер игрока по HTTP, мастер смотрит Qt | готово — план `add-character-sheet-d1` |
-| 7 | **P** | PDF, не основной флоу. Можно последним, после экземпляра | не начат |
+| 3 | **A-editor** | Undo, мультиселект, snap, z-order, duplicate/paste. Последний редактор эпика | влито — `add-character-sheet-a-editor` |
+| 4 | **B** | Экземпляр в игре; Fill на канвасе; до хоста заполняет мастер | влито — `add-character-sheet-b` |
+| 5 | **C** | Движок пресетов + Fate Core + Mörk Borg (свои макеты, RU, 1 страница) | влито — `add-character-sheet-c` |
+| 6 | **D1** | Хост в LAN: браузер игрока по HTTP, мастер смотрит Qt | влито — `add-character-sheet-d1` |
+| 7 | **P** | PDF, не основной флоу. Можно последним, после экземпляра | влито — `add-character-sheet-p` |
 
 После D1, отдельными кусками: телефон открывает **тот же HTML**; софт-AP («мастер раздаёт Wi‑Fi»). Десктоп-приложение как клиент игрока в D1 нет.
 
@@ -60,4 +60,4 @@ A1 → A-playable → A-editor → B → C → D1
 2. `/opsx-propose` — только этот кусок.
 3. `/opsx-apply` после ревью плана.
 
-A1 уже прошёл шаги 1–2. B, C и D1 — тоже (`add-character-sheet-b`, `add-character-sheet-c`, `add-character-sheet-d1`).
+Все семь кусков эпика прошли шаги 1–3; порядок остаётся образцом для следующих кусков (телефон, софт-AP, C2+).

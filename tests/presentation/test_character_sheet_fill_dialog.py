@@ -138,6 +138,8 @@ async def test_no_palette_and_rail_has_no_page_mutation(dlg):
     assert not d.rail.delete_button.isVisible()
     assert not d.rail.up_button.isVisible()
     assert not d.rail.down_button.isVisible()
+    from PySide6.QtWidgets import QPushButton
+    assert "Экспорт в PDF…" not in [b.text() for b in d.findChildren(QPushButton)]
 
 
 async def test_drag_does_not_change_geometry(dlg, qtbot):

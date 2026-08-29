@@ -333,7 +333,12 @@ class TableHostService:
             return None
         row = await self._instance_service.get(instance_id)
         if image_id not in iter_instance_image_ids(row.values):
-            return None
+            # a picture the map does not carry may still be the template's own
+            # default (a field added after the sheet was created): the web Fill
+            # inherits it, so its preview must be reachable — and nothing else.
+            template = await self._sheet_service.load(row.template_id)
+            if image_id not in _template_image_ids(template):
+                return None
         return await self._image_store.preview_file_path(image_id)
 
     # -- internals ----------------------------------------------------------
@@ -381,6 +386,15 @@ class TableHostService:
     def _notify_occupancy(self) -> None:
         for callback in list(self._on_occupancy_changed):
             callback()
+
+
+def _template_image_ids(template) -> set[int]:
+    return {
+        field.image_id
+        for page in template.pages
+        for field in page.fields
+        if field.type is FieldType.IMAGE and field.image_id is not None
+    }
 
 
 def _coerce_value(field: SheetField, value: Any) -> Any:

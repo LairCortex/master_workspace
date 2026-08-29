@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QFocusEvent
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from sqlalchemy.exc import IntegrityError
 
 from app.application.services.character_sheet_instance_service import (
@@ -55,6 +55,9 @@ from app.presentation.viewmodels.character_sheet_viewmodel import (
 from app.presentation.views.character_sheet.canvas import (
     CharacterSheetCanvas,
     register_sheet_font,
+)
+from app.presentation.views.character_sheet.editor_dialog import (
+    CharacterSheetEditorDialog,
 )
 from app.presentation.views.character_sheet.fill_dialog import (
     CharacterSheetFillDialog,
@@ -480,6 +483,76 @@ async def test_canvas_and_editor_panel_edges(async_session, qapp, monkeypatch):
     )
     register_sheet_font()
     canvas_mod._font_registered = True
+
+
+def test_safe_disconnect_swallows_qt_errors():
+    from app.presentation.views.character_sheet.editor_dialog import _safe_disconnect
+
+    class BoomType:
+        def disconnect(self):
+            raise TypeError()
+
+    class BoomRuntime:
+        def disconnect(self):
+            raise RuntimeError()
+
+    class Ok:
+        def disconnect(self):
+            return None
+
+    _safe_disconnect(BoomType())
+    _safe_disconnect(BoomRuntime())
+    _safe_disconnect(Ok())
+
+
+async def test_editor_dialog_export_and_image_edges(async_session, qapp, monkeypatch, tmp_path):
+    svc = CharacterSheetService(CharacterSheetRepository(async_session))
+    row = await svc.create("Макет")
+    monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    d = CharacterSheetEditorDialog(svc, row.id)
+    d._closing = True
+    await d.load()
+    d._closing = False
+    await d.load()
+    d._on_paste()
+    d._on_orientation(0)
+    d.orientation_combo.addItem("нет", "unknown-orient")
+    d._sync_orientation("no-such")
+    d.view_model._template = None
+    d._sync_orientation()
+    d.set_name("x")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", "")))
+    d._pick_image("x")
+    await d._store_and_set_image("x", str(tmp_path / "nope.png"))
+    d.force_close()
+    d.deleteLater()  # a closed dialog otherwise lingers as a top-level widget
+
+    class BadStore:
+        async def store(self, data):
+            raise ValueError("bad")
+
+    (tmp_path / "x.bin").write_bytes(b"x")
+    d2 = CharacterSheetEditorDialog(svc, row.id, image_store=BadStore())
+    await d2.load()
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(tmp_path / "x.bin"), "")),
+    )
+    d2._pick_image("x")
+    await d2._store_and_set_image("gone", str(tmp_path / "missing.png"))
+    await d2._store_and_set_image("gone", str(tmp_path / "x.bin"))
+
+    class OkStore:
+        async def store(self, data):
+            return 42
+
+    d2._image_store = OkStore()
+    fid = d2.view_model.place(FieldType.IMAGE, 10.0, 10.0)
+    await d2._store_and_set_image(fid, str(tmp_path / "x.bin"))
+    assert d2.view_model.template.get_field(fid).image_id == 42
+    d2.force_close()
+    d2.deleteLater()
 
 
 async def test_http_ws_idle_loop(async_session):

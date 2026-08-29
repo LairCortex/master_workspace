@@ -290,3 +290,181 @@ async def test_snap_toggle_and_z_order_buttons(dlg):
     assert [f.id for f in vm.template.page.fields] == [b, a]
     dlg.send_back_button.click()
     assert [f.id for f in vm.template.page.fields] == [a, b]
+
+
+# ── PDF export (add-character-sheet-p) ──────────────────────────────────
+
+async def test_export_pdf_button_next_to_save(dlg):
+    assert dlg.export_pdf_button.text() == "Экспорт в PDF…"
+    bottom = dlg.layout().itemAt(dlg.layout().count() - 1).layout()
+    widgets = [
+        bottom.itemAt(i).widget()
+        for i in range(bottom.count())
+        if bottom.itemAt(i).widget() is not None
+    ]
+    assert widgets.index(dlg.export_pdf_button) == widgets.index(dlg.save_button) - 1
+
+
+async def test_export_pdf_cancel_does_not_write(dlg, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(lambda *a, **k: ("", "")),
+    )
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
+        lambda *a, **k: calls.append(1),
+    )
+    dlg.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    assert calls == []
+
+
+async def test_export_pdf_suggested_name(dlg, monkeypatch):
+    captured: dict = {}
+
+    def fake_save(parent, caption, directory="", filter=""):
+        captured["directory"] = directory
+        captured["filter"] = filter
+        return "", ""
+
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(fake_save),
+    )
+    dlg.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    assert captured["directory"].endswith("Лист героя.pdf")
+    assert "pdf" in captured["filter"].lower()
+
+
+async def test_export_pdf_uses_dirty_canvas(dlg, monkeypatch, tmp_path):
+    written: list = []
+
+    def fake_save(parent, caption, directory="", filter=""):
+        return str(tmp_path / "out.pdf"), "PDF (*.pdf)"
+
+    def fake_write(template, dest, images):
+        written.append((template, dest, dict(images)))
+
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(fake_save),
+    )
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
+        fake_write,
+    )
+    fid = dlg.view_model.place(FieldType.LABEL, 10.0, 10.0)
+    dlg.view_model.set_content(fid, "Черновик")
+    dlg.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    assert written
+    template, dest, images = written[0]
+    assert template.get_field(fid).content == "Черновик"
+    assert images == {}
+
+
+async def test_export_pdf_oserror_shows_box(dlg, monkeypatch, save_boxes, qtbot):
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(lambda *a, **k: ("/tmp/out.pdf", "PDF (*.pdf)")),
+    )
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("нет места")),
+    )
+    dlg.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    await _wait_boxes(save_boxes, qtbot, 1)
+
+
+async def test_export_pdf_collects_image_bytes(qtbot, service, row, monkeypatch, tmp_path):
+    orig = tmp_path / "orig.png"
+    orig.write_bytes(b"PNGDATA")
+
+    class Store:
+        async def original_file_path(self, image_id):
+            return orig if image_id == 7 else None
+
+        async def preview_file_path(self, image_id):
+            return None
+
+    written: list = []
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(lambda *a, **k: (str(tmp_path / "x.pdf"), "PDF")),
+    )
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
+        lambda template, dest, images: written.append(dict(images)),
+    )
+    d = CharacterSheetEditorDialog(service, row.id, image_store=Store())
+    await d.load()
+    fid = d.view_model.place(FieldType.IMAGE, 10.0, 10.0)
+    d.view_model.set_image_id(fid, 7)
+    d.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    assert written[0][7] == b"PNGDATA"
+    d.force_close()
+    d.deleteLater()
+    qtbot.wait(1)
+
+
+async def test_export_pdf_preview_and_unreadable(qtbot, service, row, monkeypatch, tmp_path):
+    preview = tmp_path / "prev.png"
+    preview.write_bytes(b"PREV")
+    missing = tmp_path / "gone.png"
+
+    class Store:
+        async def original_file_path(self, image_id):
+            if image_id == 1:
+                return None
+            if image_id == 2:
+                return missing
+            return None
+
+        async def preview_file_path(self, image_id):
+            if image_id == 1:
+                return preview
+            return None
+
+    written: list = []
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(lambda *a, **k: (str(tmp_path / "x.pdf"), "PDF")),
+    )
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
+        lambda template, dest, images: written.append(dict(images)),
+    )
+    d = CharacterSheetEditorDialog(service, row.id, image_store=Store())
+    await d.load()
+    a = d.view_model.place(FieldType.IMAGE, 10.0, 10.0)
+    b = d.view_model.place(FieldType.IMAGE, 40.0, 10.0)
+    c = d.view_model.place(FieldType.IMAGE, 70.0, 10.0)
+    d.view_model.set_image_id(a, 1)
+    d.view_model.set_image_id(b, 2)
+    d.view_model.set_image_id(c, 3)
+    d.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    assert written[0] == {1: b"PREV"}
+    d.force_close()
+    d.deleteLater()
+    qtbot.wait(1)
+
+
+async def test_export_pdf_no_op_without_template(qtbot, service, row, monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(
+        "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
+        staticmethod(lambda *a, **k: calls.append("picker") or ("/x.pdf", "PDF")),
+    )
+    d = CharacterSheetEditorDialog(service, row.id)
+    d.export_pdf_button.click()
+    await asyncio.sleep(0.05)
+    assert calls == []
+    d.force_close()
+    d.deleteLater()
+    qtbot.wait(1)
+

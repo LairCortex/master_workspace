@@ -158,6 +158,23 @@
     applyZoom();
   }
 
+  function templateDefault(field) {
+    if (field.type === "image") {
+      return field.image_id === undefined ? null : field.image_id;
+    }
+    return field.content || "";
+  }
+
+  function displayValue(field) {
+    // Missing key inherits the template default; a key that is present wins,
+    // including an explicit null (a picture cleared on this sheet).
+    if (Object.prototype.hasOwnProperty.call(values, field.id)) {
+      var own = values[field.id];
+      return own === undefined ? templateDefault(field) : own;
+    }
+    return templateDefault(field);
+  }
+
   function renderField(field) {
     var el = document.createElement("div");
     el.className = "field " + field.type + (field.input ? " input" : "");
@@ -173,9 +190,9 @@
       }
       return el;
     }
-    var current = values[field.id];
-    if (current === undefined || current === null) {
-      current = field.content || "";
+    var current = displayValue(field);
+    if (current === null && field.type !== "image") {
+      current = "";
     }
     if (field.type === "textarea") {
       var ta = document.createElement("textarea");
@@ -192,13 +209,24 @@
       el.appendChild(cb);
     } else if (field.type === "dropdown") {
       var sel = document.createElement("select");
-      (field.options || []).forEach(function (opt) {
+      var options = field.options || [];
+      var stored = String(current);
+      if (stored && options.indexOf(stored) === -1) {
+        // an option dropped from the template stays in the map and stays
+        // visible, as it does in the master's Fill — but cannot be re-picked
+        var orphan = document.createElement("option");
+        orphan.value = stored;
+        orphan.textContent = stored;
+        orphan.disabled = true;
+        sel.appendChild(orphan);
+      }
+      options.forEach(function (opt) {
         var o = document.createElement("option");
         o.value = opt;
         o.textContent = opt;
         sel.appendChild(o);
       });
-      sel.value = String(current);
+      sel.value = stored;
       sel.addEventListener("change", function () {
         commit(field.id, sel.value);
       });
