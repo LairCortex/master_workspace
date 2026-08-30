@@ -14,6 +14,9 @@ from PySide6.QtCore import QDate
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QListWidget, QWidget
 
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 
@@ -52,6 +55,62 @@ def pick_menu_action(menu_qmenu, text: str) -> None:
         return None
 
     menu_qmenu.choose(chooser)
+
+
+# ── Timeline canvas interaction (W3: events are bars, not list rows) ──────
+
+def timeline_canvas(window) -> QWidget:
+    """The event scale canvas of the main window's timeline panel."""
+    return window.timeline_widget.canvas
+
+
+def has_event_named(window, name: str) -> bool:
+    """True when a bar for an event whose name contains ``name`` is rendered."""
+    return any(name in e.name for e in timeline_canvas(window).events)
+
+
+def find_event_id(window, name: str) -> int:
+    return next(e.id for e in timeline_canvas(window).events if name in e.name)
+
+
+def bar_center(canvas, event_id: int) -> QPoint:
+    """Visible center of the bar for ``event_id`` (scroll-aware, W3 D8)."""
+    bar = canvas.plan.bar_for(event_id)
+    if bar is None:
+        raise AssertionError(f"event {event_id} has no bar in the current plan")
+    x = (bar.x0 + bar.x1) / 2.0
+    y = canvas.plan.metrics.axis_h + (bar.y_top + bar.height / 2.0) - canvas._scroll_y
+    return QPoint(int(x), int(y))
+
+
+def _send_mouse(canvas, point, etype, button):
+    QApplication.sendEvent(canvas, QMouseEvent(
+        etype, QPointF(point), canvas.mapToGlobal(point),
+        button, button, Qt.KeyboardModifier.NoModifier))
+    if etype == QEvent.Type.MouseButtonPress:
+        QApplication.sendEvent(canvas, QMouseEvent(
+            QEvent.Type.MouseButtonRelease, QPointF(point), canvas.mapToGlobal(point),
+            button, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+
+
+def click_timeline_event(window, name: str) -> int:
+    """Single-click the middle of the event's bar; returns the event id."""
+    canvas = timeline_canvas(window)
+    event_id = find_event_id(window, name)
+    canvas.scroll_to_event(event_id)
+    center = bar_center(canvas, event_id)
+    _send_mouse(canvas, center, QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton)
+    return event_id
+
+
+def double_click_timeline_event(window, name: str) -> int:
+    """Double-click the middle of the event's bar (edit dialog trigger)."""
+    canvas = timeline_canvas(window)
+    event_id = find_event_id(window, name)
+    canvas.scroll_to_event(event_id)
+    center = bar_center(canvas, event_id)
+    _send_mouse(canvas, center, QEvent.Type.MouseButtonDblClick, Qt.MouseButton.LeftButton)
+    return event_id
 
 
 def double_click_item(list_widget: QListWidget, item) -> None:
@@ -227,8 +286,7 @@ async def create_event_via_ui(
         dialog.end_date_input.setDate(end_date)
     assert dialog.save_button.isEnabled()
     dialog.save_button.click()
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: any(name in timeline.item(i).text() for i in range(timeline.count())))
+    await wait_for(lambda: has_event_named(window, name))
     return dialog
 
 

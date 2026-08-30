@@ -18,10 +18,18 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     application, window = app
     db_path = Path(application._db_path)
 
-    # An event dated in May (the month that will be renamed).
-    await helpers.create_event_via_ui(window, wait_for, "Фестиваль", start_date=QDate(1200, 5, 15))
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: any("15 Май 1200" in timeline.item(i).text() for i in range(timeline.count())))
+    # An event starting on the first of May (the month that will be renamed)
+    # and running into June, so the axis carries that month boundary as a tick.
+    await helpers.create_event_via_ui(
+        window, wait_for, "Фестиваль",
+        start_date=QDate(1200, 5, 1), end_date=QDate(1200, 6, 20),
+    )
+    canvas = window.timeline_widget.canvas
+    await wait_for(lambda: helpers.has_event_named(window, "Фестиваль"))
+    # The axis labels month boundaries through format_game_date with the game's
+    # month names; the range start itself is never labeled (spec «Шкала времени»).
+    await wait_for(lambda: "01 Май 1200" in canvas.axis_labels())
+    assert "01 Июнь 1200" in canvas.axis_labels()
 
     # Settings dialog (menu action) → rename May.
     window.month_settings_action.trigger()
@@ -33,9 +41,10 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     may_input.setText(CUSTOM_MAY)
     save_btn = next(b for b in dialog.findChildren(QPushButton) if b.text() == "Сохранить")
     save_btn.click()
+    await helpers.wait_until_settled()  # the settings-save task owns the session
 
-    # The timeline re-renders with the custom month name.
-    await wait_for(lambda: any(f"15 {CUSTOM_MAY} 1200" in timeline.item(i).text() for i in range(timeline.count())))
+    # The scale re-renders with the custom month name on its axis.
+    await wait_for(lambda: f"01 {CUSTOM_MAY} 1200" in canvas.axis_labels())
 
     # Stored in the game's game_settings (per-game key/value pattern).
     row = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
@@ -54,7 +63,8 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     may_input2.setText(f"{CUSTOM_MAY}-2")
     save_btn2 = next(b for b in dialog2.findChildren(QPushButton) if b.text() == "Сохранить")
     save_btn2.click()
-    await wait_for(lambda: any(f"15 {CUSTOM_MAY}-2 1200" in timeline.item(i).text() for i in range(timeline.count())))
+    await helpers.wait_until_settled()  # do not race the save task with shutdown
+    await wait_for(lambda: f"01 {CUSTOM_MAY}-2 1200" in canvas.axis_labels())
     row2 = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
     assert row2 and f"{CUSTOM_MAY}-2" in row2[0][0]
 
@@ -62,10 +72,8 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     await application.shutdown()
     window2 = await application.start(str(db_path))
     try:
-        timeline2 = window2.timeline_widget.list_widget
-        await wait_for(lambda: any(
-            f"15 {CUSTOM_MAY}-2 1200" in timeline2.item(i).text() for i in range(timeline2.count())
-        ))
+        canvas2 = window2.timeline_widget.canvas
+        await wait_for(lambda: f"01 {CUSTOM_MAY}-2 1200" in canvas2.axis_labels())
     finally:
         window.close()  # already closed by start(); safe no-op
         await application.shutdown()

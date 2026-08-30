@@ -2,7 +2,30 @@
 
 ## Unreleased — незавершённый
 
-### Дизайн-система W2b: миграция остатка chrome (эпик W: W2 завершён — W2a влит, W2b ждёт коммита/мерджа; эпик открыт до W3)
+### Дизайн-система W3: шкала событий вместо списка (эпик W: W1/W2 влиты — W2b в main с `4810755`; W3 реализован и ждёт коммита/мерджа, коммитов по нему ещё нет; остаток до Q-эпика — только целевые точки карты, зум/drag/дорожки-по-сущностям вне скоупа)
+
+#### Новый функционал
+- Панель таймлайна: вместо `QListWidget` — кастомное полотно `TimelineCanvas` (`QWidget` + `QPainter`): одна полоса на событие, пересекающиеся события упаковываются по вертикали в дорожки (greedy first-fit по `(start, id)`), непрерывная линейная шкала на весь отфильтрованный диапазон без зума и горизонтального скролла
+- Чистое ядро геометрии `app/presentation/views/track_layout.py` (без Qt-импортов): вход — `(event_id, start, end|None)` + `TrackMetrics`, выход — plan (rect'ы полос, текст-фит flag, число дорожек, content/scroll-высоты); hit-test и scroll-маппинг там же. Ось — тики/подписи строго по границам игровых месяцев (`game_settings` custom months, формат `format_game_date`); старт диапазона подписью не считается, подмесячный интервал остаётся без подписей
+- Адаптивная высота дорожек: clamp по высоте вьюпорта, внутренний вертикальный скролл при переполнении (content_h > viewport_h); подписи на полосах — только при текст-фите; tooltip (название + диапазон дат, «—» для открытого конца) — при наведении на любую полосу: подпись никогда не показывает даты (D5); идущие события (`end=None`) — полоса до правого края со скосом-маркером; пустая выборка — hint «Нет событий в диапазоне» (`color.fg.muted`)
+- Одиночное событие — полоса на всю ширину; однодневка — не уже min-ширины с симметричным двусторонним стиранием; padding по краям области полос
+- Цвета канваса — только токены и их производные: fill/выделение полос — производные `color.accent` (`accent_rgba`-механизм W2b, новых токенов не заводили), подписи — `color.fg.muted`, hairline границ месяцев и сетка — `color.border`, фон — `color.bg.surface`; live ре-тема через `ThemeRuntime.add_listener` (пересчёт QColor + repaint, выбор и скролл сохранены); оф-скин (нет runtime/битый токен) рисуется только именованными Qt-глобалами (`gray/black/white`) — своего hex под этот случай не выдумано (spec-сценарий «Вне скина»)
+- Приёмка: юниты `tests/presentation/test_track_layout.py` (упаковка/шкала/клампы/hit-test/скролл, детерминизм), widget-тесты канваса (клик/dblclick → id, wheel-скролл, ре-тема, tooltip, hint, идемпотентный `set_selected`), пиксельный `tests/ui/test_e2e_timeline_theme.py` (обе темы: grab-пиксель fill/выделения/hairline == токен; правка `color.accent` в копиях токенов перекрашивает полосы без правок экранов), grep-инвариант `test_no_chrome_hex.py` покрывает `timeline_widget.py` без правок теста (он с W2b сканирует весь `views/**`); hit-test — верхняя по отрисовке полоса, т.к. min-ширина может надвинуть короткую полосу на соседа в той же дорожке
+
+#### Изменено
+- **BREAKING (контракт UI-слоя):** выбор события id-центричный — `event_selected(event_id)`/`event_double_clicked(event_id)` вместо row-сигналов; `TimelineViewModel.select_event_by_id(id)` (промах → сброс выбора, эмит `selected_event_changed` как и раньше); `list_widget`-обращения удалены из wiring и E2E-хелперов (search-jump → `select_event_by_id` + `scroll_to_event`)
+- Публичный API канваса: `set_events(events, selected_id)`, идемпотентный `set_selected(id)` (тот же id не пересобирает plan), `scroll_to_event(id)`
+- Выбор живёт одинаково во всех слоях: фильтр, исключивший выбранное событие, сбрасывает его и в канвасе, и в `TimelineViewModel` (`selected_event_changed`), и в панели деталей (wiring-слушатель); смена набора событий отматывает внутренний скролл в начало, перезагрузка того же набора — оставляет
+- Колесо мыши: один нотч = одна строка дорожки (раньше — весь `angleDelta`, 5–8 дорожек за щелчок); пересборка плана и замер подписей закэшированы по (версия событий, размер вьюпорта, шрифт) — `paintEvent`/`wheelEvent` больше не пакуют дорожки заново
+- Шапка панели без изменений: «+»-меню, CustomDateEdit-фильтр, apply/clear, сигналы `add_event_requested`/`add_entity_requested`/`filter_changed`, семантика `filter_by_dates`
+- В `theme/compiler.py` добавлен `token_rgb(tokens, theme, key)` — токен как `(r, g, b)` для QPainter-кода вне QSS (канвас сам считает альфы, новых токенов нет)
+- Попутно вычищено из diff без отдельных задач: удалён дубль `test_accent_token_change_moves_mention_ai_and_selection_together` в `tests/ui/test_theme_grab.py` (на HEAD две одноимённые функции, первая мертва), поправлены неиспользуемые импорты в `event_dialog.py`/`game_launcher_dialog.py`, обновлены E2E `test_e2e_crud/import/launcher` и `test_w2b_review_fixes` под id-контракт
+
+#### Проверено
+- `QT_QPA_PLATFORM=offscreen python -m pytest` — 1899 passed; `ruff check app/ tests/` — без ошибок
+- Line coverage: все файлы W3 (`track_layout.py`, `timeline_widget.py`, `timeline_viewmodel.py`, `wiring.py`, `compiler.py`) — 100%. Гейт `fail_under=100` локально на macOS НЕ проходит: total 99.87%, 15 непокрытых строк и все они вне W3 — `detail_panel` 4 (50, 177, 217–218), `mention_text_edit` 3 (229, 232, 247), `ai_assist_button` 2 (37, 282), `image_viewer_dialog` 2 (87–88), `main_window` 2 (92–93), `world_snapshot_widget` 2 (105–106); это off-skin- и exception-ветки, приехавшие с W2b (не «платформенно-зависимые»). Локально с этим же списком на HEAD прогон не делался, так что статус «100%-гейт зелёный» подтверждается только прогоном CI на Linux, а не локальной машиной
+
+### Дизайн-система W2b: миграция остатка chrome (эпик W: W2 завершён и влит — W2a + W2b в main с `4810755`; эпик открыт до W3)
 
 #### Новый функционал
 - Все оставшиеся chrome-экраны мастера подключены к теме одной точкой (`attach_theme` + роли каталога W2a): `LlmSetupDialog` (page-title/hint-фабрики, статусы проверки на `status-ok`/`status-error` вместо inline-свопов `#2e7d32/#c62828`), `EventDialog`, `XlsxImportDialog` (mono-токен вместо inline-QSS), `ImageViewerDialog`, `EntityCardDialog` (card-роль placeholder вместо `palette(mid/base)`), `TableHostPanel`, `_DocViewerDialog` (mono-токен вместо `QFont("Menlo…")`)

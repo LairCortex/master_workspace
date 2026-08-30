@@ -124,9 +124,9 @@ class ApplicationWiring:
         event_service = self._event_service
         event_dialog_vm = self._event_dialog_vm
 
-        # Timeline selection -> detail panel
-        async def on_event_selected(index):
-            timeline_vm.select_event(index)
+        # Timeline selection -> detail panel (W3: the signal carries event ids)
+        async def on_event_selected(event_id):
+            timeline_vm.select_event_by_id(event_id)
             event = timeline_vm.selected_event
             if event:
                 await detail_vm.load_details(event.id)
@@ -135,7 +135,7 @@ class ApplicationWiring:
                 window.detail_panel.clear()
 
         window.timeline_widget.event_selected.connect(
-            lambda idx: self._spawn(on_event_selected(idx))
+            lambda event_id: self._spawn(on_event_selected(event_id))
         )
 
         # Date range filter
@@ -144,6 +144,17 @@ class ApplicationWiring:
             window.timeline_widget.update_events(timeline_vm.events)
 
         window.timeline_widget.filter_changed.connect(on_filter_changed)
+
+        # A selection the ViewModel had to prune (the event fell out of the
+        # visible set, e.g. after filtering) must leave the detail panel too:
+        # the canvas drops the id while re-rendering the new set, the panel
+        # has no other reason to notice.
+        def on_selected_event_changed():
+            if timeline_vm.selected_event is None:
+                window.detail_panel.clear()
+                window.timeline_widget.canvas.set_selected(None)
+
+        timeline_vm.selected_event_changed.connect(on_selected_event_changed)
 
         # ── XLSX import actions ─────────────────────────────────────────────
         async def _run_import(entity_type: str):
@@ -342,11 +353,16 @@ class ApplicationWiring:
         # Search result click -> open entity card (or select event in timeline)
         async def on_search_result(entity_type, entity_id):
             if entity_type == "event":
-                # Select in timeline and show details
-                for i, ev in enumerate(timeline_vm.events):
-                    if ev.id == entity_id:
-                        window.timeline_widget.list_widget.setCurrentRow(i)
-                        break
+                # Select by id and show details (plain await: the task of
+                # this handler already holds the session lock), then scroll
+                # the scale so the highlighted bar is visible (W3 D3). An id
+                # outside the visible selection leaves the panel untouched,
+                # as the row-based jump did before.
+                if any(ev.id == entity_id for ev in timeline_vm.events):
+                    await on_event_selected(entity_id)
+                    canvas = window.timeline_widget.canvas
+                    canvas.set_selected(entity_id)
+                    canvas.scroll_to_event(entity_id)
             else:
                 # Plain await, not a new spawn: on_search_result's own task
                 # already holds the session lock (see _spawn at the connect

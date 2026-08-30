@@ -25,6 +25,10 @@ ENDPOINT = "http://mock-llm/v1"
 MODEL = "test-model"
 
 
+def timeline_vm_events(canvas):
+    return canvas.events
+
+
 async def _open_entity_card(window, wait_for, entity_type: str, entity_id: int) -> EntityCardDialog:
     window.detail_panel.entity_clicked.emit(entity_type, entity_id)
 
@@ -46,16 +50,16 @@ async def test_filter_and_unknown_type_guards(app, wait_for):
     await helpers.create_event_via_ui(
         window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1)
     )
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: timeline.count() == 1)
+    canvas = window.timeline_widget.canvas
+    await wait_for(lambda: len(canvas.events) == 1)
 
     # A narrow date range hides the event; clearing brings it back
     window.timeline_widget.filter_changed.emit(
         datetime.date(1400, 1, 1), datetime.date(1400, 12, 31)
     )
-    await wait_for(lambda: timeline.count() == 0)
+    await wait_for(lambda: len(canvas.events) == 0)
     window.timeline_widget.filter_changed.emit(None, None)
-    await wait_for(lambda: timeline.count() == 1)
+    await wait_for(lambda: len(canvas.events) == 1)
 
     # Unknown entity type from the "+" menu: guard, no dialog
     window.timeline_widget.add_entity_requested.emit("no-such-type")
@@ -67,11 +71,45 @@ async def test_filter_and_unknown_type_guards(app, wait_for):
     await helpers.wait_until_settled()
     assert not [d for d in window.findChildren(EventDialog) if d.isVisible()]
 
+    # Unknown id on selection: the detail panel is cleared, not left stale
+    window.timeline_widget.event_selected.emit(999999)
+    await helpers.wait_until_settled()
+    assert window.detail_panel.title_label.text() == "" or not window.detail_panel.title_label.text()
+
     # Entity click with an unknown type or id: guards, no card
     window.detail_panel.entity_clicked.emit("no-such-type", 1)
     window.detail_panel.entity_clicked.emit("character", 999999)
     await helpers.wait_until_settled()
     assert not [d for d in window.findChildren(EntityCardDialog) if d.isVisible()]
+
+
+async def test_filtering_out_the_selected_event_clears_every_layer(app, wait_for):
+    """The selection is id-centered in all three layers (task 3.3).
+
+    A filter that drops the selected event used to leave the ViewModel and the
+    detail panel holding an object the canvas had already forgotten.
+    """
+    application, window = app
+    await helpers.create_event_via_ui(
+        window, wait_for, "Война", start_date=QDate(1300, 7, 1)
+    )
+    canvas = window.timeline_widget.canvas
+    await wait_for(lambda: len(canvas.events) == 1)
+
+    event_id = helpers.click_timeline_event(window, "Война")
+    await wait_for(lambda: "Война" in window.detail_panel.title_label.text())
+    assert canvas.selected_id == event_id
+
+    window.timeline_widget.filter_changed.emit(
+        datetime.date(1400, 1, 1), datetime.date(1400, 12, 31)
+    )
+    await wait_for(lambda: len(canvas.events) == 0)
+    await helpers.wait_until_settled()
+
+    # canvas, view model and detail panel agree: nothing is selected
+    assert canvas.selected_id is None
+    assert window.detail_panel.title_label.text() == ""
+    assert application._wiring._timeline_vm.selected_event is None
 
 
 async def test_entity_create_failure_rolls_back(app, wait_for, menu_qmenu, monkeypatch):
@@ -153,13 +191,13 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     await helpers.wait_until_settled()
     event_id = query_db(db_path, "SELECT id FROM events WHERE name = 'СобытиеПоиска'")[0][0]
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'ГеройПоиска'")[0][0]
-    timeline = window.timeline_widget.list_widget
+    canvas = window.timeline_widget.canvas
 
-    # "event" result: the event is selected on the timeline
+    # "event" result: the event's bar is selected on the scale (id-contract)
     window.search_bar.result_selected.emit("event", event_id)
     await helpers.wait_until_settled()
-    current = timeline.item(timeline.currentRow())
-    assert current is not None and "СобытиеПоиска" in current.text()
+    assert canvas.selected_id == event_id
+    assert any(e.id == event_id for e in timeline_vm_events(canvas))
 
     # entity result: the entity card opens
     window.search_bar.result_selected.emit("character", char_id)

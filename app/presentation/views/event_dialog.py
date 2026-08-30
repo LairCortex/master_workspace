@@ -6,7 +6,7 @@ from typing import Any
 from PySide6.QtCore import QDate, QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit,
+    QHBoxLayout, QLineEdit,
     QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 

@@ -21,7 +21,21 @@ class TimelineViewModel(QObject):
 
     async def load_events(self) -> None:
         self._all_events = list(await self._event_service.get_all_events())
-        # Re-apply current filter (if any) after reload
+        self._apply_filter()
+
+    def filter_by_dates(self, start: date | None, end: date | None) -> None:
+        """Filter events by date range. None clears the filter."""
+        self._current_filter = (start, end)
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """Recompute the visible set, then keep the selection consistent with it.
+
+        A selected event that fell out of the visible set is dropped here (and
+        ``selected_event_changed`` fires), so the canvas — which prunes the
+        same id on ``set_events`` — the ViewModel and the detail panel never
+        disagree about what is selected (task 3.3).
+        """
         start, end = self._current_filter
         if start is None or end is None:
             self.events = list(self._all_events)
@@ -31,22 +45,12 @@ class TimelineViewModel(QObject):
                 if e.start_date >= start and (e.end_date is None or e.end_date <= end)
             ]
         self.events_changed.emit()
+        if self.selected_event is not None:
+            self.select_event_by_id(self.selected_event.id)
 
-    def filter_by_dates(self, start: date | None, end: date | None) -> None:
-        """Filter events by date range. None clears the filter."""
-        self._current_filter = (start, end)
-        if start is None or end is None:
-            self.events = list(self._all_events)
-        else:
-            self.events = [
-                e for e in self._all_events
-                if e.start_date >= start and (e.end_date is None or e.end_date <= end)
-            ]
-        self.events_changed.emit()
-
-    def select_event(self, index: int) -> None:
-        if 0 <= index < len(self.events):
-            self.selected_event = self.events[index]
-        else:
-            self.selected_event = None
+    def select_event_by_id(self, event_id: int | None) -> None:
+        """Select by event id (W3 id-contract); a miss clears the selection."""
+        self.selected_event = next(
+            (e for e in self.events if e.id == event_id), None
+        )
         self.selected_event_changed.emit()

@@ -59,13 +59,10 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
         for i in range(dialog.char_tab.list_widget.count())
     ))
     dialog.save_button.click()
+    await wait_for(lambda: helpers.has_event_named(window, "Битва у моста"))
 
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: any("Битва у моста" in timeline.item(i).text() for i in range(timeline.count())))
-
-    # Select on the timeline → detail panel loads the event.
-    item = next(timeline.item(i) for i in range(timeline.count()) if "Битва у моста" in timeline.item(i).text())
-    helpers.select_item(timeline, item)
+    # Click the bar on the scale → detail panel loads the event.
+    helpers.click_timeline_event(window, "Битва у моста")
     detail = window.detail_panel
     await wait_for(lambda: detail.title_label.text() == "Битва у моста")
     assert detail.date_label.text()
@@ -92,18 +89,15 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
     # Detail panel refreshed with the updated entity
     await wait_for(lambda: "Генерал Старый Вард" in helpers.detail_panel_names(detail.char_list))
 
-    # Edit the event itself (double-click on the timeline → renamed on the timeline and in the panel).
-    item = next(timeline.item(i) for i in range(timeline.count()) if "Битва у моста" in timeline.item(i).text())
-    helpers.double_click_item(timeline, item)
+    # Edit the event itself (double-click on its bar → renamed on the scale and in the panel).
+    helpers.double_click_timeline_event(window, "Битва у моста")
     # The original creation dialog is hidden (not destroyed) after accept — filter visible ones
     await wait_for(lambda: [d for d in window.findChildren(EventDialog) if d.isVisible()])
     edit_dialog = [d for d in window.findChildren(EventDialog) if d.isVisible()][0]
     assert edit_dialog.windowTitle() == "Редактировать событие"
     edit_dialog.name_input.setText("Битва у разрушенного моста")
     edit_dialog.save_button.click()
-    await wait_for(lambda: any(
-        "Битва у разрушенного моста" in timeline.item(i).text() for i in range(timeline.count())
-    ))
+    await wait_for(lambda: helpers.has_event_named(window, "Битва у разрушенного моста"))
     await wait_for(lambda: detail.title_label.text() == "Битва у разрушенного моста")
 
 
@@ -147,10 +141,7 @@ async def test_create_character_from_event_dialog(app, wait_for, modal_qdialog):
     assert _name_in_list(dialog.char_tab, "Рыцарь")  # entity appears in the parent section
 
     dialog.save_button.click()
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: any(
-        "Битва героев" in timeline.item(i).text() for i in range(timeline.count())
-    ))
+    await wait_for(lambda: helpers.has_event_named(window, "Битва героев"))
     await helpers.wait_until_settled()
 
     # Character persisted and linked to the event.
@@ -187,10 +178,7 @@ async def test_link_location_in_character_popup(app, wait_for, modal_qdialog):
     assert _name_in_list(dialog.char_tab, "Местный")
 
     dialog.save_button.click()
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: any(
-        "В деревне" in timeline.item(i).text() for i in range(timeline.count())
-    ))
+    await wait_for(lambda: helpers.has_event_named(window, "В деревне"))
     await helpers.wait_until_settled()
 
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'Местный'")[0][0]
@@ -272,10 +260,7 @@ async def test_unlink_popup_entity_keeps_entity(app, wait_for, modal_qdialog):
     assert dialog.char_tab.list_widget.count() == 0
 
     dialog.save_button.click()
-    timeline = window.timeline_widget.list_widget
-    await wait_for(lambda: any(
-        "Отвязка" in timeline.item(i).text() for i in range(timeline.count())
-    ))
+    await wait_for(lambda: helpers.has_event_named(window, "Отвязка"))
     await helpers.wait_until_settled()
 
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'Странник'")[0][0]
@@ -289,12 +274,8 @@ async def test_unlink_popup_entity_keeps_entity(app, wait_for, modal_qdialog):
 
 
 async def _open_event_edit_dialog(window, wait_for, event_name: str) -> EventDialog:
-    timeline = window.timeline_widget.list_widget
-    item = next(
-        timeline.item(i) for i in range(timeline.count())
-        if event_name in timeline.item(i).text()
-    )
-    helpers.double_click_item(timeline, item)
+    await wait_for(lambda: helpers.has_event_named(window, event_name))
+    helpers.double_click_timeline_event(window, event_name)
     await wait_for(lambda: [d for d in window.findChildren(EventDialog) if d.isVisible()])
     return next(d for d in window.findChildren(EventDialog) if d.isVisible())
 

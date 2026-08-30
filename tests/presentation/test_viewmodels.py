@@ -36,22 +36,46 @@ class TestTimelineViewModel:
         assert len(vm.events) == 2
 
     @pytest.mark.asyncio
-    async def test_select_event(self):
+    async def test_select_event_by_id(self):
         service = AsyncMock()
         events = [_mock_event(1), _mock_event(2, "Siege")]
         service.get_all_events.return_value = events
         vm = TimelineViewModel(service)
         await vm.load_events()
-        vm.select_event(0)
-        assert vm.selected_event.id == 1
+        signals: list = []
+        vm.selected_event_changed.connect(lambda: signals.append(1))
+        vm.select_event_by_id(2)
+        assert vm.selected_event.id == 2
+        assert signals == [1]
 
     @pytest.mark.asyncio
-    async def test_select_event_none(self):
+    async def test_select_event_by_id_missing_clears(self):
         service = AsyncMock()
-        service.get_all_events.return_value = []
+        events = [_mock_event(1)]
+        service.get_all_events.return_value = events
         vm = TimelineViewModel(service)
         await vm.load_events()
-        vm.select_event(-1)
+        vm.select_event_by_id(1)
+        assert vm.selected_event.id == 1
+        # a miss resets the selection (same emitting semantics as before)
+        vm.select_event_by_id(999)
+        assert vm.selected_event is None
+
+    @pytest.mark.asyncio
+    async def test_select_event_by_id_respects_visible_filter(self):
+        service = AsyncMock()
+        e1 = _mock_event(1, "Early")
+        e1.start_date = date(1100, 1, 1)
+        e1.end_date = date(1100, 6, 1)
+        e2 = _mock_event(2, "Mid")
+        e2.start_date = date(1200, 1, 1)
+        e2.end_date = date(1200, 12, 31)
+        service.get_all_events.return_value = [e1, e2]
+        vm = TimelineViewModel(service)
+        await vm.load_events()
+        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))
+        # id 1 is loaded but not visible → the miss clears (W3: visible set)
+        vm.select_event_by_id(1)
         assert vm.selected_event is None
 
     @pytest.mark.asyncio
@@ -93,6 +117,46 @@ class TestTimelineViewModel:
 
         vm.filter_by_dates(None, None)
         assert len(vm.events) == 2
+
+    @pytest.mark.asyncio
+    async def test_filter_prunes_selection_that_left_the_visible_set(self):
+        service = AsyncMock()
+        e1 = _mock_event(1, "Early")
+        e1.start_date = date(1100, 1, 1)
+        e1.end_date = date(1100, 6, 1)
+        e2 = _mock_event(2, "Mid")
+        e2.start_date = date(1200, 1, 1)
+        e2.end_date = date(1200, 12, 31)
+        service.get_all_events.return_value = [e1, e2]
+        vm = TimelineViewModel(service)
+        await vm.load_events()
+        vm.select_event_by_id(1)
+        signals: list = []
+        vm.selected_event_changed.connect(lambda: signals.append(1))
+
+        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))  # e1 falls out
+
+        # The canvas drops an invisible id on set_events; the VM must not keep
+        # holding it (task 3.3: an id-contract selection lives exactly as long as
+        # its event is visible), and the pruning has to be announced so the
+        # canvas and the detail panel can follow.
+        assert vm.selected_event is None
+        assert signals == [1]
+
+    @pytest.mark.asyncio
+    async def test_reload_keeps_selection_that_is_still_visible(self):
+        service = AsyncMock()
+        service.get_all_events.return_value = [_mock_event(1), _mock_event(2, "Siege")]
+        vm = TimelineViewModel(service)
+        await vm.load_events()
+        vm.select_event_by_id(2)
+        signals: list = []
+        vm.selected_event_changed.connect(lambda: signals.append(1))
+
+        await vm.load_events()  # mutation reload: the ids are still visible
+
+        assert vm.selected_event.id == 2
+        assert signals == [1]  # re-asserted once, never pruned
 
     @pytest.mark.asyncio
     async def test_filter_no_match(self):

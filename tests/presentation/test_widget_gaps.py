@@ -400,7 +400,9 @@ class TestEntityCardDialogGaps:
         opened: list = []
         monkeypatch.setattr(
             entity_card_dialog_mod, "ImageViewerDialog",
-            lambda original, preview, parent=None, theme=None: SimpleNamespace(exec=lambda: opened.append((original, preview))),
+            lambda original, preview, parent=None, theme=None: SimpleNamespace(
+                exec=lambda: opened.append((original, preview))
+            ),
         )
         d = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(d)

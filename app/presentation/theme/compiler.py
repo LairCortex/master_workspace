@@ -131,6 +131,18 @@ def accent_rgba(tokens: Tokens, theme: str, alpha: float) -> str:
     return f"rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {alpha:g})"
 
 
+def token_rgb(tokens: Tokens, theme: str, key: str) -> Optional[tuple[int, int, int]]:
+    """Token color as ``(r, g, b)`` for QPainter code outside QSS (W3 D4).
+
+    The timeline canvas paints bars/axis/grid with a QPen/QBrush, where QSS
+    roles do not reach — the screen asks the compiler for the token's RGB and
+    composes alphas itself (the same derivations ``accent_rgba`` spells for
+    sheets, no new tokens). ``None`` when the value is not a hex color: the
+    caller falls back to a neutral paint instead of inventing a color (D7).
+    """
+    return _hex_rgb(tokens[key][theme])
+
+
 def mention_style(tokens: Tokens, theme: str) -> str:
     """Inline-HTML style for ``@mention`` anchors (W2b D2/Q8-a).
 

@@ -11,9 +11,7 @@ import datetime
 import json
 from types import SimpleNamespace
 
-import pytest
-from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QColor
 
 from app.infrastructure.ui_prefs.config import UiPrefs, UiPrefsManager
 from app.presentation.theme.compiler import tokens_file_path

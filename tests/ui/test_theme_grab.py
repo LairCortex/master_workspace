@@ -404,58 +404,6 @@ def test_editor_chrome_is_tokens_and_canvas_keeps_its_own_colors(qtbot, tmp_path
 def test_accent_token_change_moves_mention_ai_and_selection_together(qtbot, tmp_path, theme):
     """Changing ``color.accent`` in tokens alone recolors mentions, the AI
     active state, list selections and the «Показать» button — no screen edits
-    (the «разделитель и выделение» / «упоминание и AI через токен» scenarios)."""
-    import json
-
-    from PySide6.QtWidgets import QApplication, QLineEdit
-
-    from app.presentation.views.ai_assist_button import AI_STATE_ACTIVE, AiAssistButton, ai_state_is
-    from app.presentation.views.mention_text_edit import MentionTextEdit
-    from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
-
-    new_accent = "#0f8c3c"
-    tokens = json.loads(tokens_file_path().read_text(encoding="utf-8"))
-    tokens["color.accent"][theme] = new_accent
-    tokens_path = tmp_path / "tokens.json"
-    tokens_path.write_text(json.dumps(tokens), encoding="utf-8")
-    prefs = UiPrefsManager(tmp_path / "ui.json")
-    if theme != "dark":
-        prefs.save(UiPrefs(theme=theme))
-    runtime = ThemeRuntime(prefs=prefs, tokens_path=tokens_path)
-
-    # 1) mention markup carries the new accent through the compiler.
-    edit = MentionTextEdit(theme=runtime)
-    qtbot.addWidget(edit)
-    edit.setContent("@[A](character:1)")
-    assert f"color:{new_accent}" in edit.toHtml()
-
-    # 2) AI-active style is an accent derivative (rgba of the new token).
-    field = QLineEdit()
-    qtbot.addWidget(field)
-    ai = AiAssistButton(field, "character", "backstory", "П", theme=runtime)
-    ai.update_llm_state("ready", True)
-    assert ai_state_is(ai, AI_STATE_ACTIVE)
-    green = QColor(new_accent)
-    assert f"rgba({green.red()}, {green.green()}, {green.blue()}, 0.25)" in ai.styleSheet()
-
-    # 3) «Показать» (chrome button) follows the accent token. List selections
-    #    are the same QSS accent (popup-surface test above pins the pixel).
-    runtime.attach_app(QApplication.instance())
-    widget = WorldSnapshotWidget(theme=runtime)
-    widget.resize(420, 320)
-    qtbot.addWidget(widget)
-    widget.show()
-    qtbot.waitExposed(widget)
-    image = widget.show_button.grab().toImage()
-    assert image.pixelColor(image.width() - 3, image.height() // 2) == QColor(new_accent)
-
-
-# ── W2b final acceptance (specs ui-theme): one accent token drives them all ─
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_accent_token_change_moves_mention_ai_and_selection_together(qtbot, tmp_path, theme):
-    """Changing ``color.accent`` in tokens alone recolors mentions, the AI
-    active state, list selections and the «Показать» button — no screen edits
     (the «разделитель и выделение» / «упоминание и AI через токен» scenarios).
 
     The AI state is pinned by its marker and by a pixel, never by grepping a

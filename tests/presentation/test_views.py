@@ -7,7 +7,7 @@ import zipfile
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox, QToolTip
 
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.timeline_widget import TimelineWidget
@@ -499,11 +499,14 @@ class TestTimelineWidget:
         qtbot.addWidget(w)
 
         event1 = MagicMock()
+        event1.id = 1
         event1.name = "Battle"
         event1.start_date = date(1200, 1, 1)
         event1.end_date = date(1200, 12, 31)
         w.update_events([event1])
-        assert w.list_widget.count() == 1
+        canvas = w.canvas
+        assert [e.id for e in canvas.events] == [1]
+        assert canvas.plan.bar_for(1) is not None
 
     def test_timeline_has_add_button(self, qtbot):
         vm = MagicMock()
@@ -559,6 +562,328 @@ class TestTimelineWidget:
         assert len(received) == 1
         assert received[0] == (None, None)
         assert not w.clear_filter_button.isEnabled()
+
+    def test_list_widget_is_gone(self, qtbot):
+        # W3 breaking contract: the row-based QListWidget is fully removed.
+        vm = MagicMock()
+        vm.events = []
+        w = TimelineWidget(vm)
+        qtbot.addWidget(w)
+        assert not hasattr(w, "list_widget")
+        assert hasattr(w.canvas, "event_double_clicked")
+
+
+# ── TimelineCanvas (W3) ──────────────────────────────────────────────────
+
+from PySide6.QtCore import QEvent, QPoint, QPointF  # noqa: E402
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QWheelEvent  # noqa: E402
+
+from app.presentation.theme import ThemeRuntime  # noqa: E402
+from app.presentation.theme.compiler import tokens_file_path  # noqa: E402
+from app.presentation.utils.date_utils import set_custom_months  # noqa: E402
+from app.presentation.views.timeline_widget import (  # noqa: E402
+    EMPTY_HINT_TEXT,
+    TimelineCanvas,
+    canvas_palette,
+)
+from app.infrastructure.ui_prefs.config import UiPrefsManager  # noqa: E402
+
+
+def _evt(id_, name, start, end):
+    e = MagicMock()
+    e.id = id_
+    e.name = name
+    e.start_date = start
+    e.end_date = end
+    return e
+
+
+def _press(canvas, point, button=Qt.MouseButton.LeftButton):
+    args = (QEvent.Type.MouseButtonPress, QPointF(point), canvas.mapToGlobal(point), button,
+            button if button != Qt.MouseButton.NoButton else Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(canvas, QMouseEvent(*args))
+    QApplication.sendEvent(canvas, QMouseEvent(
+        QEvent.Type.MouseButtonRelease, QPointF(point), canvas.mapToGlobal(point),
+        button, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+
+
+def _double_click(canvas, point):
+    QApplication.sendEvent(canvas, QMouseEvent(
+        QEvent.Type.MouseButtonDblClick, QPointF(point), canvas.mapToGlobal(point),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+
+
+def _move(canvas, point):
+    QApplication.sendEvent(canvas, QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(point), canvas.mapToGlobal(point),
+        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+
+
+def _wheel(canvas, dy):
+    QApplication.sendEvent(canvas, QWheelEvent(
+        QPointF(canvas.rect().center()), canvas.mapToGlobal(canvas.rect().center()),
+        QPoint(0, 0), QPoint(0, dy),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase, False))
+
+
+def _make_runtime(tmp_path, theme_runtime_path=None):
+    return ThemeRuntime(prefs=UiPrefsManager(tmp_path / "ui.json"),
+                        tokens_path=theme_runtime_path or tokens_file_path())
+
+
+def _visible_center(canvas, event_id):
+    bar = canvas.plan.bar_for(event_id)
+    x = (bar.x0 + bar.x1) / 2.0
+    y = canvas.plan.metrics.axis_h + (bar.y_top + bar.height / 2.0) - canvas._scroll_y
+    return QPoint(int(x), int(y))
+
+
+class TestTimelineCanvas:
+    def _canvas(self, qtbot, events=(), theme=None, size=(320, 160)):
+        canvas = TimelineCanvas(theme=theme)
+        canvas.resize(*size)
+        qtbot.addWidget(canvas)
+        if events:
+            canvas.set_events(events)
+        return canvas
+
+    def test_click_bar_center_emits_event_id(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(7, "Бой", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.show()
+        received = []
+        canvas.event_selected.connect(received.append)
+        _press(canvas, _visible_center(canvas, 7))
+        assert received == [7]
+        assert canvas.selected_id == 7
+
+    def test_click_on_axis_or_empty_area_is_silent(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(7, "Бой", date(1200, 1, 1), date(1200, 6, 30))])
+        canvas.show()
+        received = []
+        canvas.event_selected.connect(received.append)
+        _press(canvas, QPoint(10, 2))  # axis strip
+        _press(canvas, QPoint(canvas.width() - 1, canvas.height() - 1))  # past the bar end
+        assert received == []
+
+    def test_right_click_selects_nothing(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(7, "Бой", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.show()
+        received = []
+        canvas.event_selected.connect(received.append)
+        _press(canvas, _visible_center(canvas, 7), button=Qt.MouseButton.RightButton)
+        assert received == []
+
+    def test_double_click_emits_event_id(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(8, "Осада", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.show()
+        received = []
+        canvas.event_double_clicked.connect(received.append)
+        _double_click(canvas, _visible_center(canvas, 8))
+        assert received == [8]
+        before = canvas.plan
+        _double_click(canvas, QPoint(canvas.width() - 1, int(canvas.plan.metrics.axis_h) + 1)
+                      if before.is_empty else QPoint(int(before.inner_right) + 1, 40))
+        assert received == [8]  # outside-of-bar dblclick stays silent
+
+    def test_wheel_changes_scroll_and_repaints(self, qtbot):
+        events = [_evt(i, f"E{i}", date(1200, 1, 1), date(1200, 1, 2)) for i in range(12)]
+        canvas = self._canvas(qtbot, events, size=(240, 80))
+        canvas.show()
+        _wheel(canvas, -80)
+        assert canvas._scroll_y > 0.0
+        _wheel(canvas, -10**6)
+        assert canvas._scroll_y == canvas.plan.max_scroll
+        _wheel(canvas, 10**6)
+        assert canvas._scroll_y == 0.0
+        assert not canvas.grab().isNull()
+
+    def test_hover_shows_tooltip_with_name_and_range(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(3, "Пир", date(1200, 6, 1), None)])
+        canvas.show()
+        # The tooltip is not only the label's stand-in: even on a bar whose
+        # label fits it carries the date range the label never shows (D5).
+        assert canvas.plan.bar_for(3).text_fits is True
+        _move(canvas, _visible_center(canvas, 3))
+        assert "Пир" in QToolTip.text()
+        assert "—" in canvas.tooltip_text(3)  # open end rendered as an em dash
+        assert canvas.tooltip_text(999) == ""
+        _move(canvas, QPoint(1, 1))  # off the bar → hovered tooltip hides
+        _move(canvas, _visible_center(canvas, 3))  # hover again → Leave clears it
+        QApplication.sendEvent(canvas, QEvent(QEvent.Type.Leave))
+        canvas.grab()
+
+    def test_empty_canvas_paints_hint_text(self, qtbot, monkeypatch):
+        drawn: list[str] = []
+        real_draw_text = QPainter.drawText
+
+        def spy(self, *args, **kwargs):
+            texts = [a for a in args if isinstance(a, str)]
+            drawn.extend(texts)
+            return real_draw_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(QPainter, "drawText", spy)
+        canvas = self._canvas(qtbot)
+        canvas.show()
+        canvas.grab()
+        assert EMPTY_HINT_TEXT in drawn
+
+    def test_narrow_canvas_skips_colliding_axis_labels(self, qtbot, monkeypatch):
+        drawn: list[str] = []
+        real_draw_text = QPainter.drawText
+
+        def spy(self, *args, **kwargs):
+            drawn.extend(a for a in args if isinstance(a, str))
+            return real_draw_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(QPainter, "drawText", spy)
+        canvas = self._canvas(
+            qtbot,
+            [_evt(1, "Кампания", date(1200, 1, 1), date(1200, 12, 31))],
+            size=(180, 70),
+        )
+        canvas.show()
+        canvas.grab()
+        labels = [t for t in drawn if "1200" in t]
+        assert 0 < len(labels) < len(canvas.plan.ticks)  # label clipping (D6)
+
+    def test_set_events_keeps_or_drops_selection(self, qtbot):
+        events = [_evt(1, "A", date(1200, 1, 1), date(1200, 2, 1)),
+                  _evt(2, "B", date(1200, 3, 1), date(1200, 4, 1))]
+        canvas = self._canvas(qtbot, events)
+        canvas.set_selected(2)
+        canvas.set_events(events)  # reload with the selection still present
+        assert canvas.selected_id == 2
+        canvas.set_events([events[0]])  # selected event vanished → dropped
+        assert canvas.selected_id is None
+        canvas.set_events(events, selected_id=1)  # explicit selection wins
+        assert canvas.selected_id == 1
+
+    def test_set_selected_is_idempotent(self, qtbot, mocker):
+        canvas = self._canvas(qtbot, [_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.set_selected(1)
+        plan_before = canvas.plan
+        spy = mocker.spy(canvas, "update")
+        canvas.set_selected(1)
+        spy.assert_not_called()
+        assert canvas.plan is plan_before  # no rebuild
+
+    def test_external_selection_rehighlights_without_relayout(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.show()
+        canvas.grab()  # first paint: unselected fill
+        before = canvas.grab().toImage()
+        canvas.set_selected(1)
+        after = canvas.grab().toImage()
+        cx = int((canvas.plan.bar_for(1).x0 + canvas.plan.bar_for(1).x1) / 2) * before.width() // max(canvas.width(), 1)
+        cy = int(canvas.plan.metrics.axis_h + canvas.plan.lane_h / 2) * before.height() // max(canvas.height(), 1)
+        assert before.pixelColor(cx, cy) != after.pixelColor(cx, cy)
+        assert canvas.plan.lane_count == 1  # layout untouched by selection
+
+    def test_scroll_to_event_brings_bar_into_view(self, qtbot):
+        events = [_evt(i, f"E{i}", date(1200, 1, 1), date(1200, 1, 2)) for i in range(12)]
+        canvas = self._canvas(qtbot, events, size=(240, 80))
+        canvas.show()
+        canvas.scroll_to_event(11)
+        center = _visible_center(canvas, 11)
+        received = []
+        canvas.event_selected.connect(received.append)
+        _press(canvas, center)
+        assert received == [11]
+
+    def test_axis_labels_use_custom_month_names(self, qtbot):
+        try:
+            set_custom_months({6: "Травень"})
+            canvas = self._canvas(
+                qtbot, [_evt(1, "Лето", date(1200, 1, 1), date(1200, 12, 31))]
+            )
+            labels = canvas.axis_labels()
+            assert any("01 Травень 1200" == label for label in labels)
+            assert not any("Июнь" in label for label in labels)
+        finally:
+            set_custom_months(None)
+
+    def test_resize_relayouts(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.show()
+        canvas.resize(400, 220)
+        qtbot.wait(0)  # the visible widget gets its resize event dispatched
+        assert canvas.plan.metrics.viewport_w == 400.0
+        assert canvas.minimumSizeHint().width() > 0
+
+    def test_live_retheme_repaints_selection_and_keeps_it(self, qtbot, tmp_path):
+        runtime = _make_runtime(tmp_path)
+        canvas = self._canvas(
+            qtbot, [_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))], theme=runtime
+        )
+        canvas.show()
+        canvas.set_selected(1)
+        canvas.set_events([_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))])
+        image_dark = canvas.grab().toImage()
+        assert runtime.toggle() and runtime.theme == "light"
+        image_light = canvas.grab().toImage()
+        assert canvas.selected_id == 1  # live re-theme never clears the choice
+        cy = int(image_dark.height() * 0.6)
+        # the accent changed with the theme ⇒ the selected fill pixel moved
+        row_dark = [image_dark.pixelColor(x, cy).getRgb() for x in range(10, image_dark.width() - 10)]
+        row_light = [image_light.pixelColor(x, cy).getRgb() for x in range(10, image_light.width() - 10)]
+        assert row_dark != row_light
+
+    def test_runtime_with_unparsable_accent_falls_back_neutrally(self, qtbot, tmp_path):
+        tokens = json.loads(tokens_file_path().read_text(encoding="utf-8"))
+        tokens["color.accent"]["dark"] = "not-a-color"
+        broken = tmp_path / "tokens.json"
+        broken.write_text(json.dumps(tokens), encoding="utf-8")
+        runtime = _make_runtime(tmp_path, theme_runtime_path=broken)
+        palette = canvas_palette(runtime)
+        canvas = self._canvas(qtbot, [_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))],
+                              theme=runtime)
+        canvas.grab()
+        # Qt's gray global (r == g), never an invented hex (off-skin note, D4).
+        assert palette.bar_selected.red() == palette.bar_selected.green()
+
+    def test_off_skin_palette_used_without_runtime(self, qtbot):
+        palette = canvas_palette(None)
+        assert palette.bar_fill.alphaF() < 1.0
+        # Spec scenario «Вне скина»: the fallback is named Qt globals only —
+        # no app-owned color is invented for the token-less state.
+        assert palette.bar_text == QColor(Qt.GlobalColor.black)
+        assert palette.bar_text_selected == QColor(Qt.GlobalColor.white)
+        assert palette.bar_selected == QColor(Qt.GlobalColor.gray)
+
+    def test_wheel_notch_scrolls_exactly_one_lane_row(self, qtbot):
+        events = [_evt(i, f"E{i}", date(1200, 1, 1), date(1200, 1, 2)) for i in range(12)]
+        canvas = self._canvas(qtbot, events, size=(240, 80))
+        canvas.show()
+        _wheel(canvas, -120)  # one notch down == one lane row, not 5–8 of them
+        row_h = canvas.plan.lane_h + canvas.plan.metrics.lane_gap
+        assert canvas._scroll_y == pytest.approx(row_h)
+        _wheel(canvas, 120)
+        assert canvas._scroll_y == pytest.approx(0.0)
+
+    def test_membership_change_rewinds_scroll(self, qtbot):
+        events = [_evt(i, f"E{i}", date(1200, 1, 1), date(1200, 1, 2)) for i in range(12)]
+        canvas = self._canvas(qtbot, events, size=(240, 80))
+        canvas.show()
+        _wheel(canvas, -10**6)
+        assert canvas._scroll_y > 0.0
+        canvas.set_events(events)  # same ids (mutation reload) → position kept
+        assert canvas._scroll_y > 0.0
+        canvas.set_events(events[:6])  # a different set (another filter) → from the top
+        assert canvas._scroll_y == 0.0
+
+    def test_plan_is_cached_until_its_inputs_change(self, qtbot):
+        canvas = self._canvas(qtbot, [_evt(1, "A", date(1200, 1, 1), date(1200, 12, 31))])
+        canvas.show()
+        canvas.grab()
+        cached = canvas.plan
+        canvas.grab()  # neither painting nor selection may repack the lanes
+        canvas.set_selected(1)
+        assert canvas.plan is cached
+        canvas.resize(400, 200)  # a new viewport size must
+        qtbot.wait(0)
+        assert canvas.plan is not cached
 
 
 # ── DetailPanel ──────────────────────────────────────────────────────────
@@ -765,10 +1090,10 @@ class TestTimelineDoubleClick:
         event.start_date = date(1200, 1, 1)
         event.end_date = date(1200, 12, 31)
         w.update_events([event])
+        w.show()
         received = []
         w.event_double_clicked.connect(lambda eid: received.append(eid))
-        item = w.list_widget.item(0)
-        w.list_widget.itemDoubleClicked.emit(item)
+        _double_click(w.canvas, _visible_center(w.canvas, 42))
         assert received == [42]
 
     def test_detail_panel_no_edit_button(self, qtbot):

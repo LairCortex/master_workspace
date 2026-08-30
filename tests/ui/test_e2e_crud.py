@@ -56,14 +56,8 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
 
     # 2. Link the entity to a new event (event edit dialog → tab → "Привязать существующего")
     await helpers.create_event_via_ui(window, wait_for, event_name, characteristics="Связь")
-    timeline = window.timeline_widget.list_widget
 
-    def open_event_edit_dialog() -> EventDialog:
-        item = next(timeline.item(i) for i in range(timeline.count()) if event_name in timeline.item(i).text())
-        helpers.double_click_item(timeline, item)
-        return None
-
-    open_event_edit_dialog()
+    helpers.double_click_timeline_event(window, event_name)
     await wait_for(lambda: _event_dialogs(window))
     edit_dialog = _event_dialogs(window)[0]
     tab = getattr(edit_dialog, _TAB_ATTR[entity_type])
@@ -74,8 +68,7 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
     await helpers.wait_until_settled()
 
     # 3. The entity is displayed in the detail panel after selecting the event
-    item = next(timeline.item(i) for i in range(timeline.count()) if event_name in timeline.item(i).text())
-    helpers.select_item(timeline, item)
+    helpers.click_timeline_event(window, event_name)
     detail_list = getattr(window.detail_panel, _DETAIL_LIST_ATTR[entity_type])
     await wait_for(lambda: name in helpers.detail_panel_names(detail_list))
 
@@ -101,8 +94,7 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
     await wait_for(lambda: new_name in helpers.detail_panel_names(detail_list))
 
     # 5. Unlink (UI-level delete): event edit → tab → "Удалить" → save
-    item = next(timeline.item(i) for i in range(timeline.count()) if event_name in timeline.item(i).text())
-    helpers.double_click_item(timeline, item)
+    helpers.double_click_timeline_event(window, event_name)
     await wait_for(lambda: _event_dialogs(window))
     edit_dialog2 = _event_dialogs(window)[0]
     tab2 = getattr(edit_dialog2, _TAB_ATTR[entity_type])
