@@ -12,6 +12,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
+from app.presentation.theme.catalog import attach_theme, set_role
+
 
 class ImageViewerDialog(QDialog):
     """Shows ``original`` full-size; falls back to ``preview``; else a message.
@@ -26,12 +28,22 @@ class ImageViewerDialog(QDialog):
         original: QPixmap | None,
         preview: QPixmap | None = None,
         parent: QWidget | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
+        self._theme = theme
         self.setWindowTitle("Просмотр изображения")
         self.resize(700, 600)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("imageViewerChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
+        layout.setContentsMargins(11, 11, 11, 11)
 
         pixmap: QPixmap | None = None
         used_preview = False
@@ -44,6 +56,9 @@ class ImageViewerDialog(QDialog):
         if pixmap is None:
             message = QLabel("Изображение недоступно.")
             message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # The missing-image placeholder is a card: surface background and
+            # border from tokens (was the OS base/mid palette).
+            set_role(message, "card")
             layout.addWidget(message, 1)
         else:
             image_label = QLabel()
@@ -63,6 +78,14 @@ class ImageViewerDialog(QDialog):
         close_btn.clicked.connect(self.close)
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
+
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:

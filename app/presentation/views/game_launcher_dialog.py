@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from app.infrastructure.db.game_manager import (
     create_game, delete_game, import_game, list_games, read_archive_meta,
 )
-from app.presentation.theme.catalog import attach_theme
+from app.presentation.theme.catalog import attach_theme, title
 
 
 class GameLauncherDialog(QDialog):
@@ -53,9 +53,9 @@ class GameLauncherDialog(QDialog):
         chrome_layout.setContentsMargins(8, 8, 8, 8)
         chrome_layout.setSpacing(8)
 
-        title = QLabel("Выберите игру или создайте новую")
-        title.setStyleSheet("font-weight: bold; font-size: 16px; margin-bottom: 8px;")
-        chrome_layout.addWidget(title)
+        # W1 remnants (bold-16 inline sheet) → catalog title-xl: same 16px bold
+        # from the tokens, margin-bottom replaced by the layout spacing (8px).
+        chrome_layout.addWidget(title("Выберите игру или создайте новую", size="xl"))
 
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._on_open)

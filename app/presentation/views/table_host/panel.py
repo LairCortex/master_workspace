@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.presentation.theme.catalog import attach_theme, set_role
 from app.application.services.table_host_service import (
     EmptySeatingError,
     PortBusyError,
@@ -58,9 +59,11 @@ class TableHostPanel(QDialog):
         host: TableHostService,
         parent: QWidget | None = None,
         list_ipv4: Callable[[], list[str]] | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self._host = host
+        self._theme = theme
         self._list_ipv4 = list_ipv4 or local_ipv4_addresses
         self.setWindowTitle("Стол")
         self.resize(420, 560)
@@ -84,11 +87,20 @@ class TableHostPanel(QDialog):
         self.firewall_label.setWordWrap(True)
         self.seat_list = QListWidget(self)
         self.player_list = QListWidget(self)
+        set_role(self.seat_list, "list")
+        set_role(self.player_list, "list")
         self.start_button = QPushButton("Открыть стол", self)
         self.stop_button = QPushButton("Остановить", self)
         self.kick_button = QPushButton("Выгнать", self)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("tableHostChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
         port_row = QHBoxLayout()
         port_row.addWidget(QLabel("Порт", self))
         port_row.addWidget(self.port_spin)
@@ -116,6 +128,13 @@ class TableHostPanel(QDialog):
         self._seats_loading = False
         self.refresh_urls()
         self.sync_running()
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     def selected_port(self) -> int:
         return int(self.port_spin.value())

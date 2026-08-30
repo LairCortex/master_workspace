@@ -90,6 +90,15 @@ class ThemeRuntime:
         return self._theme
 
     @property
+    def tokens(self) -> Optional[Tokens]:
+        """Loaded token table (``None`` when the whole theme is invalid, D7).
+
+        Read accessor for the rare screen that derives a color from a token
+        outside the QSS (e.g. a status label on a non-attached dialog).
+        """
+        return self._tokens
+
+    @property
     def prefs(self) -> UiPrefsManager:
         return self._prefs
 
@@ -170,9 +179,14 @@ class ThemeRuntime:
         """Call ``callback()`` after a theme change was applied.
 
         Held weakly (bound methods included), so a closed window never keeps
-        the subscription — nor is kept alive by it.
+        the subscription — nor is kept alive by it. Re-subscribing the same
+        callback is a no-op (mirrors ``register`` de-duplication for widgets):
+        a double ``refresh_content`` per switch would only double the work.
         """
         ref = weakref.WeakMethod(callback) if inspect.ismethod(callback) else weakref.ref(callback)
+        # Bound methods re-create on attribute access, so compare with ``==``
+        # (WeakMethod exposes the live bound method; identity would miss).
+        self._listeners = [r for r in self._listeners if r() != callback]
         self._listeners.append(ref)
 
     @property
@@ -181,13 +195,21 @@ class ThemeRuntime:
         return tuple(callback for callback in (ref() for ref in self._listeners) if callback is not None)
 
     def _notify_listeners(self) -> None:
+        """Notify subscribers; a listener failure is contained (logged), never
+        allowed to abort the switch for the others (W2b review: one dead
+        wrapper must not freeze every screen's re-render nor escape into the
+        toggle action — the QSS itself is already applied to all widgets).
+        """
         alive: list = []
         for ref in self._listeners:
             callback = ref()
             if callback is None:
                 continue  # the window/dialog behind it is gone
             alive.append(ref)
-            callback()
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 — one broken screen must not stop the rest
+                log.exception("Обновление темы не дошло до подписчика %r", callback)
         self._listeners = alive
 
     def apply(self) -> None:

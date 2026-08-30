@@ -2,6 +2,42 @@
 
 ## Unreleased — незавершённый
 
+### Дизайн-система W2b: миграция остатка chrome (эпик W: W2 завершён — W2a влит, W2b ждёт коммита/мерджа; эпик открыт до W3)
+
+#### Новый функционал
+- Все оставшиеся chrome-экраны мастера подключены к теме одной точкой (`attach_theme` + роли каталога W2a): `LlmSetupDialog` (page-title/hint-фабрики, статусы проверки на `status-ok`/`status-error` вместо inline-свопов `#2e7d32/#c62828`), `EventDialog`, `XlsxImportDialog` (mono-токен вместо inline-QSS), `ImageViewerDialog`, `EntityCardDialog` (card-роль placeholder вместо `palette(mid/base)`), `TableHostPanel`, `_DocViewerDialog` (mono-токен вместо `QFont("Menlo…")`)
+- Панели главного окна: `detail_panel` (card/list-роли, `rating_to_color()` читает концы градиента из runtime-токенов `color.rating.low/high`), `timeline_widget` и попап `search_bar` — list-роль (ушли `palette(mid/highlight)`-QSS, выделение = accent), шапки результатов поиска — `color.border` вместо `palette().mid()`, `QSplitter::handle` — роль `splitter` (border-токен), title лаунчера — фабрика `title(size="xl")` (закрыт остаток W1)
+- character_sheet-диалоги (preset/list/editor/fill): chrome-формы подключены к теме; канвас и `QGraphicsProxyWidget`-поля сцены — вне темы (D5, пиксельный regression «канвас не трогать» обе темы)
+- Заведены токены, перенесённые из W2a как мёртвые: `font.family.mono`, `color.rating.low`, `color.rating.high` (в `tokens.json` + `REQUIRED_TOKEN_KEYS` тем же кодом, что их читает: `[field][uiRoleMono]`-правило, `rating_to_color`). Naming по namespace'у обязательно, т.к. каждый ключ становится CSS custom property web-игрока: monospace-семейство живёт в `font.*` (в `color.*` оно уходило как `--color-font-family-mono`), `color.rating.*` — цвета (контент-тинты), поэтому в `color.*` и остаются
+- Mention и AI (решение Q8=a): `compiler.mention_style(tokens, theme)` — inline-HTML упоминаний красится accent'ом (ушёл `#5b9bd5`); `attach_theme(..., on_retheme=...)` — подписка на live-перекраску контента, недоступного QSS (rating-тинты `detail_panel`, шапки результатов `search_bar`, узлы дерева `world_snapshot`); `MentionTextEdit` — не chrome-корень, поэтому подписывает `refresh_content()` напрямую через `ThemeRuntime.add_listener` (тот же путь) и перезапекает документ при live-смене темы с сохранением каретки/выделения; ACTIVE/DISABLED AI-кнопки — производные `accent_rgba` и `color.fg.muted` вместо hardcoded rgba (оф-скин — shape без цвета, маркер `aiState` не менялся)
+- Зачистка-инвариант: новый `tests/presentation/test_no_chrome_hex.py` — AST-проход по `app/presentation/views/**` (кроме канвас-слоя) запрещает hex-литералы и вызовы `palette()` в chrome-коде экранов
+- Приёмка (specs `ui-theme`/`ui-widget-catalog`): автотест «смена `color.accent` в токенах меняет mention, AI-active, выделения списков и кнопку «Показать» без правок экранов» (обе темы); пиксельные E2E rating-карточки (композит с токеном + смена токена без правок), editor-chrome-vs-canvas, mention-попапа (accent/accent.fg/surface); полный `QT_QPA_PLATFORM=offscreen python -m pytest` зелёный
+
+#### Изменено
+- **BREAKING (тесты):** ожидания старых literal-цветов (rgba AI-кнопки, `128/128/128`, `#5b9bd5`) заменены на маркер `aiState`, производные токенов и off-skin-контракт; layout-тест editor-диалога читает chrome-контейнер
+- Выделения/ховер строк timeline и поиска — accent из токенов (accent-slip подтверждён как целевой вид; отдельный токен `color.selection` не заведён — нет подтверждённого конфликта)
+- **User-visible (оф-скин):** при битых токенах rating-карточки и rating-узлы дерева не показывают тина вообще (`rating_to_color` → полностью прозрачный). Исторически у конца градиента был серый `#3a3a3a`, теперь off-skin не рисует выдуманный цвет (D7): индикация рейтинга пропадает вместе со всей темой. При валидных токенах — прежний градиент
+- **User-visible:** rating-карточки related-списков снова разделены рамкой: карточка красит surface/border из роли (`WA_StyledBackground`), а tint останавливается inside-рамки. `alternate-background-color` list-роли по-прежнему виден только в списках с обычными элементами (timeline, поиск) — там, где строку не перекрывает item-widget
+- Status-лейбл LLM-проверки больше не берёт цвет из process-wide токенов, когда переданный диалогу runtime невалиден: либо вся тема (роль `status-ok`/`status-error` в подключённом chrome), либо вся палитра ОС (D7 вместо half-theming)
+
+#### Исправлено
+- Пиксельный тест mention-попапа сравнивал logical-координаты `visualItemRect` с device-пикселями grabbed-изображения (dpr 2) и был flaky вне offscreen — зонд переведён в одно пространство координат (падал и на HEAD)
+- `Spy`-тест doc-viewer принимал новый `theme`-параметр `_DocViewerDialog`
+- Review-фикс W2b: исключение в одном retheme-подписчике больше не обрывает переключение темы для остальных (изолируется и логируется в `ThemeRuntime._notify_listeners`); повторная подписка одного колбэка дедуплицируется
+- Review-фикс W2b: `DetailPanel.clear()` чистит bookkeeping rating-карточек (старые обёртки не доживают до live-смены темы); `WorldSnapshotWidget` перекрашивает rating-узлы дерева при смене темы, не дожидаясь следующего snapshot-запроса
+- Review-фикс W2b: `MentionTextEdit.refresh_content()` перекрашивает anchors по форматам вместо пересборки документа — каретка, выделение и undo-история переживают live-смену темы; `_DocViewerDialog` в подключённом chrome не переопределяет mono-шрифт поверх QSS (live-следование токену); шапки результатов поиска перекрашиваются при live-смене темы; alternating-строки list-роли получают accent-оттенок из токена вместо OS AlternateBase
+- Review-фикс W2b: невалидное значение цветного токена в AI-кнопке больше не превращается в чёрный (passthrough, как `accent_rgba`); спецификации change `migrate-remaining-chrome-w2b` проходят `openspec validate --strict` (возвращены вырезанные сценарии)
+
+#### Исправлено (аудит W2b)
+- Тёк-тест финальной приёмки (`color.accent` → mention/AI/выделения/«Показать») оставлял персонализированный popup-лист на `QApplication` без cleanup — следующий тест этого же прогона дорисовывался чужим accent'ом (потенциальный flaky, порядок-зависимый). Лист снимается в `finally`, как в popup-тесте W2a
+- Live-смена темы больше не «пачкает» mention-редактор: `refresh_content()` восстанавливает `document().isModified()` — открытые карточки сущностей после тумблера темы не считаются изменёнными (undo-история и каретка, как и раньше, сохраняются)
+- Шапки результатов поиска с невалидным значением `color.border` больше не красятся чёрным (значение, которое Qt не парсит, даёт invalid `QColor` → чёрный). Контракт как у `rating_to_color`/`accent_rgba`: невалидный токен не рисует выдуманный цвет
+- Рамка rating-карточки related-списка больше не замазывается tint'ом: тинт рисуется внутри 1px рамки (раньше `drawRoundedRect(rect())` перекрывал border-токен, и строки разделялись только самим tint'ом)
+- `_check_theme_runtime` убран: статус-проверка LLM не подмешивает цвет из process-wide токенов в иначе не темизированный диалог (D7: никаких половинчатых тем)
+- Токен monospace-семейства переименован `color.font.family.mono` → `font.family.mono`: ключи `color.*` — цвета, а `compile_css_root` отдавал семейство web-игроку как `--color-font-family-mono`
+- Приёмка AI-кнопки (spec-контракт «сравнение по свойству состояния, не по цветовой подстроке»):_styleSheet() c rgba-подстрокой больше не grep-ается — состояние проверяется маркером `aiState`, а цвет пикселем (композит accent × surface-подложки, обе темы)
+- Тест off-skin mention-редактора: тавтологическая дизъюнкция (`"color:" not in … or …`) заменена проверяемым — якорь отдаётся без inline-`style`, а дефолтный цвет ссылки Qt остаётся единственной краской документа
+
 ### Дизайн-система W2a: механика ролей, каталог виджетов, попапы (эпик W не закрыт; W2b — следующий change)
 
 #### Новый функционал

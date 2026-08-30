@@ -20,6 +20,8 @@ screens keep the OS palette (spec «немигрированный диалог 
 """
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QMenuBar, QWidget
 
@@ -27,7 +29,10 @@ from app.presentation.theme.runtime import ThemeRuntime
 
 #: Roles accepted by ``set_role`` (mirrors the rules of ``compile_qss``).
 CATALOG_ROLES: frozenset[str] = frozenset(
-    {"title", "hint", "field", "list", "card", "status-ok", "status-error"}
+    {
+        "title", "hint", "field", "list", "card", "splitter",
+        "status-ok", "status-error",
+    }
 )
 
 #: Title size modifiers; "md" is the base rule and needs no property value.
@@ -42,13 +47,26 @@ def _repolish(widget: QWidget) -> None:
     widget.update()
 
 
-def attach_theme(widget: QWidget, runtime: ThemeRuntime | None = None) -> QWidget:
+def attach_theme(
+    widget: QWidget,
+    runtime: ThemeRuntime | None = None,
+    *,
+    on_retheme: Callable[[], None] | None = None,
+) -> QWidget:
     """Connect a screen root to the theme; returns ``widget`` for chaining.
 
     Marks the root ``chrome`` (``menu`` for a QMenuBar), registers it for live
     theme swaps and re-polishes. Registering twice is harmless (the runtime
     de-duplicates), so repeated calls are idempotent. Without ``runtime`` the
     process-wide default runtime is used (call sites in tests inject one).
+
+    ``on_retheme`` (W2b D2) subscribes a callback that runs after every theme
+    switch the runtime applies — for content painted outside QSS (rating tints,
+    item background brushes, inline HTML in a rich-text document) that must
+    repaint itself. It is the root-level sugar over
+    ``ThemeRuntime.add_listener``, which is what a content widget that is not a
+    chrome root (e.g. ``MentionTextEdit``) calls directly. Held weakly by the
+    runtime, so a closed dialog never keeps the subscription.
     """
     from app.presentation.theme import get_default_theme
 
@@ -59,6 +77,8 @@ def attach_theme(widget: QWidget, runtime: ThemeRuntime | None = None) -> QWidge
     # is on; harmless on every other container.
     widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     runtime.register(widget)
+    if on_retheme is not None:
+        runtime.add_listener(on_retheme)
     _repolish(widget)
     return widget
 
@@ -69,18 +89,21 @@ def set_role(
     *,
     size: str | None = None,
     italic: bool = False,
+    mono: bool = False,
 ) -> QWidget:
     """Tag ``widget`` with a catalog ``role``; returns it for chaining.
 
-    Modifiers live in their own properties: ``uiRoleSize="xl"`` and
-    ``uiRoleItalic="true"`` — cleared (empty string = selector no-match)
-    when absent, so toggling a role never leaves a stale modifier behind.
+    Modifiers live in their own properties: ``uiRoleSize="xl"``,
+    ``uiRoleItalic="true"`` and ``uiRoleMono="true"`` — cleared (empty string
+    = selector no-match) when absent, so toggling a role never leaves a stale
+    modifier behind.
     """
     if role not in CATALOG_ROLES:
         raise ValueError(f"unknown catalog role: {role!r}")
     widget.setProperty("uiRole", role)
     widget.setProperty("uiRoleSize", size if size and size != "md" else "")
     widget.setProperty("uiRoleItalic", "true" if italic else "")
+    widget.setProperty("uiRoleMono", "true" if mono else "")
     _repolish(widget)
     return widget
 

@@ -36,6 +36,7 @@ from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
 )
+from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.character_sheet.preset_dialog import (
     CharacterSheetPresetDialog,
 )
@@ -77,6 +78,7 @@ class CharacterSheetListDialog(QDialog):
         parent: QWidget | None = None,
         run_locked: Callable[[Coroutine], Awaitable] | None = None,
         instance_service: CharacterSheetInstanceService | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self._service = service
@@ -86,12 +88,15 @@ class CharacterSheetListDialog(QDialog):
         self._seated_ids: set[int] = set()
         self._instance_counts: dict[int, int] = {}
         self._run_locked = run_locked or _run_now
+        self._theme = theme
 
         self.setWindowTitle("Чар-листы")
         self.resize(420, 520)
 
         self.list_widget = QListWidget(self)
         self.instance_list = QListWidget(self)
+        set_role(self.list_widget, "list")
+        set_role(self.instance_list, "list")
 
         self.tabs = QTabWidget(self)
         self.tabs.addTab(self.list_widget, "Шаблоны")
@@ -130,11 +135,29 @@ class CharacterSheetListDialog(QDialog):
 
         info = QLabel("Чар-листы текущей игры", self)
         info.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        set_role(info, "hint")
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it
+        # (the W1 launcher / W2a month-dialog pattern).
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("sheetListChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
+        layout.setContentsMargins(11, 11, 11, 11)
         layout.addWidget(info)
         layout.addWidget(self.tabs, 1)
         layout.addLayout(bottom)
+
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     # -- wiring helpers -------------------------------------------------------
 
@@ -282,6 +305,7 @@ class CharacterSheetListDialog(QDialog):
             return
         dialog = CharacterSheetPresetDialog(
             self._service, parent=self, run_locked=self._run_locked,
+            theme=self._theme,
         )
         dialog.created.connect(self._on_preset_created)
         dialog.finished.connect(

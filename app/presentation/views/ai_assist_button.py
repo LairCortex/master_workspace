@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QLineEdit, QMessageBox, QProgressBar, QPushButton, QTextEdit, QWidget,
 )
+
+from app.presentation.theme.compiler import accent_rgba
 
 #: Hints shared by field buttons and the entity button (same wording in both).
 NOT_CONFIGURED_MESSAGE = (
@@ -18,18 +21,50 @@ NO_WORLD_PROMPT_MESSAGE = (
     "Перейдите в меню LLM → Настройка LLM… и опишите ваш мир."
 )
 
-#: Shared button styles. W2a: e2e assertions read the ``aiState`` dynamic
-#: property instead of grepping these rgba substrings; migrating the colors
-#: themselves to tokens is W2b work.
-ACTIVE_STYLE = (
-    "QPushButton { background: rgba(91,155,213,0.25); border: 1px solid rgba(91,155,213,0.5);"
-    " border-radius: 4px; font-size: 14px; }"
-    "QPushButton:hover { background: rgba(91,155,213,0.45); }"
-)
-DISABLED_STYLE = (
-    "QPushButton { background: rgba(128,128,128,0.15); border: 1px solid rgba(128,128,128,0.3);"
-    " border-radius: 4px; font-size: 14px; color: rgba(128,128,128,0.6); }"
-)
+#: Geometry part of the two state styles; only colors come from tokens (D3).
+_SHAPE = "border-radius: 4px; font-size: 14px;"
+
+
+def _rgba(value: str, alpha: float) -> str:
+    """Token color value with an explicit alpha as ``rgba(...)``.
+
+    An unparsable token value is passed through verbatim (same contract as
+    ``compiler.accent_rgba``): inventing black would turn a broken token into
+    a confidently wrong color instead of a neutral/invalid declaration.
+    """
+    color = QColor(value)
+    if not color.isValid():
+        return value
+    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {alpha:g})"
+
+
+def ai_button_styles(runtime) -> tuple[str, str]:
+    """``(active, disabled)`` stylesheets derived from the theme tokens (D3).
+
+    ACTIVE is the accent with alphas (fill/border/hover), DISABLED — the
+    muted foreground. Business logic of the states stays in the buttons;
+    only the palette is asked from the compiler here. Off-skin (no runtime
+    / invalid tokens) the states keep their shape but carry no invented
+    color (D7).
+    """
+    off_skin = runtime is None or not getattr(runtime, "is_valid", False)
+    if off_skin:
+        active = f"QPushButton {{ {_SHAPE} }}"
+        disabled = f"QPushButton {{ {_SHAPE} }}"
+        return active, disabled
+    tokens, theme = runtime.tokens, runtime.theme
+    active = (
+        f"QPushButton {{ background: {accent_rgba(tokens, theme, 0.25)};"
+        f" border: 1px solid {accent_rgba(tokens, theme, 0.5)}; {_SHAPE} }}"
+        f"QPushButton:hover {{ background: {accent_rgba(tokens, theme, 0.45)}; }}"
+    )
+    muted = tokens["color.fg.muted"][theme]
+    disabled = (
+        f"QPushButton {{ background: {_rgba(muted, 0.15)};"
+        f" border: 1px solid {_rgba(muted, 0.3)}; {_SHAPE}"
+        f" color: {_rgba(muted, 0.6)}; }}"
+    )
+    return active, disabled
 
 #: State marker of both AI buttons (W2a D5): tests select by marker, never by
 #: the rgba colors above. Read it only through ``ai_state_is``.
@@ -61,9 +96,6 @@ class AiAssistButton(QPushButton):
 
     generate_requested = Signal(str, str, str, str)  # entity_type, field_name, field_label, current_text
 
-    _ACTIVE_STYLE = ACTIVE_STYLE
-    _DISABLED_STYLE = DISABLED_STYLE
-
     def __init__(
         self,
         target_widget: QWidget,
@@ -71,6 +103,7 @@ class AiAssistButton(QPushButton):
         field_name: str,
         field_label: str,
         parent: QWidget | None = None,
+        theme=None,
     ) -> None:
         super().__init__("\u2728", parent or target_widget)
         self._target = target_widget
@@ -80,6 +113,7 @@ class AiAssistButton(QPushButton):
         self._llm_status: str = "not_configured"
         self._has_world_prompt: bool = False
         self._generating: bool = False
+        self._theme = theme  # ThemeRuntime | None — token source for the styles
 
         self.setFixedSize(QSize(24, 24))
         self.setToolTip("AI-ассистент")
@@ -95,7 +129,14 @@ class AiAssistButton(QPushButton):
 
         self._target.installEventFilter(self)
         self._reposition_progress()
+        if theme is not None:
+            # Live retheme (D3): rebuild the state style from the new tokens.
+            theme.add_listener(self._restyle)
         self.update_llm_state("not_configured", False)
+
+    def _restyle(self) -> None:
+        """Re-derive the current state's stylesheet from the tokens."""
+        self.update_llm_state(self._llm_status, self._has_world_prompt)
 
     @property
     def entity_type(self) -> str:
@@ -122,7 +163,8 @@ class AiAssistButton(QPushButton):
         self._llm_status = status
         self._has_world_prompt = has_world_prompt
         is_active = status == "ready" and has_world_prompt
-        self.setStyleSheet(self._ACTIVE_STYLE if is_active else self._DISABLED_STYLE)
+        active_style, disabled_style = ai_button_styles(self._theme)
+        self.setStyleSheet(active_style if is_active else disabled_style)
         # W2a e2e marker: tests switch on this property, not rgba substrings
         # (the colors themselves migrate in W2b).
         self.setProperty(AI_STATE_PROPERTY, AI_STATE_ACTIVE if is_active else AI_STATE_DISABLED)
@@ -218,18 +260,26 @@ class EntityGenerateButton(QPushButton):
     IDLE_TOOLTIP = "Сгенерировать сущность (все поля)"
     CANCEL_TOOLTIP = "Отменить генерацию"
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, theme=None) -> None:
         super().__init__(self.IDLE_ICON, parent)
         self._llm_status: str = "not_configured"
         self._has_world_prompt: bool = False
         self._wave_in_flight: bool = False
         self._single_in_flight: bool = False
+        self._theme = theme  # ThemeRuntime | None — token source for the styles
 
         self.setFixedSize(QSize(24, 24))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clicked.connect(self._on_clicked)
 
+        if theme is not None:
+            # Live retheme (D3): rebuild the state style from the new tokens.
+            theme.add_listener(self._restyle)
         self.update_llm_state("not_configured", False)
+
+    def _restyle(self) -> None:
+        """Re-derive the current state's stylesheet from the tokens."""
+        self._refresh()
 
     @property
     def is_cancelling(self) -> bool:
@@ -251,10 +301,11 @@ class EntityGenerateButton(QPushButton):
         self._refresh()
 
     def _refresh(self) -> None:
+        active_style, disabled_style = ai_button_styles(self._theme)
         if self._wave_in_flight:
             self.setText(self.CANCEL_ICON)
             self.setToolTip(self.CANCEL_TOOLTIP)
-            self.setStyleSheet(ACTIVE_STYLE)
+            self.setStyleSheet(active_style)
             self.setProperty(AI_STATE_PROPERTY, AI_STATE_ACTIVE)
             self.setEnabled(True)
             return
@@ -262,14 +313,14 @@ class EntityGenerateButton(QPushButton):
         self.setText(self.IDLE_ICON)
         self.setToolTip(self.IDLE_TOOLTIP)
         if self._single_in_flight:
-            self.setStyleSheet(DISABLED_STYLE)
+            self.setStyleSheet(disabled_style)
             self.setProperty(AI_STATE_PROPERTY, AI_STATE_DISABLED)
             self.setEnabled(False)
             return
 
         is_ready = self._llm_status == "ready" and self._has_world_prompt
-        self.setStyleSheet(ACTIVE_STYLE if is_ready else DISABLED_STYLE)
-        # W2a e2e marker (see AiAssistButton.update_llm_state), colors — W2b.
+        self.setStyleSheet(active_style if is_ready else disabled_style)
+        # W2a e2e marker (see AiAssistButton.update_llm_state): state, not color.
         self.setProperty(AI_STATE_PROPERTY, AI_STATE_ACTIVE if is_ready else AI_STATE_DISABLED)
         # Clickable even when not ready: the click shows the hint message
         # (same behavior as the field buttons).

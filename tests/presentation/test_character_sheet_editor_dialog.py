@@ -295,7 +295,9 @@ async def test_snap_toggle_and_z_order_buttons(dlg):
 
 async def test_export_pdf_button_next_to_save(dlg):
     assert dlg.export_pdf_button.text() == "Экспорт в PDF…"
-    bottom = dlg.layout().itemAt(dlg.layout().count() - 1).layout()
+    # W2b: the dialog content lives inside the chrome container now.
+    chrome = dlg.chrome.layout()
+    bottom = chrome.itemAt(chrome.count() - 1).layout()
     widgets = [
         bottom.itemAt(i).widget()
         for i in range(bottom.count())

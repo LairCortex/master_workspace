@@ -137,7 +137,7 @@ class TestDetailPanelGaps:
         opened: list = []
         monkeypatch.setattr(
             _detail_panel_mod, "ImageViewerDialog",
-            lambda original, preview, parent=None: opened.append((original, preview)) or MagicMock(),
+            lambda original, preview, parent=None, theme=None: opened.append((original, preview)) or MagicMock(),
         )
         w = DetailPanel(MagicMock())
         qtbot.addWidget(w)
@@ -400,7 +400,7 @@ class TestEntityCardDialogGaps:
         opened: list = []
         monkeypatch.setattr(
             entity_card_dialog_mod, "ImageViewerDialog",
-            lambda original, preview, parent=None: SimpleNamespace(exec=lambda: opened.append((original, preview))),
+            lambda original, preview, parent=None, theme=None: SimpleNamespace(exec=lambda: opened.append((original, preview))),
         )
         d = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(d)

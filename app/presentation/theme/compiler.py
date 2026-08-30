@@ -27,8 +27,16 @@ log = logging.getLogger(__name__)
 # and extended by W2a (add-widget-catalog-chrome-mechanics-w2a D4). A role is
 # only added here once something actually reads it (compiler rule, catalog
 # role or CSS body): "declared but unread" tokens would tighten validation
-# (absence kills the whole theme) for zero benefit — rating endpoints and the
-# mono family join the set in W2b together with the screens that read them.
+# (absence kills the whole theme) for zero benefit. ``font.family.mono``
+# joins the set in W2b together with the ``[field]+mono`` rule that reads it
+# (it was dropped from W2a as dead — nothing consumed it back then).
+#
+# Namespaces are load-bearing: every key becomes a CSS custom property for the
+# web player (``compile_css_root``), so a value lives under the namespace that
+# describes it. The monospace family is a font, hence ``font.family.mono``
+# (never ``color.font.family.mono`` → ``--color-font-family-mono``), and
+# ``color.rating.low/high`` are real colors — the content tints that
+# ``detail_panel.rating_to_color`` paints from.
 REQUIRED_TOKEN_KEYS: tuple[str, ...] = (
     "color.bg.canvas",
     "color.bg.surface",
@@ -39,10 +47,13 @@ REQUIRED_TOKEN_KEYS: tuple[str, ...] = (
     "color.accent.fg",
     "color.danger",
     "color.status.ok",
+    "color.rating.low",
+    "color.rating.high",
     "space.xs",
     "space.sm",
     "space.md",
     "radius.sm",
+    "font.family.mono",
     "font.size.md",
     "font.size.lg",
     "font.size.xl",
@@ -120,6 +131,22 @@ def accent_rgba(tokens: Tokens, theme: str, alpha: float) -> str:
     return f"rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {alpha:g})"
 
 
+def mention_style(tokens: Tokens, theme: str) -> str:
+    """Inline-HTML style for ``@mention`` anchors (W2b D2/Q8-a).
+
+    Rich text inside a ``QTextEdit`` cannot inherit QSS: the anchor's
+    ``style`` attribute is part of the document, so the screen asks the
+    compiler instead of keeping its own literal hex. The color is the
+    ``color.accent`` token of the current theme; screens re-render their
+    documents through the runtime's retheme callback on a live switch.
+    """
+    return (
+        f"color:{tokens['color.accent'][theme]};"
+        f"font-weight:{tokens['font.weight.bold'][theme]};"
+        "text-decoration:none;"
+    )
+
+
 def compile_qss(tokens: Tokens, theme: str) -> str:
     """Qt stylesheet for attached roots and catalog roles (literals only).
 
@@ -134,6 +161,14 @@ def compile_qss(tokens: Tokens, theme: str) -> str:
     t = {key: values[theme] for key, values in tokens.items()}
     hover = accent_rgba(tokens, theme, 0.85)
     pressed = accent_rgba(tokens, theme, 0.7)
+    # Item views honor the widget palette's AlternateBase even when QSS sets
+    # the base background — ``setAlternatingRowColors`` would keep painting OS
+    # grey stripes. The alternate shade is an accent wash over the surface
+    # (token-derived, mirrors the hover/pressed derivations). Visible in lists
+    # of plain items (timeline, search results); a list whose rows are item
+    # widgets (detail_panel cards) paints over it — there the card's own frame
+    # separates the rows.
+    alternate = accent_rgba(tokens, theme, 0.06)
     return f"""
 QWidget[uiRole="chrome"], QMenuBar[uiRole="menu"] {{
     background: {t['color.bg.canvas']};
@@ -195,10 +230,14 @@ QWidget[uiRole="chrome"] QPlainTextEdit {{
     selection-background-color: {t['color.accent']};
     selection-color: {t['color.accent.fg']};
 }}
+[uiRole="field"][uiRoleMono="true"] {{
+    font-family: {t['font.family.mono']};
+}}
 [uiRole="list"] {{
     background: {t['color.bg.surface']};
     color: {t['color.fg.primary']};
     border: 1px solid {t['color.border']};
+    alternate-background-color: {alternate};
     outline: 0;
 }}
 [uiRole="list"]::item {{
@@ -207,6 +246,9 @@ QWidget[uiRole="chrome"] QPlainTextEdit {{
 [uiRole="list"]::item:selected {{
     background: {t['color.accent']};
     color: {t['color.accent.fg']};
+}}
+[uiRole="splitter"]::handle {{
+    background: {t['color.border']};
 }}
 [uiRole="card"] {{
     background: {t['color.bg.surface']};

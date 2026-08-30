@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget, QMenu,
 )
 
+from app.presentation.theme.catalog import attach_theme, set_role, title
 from app.presentation.utils.date_utils import format_game_date
 from app.presentation.views.custom_date_edit import CustomDateEdit
 
@@ -20,22 +21,39 @@ class TimelineWidget(QWidget):
     add_entity_requested = Signal(str)  # entity_type: character/location/organization/item
     filter_changed = Signal(object, object)  # (start_date | None, end_date | None)
 
-    def __init__(self, timeline_vm, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        timeline_vm,
+        parent: QWidget | None = None,
+        theme=None,
+    ) -> None:
         super().__init__(parent)
         self._vm = timeline_vm
+        self._theme = theme
         self._filter_active = False
         self._init_ui()
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("timelineChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
         # Header
         header = QHBoxLayout()
-        title = QLabel("Таймлайн событий")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        header.addWidget(title)
+        header.addWidget(title("Таймлайн событий"))
         header.addStretch()
 
         self.add_button = QPushButton("+")
@@ -81,11 +99,9 @@ class TimelineWidget(QWidget):
         self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.list_widget.setAlternatingRowColors(True)
-        self.list_widget.setStyleSheet(
-            "QListWidget { font-size: 13px; }"
-            "QListWidget::item { border-bottom: 1px solid palette(mid); padding: 4px 6px; }"
-            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"
-        )
+        # Catalog list role: surface/border/item padding/selection from tokens
+        # (the OS-palette mid/highlight inline sheet is gone, W2b).
+        set_role(self.list_widget, "list")
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self.list_widget, 1)

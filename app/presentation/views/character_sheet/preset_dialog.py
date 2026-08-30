@@ -33,6 +33,7 @@ from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
 )
+from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.character_sheet.presets.catalog import (
     PresetCatalog,
 )
@@ -55,11 +56,13 @@ class CharacterSheetPresetDialog(QDialog):
         service: CharacterSheetService,
         parent: QWidget | None = None,
         run_locked: Callable[[Coroutine], Awaitable] | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._run_locked = run_locked or _run_now
         self._presets = PresetCatalog().list()
+        self._theme = theme
 
         self.setWindowTitle("Создать из пресета")
         self.resize(540, 500)
@@ -68,16 +71,19 @@ class CharacterSheetPresetDialog(QDialog):
         self.preset_list = QListWidget(self)
         for preset in self._presets:
             QListWidgetItem(preset.title, self.preset_list)
+        set_role(self.preset_list, "list")
 
         self.license_label = QLabel("Лицензия:", self)
         # The full license text is shown read-only, at the dialog's font size
-        # (not smaller than the neighbouring captions — spec).
+        # (not smaller than the neighbouring captions — spec). Its surface/
+        # border come from the chrome sheet once the root is attached (W2b).
         self.license_view = QPlainTextEdit(self)
         self.license_view.setReadOnly(True)
         self.license_view.setFixedHeight(140)
 
         self.name_label = QLabel("Имя:", self)
         self.name_edit = QLineEdit(self)
+        set_role(self.name_edit, "field")
 
         self.ok_button = QPushButton("Создать", self)
         self.cancel_button = QPushButton("Отмена", self)
@@ -91,7 +97,16 @@ class CharacterSheetPresetDialog(QDialog):
         buttons.addWidget(self.ok_button)
         buttons.addWidget(self.cancel_button)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it
+        # (the W1 launcher / W2a month-dialog pattern).
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("presetChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
+        layout.setContentsMargins(11, 11, 11, 11)
         layout.addWidget(self.preset_label)
         layout.addWidget(self.preset_list, 1)
         layout.addWidget(self.license_label)
@@ -101,6 +116,13 @@ class CharacterSheetPresetDialog(QDialog):
         layout.addLayout(buttons)
 
         self.preset_list.setCurrentRow(0)
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     @staticmethod
     def _spawn(coro) -> None:

@@ -6,13 +6,14 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog, QMainWindow, QMenuBar, QPlainTextEdit,
     QSplitter, QVBoxLayout, QWidget,
 )
 
-from app.presentation.theme.catalog import attach_theme
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_widget import TimelineWidget
@@ -52,18 +53,52 @@ def _docs_dir() -> Path:
 class _DocViewerDialog(QDialog):
     """Read-only dialog that shows a text/markdown file."""
 
-    def __init__(self, title: str, file_path: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        file_path: Path,
+        parent: QWidget | None = None,
+        theme=None,
+    ) -> None:
         super().__init__(parent)
+        self._theme = theme
         self.setWindowTitle(title)
         self.setMinimumSize(640, 480)
         self.resize(720, 560)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("docViewerChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
         layout.setContentsMargins(8, 8, 8, 8)
 
         text_edit = QPlainTextEdit()
         text_edit.setReadOnly(True)
-        text_edit.setFont(QFont("Menlo, Consolas, monospace", 11))
+        # The block gets field chrome + the monospace family from the
+        # font.family.mono token (W2b). Inside the attached chrome the
+        # [field][uiRoleMono] QSS rule carries the family and follows live
+        # theme switches — an explicit setFont would override it and freeze
+        # the old theme's family (W2b fix). Off-skin there is no sheet at
+        # all, so the family is applied as an explicit font fallback (D7).
+        set_role(text_edit, "field", mono=True)
+        runtime = self._theme
+        if runtime is None:
+            try:
+                runtime = get_default_theme()
+            except Exception:  # no usable theme (off-skin test)
+                runtime = None
+        tokens = runtime.tokens if runtime is not None else None
+        chrome_attached = self._theme is not None
+        if tokens and not chrome_attached:
+            font = text_edit.font()
+            font.setFamilies(
+                [f.strip() for f in tokens["font.family.mono"][runtime.theme].split(",")]
+            )
+            text_edit.setFont(font)
         text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
 
         if file_path.exists():
@@ -72,6 +107,14 @@ class _DocViewerDialog(QDialog):
             text_edit.setPlainText(f"Файл не найден: {file_path}")
 
         layout.addWidget(text_edit)
+
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
 
 class MainWindow(QMainWindow):
@@ -188,15 +231,17 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
 
-        self.search_bar = SearchBar(search_vm)
+        self.search_bar = SearchBar(search_vm, theme=self._theme)
         main_layout.addWidget(self.search_bar)
 
         splitter = QSplitter()
         splitter.setHandleWidth(4)
-        splitter.setStyleSheet("QSplitter::handle { background: palette(mid); }")
+        # Handle color = the border token via the catalog splitter rule (W2b);
+        # no OS-palette mid inline sheet anymore.
+        set_role(splitter, "splitter")
         splitter.setChildrenCollapsible(False)
-        self.timeline_widget = TimelineWidget(timeline_vm)
-        self.detail_panel = DetailPanel(detail_vm)
+        self.timeline_widget = TimelineWidget(timeline_vm, theme=self._theme)
+        self.detail_panel = DetailPanel(detail_vm, theme=self._theme)
         self.world_snapshot = WorldSnapshotWidget(theme=self._theme)
         self.timeline_widget.setMinimumWidth(220)
         self.detail_panel.setMinimumWidth(280)
@@ -267,9 +312,13 @@ class MainWindow(QMainWindow):
         self.theme_toggle_action.blockSignals(False)
 
     def _show_readme(self) -> None:
-        dlg = _DocViewerDialog("Документация", _docs_dir() / "README.md", parent=self)
+        dlg = _DocViewerDialog(
+            "Документация", _docs_dir() / "README.md", parent=self, theme=self._theme,
+        )
         dlg.open()
 
     def _show_changelog(self) -> None:
-        dlg = _DocViewerDialog("Changelog", _docs_dir() / "CHANGELOG.md", parent=self)
+        dlg = _DocViewerDialog(
+            "Changelog", _docs_dir() / "CHANGELOG.md", parent=self, theme=self._theme,
+        )
         dlg.open()

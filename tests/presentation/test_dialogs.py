@@ -349,7 +349,8 @@ class TestDialogEntityButton:
     def test_entity_button_row_sits_at_top_of_form(self, qtbot, kind):
         d = _make_dialog(qtbot, kind)
         if kind == "event":
-            first = d.layout().itemAt(0)
+            # W2b: the form lives inside the chrome container.
+            first = d.chrome.layout().itemAt(0)
         else:
             first = d._form_layout.itemAt(0)
         assert first is not None
@@ -359,7 +360,11 @@ class TestDialogEntityButton:
     def test_entity_button_not_ready_by_default(self, qtbot, kind):
         d = _make_dialog(qtbot, kind)
         btn = d.get_entity_button()
-        assert "128,128,128" in btn.styleSheet()
+        # W2b: the dialog here runs off-skin (no runtime) — state carries the
+        # aiState marker, colors only exist with tokens (D3/D7).
+        from app.presentation.views.ai_assist_button import AI_STATE_DISABLED, ai_state_is
+
+        assert ai_state_is(btn, AI_STATE_DISABLED)
         assert btn.isEnabled()  # clickable — the click shows the hint
         assert not btn.is_cancelling
 

@@ -45,6 +45,7 @@ from app.domain.entities.character_sheet import (
 )
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
+from app.presentation.theme.catalog import attach_theme
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     CharacterSheetViewModel,
 )
@@ -94,6 +95,7 @@ class CharacterSheetEditorDialog(QDialog):
         parent: QWidget | None = None,
         run_locked: Callable[[Coroutine], Awaitable] | None = None,
         image_store: ImageStore | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self._sheet_id = sheet_id
@@ -102,6 +104,7 @@ class CharacterSheetEditorDialog(QDialog):
         self._closing = False
         self._run_locked = run_locked or _run_now
         self._image_store = image_store
+        self._theme = theme
 
         self.setWindowTitle("Чар-лист")
         self.resize(1280, 800)
@@ -171,7 +174,16 @@ class CharacterSheetEditorDialog(QDialog):
         bottom.addWidget(self.export_pdf_button)
         bottom.addWidget(self.save_button)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        # The canvas (a QGraphicsView) is deliberately not in the chrome rule
+        # set: its scene renders untouched (W2b D5 — proxy widgets included).
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("sheetEditorChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setMenuBar(self._menu_bar)
         layout.addLayout(top)
@@ -195,6 +207,17 @@ class CharacterSheetEditorDialog(QDialog):
         self._vm.history_changed.connect(self._sync_edit_actions)
         self._vm.selection_changed.connect(lambda _fid: self._sync_edit_actions())
         self._vm.clipboard_changed.connect(self._sync_edit_actions)
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1).
+
+        The canvas and its scene (proxy widgets included) stay off-skin (D5).
+        """
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            attach_theme(self._menu_bar, self._theme)
+            self._theme.apply()
 
     # -- data -----------------------------------------------------------------
 

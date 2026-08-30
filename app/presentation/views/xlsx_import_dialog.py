@@ -15,7 +15,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
+
+from app.presentation.theme.catalog import attach_theme, set_role, title
 
 FORMAT_TEXTS: dict[str, str] = {
     "event": (
@@ -100,25 +103,41 @@ class XlsxImportDialog(QDialog):
     """Dialog to select .xlsx file and run import with progress."""
     import_requested = Signal(str)  # path
 
-    def __init__(self, entity_type: str, parent=None):
+    def __init__(self, entity_type: str, parent=None, theme=None):
         super().__init__(parent)
         self._entity_type = entity_type
+        self._theme = theme
         self._path: str = ""
         self.setWindowTitle(f"Импорт {ENTITY_LABELS.get(entity_type, entity_type)} из .xlsx")
         self.setMinimumSize(580, 480)
         self._init_ui()
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("xlsxImportChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
+        layout.setContentsMargins(11, 11, 11, 11)
 
-        format_label = QLabel("Требования к файлу:")
-        format_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(format_label)
+        layout.addWidget(title("Требования к файлу:"))
 
         self.format_text = QTextEdit()
         self.format_text.setReadOnly(True)
         self.format_text.setMaximumHeight(260)
-        self.format_text.setStyleSheet("QTextEdit { font-family: monospace; font-size: 12px; }")
+        # The mono format block: field chrome + the mono font-family token
+        # (was an inline ``font-family: monospace`` table before W2b).
+        set_role(self.format_text, "field", mono=True)
         self.format_text.setPlainText(FORMAT_TEXTS.get(self._entity_type, ""))
         layout.addWidget(self.format_text)
 

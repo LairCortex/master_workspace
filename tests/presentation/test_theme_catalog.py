@@ -56,6 +56,19 @@ def test_attach_theme_is_idempotent(qtbot, runtime):
     assert root.property("uiRole") == "chrome"
 
 
+def test_attach_theme_on_retheme_fires_on_theme_switch(qtbot, runtime):
+    # W2b D2: content built outside QSS (rich-text HTML) subscribes here.
+    seen = []
+    root = QWidget()
+    qtbot.addWidget(root)
+    # The runtime keeps callbacks weakly — the test must own the lambda.
+    callback = lambda: seen.append(runtime.theme)  # noqa: E731
+    attach_theme(root, runtime, on_retheme=callback)
+    assert seen == []  # attaching itself is not a theme change
+    assert runtime.set_theme("light")
+    assert seen == ["light"]
+
+
 def test_root_without_attach_gets_no_role(qtbot):
     # The role is only what attach_theme/set_role put there — no magic scope.
     widget = QWidget()

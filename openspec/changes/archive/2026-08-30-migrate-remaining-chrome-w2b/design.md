@@ -20,9 +20,11 @@ W2a (влит) принёс: `uiRole`-селекторы + `catalog.attach_theme
 
 `1) обычные диалоги → 2) detail/timeline/search/splitter/doc-viewer/table_host → 3) character_sheet-диалоги (chrome) → 4) mention + AI-кнопка → 5) launcher title-xl + зачистка-скан + финальные E2E`. Каждый промежуточный merge-scope остаётся рабочим: неподключённый экран просто живёт на палитре ОС до своего коммита.
 
+**Отклонение (факт):** работы легли одной партией в рабочем дереве, а не пятью коммитами — общая правка тестов/CHANGELOG/токенов перемешана между группами, поэтому разнести их по зелёным коммитам постфактум нельзя (промежуточные прогоны по группам unverifiable). Фактическая приёмка — один полный offscreen-прогон (+ ручной smoke), а не пять; история по группам D1 не восстановима.
+
 ### D2. Mention-цвет: inline-HTML остаётся, цвет спрашивается у компилятора
 
-Qt rich text внутри QTextEdit не умеет QSS-наследование, и inline-`<a style>` — часть форматированного документа, а не виджета. Решение: `compiler.mention_style(tokens, theme)` отдаёт готовую inline-строку (`color:<accent>; font-weight:bold; ...`); `_MENTION_STYLE` становится function-based. Live-смена темы: `attach_theme` расширяется необязательным `on_retheme`-колбэком (вызывается в `ThemeRuntime.apply`/`set_theme` после смены); `MentionTextEdit` регистрируется с колбэком `refresh_content()` = `setContent(getContent())`.
+Qt rich text внутри QTextEdit не умеет QSS-наследование, и inline-`<a style>` — часть форматированного документа, а не виджета. Решение: `compiler.mention_style(tokens, theme)` отдаёт готовую inline-строку (`color:<accent>; font-weight:bold; ...`); `_MENTION_STYLE` становится function-based. Live-смена темы: `attach_theme` расширяется необязательным `on_retheme`-колбэком (sugar над `ThemeRuntime.add_listener`, вызывается после смены) — его используют экраны с контентом вне QSS: `detail_panel` (rating-тинты), `search_bar` (шапки), `world_snapshot_widget` (узлы дерева). `MentionTextEdit` — не chrome-корень, поэтому подписывает retheme-колбэк напрямую через `add_listener`.
 *Alt:* QTextCharFormat + перекраска по документу — больше кода, эквивалентный результат; QSS-псевдо-класс для `<a>` в Qt отсутствует.
 
 ### D3. AI-кнопка: состояния остаются вычисляемыми, палитра — из компилятора
@@ -31,7 +33,7 @@ Qt rich text внутри QTextEdit не умеет QSS-наследование
 
 ### D4. `rating_to_color`: endpoints только из токенов (токены заводятся в W2b)
 
-`color.rating.low/high` (как и `color.font.family.mono`) в W2a не заведены: их не читал ни один лист/CSS, а обязательность в `REQUIRED_TOKEN_KEYS` лишь ужесточала валидацию (ревью W2a). Ключи добавляются в `tokens.json` + `REQUIRED_TOKEN_KEYS` тем же коммитом, что и читающий код.
+`color.rating.low/high` (как и `font.family.mono`) в W2a не заведены: их не читал ни один лист/CSS, а обязательность в `REQUIRED_TOKEN_KEYS` лишь ужесточала валидацию (ревью W2a). Ключи добавляются в `tokens.json` + `REQUIRED_TOKEN_KEYS` тем же коммитом, что и читающий код.
 
 Функция принимает endpoints из runtime (`color.rating.low/high` текущей темы); интерполяция и alpha-логика не меняются (плавный градиент — фича, не W2b). При невалидных токенах runtime уже no-op (W1-D7): экран остаётся на палитре ОС — отдельного fallback в функции нет.
 

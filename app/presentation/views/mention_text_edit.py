@@ -5,10 +5,12 @@ import re
 from html import escape as html_escape
 
 from PySide6.QtCore import QPoint, Qt, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
+
+from app.presentation.theme.compiler import mention_style
 
 # Storage format: @[Display Name](entity_type:entity_id)
 _MENTION_RE = re.compile(r"@\[([^\]]+)\]\((\w+):(\d+)\)")
@@ -21,15 +23,30 @@ _TYPE_ICONS = {
     "location": "\U0001f4cd",     # 📍
 }
 
-_MENTION_STYLE = "color:#5b9bd5;font-weight:bold;text-decoration:none;"
-
 
 # ── Conversion helpers ────────────────────────────────────────────────────
 
-def mentions_to_html(text: str) -> str:
-    """Convert plain text with @[Name](type:id) markers to HTML for QTextEdit."""
+def mention_anchor_style(runtime) -> str:
+    """Inline style for mention anchors from the theme runtime (W2b D2).
+
+    Off-skin (no runtime / invalid tokens) returns an empty attribute value:
+    links stay functional but carry no invented color (D7 — never a
+    half-applied theme)."""
+    if runtime is None or not getattr(runtime, "is_valid", False):
+        return ""
+    return mention_style(runtime.tokens, runtime.theme)
+
+
+def mentions_to_html(text: str, style: str = "") -> str:
+    """Convert plain text with @[Name](type:id) markers to HTML for QTextEdit.
+
+    ``style`` is the inline-HTML style for the anchor (accent from the tokens,
+    D2); an empty style emits a bare anchor — the marker format itself is
+    storage and stays untouched.
+    """
     if not text:
         return ""
+    style_attr = f' style="{style}"' if style else ""
     parts: list[str] = []
     last = 0
     for m in _MENTION_RE.finditer(text):
@@ -38,7 +55,7 @@ def mentions_to_html(text: str) -> str:
         parts.append(html_escape(before).replace("\n", "<br>"))
         name, etype, eid = m.group(1), m.group(2), m.group(3)
         parts.append(
-            f'<a href="mention://{etype}/{eid}" style="{_MENTION_STYLE}">'
+            f'<a href="mention://{etype}/{eid}"{style_attr}>'
             f"{html_escape(name)}</a>"
         )
         last = m.end()
@@ -155,28 +172,90 @@ class _MentionPopup(QWidget):
 # ── MentionTextEdit ───────────────────────────────────────────────────────
 
 class MentionTextEdit(QTextEdit):
-    """QTextEdit that supports @mention autocomplete and clickable entity links."""
+    """QTextEdit that supports @mention autocomplete and clickable entity links.
+
+    ``theme`` (optional W2b runtime): mention anchors are colored with the
+    ``color.accent`` token via the compiler's inline style, and the editor
+    subscribes ``refresh_content`` as a retheme callback, so a live theme
+    switch recolors existing mentions without any screen-side edits (D2).
+    """
 
     mention_clicked = Signal(str, int)  # (entity_type, entity_id)
     mention_search_requested = Signal(str)  # query text after @
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, theme=None) -> None:
         super().__init__(parent)
+        self._theme = theme
         self._mention_start: int = -1  # cursor position of '@'
         self._popup = _MentionPopup()
         self._popup.item_selected.connect(self._insert_mention)
         self.setMouseTracking(True)
         # Make links clickable via cursor change
         self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        if theme is not None:
+            # The editor is the widget itself, not a chrome root, so there is
+            # no ``attach_theme`` call to hang the retheme callback on (panels
+            # use that sugar); the runtime listener is the same path.
+            theme.add_listener(self.refresh_content)
 
     # ── Public API ────────────────────────────────────────────────────
 
     def setContent(self, text: str) -> None:
         """Load text with mention markers into the editor."""
         if _MENTION_RE.search(text or ""):
-            self.setHtml(mentions_to_html(text))
+            self.setHtml(mentions_to_html(text, mention_anchor_style(self._theme)))
         else:
             self.setPlainText(text or "")
+
+    def refresh_content(self) -> None:
+        """Re-tint existing mention anchors with the current accent token.
+
+        Called by the runtime after a live theme switch. Formats are edited
+        in place instead of rebuilding the document (W2b review): a
+        ``setHtml`` roundtrip would wipe the caret, the selection *and* the
+        whole undo history of what the user typed.
+
+        A theme switch is a repaint, not user content: the document must not
+        end up ``modified`` because of it, or every open entity card goes
+        "dirty" on a theme toggle and closing it warns about colors the user
+        never typed. The flag is captured before the edit block and restored
+        after it (undo still rolls the tint back with the typing).
+
+        Two passes: collect the anchor ranges first — re-formatting fragments
+        while iterating may split them and invalidate the fragment iterator.
+        """
+        runtime = self._theme
+        if runtime is None or not getattr(runtime, "is_valid", False):
+            return  # off-skin: anchors carry no invented color (D7)
+        accent = QColor(runtime.tokens["color.accent"][runtime.theme])
+        if not accent.isValid():
+            return
+        doc = self.document()
+        ranges: list[tuple[int, int]] = []
+        block = doc.begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    fmt = frag.charFormat()
+                    if fmt.isAnchor() and fmt.anchorHref().startswith("mention://"):
+                        ranges.append((frag.position(), frag.length()))
+                it += 1
+            block = block.next()
+        if not ranges:
+            return
+        was_modified = doc.isModified()
+        cursor = QTextCursor(doc)
+        cursor.beginEditBlock()
+        for position, length in ranges:
+            cursor.setPosition(position)
+            cursor.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+            fmt = cursor.charFormat()
+            fmt.setForeground(accent)
+            cursor.mergeCharFormat(fmt)
+        cursor.endEditBlock()
+        doc.setModified(was_modified)
 
     def getContent(self) -> str:
         """Return text with mention markers for DB storage."""
@@ -293,8 +372,10 @@ class MentionTextEdit(QTextEdit):
         etype = data["type"]
         eid = data["id"]
         name = html_escape(data["name"])
+        style = mention_anchor_style(self._theme)
+        style_attr = f' style="{style}"' if style else ""
         cursor.insertHtml(
-            f'<a href="mention://{etype}/{eid}" style="{_MENTION_STYLE}">{name}</a>&nbsp;'
+            f'<a href="mention://{etype}/{eid}"{style_attr}>{name}</a>&nbsp;'
         )
         self._mention_start = -1
         self._popup.hide()

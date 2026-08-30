@@ -32,6 +32,7 @@ from app.application.services.character_sheet_instance_service import (
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
+from app.presentation.theme.catalog import attach_theme
 from app.presentation.viewmodels.character_sheet_fill_viewmodel import (
     CharacterSheetFillViewModel,
 )
@@ -223,6 +224,7 @@ class CharacterSheetFillDialog(QDialog):
         image_store: ImageStore | None = None,
         character_service=None,
         read_only: bool = False,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self._instance_id = instance_id
@@ -233,6 +235,7 @@ class CharacterSheetFillDialog(QDialog):
         self._run_locked = run_locked or _run_now
         self._image_store = image_store
         self._character_service = character_service
+        self._theme = theme
 
         self.setWindowTitle("Лист")
         self.resize(1100, 800)
@@ -279,7 +282,16 @@ class CharacterSheetFillDialog(QDialog):
         bottom.addStretch(1)
         bottom.addWidget(self.save_button)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        # The canvas (a QGraphicsView) is deliberately not in the chrome rule
+        # set: its scene renders untouched (W2b D5 — proxy widgets included).
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("sheetFillChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setMenuBar(self._menu_bar)
         layout.addLayout(body, 1)
@@ -295,6 +307,17 @@ class CharacterSheetFillDialog(QDialog):
             self.bind_button.hide()
             self.unbind_button.hide()
             self._menu_bar.hide()
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1).
+
+        The canvas and its scene (proxy widgets included) stay off-skin (D5).
+        """
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            attach_theme(self._menu_bar, self._theme)
+            self._theme.apply()
 
     def set_read_only(self, value: bool) -> None:
         self._vm.set_read_only(value)

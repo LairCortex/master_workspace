@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
 from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
 from app.presentation.views.clickable_label import ClickableLabel
@@ -87,9 +88,16 @@ class EntityCardDialog(QDialog):
     image_picked = Signal(bytes)
     open_character_sheet_requested = Signal()
 
-    def __init__(self, entity_vm, entity_type: str = "organization", parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        entity_vm,
+        entity_type: str = "organization",
+        parent: QWidget | None = None,
+        theme=None,
+    ) -> None:
         super().__init__(parent)
         self._vm = entity_vm
+        self._theme = theme
         self._entity_type = entity_type
         self._populated_entity_id: int | None = None
         self._related_sections: dict[str, RelatedSection] = {}
@@ -114,10 +122,25 @@ class EntityCardDialog(QDialog):
         self.setWindowTitle(f"Карточка: {entity_type}")
         self.setMinimumSize(750 if self._has_image_field else 550, 550)
         self._init_ui()
+        self._apply_theme()
         self._setup_ai_buttons()
 
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
+
     def _init_ui(self) -> None:
-        root_layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("entityCardChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        root_layout = QVBoxLayout(self.chrome)
+        root_layout.setContentsMargins(11, 11, 11, 11)
 
         # Top area: image (left) + form (right) for types with image
         top_layout = QHBoxLayout()
@@ -129,9 +152,9 @@ class EntityCardDialog(QDialog):
             self.image_label = ClickableLabel()
             self.image_label.setFixedSize(280, 280)
             self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.image_label.setStyleSheet(
-                "QLabel { border: 1px solid palette(mid); background: palette(base); }"
-            )
+            # Placeholder chrome comes from the card role (surface/border from
+            # tokens) — no OS-palette mid/base literals anymore (W2b).
+            set_role(self.image_label, "card")
             self.image_label.setText("Нет изображения")
             self.image_label.clicked.connect(self._open_image_viewer)
             img_col.addWidget(self.image_label)
@@ -159,7 +182,7 @@ class EntityCardDialog(QDialog):
         self._entity_row = QHBoxLayout()
         self._entity_row.setContentsMargins(0, 0, 0, 0)
         self._entity_row.addStretch(1)
-        self._entity_button = EntityGenerateButton(form_widget)
+        self._entity_button = EntityGenerateButton(form_widget, theme=self._theme)
         self._entity_row.addWidget(self._entity_button)
         form_layout.addLayout(self._entity_row)
 
@@ -188,12 +211,12 @@ class EntityCardDialog(QDialog):
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
 
-        self.characteristics_input = MentionTextEdit()
+        self.characteristics_input = MentionTextEdit(theme=self._theme)
         self.characteristics_input.setMinimumHeight(60)
         self.characteristics_input.mention_clicked.connect(self.mention_clicked)
         form.addRow("Характеристики:", self._make_ai_row(self.characteristics_input, "characteristics"))
 
-        self.backstory_input = MentionTextEdit()
+        self.backstory_input = MentionTextEdit(theme=self._theme)
         self.backstory_input.setMinimumHeight(60)
         self.backstory_input.mention_clicked.connect(self.mention_clicked)
         form.addRow("Предыстория:", self._make_ai_row(self.backstory_input, "backstory"))
@@ -230,7 +253,7 @@ class EntityCardDialog(QDialog):
         for spec in self._extra_specs:
             if spec.kind == "image":
                 continue  # image panel is built in the top area
-            widget = MentionTextEdit()
+            widget = MentionTextEdit(theme=self._theme)
             widget.setMinimumHeight(_EXTRA_FIELD_MIN_HEIGHT)
             widget.mention_clicked.connect(self.mention_clicked)
             setattr(self, f"{spec.name}_input", widget)
@@ -346,7 +369,9 @@ class EntityCardDialog(QDialog):
     def _open_image_viewer(self) -> None:
         if not self._has_image_field:
             return
-        ImageViewerDialog(self._viewer_original, self._viewer_preview, parent=self).exec()
+        ImageViewerDialog(
+            self._viewer_original, self._viewer_preview, parent=self, theme=self._theme,
+        ).exec()
 
     def _display_pixmap(self, pm: QPixmap) -> None:
         if not self._has_image_field:
@@ -473,7 +498,7 @@ class EntityCardDialog(QDialog):
             fields.append((self._extra_widgets[spec.name], spec.name, spec.label))
 
         for widget, field_name, field_label in fields:
-            btn = AiAssistButton(widget, et, field_name, field_label)
+            btn = AiAssistButton(widget, et, field_name, field_label, theme=self._theme)
             self._ai_buttons.append(btn)
             # Single-line fields align to the middle; multi-line ones pin to the top edge.
             align = (

@@ -35,9 +35,11 @@ def _signals(button):
 
 def test_idle_ready_active_style_and_tooltip(button):
     button.update_llm_state("ready", True)
-    assert button.text() == "\u2728"
+    assert button.text() == "✨"
     assert button.toolTip() == "Сгенерировать сущность (все поля)"
-    assert "91,155,213" in button.styleSheet()
+    # Off-skin without a runtime: no invented colors (W2b D3/D7); the marker
+    # check and the click behavior below carry the state semantics.
+    assert "rgba" not in button.styleSheet()
     assert button.isEnabled()
     assert not button.is_cancelling
 
@@ -55,14 +57,14 @@ def test_idle_ready_click_emits_batch_requested(button):
 
 def test_not_configured_uses_disabled_style_but_stays_clickable(button):
     button.update_llm_state("not_configured", False)
-    assert "128,128,128" in button.styleSheet()
+    assert "rgba" not in button.styleSheet()  # off-skin (W2b D3/D7): no invented colors
     assert button.isEnabled()
     assert button.text() == "\u2728"
 
 
 def test_ready_without_world_prompt_uses_disabled_style(button):
     button.update_llm_state("ready", False)
-    assert "128,128,128" in button.styleSheet()
+    assert "rgba" not in button.styleSheet()  # off-skin (W2b D3/D7): no invented colors
     assert button.isEnabled()
 
 

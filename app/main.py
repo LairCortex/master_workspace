@@ -350,6 +350,7 @@ class Application:
                 self._sheet_service, parent=self._window,
                 run_locked=self._wiring.run_locked,
                 instance_service=self._instance_service,
+                theme=self._theme,
             )
             dialog.open_requested.connect(self._on_sheet_open)
             dialog.open_instance_requested.connect(self._on_instance_open)
@@ -366,7 +367,9 @@ class Application:
         if self._table_host is None or self._window is None:
             return
         if self._table_host_panel is None:
-            panel = TableHostPanel(self._table_host, parent=self._window)
+            panel = TableHostPanel(
+                self._table_host, parent=self._window, theme=self._theme,
+            )
             panel.start_requested.connect(
                 lambda: self._wiring._spawn(self._start_table())
             )
@@ -505,6 +508,7 @@ class Application:
             self._sheet_service, sheet_id, parent=self._window,
             run_locked=self._wiring.run_locked,
             image_store=self._image_store,
+            theme=self._theme,
         )
         self._sheet_editor = editor
         # A closed window must not keep its stale reference (D6 single editor).
@@ -590,6 +594,7 @@ class Application:
             image_store=self._image_store,
             character_service=self._entity_services.get("character"),
             read_only=read_only,
+            theme=self._theme,
         )
         self._sheet_fill = fill
         fill.finished.connect(lambda _r, _f=fill: self._forget_fill(_f))
@@ -1020,6 +1025,7 @@ class Application:
             field_prompts=llm_vm.field_prompts,
             http=self._http,
             parent=window,
+            theme=self._theme,
         )
 
         async def _on_saved(config, world_prompt, field_prompts):

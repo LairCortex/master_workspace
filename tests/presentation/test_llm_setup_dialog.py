@@ -111,6 +111,7 @@ def test_check_button_disabled_when_model_empty(dialog):
 async def test_check_success_shows_established(dialog):
     await dialog._on_check()
     assert "установлено" in dialog._check_label.text().lower()
+    assert dialog._check_label.property("uiRole") == "status-ok"
     assert dialog._check_btn.isEnabled()
 
 
@@ -119,6 +120,7 @@ async def test_check_401_shows_invalid_key(make_dialog):
     dlg = make_dialog(handler=_error_response(401, "Invalid API key"))
     await dlg._on_check()
     assert "неверный ключ" in dlg._check_label.text().lower()
+    assert dlg._check_label.property("uiRole") == "status-error"
     assert dlg._check_btn.isEnabled()
 
 

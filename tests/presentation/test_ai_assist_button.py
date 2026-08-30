@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QLineEdit, QMessageBox, QTextEdit
 
 from app.presentation.views.ai_assist_button import (
@@ -40,23 +41,64 @@ def btn_on_line(line_edit):
     return AiAssistButton(line_edit, "event", "name", "Название")
 
 
+@pytest.fixture
+def runtime(tmp_path):
+    from app.infrastructure.ui_prefs.config import UiPrefsManager
+    from app.presentation.theme import ThemeRuntime
+    from app.presentation.theme.compiler import tokens_file_path
+
+    return ThemeRuntime(
+        prefs=UiPrefsManager(tmp_path / "ui.json"), tokens_path=tokens_file_path()
+    )
+
+
 def test_default_state_is_not_configured(btn_on_text):
     assert btn_on_text._llm_status == "not_configured"
 
 
 def test_button_disabled_when_not_configured(btn_on_text):
     btn_on_text.update_llm_state("not_configured", False)
-    assert "128,128,128" in btn_on_text.styleSheet()
+    # Off-skin (no theme): state marker only, no invented colors (D7).
+    assert "rgba" not in btn_on_text.styleSheet()
 
 
 def test_button_disabled_when_no_world_prompt(btn_on_text):
     btn_on_text.update_llm_state("ready", False)
-    assert "128,128,128" in btn_on_text.styleSheet()
+    assert "rgba" not in btn_on_text.styleSheet()
 
 
 def test_button_enabled_when_ready(btn_on_text):
     btn_on_text.update_llm_state("ready", True)
-    assert "91,155,213" in btn_on_text.styleSheet()
+    assert "rgba" not in btn_on_text.styleSheet()
+
+
+def test_ai_styles_are_accent_and_muted_derivatives(text_edit, runtime):
+    # W2b D3: ACTIVE = accent alphas from the tokens, DISABLED = muted alphas.
+    from app.presentation.theme.compiler import accent_rgba, load_tokens, tokens_file_path
+
+    tokens = load_tokens(tokens_file_path())
+    accent_rgb = accent_rgba(tokens, runtime.theme, 0.25)
+    muted = QColor(tokens["color.fg.muted"][runtime.theme])
+    btn = AiAssistButton(text_edit, "character", "backstory", "П", theme=runtime)
+    btn.update_llm_state("ready", True)
+    assert accent_rgb in btn.styleSheet()
+    btn.update_llm_state("not_configured", False)
+    assert f"rgba({muted.red()}, {muted.green()}, {muted.blue()}, 0.15)" in btn.styleSheet()
+    # The fixed blue/fixed grey literals are gone for good.
+    assert "91,155,213" not in btn.styleSheet()
+    assert "128,128,128" not in btn.styleSheet()
+
+
+def test_ai_styles_rebuild_on_live_theme_switch(text_edit, runtime):
+    from app.presentation.theme.compiler import accent_rgba, load_tokens, tokens_file_path
+
+    tokens = load_tokens(tokens_file_path())
+    btn = AiAssistButton(text_edit, "character", "backstory", "П", theme=runtime)
+    btn.update_llm_state("ready", True)
+    before = btn.styleSheet()
+    assert runtime.set_theme("light")
+    assert accent_rgba(tokens, "light", 0.25) in btn.styleSheet()
+    assert btn.styleSheet() != before
 
 
 def test_ai_state_marker_is_read_by_the_marker_helper(btn_on_text):

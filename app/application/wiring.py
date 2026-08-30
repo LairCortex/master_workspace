@@ -147,7 +147,7 @@ class ApplicationWiring:
 
         # ── XLSX import actions ─────────────────────────────────────────────
         async def _run_import(entity_type: str):
-            dlg = XlsxImportDialog(entity_type, window)
+            dlg = XlsxImportDialog(entity_type, window, theme=self._app._theme)
             dlg.open()
 
             async def _do_import(path: str):
@@ -206,7 +206,7 @@ class ApplicationWiring:
 
         # Add event button
         def on_add_event():
-            dialog = EventDialog(event_dialog_vm, parent=window)
+            dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
             self._spawn(_load_available_into_dialog(dialog))
             self._app._wire_mentions_for_dialog(dialog, on_entity_click)
             self._app._wire_ai_buttons(dialog)
@@ -248,7 +248,10 @@ class ApplicationWiring:
                 if not entity_service:
                     return
 
-                dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
+                dialog = EntityCardDialog(
+                    None, entity_type=entity_type, parent=window,
+                    theme=self._app._theme,
+                )
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
                 self._app._wire_ai_buttons(dialog)
                 self._wire_image_picked(dialog)
@@ -282,7 +285,7 @@ class ApplicationWiring:
                 event = await event_service.get_event(event_id)
                 if not event:
                     return
-                dialog = EventDialog(event_dialog_vm, parent=window)
+                dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
                 await _load_available_into_dialog(dialog)
                 dialog.populate(event)
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
@@ -387,7 +390,10 @@ class ApplicationWiring:
                 if not entity:
                     return
 
-                dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
+                dialog = EntityCardDialog(
+                    None, entity_type=entity_type, parent=window,
+                    theme=self._app._theme,
+                )
                 dialog.populate(entity)
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
                 self._app._wire_ai_buttons(dialog)
@@ -439,6 +445,7 @@ class ApplicationWiring:
         async def _open_related_create_dialog(parent_dialog, attr_name: str, entity_type: str):
             sub_dialog = EntityCardDialog(
                 None, entity_type=entity_type, parent=parent_dialog,
+                theme=self._app._theme,
             )
             self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
             self._app._wire_ai_buttons(sub_dialog)

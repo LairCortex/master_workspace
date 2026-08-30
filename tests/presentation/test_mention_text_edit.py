@@ -529,3 +529,84 @@ class TestMentionEdgeBranches:
         edit._check_mention_query()
         assert edit._mention_start == -1
         assert edit.toPlainText() == "@a"  # text untouched, only the mode cancelled
+
+
+# ── W2b: mention color comes from the accent token, live retheme (D2/Q8-a) ──
+
+
+def _runtime(tmp_path, theme):
+    import json
+
+    from app.infrastructure.ui_prefs.config import UiPrefs, UiPrefsManager
+    from app.presentation.theme import ThemeRuntime
+    from app.presentation.theme.compiler import tokens_file_path
+
+    tokens = json.loads(tokens_file_path().read_text(encoding="utf-8"))
+    tokens["color.accent"]["dark"] = "#aa11ee"
+    tokens["color.accent"]["light"] = "#11eeaa"
+    tokens_path = tmp_path / "tokens.json"
+    tokens_path.write_text(json.dumps(tokens), encoding="utf-8")
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    if theme != "dark":
+        prefs.save(UiPrefs(theme=theme))
+    return ThemeRuntime(prefs=prefs, tokens_path=tokens_path)
+
+
+class TestMentionAccentToken:
+    def test_html_contains_accent_of_both_themes(self, tmp_path):
+        from app.presentation.views.mention_text_edit import (
+            mention_anchor_style,
+            mentions_to_html,
+        )
+
+        for theme in ("dark", "light"):
+            style = mention_anchor_style(_runtime(tmp_path, theme))
+            html = mentions_to_html("@[A](character:1)", style)
+            expected = "#aa11ee" if theme == "dark" else "#11eeaa"
+            assert f"color:{expected}" in html
+            # The old fixed blue is gone from the rendered document.
+            assert "5b9bd5" not in html
+
+    def test_off_skin_editor_has_no_invented_color(self, qtbot):
+        edit = MentionTextEdit()
+        qtbot.addWidget(edit)
+        edit.setContent("@[A](character:1)")
+        html = edit.toHtml()
+        # Qt serializes its own default link color for a bare anchor, so the
+        # off-skin contract is about what the editor contributed: the anchor
+        # carries no style attribute at all (and no old fixed blue anywhere).
+        assert '<a href="mention://character/1">' in html
+        assert 'style=""' not in html
+        assert "5b9bd5" not in html
+
+    def test_live_theme_switch_recolors_without_breaking_editor(self, qtbot, tmp_path):
+        runtime = _runtime(tmp_path, "dark")
+        edit = MentionTextEdit(theme=runtime)
+        qtbot.addWidget(edit)
+        original = "Привет @[Артас](character:42), как дела?"
+        edit.setContent(original)
+        # Cursor in the middle of the following plain text must be preserved.
+        cursor = edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.MoveAnchor, 9)
+        edit.setTextCursor(cursor)
+        position = cursor.position()
+
+        assert runtime.set_theme("light") is True
+
+        content = edit.getContent()
+        assert "@[Артас](character:42)" in content  # markup survives
+        assert "Привет" in content and "как дела?" in content
+        assert edit.textCursor().position() == position  # caret survived
+        # The anchor's inline style now carries the light-theme accent.
+        assert "color:#11eeaa" in edit.toHtml()
+
+    def test_inserted_mention_uses_token_style(self, qtbot, tmp_path):
+        runtime = _runtime(tmp_path, "light")
+        edit = MentionTextEdit(theme=runtime)
+        qtbot.addWidget(edit)
+        edit.setPlainText("@ar")
+        cur = edit.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        edit.setTextCursor(cur)
+        edit._insert_mention({"type": "item", "id": 8, "name": "Меч"})
+        assert "color:#11eeaa" in edit.toHtml()

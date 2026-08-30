@@ -492,3 +492,40 @@ def test_registered_chrome_widget_is_not_restyled_without_a_change(qtbot, runtim
     runtime.apply()
     assert widget.pushes == 1
     assert widget.styleSheet() == runtime.qss()
+
+
+# ── W2b review-fix: listener isolation and de-duplication ───────────────────
+
+def test_listener_exception_does_not_abort_the_switch(runtime):
+    """A broken screen must not freeze re-render for the others, and the
+    exception must not escape into the toggle action (W2b review)."""
+    seen = []
+
+    class Boom:
+        def cb(self):
+            raise RuntimeError("dead widget")
+
+    boom = Boom()
+    runtime.add_listener(boom.cb)
+    second = lambda: seen.append("second")  # noqa: E731 — runtime holds it weakly
+    runtime.add_listener(second)
+    # Default theme is dark; flip to light — the switch itself must succeed.
+    assert runtime.set_theme("light") is True
+    assert seen == ["second"]
+
+
+def test_duplicate_listener_registration_is_deduplicated(runtime):
+    """Adding the same callback twice means one call per switch (mirrors the
+    register() contract for widgets)."""
+    hits = []
+
+    class Sub:
+        def cb(self):
+            hits.append(1)
+
+    sub = Sub()
+    runtime.add_listener(sub.cb)
+    runtime.add_listener(sub.cb)
+    assert len(runtime.subscribers) == 1
+    assert runtime.set_theme("light") is True
+    assert len(hits) == 1

@@ -168,8 +168,8 @@ class TestMainWindow:
         captured = []
 
         class Spy(mw._DocViewerDialog):
-            def __init__(self, title, file_path, parent=None):
-                super().__init__(title, file_path, parent)
+            def __init__(self, title, file_path, parent=None, theme=None):
+                super().__init__(title, file_path, parent, theme=theme)
                 edit = self.findChild(QPlainTextEdit)
                 captured.append((title, edit.toPlainText()))
 
@@ -1041,31 +1041,63 @@ class TestEntityCardDialogRating:
         assert data["rating"] == 1
 
 
+def _rating_runtime(tmp_path):
+    """Runtime with the real token file — the gradient endpoints live in tokens (W2b)."""
+    from app.infrastructure.ui_prefs.config import UiPrefsManager
+    from app.presentation.theme import ThemeRuntime
+    from app.presentation.theme.compiler import tokens_file_path
+
+    return ThemeRuntime(
+        prefs=UiPrefsManager(tmp_path / "ui.json"),
+        tokens_path=tokens_file_path(),
+    )
+
+
 class TestRatingColor:
-    def test_rating_1_grey(self):
+    """W2b: the endpoints come from ``color.rating.low/high``, read via runtime."""
+
+    def test_rating_1_grey(self, tmp_path):
         from app.presentation.views.detail_panel import rating_to_color
-        c = rating_to_color(1)
+        c = rating_to_color(1, _rating_runtime(tmp_path))
         # At rating 1 red ≈ green ≈ blue (grey-ish)
         assert abs(c.red() - c.green()) <= 5
         assert abs(c.green() - c.blue()) <= 5
 
-    def test_rating_20_red_dominant(self):
+    def test_rating_20_red_dominant(self, tmp_path):
         from app.presentation.views.detail_panel import rating_to_color
-        c = rating_to_color(20)
+        c = rating_to_color(20, _rating_runtime(tmp_path))
         assert c.red() > c.green()
         assert c.red() > c.blue()
 
-    def test_rating_20_higher_alpha(self):
+    def test_rating_20_higher_alpha(self, tmp_path):
         from app.presentation.views.detail_panel import rating_to_color
-        c1 = rating_to_color(1)
-        c20 = rating_to_color(20)
+        rt = _rating_runtime(tmp_path)
+        c1 = rating_to_color(1, rt)
+        c20 = rating_to_color(20, rt)
         assert c20.alpha() > c1.alpha()
 
-    def test_mid_rating(self):
+    def test_mid_rating(self, tmp_path):
         from app.presentation.views.detail_panel import rating_to_color
-        c = rating_to_color(10)
+        c = rating_to_color(10, _rating_runtime(tmp_path))
         assert c.red() >= c.green()
         assert c.alpha() > 60
+
+    def test_endpoints_are_the_runtime_tokens(self, tmp_path):
+        from PySide6.QtGui import QColor
+
+        from app.presentation.views.detail_panel import rating_to_color
+        rt = _rating_runtime(tmp_path)
+        low = QColor(rt.tokens["color.rating.low"][rt.theme])
+        high = QColor(rt.tokens["color.rating.high"][rt.theme])
+        c1 = rating_to_color(1, rt)
+        c20 = rating_to_color(20, rt)
+        assert (c1.red(), c1.green(), c1.blue()) == (low.red(), low.green(), low.blue())
+        assert (c20.red(), c20.green(), c20.blue()) == (high.red(), high.green(), high.blue())
+
+    def test_no_runtime_paints_nothing(self):
+        # Off-skin (no runtime / broken tokens): no invented content color.
+        from app.presentation.views.detail_panel import rating_to_color
+        assert rating_to_color(20).alpha() == 0
 
 
 # ── WorldSnapshotWidget ──────────────────────────────────────────────────

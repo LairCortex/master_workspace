@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 
+import pathlib
+
 import pytest
 from PySide6.QtGui import QColor
 
@@ -52,6 +54,9 @@ def test_d1_key_list_is_exact():
         "color.accent.fg",
         "color.danger",
         "color.status.ok",
+        "font.family.mono",
+        "color.rating.low",
+        "color.rating.high",
         "space.xs",
         "space.sm",
         "space.md",
@@ -63,14 +68,31 @@ def test_d1_key_list_is_exact():
     }
 
 
+# Keys read at runtime by screen code rather than by a generated stylesheet —
+# each exemption must name its reader (W2b D4: rating endpoints are painted
+# by ``detail_panel.rating_to_color``, not by QSS).
+RUNTIME_READ_TOKENS = {
+    "color.rating.low": "app.presentation.views.detail_panel",
+    "color.rating.high": "app.presentation.views.detail_panel",
+}
+
+
 def test_every_required_token_is_read_by_a_generated_style(tokens):
     # Guard against re-introducing dead tokens: each key must appear either as
-    # a literal in the compiled QSS (sheetworks embed token values) or as a
-    # custom property the repo app.css body actually references.
+    # a literal in the compiled QSS (sheetworks embed token values), as a
+    # custom property the repo app.css body actually references, or be read by
+    # a named runtime reader (RUNTIME_READ_TOKENS).
+    import importlib
+
     qss = compile_qss(tokens, "dark") + compile_popup_qss(tokens, "dark")
     css_root = compile_css_root(tokens, "dark")
     body = APP_CSS_PATH.read_text(encoding="utf-8")
     for key in REQUIRED_TOKEN_KEYS:
+        if key in RUNTIME_READ_TOKENS:
+            reader = importlib.import_module(RUNTIME_READ_TOKENS[key])
+            source = pathlib.Path(reader.__file__).read_text(encoding="utf-8")
+            assert f'"{key}"' in source, key
+            continue
         for theme in ("light", "dark"):
             if tokens[key][theme] in qss:
                 break
@@ -312,3 +334,11 @@ def test_top_level_not_object_is_invalid(tmp_path):
 def test_accent_rgba_expands_short_hex():
     fake = {"color.accent": {"light": "#7ae", "dark": "#7ae"}}
     assert accent_rgba(fake, "light", 0.5) == "rgba(119, 170, 238, 0.5)"
+
+
+def test_field_role_mono_rule_uses_the_mono_token(tokens):
+    """W2b: ``[field][uiRoleMono=true]`` draws its family from the token."""
+    for theme in ("light", "dark"):
+        qss = compile_qss(tokens, theme)
+        assert '[uiRole="field"][uiRoleMono="true"]' in qss
+        assert f"font-family: {tokens['font.family.mono'][theme]}" in qss

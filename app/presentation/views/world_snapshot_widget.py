@@ -79,14 +79,32 @@ class WorldSnapshotWidget(QWidget):
     def __init__(self, parent: QWidget | None = None, theme=None) -> None:
         super().__init__(parent)
         self._theme = theme
+        # (node, rating) pairs of the last populate — the rating tints are
+        # painted from token endpoints, so a live theme switch must re-tint
+        # them (W2b fix: without this the tree keeps the pre-switch gradient
+        # until the next snapshot request).
+        self._rated_nodes: list[tuple[QTreeWidgetItem, int]] = []
         self._init_ui()
         self._apply_theme()
 
     def _apply_theme(self) -> None:
         """One attach point for the whole panel (catalog contract)."""
         if self._theme is not None:
-            attach_theme(self, self._theme)
+            # Rating nodes are painted with QColor brushes (not QSS) → the
+            # retheme callback re-reads the token endpoints on every switch.
+            attach_theme(self, self._theme, on_retheme=self._on_theme_changed)
             self._theme.apply()
+
+    def _on_theme_changed(self) -> None:
+        """Re-read the rating endpoints from the new theme and re-tint."""
+        alive: list[tuple[QTreeWidgetItem, int]] = []
+        for node, rating in self._rated_nodes:
+            try:
+                node.setBackground(0, QBrush(rating_to_color(rating, self._theme)))
+                alive.append((node, rating))
+            except RuntimeError:  # the tree was cleared since the last populate
+                pass
+        self._rated_nodes = alive
 
     def _init_ui(self) -> None:
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -149,6 +167,7 @@ class WorldSnapshotWidget(QWidget):
         for_date: date for stats label; None means 'show all' mode.
         """
         self.tree.clear()
+        self._rated_nodes = []
         self.clear_button.setEnabled(True)
 
         if not events:
@@ -263,8 +282,9 @@ class WorldSnapshotWidget(QWidget):
         node.setData(0, Qt.ItemDataRole.UserRole, (entity_type, entity.id))
 
         # Rating color
-        color = rating_to_color(rating)
+        color = rating_to_color(rating, self._theme)
         node.setBackground(0, QBrush(color))
+        self._rated_nodes.append((node, rating))
 
         # Bold for high-rating entities
         if rating >= 15:
@@ -304,6 +324,7 @@ class WorldSnapshotWidget(QWidget):
 
     def _on_clear(self) -> None:
         self.tree.clear()
+        self._rated_nodes = []
         self.clear_button.setEnabled(False)
         self.stats_label.setText("")
         self._show_empty("Выберите дату и нажмите «Показать»")

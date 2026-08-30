@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from app.presentation.theme.catalog import attach_theme, title
 from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.mention_text_edit import MentionTextEdit
@@ -33,9 +34,15 @@ class EventDialog(QDialog):
     create_related_requested = Signal(str, str)  # (attr_name, entity_type)
     mention_clicked = Signal(str, int)  # (entity_type, entity_id)
 
-    def __init__(self, event_dialog_vm, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        event_dialog_vm,
+        parent: QWidget | None = None,
+        theme=None,
+    ) -> None:
         super().__init__(parent)
         self._vm = event_dialog_vm
+        self._theme = theme
         self._event_id: int | None = None
         self._ai_buttons: list[AiAssistButton] = []
         self._ai_row_layouts: dict[str, QHBoxLayout] = {}
@@ -47,12 +54,27 @@ class EventDialog(QDialog):
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
+        self._apply_theme()
         self._setup_ai_buttons()
         self.characteristics_input.mention_clicked.connect(self.mention_clicked)
         self.backstory_input.mention_clicked.connect(self.mention_clicked)
 
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
+
     def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it.
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.chrome = QWidget()
+        self.chrome.setObjectName("eventDialogChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        layout = QVBoxLayout(self.chrome)
+        layout.setContentsMargins(11, 11, 11, 11)
 
         form = QFormLayout()
 
@@ -79,17 +101,19 @@ class EventDialog(QDialog):
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
 
-        lbl = QLabel("Описание (обязательные поля)")
-        lbl.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        lbl = title("Описание (обязательные поля)")
+        # The old inline style carried 10px of top margin; restored as a
+        # layout margin on the label (spacing, not style).
+        lbl.setContentsMargins(0, 10, 0, 0)
         form.addRow(lbl)
 
-        self.characteristics_input = MentionTextEdit()
+        self.characteristics_input = MentionTextEdit(theme=self._theme)
         self.characteristics_input.setPlaceholderText("Характеристики *")
         self.characteristics_input.setMinimumHeight(60)
         self.characteristics_input.textChanged.connect(self._update_validity)
         form.addRow("Характеристики *:", self._make_ai_row(self.characteristics_input, "characteristics"))
 
-        self.backstory_input = MentionTextEdit()
+        self.backstory_input = MentionTextEdit(theme=self._theme)
         self.backstory_input.setPlaceholderText("Предыстория *")
         self.backstory_input.setMinimumHeight(60)
         self.backstory_input.textChanged.connect(self._update_validity)
@@ -99,7 +123,7 @@ class EventDialog(QDialog):
         self._entity_row = QHBoxLayout()
         self._entity_row.setContentsMargins(0, 0, 0, 0)
         self._entity_row.addStretch(1)
-        self._entity_button = EntityGenerateButton(self)
+        self._entity_button = EntityGenerateButton(self, theme=self._theme)
         self._entity_row.addWidget(self._entity_button)
         layout.addLayout(self._entity_row)
         layout.addLayout(form)
@@ -229,7 +253,7 @@ class EventDialog(QDialog):
             (self.backstory_input, "backstory", "Предыстория"),
         ]
         for widget, field_name, field_label in fields:
-            btn = AiAssistButton(widget, "event", field_name, field_label)
+            btn = AiAssistButton(widget, "event", field_name, field_label, theme=self._theme)
             self._ai_buttons.append(btn)
             # Single-line fields align to the middle; multi-line ones pin to the top edge.
             align = (

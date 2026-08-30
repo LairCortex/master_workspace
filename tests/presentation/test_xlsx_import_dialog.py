@@ -1,5 +1,5 @@
 """Characterization tests for XlsxImportDialog — import dialog widget."""
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QLabel, QMessageBox
 
 import pytest
 
@@ -145,3 +145,36 @@ class TestGetPath:
         d._path = "/clicked/path.xlsx"
         d.path_edit.setText("/other.xlsx")
         assert d.get_path() == "/clicked/path.xlsx"
+
+
+class TestThemeRoles:
+    """W2b: the format block is a mono field role, not an inline QSS table."""
+
+    def test_format_label_is_title_role(self, qtbot):
+        d = XlsxImportDialog("event")
+        qtbot.addWidget(d)
+        labels = [w for w in d.chrome.findChildren(QLabel) if w.text() == "Требования к файлу:"]
+        assert len(labels) == 1
+        assert labels[0].property("uiRole") == "title"
+
+    def test_format_text_is_mono_field_role(self, qtbot):
+        d = XlsxImportDialog("event")
+        qtbot.addWidget(d)
+        assert d.format_text.property("uiRole") == "field"
+        assert d.format_text.property("uiRoleMono") == "true"
+        # The inline ``font-family: monospace`` table is gone (catalog role now).
+        assert d.format_text.styleSheet() == ""
+
+    def test_theme_attach_marks_chrome(self, qtbot, tmp_path):
+        from app.infrastructure.ui_prefs.config import UiPrefsManager
+        from app.presentation.theme import ThemeRuntime
+        from app.presentation.theme.compiler import tokens_file_path
+
+        runtime = ThemeRuntime(
+            prefs=UiPrefsManager(tmp_path / "ui.json"),
+            tokens_path=tokens_file_path(),
+        )
+        d = XlsxImportDialog("event", theme=runtime)
+        qtbot.addWidget(d)
+        assert d.chrome.property("uiRole") == "chrome"
+        assert runtime.qss() in d.chrome.styleSheet()

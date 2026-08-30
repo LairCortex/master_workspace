@@ -15,6 +15,11 @@ from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
 from app.infrastructure.llm.errors import LlmError
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
+from app.presentation.theme.catalog import attach_theme, hint, set_role, title
+
+#: Restores the ``margin-bottom: 8px`` the inline hints carried (the catalog
+#: hint rule is generic and does not repeat it) — layout spacing, not style.
+_HINT_BOTTOM_GAP = 8
 
 _ENTITY_LABELS: dict[str, str] = {
     "event": "События",
@@ -30,10 +35,6 @@ _ENDPOINT_PLACEHOLDER = (
     "Базовый URL до /v1, например https://api.openai.com/v1"
     " или http://localhost:11434/v1 (Ollama)"
 )
-
-_CHECK_OK_STYLE = "color: #2e7d32;"
-_CHECK_ERROR_STYLE = "color: #c62828;"
-
 
 _FIELD_PLACEHOLDERS: dict[str, dict[str, str]] = {
     "event": {
@@ -81,17 +82,19 @@ class _FieldPromptsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel(f"Промты полей — {_ENTITY_LABELS.get(self._entity_type, self._entity_type)}")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(title)
+        layout.addWidget(title(
+            f"Промты полей — {_ENTITY_LABELS.get(self._entity_type, self._entity_type)}"
+        ))
 
-        hint = QLabel(
+        page_hint = hint(
             "Для каждого поля можно задать инструкцию для AI. "
             "Пустое поле — используется только название поля."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray; margin-bottom: 8px;")
-        layout.addWidget(hint)
+        page_hint.setWordWrap(True)
+        layout.addWidget(page_hint)
+        # The old inline hint carried ``margin-bottom: 8px``; the catalog hint
+        # rule is generic, so the gap is restored as layout spacing.
+        layout.addSpacing(_HINT_BOTTOM_GAP)
 
         form = QFormLayout()
         fields = FIELD_CONFIG.get(self._entity_type, [])
@@ -127,10 +130,12 @@ class LlmSetupDialog(QDialog):
         field_prompts: dict[str, dict[str, str]] | None = None,
         http: AppHttpClient | None = None,
         parent: QWidget | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Настройка AI-ассистента (LLM)")
         self.setMinimumSize(620, 480)
+        self._theme = theme
         self._initial_config = config or LlmConfig()
         self._world_prompt_initial = world_prompt
         self._field_prompts_initial = field_prompts or {}
@@ -138,8 +143,15 @@ class LlmSetupDialog(QDialog):
         self._field_pages: dict[str, _FieldPromptsPage] = {}
         self._saving = False
         self._init_ui()
+        self._apply_theme()
         self._update_nav_buttons()
         self._update_check_button()
+
+    def _apply_theme(self) -> None:
+        """One attach point: the chrome container carries the whole sheet (D1)."""
+        if self._theme is not None:
+            attach_theme(self.chrome, self._theme)
+            self._theme.apply()
 
     def reject(self) -> None:
         if self._saving:
@@ -169,7 +181,17 @@ class LlmSetupDialog(QDialog):
             )
 
     def _init_ui(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # The chrome reaches the dialog edges so no OS-palette band frames it
+        # (the W1 launcher / W2a month-dialog pattern).
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.chrome = QWidget()
+        self.chrome.setObjectName("llmSetupChrome")  # identifier, not style
+        outer.addWidget(self.chrome)
+        root = QVBoxLayout(self.chrome)
+        root.setContentsMargins(11, 11, 11, 11)
 
         self._stack = QStackedWidget()
 
@@ -215,20 +237,18 @@ class LlmSetupDialog(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel("Шаг 1: Подключение к LLM")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(title)
+        layout.addWidget(title("Шаг 1: Подключение к LLM"))
 
-        hint = QLabel(
+        endpoint_hint = hint(
             "Поддерживаются любые OpenAI-совместимые серверы:\n"
             "• OpenAI: https://api.openai.com/v1\n"
             "• Ollama: http://localhost:11434/v1\n"
             "• vLLM: http://host:8000/v1\n"
             "• LM Studio: http://localhost:1234/v1"
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray; margin-bottom: 8px;")
-        layout.addWidget(hint)
+        endpoint_hint.setWordWrap(True)
+        layout.addWidget(endpoint_hint)
+        layout.addSpacing(_HINT_BOTTOM_GAP)
 
         form = QFormLayout()
 
@@ -269,17 +289,15 @@ class LlmSetupDialog(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel("Шаг 2: Описание мира")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(title)
+        layout.addWidget(title("Шаг 2: Описание мира"))
 
-        hint = QLabel(
+        world_hint = hint(
             "Опишите мир, в котором вы водите: сеттинг, эпоха, стиль, ключевые особенности.\n"
             "Этот текст будет основным контекстом для всех AI-генераций."
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray; margin-bottom: 8px;")
-        layout.addWidget(hint)
+        world_hint.setWordWrap(True)
+        layout.addWidget(world_hint)
+        layout.addSpacing(_HINT_BOTTOM_GAP)
 
         self._world_prompt_edit = QTextEdit()
         self._world_prompt_edit.setPlaceholderText(
@@ -294,9 +312,7 @@ class LlmSetupDialog(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        title = QLabel("Информация")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(title)
+        layout.addWidget(title("Информация"))
 
         warnings = [
             "• LLM будет редактировать и дополнять ваш текст на основе описания мира.",
@@ -309,8 +325,10 @@ class LlmSetupDialog(QDialog):
         for text in warnings:
             lbl = QLabel(text)
             lbl.setWordWrap(True)
-            lbl.setStyleSheet("margin-bottom: 6px;")
             layout.addWidget(lbl)
+            # The old inline style added 6px under each warning line; restored
+            # as spacing (layout, not style).
+            layout.addSpacing(6)
 
         layout.addStretch()
         return page
@@ -325,6 +343,25 @@ class LlmSetupDialog(QDialog):
             api_key=self._key_edit.text().strip(),
         )
 
+    def _set_check_status(self, text: str, status: str | None) -> None:
+        """Status line colors come from the status-ok/status-error roles.
+
+        The role is the whole story: inside the attached chrome the compiled
+        QSS paints the text. When the dialog runs off-skin (no runtime or its
+        tokens are invalid) the label simply keeps the OS palette — asking a
+        process-wide runtime for the one status color while the rest of the
+        dialog stays unthemed is the half-applied theme D7 forbids.
+        """
+        label = self._check_label
+        label.setStyleSheet("")
+        if status is None:
+            # In-progress: neutral hint color inside chrome, default fg outside.
+            set_role(label, "hint")
+            label.setText(text)
+            return
+        set_role(label, "status-ok" if status == "ok" else "status-error")
+        label.setText(text)
+
     async def _on_check(self) -> None:
         """Run a minimal test request (1 token) against the entered settings."""
         config = self.get_connection()
@@ -332,17 +369,14 @@ class LlmSetupDialog(QDialog):
             return
 
         self._check_btn.setEnabled(False)
-        self._check_label.setStyleSheet("")
-        self._check_label.setText("Проверка соединения…")
+        self._set_check_status("Проверка соединения…", None)
 
         provider = RemoteLlmProvider(config, self._http)
         try:
             await provider.check_connection()
-            self._check_label.setText("Соединение установлено")
-            self._check_label.setStyleSheet(_CHECK_OK_STYLE)
+            self._set_check_status("Соединение установлено", "ok")
         except LlmError as exc:
-            self._check_label.setText(f"Ошибка: {exc}")
-            self._check_label.setStyleSheet(_CHECK_ERROR_STYLE)
+            self._set_check_status(f"Ошибка: {exc}", "error")
         finally:
             self._update_check_button()
 
