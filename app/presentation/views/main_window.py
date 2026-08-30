@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QDialog, QMainWindow, QMenuBar, QPlainTextEdit,
@@ -89,10 +89,12 @@ class MainWindow(QMainWindow):
         llm_vm=None,
         game_name: str = "",
         parent: QWidget | None = None,
+        theme=None,
     ) -> None:
         super().__init__(parent)
         self._base_title = "НРИ Сценарий Менеджер"
         self.llm_vm = llm_vm
+        self._theme = theme
         self.set_game_name(game_name)
         self.setMinimumSize(1024, 680)
 
@@ -123,6 +125,16 @@ class MainWindow(QMainWindow):
         self.month_settings_action = QAction("Названия месяцев…", self)
         self.month_settings_action.triggered.connect(self.month_settings_requested.emit)
         settings_menu.addAction(self.month_settings_action)
+
+        # Theme toggle (design D5): checkable state mirrors the current theme;
+        # with invalid tokens the runtime toggle is a no-op and the check
+        # snaps back (D7).
+        self.theme_toggle_action = QAction("Светлая тема", self)
+        self.theme_toggle_action.setCheckable(True)
+        self.theme_toggle_action.triggered.connect(self._on_theme_toggle)
+        settings_menu.addAction(self.theme_toggle_action)
+        settings_menu.addSeparator()
+        self._sync_theme_action()
 
         # Импорт из .xlsx
         self.import_events_action = QAction("Импорт событий из .xlsx…", self)
@@ -161,9 +173,16 @@ class MainWindow(QMainWindow):
 
         self._file_handler: logging.FileHandler | None = None
 
+        menu_bar.setObjectName("themeMenu")
+        menu_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMenuBar(menu_bar)
 
         central = QWidget()
+        # W1 chrome containers (design D4): QSS goes on the central widget
+        # and the menu bar — never on the QMainWindow itself, so dialogs
+        # parented to the window keep the OS palette until W2.
+        central.setObjectName("themeChrome")
+        central.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(4, 4, 4, 4)
@@ -189,6 +208,18 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
         main_layout.addWidget(splitter, 1)
+
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """Push the generated QSS onto the two chrome containers (design D4)."""
+        if self._theme is not None:
+            self._theme.register(self.centralWidget())
+            self._theme.register(self.menuBar())
+            # The check item mirrors the current theme even when some other
+            # window switched it (e.g. the launcher on top of this window).
+            self._theme.add_listener(self._sync_theme_action)
+            self._theme.apply()
 
     def set_game_name(self, name: str) -> None:
         if name:
@@ -217,6 +248,21 @@ class MainWindow(QMainWindow):
                 root_logger.removeHandler(self._file_handler)
                 self._file_handler.close()
                 self._file_handler = None
+
+    def _on_theme_toggle(self) -> None:
+        """Settings-menu dark/light switch (design D5, D7 no-op on bad tokens)."""
+        if self._theme is not None:
+            self._theme.toggle()
+        # The checkable item flipped itself on trigger; snap it back to the
+        # real theme (a no-op toggle must not leave a lying check mark).
+        self._sync_theme_action()
+
+    def _sync_theme_action(self) -> None:
+        """Checked state = light theme is active; snaps back when toggle is no-op."""
+        light = self._theme is not None and self._theme.theme == "light"
+        self.theme_toggle_action.blockSignals(True)
+        self.theme_toggle_action.setChecked(light)
+        self.theme_toggle_action.blockSignals(False)
 
     def _show_readme(self) -> None:
         dlg = _DocViewerDialog("Документация", _docs_dir() / "README.md", parent=self)

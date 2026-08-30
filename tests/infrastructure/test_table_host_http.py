@@ -365,3 +365,125 @@ def test_web_client_inherits_defaults_and_keeps_orphan_option():
     assert "indexOf(stored) === -1" in js
 
 
+
+
+# ── theme: dynamic /app.css from the master's tokens (W1 D6) ───────────────
+
+
+def _theme_runtime(tmp_path):
+    from app.infrastructure.ui_prefs.config import UiPrefsManager
+    from app.presentation.theme import ThemeRuntime
+    from app.presentation.theme.compiler import tokens_file_path
+
+    return ThemeRuntime(
+        prefs=UiPrefsManager(tmp_path / "ui.json"),
+        tokens_path=tokens_file_path(),
+    )
+
+
+def _token_canvas(theme_name):
+    from app.presentation.theme.compiler import load_tokens, tokens_file_path
+
+    tokens = load_tokens(tokens_file_path())
+    return tokens["color.bg.canvas"][theme_name]
+
+
+async def test_index_links_dynamic_app_css():
+    app = create_table_host_app()
+    async with TestClient(TestServer(app)) as client:
+        text = await (await client.get("/")).text()
+        assert 'href="/app.css"' in text
+        assert "/static/app.css" not in text
+
+
+async def test_app_css_has_root_of_current_theme_and_vars(tmp_path):
+    runtime = _theme_runtime(tmp_path)
+    app = create_table_host_app(theme=runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/app.css")
+        assert resp.status == 200
+        assert "css" in resp.headers.get("Content-Type", "").lower()
+        text = await resp.text()
+        assert ":root" in text
+        assert "--color-bg-canvas" in text
+        assert _token_canvas("dark") in text  # default preference: dark
+        assert "var(--" in text
+
+
+async def test_app_css_chrome_rules_use_vars(tmp_path):
+    runtime = _theme_runtime(tmp_path)
+    app = create_table_host_app(theme=runtime)
+    async with TestClient(TestServer(app)) as client:
+        text = await (await client.get("/app.css")).text()
+    for selector in ("#landing", "#toolbar", "#status.error"):
+        block = text.split(selector, 1)[1].split("}", 1)[0]
+        assert "var(--" in block, selector
+
+
+async def test_app_css_page_paper_has_no_theme_vars(tmp_path):
+    runtime = _theme_runtime(tmp_path)
+    app = create_table_host_app(theme=runtime)
+    async with TestClient(TestServer(app)) as client:
+        text = await (await client.get("/app.css")).text()
+    page_block = text.split(".page {", 1)[1].split("}", 1)[0]
+    assert "var(" not in page_block
+    assert "#fff" in page_block
+
+
+async def test_app_css_follows_theme_switch_without_ws(tmp_path):
+    runtime = _theme_runtime(tmp_path)
+    app = create_table_host_app(theme=runtime)
+    async with TestClient(TestServer(app)) as client:
+        first = await (await client.get("/app.css")).text()
+        assert runtime.toggle() is True  # dark -> light, writes tmp prefs
+        second = await (await client.get("/app.css")).text()
+    assert _token_canvas("dark") in first
+    assert _token_canvas("dark") not in second
+    assert _token_canvas("light") in second
+
+
+async def test_app_css_is_empty_when_tokens_are_invalid(tmp_path):
+    # D7 web side: never serve a body of unresolved var() references.
+    from app.infrastructure.ui_prefs.config import UiPrefsManager
+    from app.presentation.theme import ThemeRuntime
+
+    broken_tokens = tmp_path / "tokens.json"
+    broken_tokens.write_bytes(b"\xff\xfe\x00{\x01\x80")
+    runtime = ThemeRuntime(
+        prefs=UiPrefsManager(tmp_path / "ui.json"),
+        tokens_path=broken_tokens,
+    )
+    app = create_table_host_app(theme=runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/app.css")
+        assert resp.status == 200
+        assert (await resp.text()) == ""
+
+
+async def test_legacy_static_css_url_serves_compiled_theme(tmp_path):
+    # The repo app.css is a var() source body: serving it raw would hand out
+    # a stylesheet with unresolved custom properties (a second, dead source).
+    runtime = _theme_runtime(tmp_path)
+    app = create_table_host_app(theme=runtime)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/static/app.css")
+        assert resp.status == 200
+        text = await resp.text()
+    assert ":root" in text
+    assert _token_canvas("dark") in text
+
+
+async def test_app_css_without_injected_runtime_is_server_error():
+    # No implicit singleton here: it would read the real developer prefs.
+    app = create_table_host_app()
+    async with TestClient(TestServer(app)) as client:
+        for path in ("/app.css", "/static/app.css"):
+            resp = await client.get(path)
+            assert resp.status == 500
+
+
+async def test_static_still_serves_the_table_script():
+    app = create_table_host_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/static/app.js")
+        assert resp.status == 200

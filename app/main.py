@@ -61,6 +61,7 @@ from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
+from app.presentation.theme import ThemeRuntime, get_default_theme
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
@@ -77,12 +78,19 @@ from app.infrastructure.repositories.character_sheet_instance_repository import 
 class Application:
     """Wires up DI and manages the application lifecycle."""
 
-    def __init__(self, qapp: QApplication, http: AppHttpClient | None = None) -> None:
+    def __init__(
+        self,
+        qapp: QApplication,
+        http: AppHttpClient | None = None,
+        theme: ThemeRuntime | None = None,
+    ) -> None:
         """Wires up DI and manages the application lifecycle.
 
         ``http`` is the optional application-wide HTTP client (injected by
         tests with an emulated transport). When omitted the application
         creates and closes its own default client per start/shutdown cycle.
+        ``theme`` injects a ThemeRuntime (tests redirect the preference
+        file); when omitted the process-wide default is used.
         """
         self._qapp = qapp
         self.engine = None
@@ -93,6 +101,8 @@ class Application:
         self._image_store: ImageStore | None = None
 
         self._config_manager = LlmConfigManager()
+        # Design tokens theme (W1): one runtime for Qt chrome and table CSS.
+        self._theme: ThemeRuntime = theme or get_default_theme()
         self._http_injected: AppHttpClient | None = http
         self._http: AppHttpClient | None = None
         self._llm_service: LlmService | None = None
@@ -182,6 +192,7 @@ class Application:
             search_vm=search_vm,
             llm_vm=self._llm_vm,
             game_name=game_name,
+            theme=self._theme,
         )
 
         self._search_service = search_service
@@ -227,7 +238,9 @@ class Application:
             self._sheet_service,
             image_store=self._image_store,
         )
-        self._table_host.set_http(TableHostHttp(create_table_host_app(self._table_host)))
+        self._table_host.set_http(
+            TableHostHttp(create_table_host_app(self._table_host, theme=self._theme))
+        )
         self._instance_service.set_seating_guard(self._table_host.is_seated)
         self._table_host.subscribe_values(self._on_host_values)
         self._table_host.subscribe_occupancy(self._sync_list_seated)
@@ -270,7 +283,7 @@ class Application:
 
     async def _on_switch_game(self) -> None:
         """Show launcher, switch to selected game."""
-        dialog = GameLauncherDialog(parent=self._window)
+        dialog = GameLauncherDialog(parent=self._window, theme=self._theme)
         dialog.game_selected.connect(lambda p: asyncio.ensure_future(self._on_game_selected(p)))
         dialog.open()
 
@@ -1096,10 +1109,13 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
-    application = Application(app)
+    # One theme runtime for the whole process: launcher chrome, main window
+    # chrome and the table host CSS all read from it (design D6).
+    theme = get_default_theme()
+    application = Application(app, theme=theme)
 
-    # Show launcher
-    launcher = GameLauncherDialog()
+    # Show launcher (theme applied immediately; toggle lives on the chrome).
+    launcher = GameLauncherDialog(theme=theme)
     launcher.exec()
     if not launcher.selected_path:
         sys.exit(0)

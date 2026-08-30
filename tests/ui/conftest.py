@@ -146,7 +146,13 @@ async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     db_path = tmp_path / "game" / "game.db"
     db_path.parent.mkdir(parents=True)
     (db_path.parent / "images").mkdir()
-    application = Application(qapp, http=llm_client)
+    from app.infrastructure.ui_prefs.config import UiPrefsManager
+    from app.presentation.theme import ThemeRuntime
+
+    # Theme preference isolated into tmp_path: e2e runs must never read or
+    # write the developer's real ~/.nri_manager/ui.json.
+    theme = ThemeRuntime(prefs=UiPrefsManager(tmp_path / "ui.json"))
+    application = Application(qapp, http=llm_client, theme=theme)
     window = await application.start(str(db_path))
     yield application, window
     window.close()

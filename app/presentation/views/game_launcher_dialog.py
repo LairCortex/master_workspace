@@ -1,7 +1,7 @@
 """Game launcher dialog — choose, create or delete a game on startup."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
@@ -15,24 +15,48 @@ from app.infrastructure.db.game_manager import (
 class GameLauncherDialog(QDialog):
     game_selected = Signal(str)  # db file path
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, theme=None) -> None:
         super().__init__(parent)
+        self._theme = theme
         self.setWindowTitle("НРИ Сценарий Менеджер — Выбор игры")
         self.setMinimumSize(480, 400)
         self._selected_path: str | None = None
         self._init_ui()
+        self._apply_theme()
         self._refresh_list()
+
+    def _apply_theme(self) -> None:
+        """Scope the generated QSS to the chrome container only (design D4)."""
+        if self._theme is not None:
+            self._theme.register(self.chrome)
+            # The toggle label follows the runtime, whoever changed the theme
+            # (this dialog, the main window menu, …).
+            self._theme.add_listener(self._sync_theme_toggle_text)
+            self._theme.apply()
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
+        # The chrome has to reach the dialog edges: the default layout margin
+        # (~11 px) would draw the OS palette as a frame around it (design D4).
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # W1 chrome container: the only widget the compiled QSS is set on.
+        self.chrome = QWidget()
+        self.chrome.setObjectName("themeChrome")
+        self.chrome.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout.addWidget(self.chrome)
+        chrome_layout = QVBoxLayout(self.chrome)
+        chrome_layout.setContentsMargins(8, 8, 8, 8)
+        chrome_layout.setSpacing(8)
 
         title = QLabel("Выберите игру или создайте новую")
         title.setStyleSheet("font-weight: bold; font-size: 16px; margin-bottom: 8px;")
-        layout.addWidget(title)
+        chrome_layout.addWidget(title)
 
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self._on_open)
-        layout.addWidget(self.list_widget, 1)
+        chrome_layout.addWidget(self.list_widget, 1)
 
         btn_row = QHBoxLayout()
         self.open_button = QPushButton("Открыть")
@@ -50,10 +74,28 @@ class GameLauncherDialog(QDialog):
 
         btn_row.addWidget(self.new_button)
         btn_row.addWidget(self.import_button)
+
+        # Theme toggle on the chrome (design D5): with invalid tokens the
+        # runtime's toggle is a no-op, so QSS never appears (D7).
+        self.theme_toggle_button = QPushButton()
+        self.theme_toggle_button.setVisible(self._theme is not None)
+        self._sync_theme_toggle_text()
+        self.theme_toggle_button.clicked.connect(self._on_theme_toggle)
+        btn_row.addWidget(self.theme_toggle_button)
+
         btn_row.addStretch()
         btn_row.addWidget(self.delete_button)
         btn_row.addWidget(self.open_button)
-        layout.addLayout(btn_row)
+        chrome_layout.addLayout(btn_row)
+
+    def _sync_theme_toggle_text(self) -> None:
+        """Label offers the theme you would switch *to*; the runtime notifies us."""
+        light = self._theme is not None and self._theme.theme == "light"
+        self.theme_toggle_button.setText("Тёмная тема" if light else "Светлая тема")
+
+    def _on_theme_toggle(self) -> None:
+        if self._theme is not None:
+            self._theme.toggle()  # no-op with invalid tokens (D7)
 
     def _refresh_list(self) -> None:
         self.list_widget.clear()

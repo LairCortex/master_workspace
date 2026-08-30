@@ -26,10 +26,30 @@ def web_static_dir() -> Path:
 
 
 TABLE_HOST_KEY = web.AppKey("table_host", object)
+THEME_KEY = web.AppKey("theme_runtime", object)
 
 
 async def handle_index(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(web_static_dir() / "index.html")
+
+
+async def handle_app_css(request: web.Request) -> web.Response:
+    """Compiled ``:root`` of the master's current theme + the repo app.css.
+
+    Same theme-runtime as the Qt chrome (design D6) — no second compiler,
+    no on-disk generated file. Fresh GET picks up the current preference;
+    already-open tabs are not pushed to (spec: no live-push).
+
+    Empty body when the tokens are invalid (D7): a stylesheet of unresolved
+    ``var()`` would be no colors at all.
+    """
+    runtime = request.app.get(THEME_KEY)
+    if runtime is None:
+        # No implicit process-wide runtime here: it would read the real
+        # ~/.nri_manager/ui.json of whoever owns this process (D6 — the table
+        # host reports the master's theme, and the master always injects it).
+        raise web.HTTPInternalServerError(text="Theme runtime is not configured")
+    return web.Response(text=runtime.css(), content_type="text/css")
 
 
 def _service(request: web.Request):
@@ -227,15 +247,22 @@ async def _max_size_middleware(request: web.Request, handler):
 
 
 def create_table_host_app(
-    service=None, *, client_max_size: int = MAX_UPLOAD_BYTES
+    service=None, *, client_max_size: int = MAX_UPLOAD_BYTES, theme=None
 ) -> web.Application:
     app = web.Application(
         client_max_size=client_max_size,
         middlewares=[_max_size_middleware],
     )
     app[TABLE_HOST_KEY] = service
+    app[THEME_KEY] = theme
     static = web_static_dir()
     app.router.add_get("/", handle_index)
+    app.router.add_get("/app.css", handle_app_css)
+    # The web dir also holds app.js and is served under /static — but the
+    # repo app.css is a var() source body, never a finished stylesheet. This
+    # explicit route is registered before add_static so the legacy URL cannot
+    # hand out a stylesheet of unresolved custom properties (a second source).
+    app.router.add_get("/static/app.css", handle_app_css)
     app.router.add_post("/api/join", handle_join)
     app.router.add_get("/api/seats", handle_seats)
     app.router.add_get("/api/sheet", handle_sheet)

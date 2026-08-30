@@ -1,16 +1,18 @@
 html, body {
   margin: 0;
   font-family: sans-serif;
-  background: #ddd;
+  background: var(--color-bg-canvas);
+  color: var(--color-fg-primary);
 }
 #landing {
-  padding: 16px;
-  background: #fff;
+  padding: var(--space-md);
+  background: var(--color-bg-surface);
+  color: var(--color-fg-primary);
   max-width: 420px;
 }
 label {
   display: block;
-  margin: 8px 0;
+  margin: var(--space-sm) 0;
 }
 #seats {
   list-style: none;
@@ -19,8 +21,13 @@ label {
 #seats button {
   display: block;
   width: 100%;
-  margin: 4px 0;
-  padding: 8px;
+  margin: var(--space-xs) 0;
+  padding: var(--space-sm);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font-weight: var(--font-weight-bold);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
 }
 #sheet {
   min-height: 100vh;
@@ -29,21 +36,23 @@ label {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #222;
-  color: #fff;
-  padding: 8px 12px;
+  background: var(--color-bg-canvas);
+  color: var(--color-fg-primary);
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-sm) var(--space-md);
   display: flex;
-  gap: 8px;
+  gap: var(--space-sm);
   align-items: center;
 }
 #viewport {
   overflow: auto;
   height: calc(100vh - 40px);
-  padding: 16px;
+  padding: var(--space-md);
 }
 #tape {
   transform-origin: top left;
 }
+/* Paper is intentionally NOT themed: literals below, no chrome var(). */
 .page {
   position: relative;
   background: #fff;
@@ -88,5 +97,5 @@ label {
   max-height: 100%;
 }
 #status.error {
-  color: #a00;
+  color: var(--color-danger);
 }

@@ -30,6 +30,8 @@ a = Analysis(
          "app/presentation/views/character_sheet/presets"),
         ("app/presentation/views/table_host/web",
          "app/presentation/views/table_host/web"),
+        ("app/presentation/theme/tokens.json",
+         "app/presentation/theme"),
     ],
     hiddenimports=[
         "aiosqlite",
