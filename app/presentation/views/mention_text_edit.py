@@ -82,8 +82,19 @@ def html_to_mentions(doc) -> str:
 
 # ── Popup widget ──────────────────────────────────────────────────────────
 
+class MentionPopupListView(QListWidget):
+    """Mention result list — named class so the app-wide popup sheet (W2a D2)
+    styles it (surface/bg, item padding, accent selection) without any inline
+    table here; anything else stays on the OS palette until migrated."""
+
+
 class _MentionPopup(QWidget):
-    """Floating list that shows search results for @-mention."""
+    """Floating list that shows search results for @-mention.
+
+    Also a named class: the popup sheet paints its own background with
+    ``color.bg.surface``, so no OS-palette strip is left where the list is
+    shorter than the popup (``setMaximumHeight`` + resize).
+    """
 
     item_selected = Signal(dict)  # {type, id, name}
 
@@ -93,18 +104,16 @@ class _MentionPopup(QWidget):
             Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint,
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        # Required for a plain QWidget to paint the background from a sheet.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
         self.setMinimumWidth(260)
         self.setMaximumHeight(220)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self._list = QListWidget()
+        self._list = MentionPopupListView()
         self._list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._list.setStyleSheet(
-            "QListWidget { font-size: 13px; }"
-            "QListWidget::item { padding: 4px 8px; }"
-            "QListWidget::item:selected { background: palette(highlight); color: palette(highlighted-text); }"
-        )
         self._list.itemClicked.connect(self._on_click)
         lay.addWidget(self._list)
 

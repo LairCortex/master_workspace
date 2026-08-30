@@ -1,7 +1,7 @@
 """Game launcher dialog — choose, create or delete a game on startup."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 from app.infrastructure.db.game_manager import (
     create_game, delete_game, import_game, list_games, read_archive_meta,
 )
+from app.presentation.theme.catalog import attach_theme
 
 
 class GameLauncherDialog(QDialog):
@@ -28,7 +29,8 @@ class GameLauncherDialog(QDialog):
     def _apply_theme(self) -> None:
         """Scope the generated QSS to the chrome container only (design D4)."""
         if self._theme is not None:
-            self._theme.register(self.chrome)
+            # W2a: the role property replaces the objectName style hook.
+            attach_theme(self.chrome, self._theme)
             # The toggle label follows the runtime, whoever changed the theme
             # (this dialog, the main window menu, …).
             self._theme.add_listener(self._sync_theme_toggle_text)
@@ -41,10 +43,11 @@ class GameLauncherDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # W1 chrome container: the only widget the compiled QSS is set on.
+        # W1 chrome container, W2a role chrome: the only widget in this dialog
+        # whose subtree the compiled QSS is set on. The objectName is a test
+        # identifier now, not a style hook.
         self.chrome = QWidget()
         self.chrome.setObjectName("themeChrome")
-        self.chrome.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout.addWidget(self.chrome)
         chrome_layout = QVBoxLayout(self.chrome)
         chrome_layout.setContentsMargins(8, 8, 8, 8)

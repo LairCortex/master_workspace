@@ -103,6 +103,10 @@ class Application:
         self._config_manager = LlmConfigManager()
         # Design tokens theme (W1): one runtime for Qt chrome and table CSS.
         self._theme: ThemeRuntime = theme or get_default_theme()
+        # W2a D2: the runtime owns the popup sheet (tooltips, menus, combo
+        # lists, calendar, mentions) app-wide; it is (re)pushed from apply()/
+        # set_theme() whenever the compiled text changes.
+        self._theme.attach_app(qapp)
         self._http_injected: AppHttpClient | None = http
         self._http: AppHttpClient | None = None
         self._llm_service: LlmService | None = None
@@ -763,7 +767,7 @@ class Application:
 
     async def _on_month_settings(self, window, timeline_vm) -> None:
         """Show month settings dialog and apply changes."""
-        dialog = MonthSettingsDialog(get_custom_months(), parent=window)
+        dialog = MonthSettingsDialog(get_custom_months(), parent=window, theme=self._theme)
 
         async def _on_saved(months):
             set_custom_months(months)

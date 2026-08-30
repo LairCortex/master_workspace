@@ -1,8 +1,10 @@
-"""Design-token theme runtime (W1)."""
+"""Design-token theme runtime (W1, catalog roles in W2a)."""
 from app.presentation.theme.compiler import (
     REQUIRED_TOKEN_KEYS,
     THEMES,
+    accent_rgba,
     compile_css_root,
+    compile_popup_qss,
     compile_qss,
     css_var_name,
     load_tokens,
@@ -15,7 +17,9 @@ __all__ = [
     "REQUIRED_TOKEN_KEYS",
     "THEMES",
     "ThemeRuntime",
+    "accent_rgba",
     "compile_css_root",
+    "compile_popup_qss",
     "compile_qss",
     "css_var_name",
     "get_default_theme",

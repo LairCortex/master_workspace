@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.date_utils import format_game_date
+from app.presentation.theme.catalog import attach_theme, set_role, title
 from app.presentation.views.custom_date_edit import CustomDateEdit
 from app.presentation.views.detail_panel import rating_to_color
 from app.presentation.utils.image_utils import load_entity_preview
@@ -66,14 +67,26 @@ def _icon(key: str) -> QIcon:
 # ── World Snapshot Widget ─────────────────────────────────────────────────
 
 class WorldSnapshotWidget(QWidget):
-    """Shows the state of the game world at a given date as a tree."""
+    """Shows the state of the game world at a given date as a tree.
+
+    W2a pilot: one ``attach_theme`` on the root; title/tree/stats carry
+    catalog roles — the button stays a plain chrome button.
+    """
 
     entity_clicked = Signal(str, int)  # (entity_type, entity_id)
     snapshot_requested = Signal(object)  # date | None
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, theme=None) -> None:
         super().__init__(parent)
+        self._theme = theme
         self._init_ui()
+        self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        """One attach point for the whole panel (catalog contract)."""
+        if self._theme is not None:
+            attach_theme(self, self._theme)
+            self._theme.apply()
 
     def _init_ui(self) -> None:
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -82,9 +95,8 @@ class WorldSnapshotWidget(QWidget):
         layout.setSpacing(4)
 
         # ── Title ──
-        title = QLabel("Обзор мира")
-        title.setStyleSheet("font-weight: bold; font-size: 14px;")
-        layout.addWidget(title)
+        self.title_label = title("Обзор мира")
+        layout.addWidget(self.title_label)
 
         # ── Date picker bar ──
         date_bar = QHBoxLayout()
@@ -96,11 +108,6 @@ class WorldSnapshotWidget(QWidget):
         date_bar.addWidget(self.date_edit, 1)
 
         self.show_button = QPushButton("Показать")
-        self.show_button.setStyleSheet(
-            "QPushButton { background-color: #2d5a88; color: white; padding: 4px 12px;"
-            " border-radius: 3px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #3a6fa0; }"
-        )
         self.show_button.clicked.connect(self._on_show)
         date_bar.addWidget(self.show_button)
 
@@ -121,17 +128,14 @@ class WorldSnapshotWidget(QWidget):
         self.tree.setAnimated(True)
         self.tree.setIndentation(24)
         self.tree.setIconSize(QSize(20, 20))
-        self.tree.setStyleSheet(
-            "QTreeWidget { font-size: 13px; }"
-            "QTreeWidget::item { padding: 3px 0px; }"
-        )
+        set_role(self.tree, "list")  # surface/border/item colors from tokens
         self.tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self.tree, 1)
 
         # ── Stats bar ──
         self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet("font-size: 11px; color: #999;")
+        set_role(self.stats_label, "hint")  # muted fg from tokens (was #999)
         self.stats_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.stats_label)
 
@@ -315,7 +319,8 @@ class WorldSnapshotWidget(QWidget):
         self.tree.clear()
         placeholder = QTreeWidgetItem(self.tree)
         placeholder.setText(0, text)
-        placeholder.setForeground(0, QBrush(QColor(150, 150, 150)))
+        # Italic-only placeholder: the color comes from the list role (W2a),
+        # no per-item gray literal.
         f = placeholder.font(0)
         f.setItalic(True)
         placeholder.setFont(0, f)

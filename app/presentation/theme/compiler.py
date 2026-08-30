@@ -1,10 +1,16 @@
-"""Design tokens: parsing and in-memory QSS/CSS compilation (W1).
+"""Design tokens: parsing and in-memory QSS/CSS compilation (W1, extended W2a).
 
 ``tokens.json`` (design D1) maps a semantic role to ``{"light": ..., "dark":
 ...}``. The compiler (D2) produces QSS (literals only) and the CSS ``:root``
 block in memory — generated artifacts are never written to disk. An
 unparsable or incomplete token file makes the whole set invalid (D7):
 ``load_tokens`` returns ``None``, callers log and degrade to the OS palette.
+
+W2a (add-widget-catalog-chrome-mechanics-w2a): chrome rules address widgets
+through ``[uiRole="..."]`` dynamic properties instead of objectNames (D6),
+catalog roles (title/hint/field/list/card/status-*) are emitted as standalone
+rules (D1), and top-level popups get their own application-wide sheet
+``compile_popup_qss`` (D2) — chrome-scoped rules could never reach them.
 """
 from __future__ import annotations
 
@@ -17,7 +23,12 @@ from app.domain.theme import THEMES
 
 log = logging.getLogger(__name__)
 
-# Semantic role names are fixed by design D1 (changes/add-design-tokens-w1).
+# Semantic role names are fixed by design D1 (changes/add-design-tokens-w1)
+# and extended by W2a (add-widget-catalog-chrome-mechanics-w2a D4). A role is
+# only added here once something actually reads it (compiler rule, catalog
+# role or CSS body): "declared but unread" tokens would tighten validation
+# (absence kills the whole theme) for zero benefit — rating endpoints and the
+# mono family join the set in W2b together with the screens that read them.
 REQUIRED_TOKEN_KEYS: tuple[str, ...] = (
     "color.bg.canvas",
     "color.bg.surface",
@@ -27,11 +38,14 @@ REQUIRED_TOKEN_KEYS: tuple[str, ...] = (
     "color.accent",
     "color.accent.fg",
     "color.danger",
+    "color.status.ok",
     "space.xs",
     "space.sm",
     "space.md",
     "radius.sm",
     "font.size.md",
+    "font.size.lg",
+    "font.size.xl",
     "font.weight.bold",
 )
 
@@ -83,31 +97,58 @@ def load_tokens(path: Path) -> Optional[Tokens]:
     return tokens
 
 
-def compile_qss(tokens: Tokens, theme: str) -> str:
-    """Qt stylesheet for the chrome containers (D1/D2/D4 — literals only).
+def _hex_rgb(color: str) -> Optional[tuple[int, int, int]]:
+    """``#rgb`` / ``#rrggbb`` → ``(r, g, b)``; anything else → ``None``."""
+    s = color.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    if len(s) != 6 or any(ch not in "0123456789abcdefABCDEF" for ch in s):
+        return None
+    return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
 
-    Rules are scoped to ``QWidget#themeChrome`` / ``QMenuBar#themeMenu`` so a
-    dialog that is a child of the main window does not inherit the skin (D4).
-    ``QToolTip`` is deliberately absent: tooltips are top-level popups with no
-    chrome ancestor, so a chrome-scoped rule for them could never match
-    (tooltip skinning needs an application-wide sheet — W2).
+
+def accent_rgba(tokens: Tokens, theme: str, alpha: float) -> str:
+    """``color.accent`` as ``rgba(r, g, b, a)`` (W2a D5 — no rgba tokens).
+
+    Used for hover/pressed/selection highlights; when the token is not a hex
+    color the raw value is returned so the stylesheet stays at least valid.
+    """
+    value = tokens["color.accent"][theme]
+    rgb = _hex_rgb(value)
+    if rgb is None:
+        return value
+    return f"rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {alpha:g})"
+
+
+def compile_qss(tokens: Tokens, theme: str) -> str:
+    """Qt stylesheet for attached roots and catalog roles (literals only).
+
+    W2a D6: rules address roles through ``[uiRole="..."]`` dynamic properties
+    instead of objectNames, so one generated sheet is pushed verbatim to every
+    registered root. A property selector matches only the widget that actually
+    carries the property (Qt does not propagate it to children), so nested
+    widgets without a role keep the OS palette. ``QToolTip``/``QMenu``/combo
+    popups are absent here: as top-level popups they have no attached ancestor
+    and could never match — they live in ``compile_popup_qss`` (D2).
     """
     t = {key: values[theme] for key, values in tokens.items()}
+    hover = accent_rgba(tokens, theme, 0.85)
+    pressed = accent_rgba(tokens, theme, 0.7)
     return f"""
-QWidget#themeChrome, QMenuBar#themeMenu {{
+QWidget[uiRole="chrome"], QMenuBar[uiRole="menu"] {{
     background: {t['color.bg.canvas']};
     color: {t['color.fg.primary']};
     font-size: {t['font.size.md']};
 }}
-QMenuBar#themeMenu::item {{
+QMenuBar[uiRole="menu"]::item {{
     padding: {t['space.xs']} {t['space.sm']};
     background: transparent;
     color: {t['color.fg.primary']};
 }}
-QMenuBar#themeMenu::item:selected {{
+QMenuBar[uiRole="menu"]::item:selected {{
     background: {t['color.bg.surface']};
 }}
-QWidget#themeChrome QPushButton {{
+QWidget[uiRole="chrome"] QPushButton {{
     background: {t['color.accent']};
     color: {t['color.accent.fg']};
     font-weight: {t['font.weight.bold']};
@@ -115,17 +156,149 @@ QWidget#themeChrome QPushButton {{
     border-radius: {t['radius.sm']};
     padding: {t['space.xs']} {t['space.sm']};
 }}
-QWidget#themeChrome QListWidget,
-QWidget#themeChrome QTreeView,
-QWidget#themeChrome QPlainTextEdit {{
+QWidget[uiRole="chrome"] QPushButton:hover {{
+    background: {hover};
+}}
+QWidget[uiRole="chrome"] QPushButton:pressed {{
+    background: {pressed};
+}}
+QWidget[uiRole="chrome"] QPushButton:disabled {{
+    color: {t['color.fg.muted']};
+}}
+QWidget[uiRole="chrome"] QListWidget,
+QWidget[uiRole="chrome"] QTreeView,
+QWidget[uiRole="chrome"] QPlainTextEdit {{
     background: {t['color.bg.surface']};
     color: {t['color.fg.primary']};
     border: 1px solid {t['color.border']};
+}}
+[uiRole="title"] {{
+    font-size: {t['font.size.lg']};
+    font-weight: {t['font.weight.bold']};
+    color: {t['color.fg.primary']};
+}}
+[uiRole="title"][uiRoleSize="xl"] {{
+    font-size: {t['font.size.xl']};
+}}
+[uiRole="hint"] {{
+    color: {t['color.fg.muted']};
+}}
+[uiRole="hint"][uiRoleItalic="true"] {{
+    font-style: italic;
+}}
+[uiRole="field"] {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    padding: {t['space.xs']} {t['space.sm']};
+    selection-background-color: {t['color.accent']};
+    selection-color: {t['color.accent.fg']};
+}}
+[uiRole="list"] {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    outline: 0;
+}}
+[uiRole="list"]::item {{
+    padding: {t['space.xs']} {t['space.sm']};
+}}
+[uiRole="list"]::item:selected {{
+    background: {t['color.accent']};
+    color: {t['color.accent.fg']};
+}}
+[uiRole="card"] {{
+    background: {t['color.bg.surface']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    padding: {t['space.sm']};
+}}
+[uiRole="status-ok"] {{
+    color: {t['color.status.ok']};
+}}
+[uiRole="status-error"] {{
+    color: {t['color.danger']};
+}}
+""".strip()
+
+
+def compile_popup_qss(tokens: Tokens, theme: str) -> str:
+    """Application-wide sheet for top-level popups only (W2a D2).
+
+    Tooltips, menus, combo/calendar dropdowns and the mention list are
+    separate top-level windows: an attached-root stylesheet cannot reach them,
+    so this sheet is set on ``QApplication``. It deliberately contains *no*
+    generic chrome rules — anything with a class selector (``QLineEdit`` etc.)
+    would also skin the widgets embedded in the sheet canvas
+    (``QGraphicsProxyWidget``) which W2a must not touch.
+
+    Menu items have no ``:hover`` rule on purpose: a hovered ``QMenu`` item is
+    already ``:selected`` for Qt, so an extra alpha-hover would only wash the
+    accent selection out under the cursor (W2a review).
+
+    The mention popup is skinned on both of its classes: ``_MentionPopup`` (the
+    top-level container, whose own background shows wherever the list does not
+    reach) and ``MentionPopupListView`` (items/selection) — a rule for the list
+    alone would leave an OS-palette strip inside the popup.
+    """
+    t = {key: values[theme] for key, values in tokens.items()}
+    return f"""
+QToolTip {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    padding: {t['space.xs']} {t['space.sm']};
 }}
 QMenu {{
     background: {t['color.bg.surface']};
     color: {t['color.fg.primary']};
     border: 1px solid {t['color.border']};
+}}
+QMenu::item {{
+    padding: {t['space.xs']} {t['space.sm']};
+}}
+QMenu::item:selected {{
+    background: {t['color.accent']};
+    color: {t['color.accent.fg']};
+}}
+QComboBox QAbstractItemView {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    selection-background-color: {t['color.accent']};
+    selection-color: {t['color.accent.fg']};
+}}
+QCalendarWidget {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+}}
+QCalendarWidget QToolButton {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+}}
+QCalendarWidget QAbstractItemView {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    selection-background-color: {t['color.accent']};
+    selection-color: {t['color.accent.fg']};
+}}
+_MentionPopup {{
+    background: {t['color.bg.surface']};
+}}
+MentionPopupListView {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    font-size: {t['font.size.md']};
+    outline: 0;
+}}
+MentionPopupListView::item {{
+    padding: {t['space.xs']} {t['space.sm']};
+}}
+MentionPopupListView::item:selected {{
+    background: {t['color.accent']};
+    color: {t['color.accent.fg']};
 }}
 """.strip()
 

@@ -2,6 +2,30 @@
 
 ## Unreleased — незавершённый
 
+### Дизайн-система W2a: механика ролей, каталог виджетов, попапы (эпик W не закрыт; W2b — следующий change)
+
+#### Новый функционал
+- Единый механизм темы вместо objectName-селекторов: виджет получает роль dynamic property `uiRole` (`chrome`/`menu`/`title`/`hint`/`field`/`list`/`card`/`status-ok`/`status-error`), QSS компилируется правилами `[uiRole="..."]`; модификаторы — отдельные свойства (`uiRoleSize="xl"`, `uiRoleItalic="true"`)
+- `app/presentation/theme/catalog.py`: `attach_theme(root)` — экран подключается к теме одной точкой (роль + регистрация в runtime + polish, live-смена темы сохраняется, повторный вызов идемпотентен); `set_role(widget, role, size=, italic=)`; фабрики `title(text, size=)` и `hint(text, italic=)` — без subclass-обёрток
+- App-wide QSS-лист строго для top-level попапов (`compile_popup_qss`): `QToolTip`, `QMenu`, `QComboBox QAbstractItemView`, `QCalendarWidget`, `_MentionPopup` + `MentionPopupListView`; ставится на `QApplication` через `ThemeRuntime.attach_app()` и пересобирается каждой сменой темы; при невалидных токенах очищается (off-skin). Generic-правил в нём нет — канвас и `QGraphicsProxyWidget`-поля не затрагиваются. Лист ставится только если текст реально изменился: `QApplication.setStyleSheet` перепомптит всё живое дерево виджетов процесса
+- +3 обязательных токена (все в `REQUIRED_TOKEN_KEYS`, отсутствие любого ⇒ тема невалидна целиком): `color.status.ok`, `font.size.lg`, `font.size.xl`. `color.rating.low/high` и `color.font.family.mono` в W2a **не** заведены: их ещё никто не читает, а обязательность только ужесточает валидацию — перенесены в W2b вместе с consuming-экранами (`rating_to_color`, mono-блоки)
+- Hover/pressed/selected-выделения — производная `color.accent` (`accent_rgba`), отдельных rgba-токенов нет
+- Пилоты перевода: `MonthSettingsDialog` и `WorldSnapshotWidget` — hint/factory, роли `title`/`field`/`list`/`hint`, кнопка «Показать» становится token-accent (ушли `#2d5a88`, `#888`, `#999`, inline-палитры); mention-попап — именованные `_MentionPopup` (фон контейнера) и `MentionPopupListView` (элементы) без inline-таблицы стилей
+- Приёмка: пиксельные E2E пилотов и mention-попапа (обе темы, включая фон контейнера попапа), regression «вложенный виджет без роли не перекрашен» и «подключённый экран live-перекрашивается без пересоздания виджетов», `QT_QPA_PLATFORM=offscreen python -m pytest` — зелёный без деградации времени
+
+#### Изменено
+- `QMenu` убран из chrome-листа (попап — top-level, живёт в popup-листе); chrome-правила (`#themeChrome`/`#themeMenu`) переведены на `[uiRole="chrome"]`/`[uiRole="menu"]`; objectName остался идентификатором в тестах, не стилю
+- **BREAKING (тесты):** e2e AI-кнопки вместо grep по rgba-подстрокам проверяют динамический маркер `aiState` (`active`/`disabled`) — константы + хелпер `ai_state_is()` в `ai_assist_button.py` (`QObject::testProperty` protected и PySide6 его не экспортирует, хелпер повторяет его проверку); сами цвета AI-кнопки не менялись (миграция — W2b)
+
+#### Исправлено (ревью W2a)
+
+- **app-wide лист больше не деградирует:** `ThemeRuntime.apply()` сравнивает собранный popup-лист с тем, что уже стоит на `QApplication` (и QSS с тем, что уже на chrome-виджете), и не дёргает `setStyleSheet` без изменения. `QApplication.setStyleSheet` перепомптит всё живое дерево виджетов сессии — прежний безусловный push при каждом подключении экрана давал квадратичную деградацию полного offscreen-прогона (зависание 100% CPU во `tests/ui/test_table_host_wiring.py`, flake `test_switch_game_from_menu`). A/B: `tests/ui/test_char_sheets_wiring.py` 23.8 с → 9.3 с (базовая линия W1)
+- Сняты мёртвые токены `color.rating.low`, `color.rating.high`, `color.font.family.mono`: их не читал ни один лист/CSS, а обязательность лишь ужесточала валидацию. Перенесены в W2b (вместе с `rating_to_color` и mono-блоками). Новый тест проверяет, что каждый обязательный токен реально попадает в QSS или в `var()` тела `app.css`
+- Фон **контейнера** mention-попапа берётся из `color.bg.surface` (правило `_MentionPopup` + `WA_StyledBackground`): раньше правило было только у списка, и там, где список не заполнял попап, оставалась палитра ОС; пиксельный тест снимает полосу под списком
+- Убрано правило `QMenu::item:hover`: при наведении оно рисовало `rgba(accent, 0.35)` поверх сплошного `::item:selected` (для Qt наведённый пункт уже selected) — выделение «светлело» под курсором
+- `MonthSettingsDialog`: возвращён зазор 6px под hint-подписью (`HINT_BOTTOM_GAP`) — он был в inline-стиле до каталога, в универсальном hint-правиле его нет (пиксельный тест пинит зазор)
+- Маркер AI-кнопки вынесён в константы и читается единственным хелпером `ai_state_is()`; тесты пинят согласованность маркера и стиля во всех ветках `EntityGenerateButton`
+
 ### Дизайн-система W1: токены и dark/light (эпик W не закрыт)
 
 #### Новый функционал

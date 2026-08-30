@@ -58,9 +58,10 @@ def test_launcher_has_theme_chrome_container(qtbot, runtime):
 def test_launcher_theme_chrome_carries_generated_qss(qtbot, runtime, canvas_dark):
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
-    chrome = dlg.findChild(QWidget, "themeChrome")
+    chrome = dlg.findChild(QWidget, "themeChrome")  # objectName: identifier only
     assert canvas_dark in chrome.styleSheet()
-    assert "themeChrome" in chrome.styleSheet()
+    # W2a: QSS addresses the role property, not the objectName.
+    assert 'QWidget[uiRole="chrome"]' in chrome.styleSheet()
 
 
 def test_launcher_dialog_itself_has_no_qss(qtbot, runtime):
@@ -84,8 +85,11 @@ def test_main_window_central_and_menu_carry_qss(qtbot, runtime, canvas_dark):
     qtbot.addWidget(window)
     central = window.centralWidget()
     menu_bar = window.menuBar()
+    # objectNames stayed as identifiers (W2a); styling comes from the roles.
     assert central.objectName() == "themeChrome"
     assert menu_bar.objectName() == "themeMenu"
+    assert central.property("uiRole") == "chrome"
+    assert menu_bar.property("uiRole") == "menu"
     assert canvas_dark in central.styleSheet()
     assert canvas_dark in menu_bar.styleSheet()
 
@@ -96,7 +100,7 @@ def test_dialog_parented_to_main_window_inherits_nothing(qtbot, runtime):
     dlg = QDialog(parent=window)
     qtbot.addWidget(dlg)
     assert dlg.styleSheet() == ""
-    assert "themeChrome" not in dlg.styleSheet()
+    assert 'uiRole="chrome"' not in dlg.styleSheet()
 
 
 # ── runtime contract ───────────────────────────────────────────────────────
@@ -249,6 +253,9 @@ class ChromeSpy:
     def __init__(self):
         self.style = ""
 
+    def styleSheet(self) -> str:  # noqa: N802 — Qt duck typing (read side)
+        return self.style
+
     def setStyleSheet(self, qss):  # noqa: N802 — Qt duck typing
         self.style = qss
 
@@ -344,6 +351,50 @@ def test_broken_tokens_leave_both_switches_untouched(qtbot, broken_runtime):
     assert dlg.theme_toggle_button.text() == "Светлая тема"
 
 
+# ── app-wide popup sheet (W2a D2) ──────────────────────────────────────────
+
+@pytest.fixture
+def clean_qapp(qapp):
+    """The session QApplication is shared — do not leak sheets into other tests."""
+    qapp.setStyleSheet("")
+    yield qapp
+    qapp.setStyleSheet("")
+
+
+def test_attach_app_pushes_popup_sheet_on_apply(qtbot, runtime, clean_qapp):
+    runtime.attach_app(clean_qapp)
+    runtime.apply()
+    sheet = clean_qapp.styleSheet()
+    assert "QToolTip" in sheet
+    assert 'QWidget[uiRole="chrome"]' not in sheet  # only popups are app-wide (D2)
+
+
+def test_app_sheet_rebuilt_on_set_theme(qtbot, runtime, clean_qapp):
+    tokens = load_tokens(tokens_file_path())
+    runtime.attach_app(clean_qapp)
+    runtime.apply()
+    dark_sheet = clean_qapp.styleSheet()
+    assert tokens["color.bg.surface"]["dark"] in dark_sheet
+    assert runtime.set_theme("light") is True
+    light_sheet = clean_qapp.styleSheet()
+    assert tokens["color.bg.surface"]["light"] in light_sheet
+    assert light_sheet != dark_sheet
+
+
+def test_broken_tokens_clear_the_app_sheet(qtbot, broken_runtime, clean_qapp):
+    clean_qapp.setStyleSheet("QToolTip { color: #123456; }")  # stale foreign sheet
+    broken_runtime.attach_app(clean_qapp)
+    broken_runtime.apply()
+    assert clean_qapp.styleSheet() == ""  # off-skin, not a partial style
+
+
+def test_apply_without_attached_app_leaves_the_app_alone(qtbot, runtime, clean_qapp):
+    clean_qapp.setStyleSheet("")
+    runtime.apply()  # attach_app was never called
+    assert clean_qapp.styleSheet() == ""
+    assert runtime.set_theme("light") is True  # no app ref, everything still works
+
+
 # ── process-wide default runtime ───────────────────────────────────────────
 
 def test_default_theme_runtime_is_a_singleton_until_reset():
@@ -352,3 +403,92 @@ def test_default_theme_runtime_is_a_singleton_until_reset():
     reset_default_theme()
     assert get_default_theme() is not first
     reset_default_theme()
+
+
+class _DyingApp:
+    """Weakref-able fake application whose shell is already gone."""
+
+    def styleSheet(self) -> str:  # noqa: N802 — Qt duck typing
+        raise RuntimeError("wrapped C++ object already deleted")
+
+    def setStyleSheet(self, qss):  # noqa: N802 — Qt duck typing
+        raise RuntimeError("wrapped C++ object already deleted")
+
+
+def test_app_sheet_push_drops_a_dead_application_reference(runtime):
+    doomed = _DyingApp()
+    runtime.attach_app(doomed)
+    runtime.apply()               # RuntimeError → the reference is dropped
+    runtime.apply()               # second apply: no app ref, nothing raises
+
+
+# ── idempotent pushes (W2a review: full-suite slowdown) ────────────────────
+
+
+class _RecordingApp:
+    """Weakref-able fake application recording every sheet push it receives."""
+
+    def __init__(self) -> None:
+        self.sheet = ""
+        self.pushes: list[str] = []
+
+    def styleSheet(self) -> str:  # noqa: N802 — Qt duck typing
+        return self.sheet
+
+    def setStyleSheet(self, qss) -> None:  # noqa: N802 — Qt duck typing
+        self.sheet = qss
+        self.pushes.append(qss)
+
+
+class _CountingWidget(QWidget):
+    """Chrome widget counting how often a stylesheet was pushed to it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pushes = 0
+
+    def setStyleSheet(self, qss) -> None:  # noqa: N802 — Qt API override
+        self.pushes += 1
+        super().setStyleSheet(qss)
+
+
+def test_unchanged_popup_sheet_is_pushed_only_once(runtime):
+    # QApplication.setStyleSheet re-polishes every live widget in the process,
+    # so the apply() that ends every screen construction must not re-push an
+    # identical sheet (the review measured a x6 slowdown of the offscreen run).
+    app = _RecordingApp()
+    runtime.attach_app(app)
+    runtime.apply()
+    runtime.register(_CountingWidget())
+    runtime.apply()
+    runtime.apply()
+    assert app.pushes == [runtime.popup_qss()]
+
+
+def test_popup_sheet_is_repushed_when_replaced_from_the_outside(runtime):
+    app = _RecordingApp()
+    runtime.attach_app(app)
+    runtime.apply()
+    app.sheet = ""  # an outside party replaced the application sheet
+    runtime.apply()
+    assert len(app.pushes) == 2
+    assert app.pushes[-1] == runtime.popup_qss()
+
+
+def test_theme_change_pushes_the_popup_sheet_again(runtime):
+    app = _RecordingApp()
+    runtime.attach_app(app)
+    runtime.apply()
+    assert runtime.set_theme("light") is True
+    assert len(app.pushes) == 2
+    assert app.pushes[0] != app.pushes[1]
+
+
+def test_registered_chrome_widget_is_not_restyled_without_a_change(qtbot, runtime):
+    widget = _CountingWidget()
+    qtbot.addWidget(widget)
+    runtime.register(widget)
+    runtime.apply()
+    runtime.apply()
+    assert widget.pushes == 1
+    assert widget.styleSheet() == runtime.qss()

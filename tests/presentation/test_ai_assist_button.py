@@ -6,7 +6,12 @@ from unittest.mock import patch
 import pytest
 from PySide6.QtWidgets import QLineEdit, QMessageBox, QTextEdit
 
-from app.presentation.views.ai_assist_button import AiAssistButton
+from app.presentation.views.ai_assist_button import (
+    AI_STATE_ACTIVE,
+    AI_STATE_DISABLED,
+    AiAssistButton,
+    ai_state_is,
+)
 
 
 @pytest.fixture
@@ -52,6 +57,19 @@ def test_button_disabled_when_no_world_prompt(btn_on_text):
 def test_button_enabled_when_ready(btn_on_text):
     btn_on_text.update_llm_state("ready", True)
     assert "91,155,213" in btn_on_text.styleSheet()
+
+
+def test_ai_state_marker_is_read_by_the_marker_helper(btn_on_text):
+    # The e2e selector for the AI button is this marker, read through
+    # ai_state_is (Qt's marker check; W2a D5) — never the rgba colors of the
+    # stylesheet, and a widget without the marker must read as False.
+    btn_on_text.update_llm_state("not_configured", False)
+    assert ai_state_is(btn_on_text, AI_STATE_DISABLED)
+    assert not ai_state_is(btn_on_text, AI_STATE_ACTIVE)
+    btn_on_text.update_llm_state("ready", True)
+    assert ai_state_is(btn_on_text, AI_STATE_ACTIVE)
+    assert not ai_state_is(btn_on_text, AI_STATE_DISABLED)
+    assert not ai_state_is(QLineEdit(), AI_STATE_DISABLED)
 
 
 def test_click_when_not_configured_mentions_setup(btn_on_text):

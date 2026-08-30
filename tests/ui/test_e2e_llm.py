@@ -17,6 +17,11 @@ from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
 from app.main import Application
 from app.presentation.viewmodels.llm_viewmodel import _default_field_prompts
+from app.presentation.views.ai_assist_button import (
+    AI_STATE_ACTIVE,
+    AI_STATE_DISABLED,
+    ai_state_is,
+)
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
@@ -26,8 +31,9 @@ WORLD_PROMPT = "Тёмное фэнтези: империя на руинах д
 ENDPOINT = "http://mock-llm/v1"
 MODEL = "test-model"
 
-_ACTIVE_STYLE_MARKER = "rgba(91,155,213"   # AiAssistButton._ACTIVE_STYLE
-_DISABLED_STYLE_MARKER = "rgba(128,128,128"  # AiAssistButton._DISABLED_STYLE
+# W2a: the button self-describes through the aiState dynamic property, and
+# e2e assertions read that marker with ai_state_is (the marker check of
+# ai_assist_button) instead of grepping the rgba substrings of its stylesheet.
 
 
 async def test_llm_wizard_check_connection_and_field_generation(app, llm_client, tmp_llm_config, wait_for):
@@ -40,7 +46,7 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     await wait_for(lambda: bool(window.findChildren(EventDialog)))
     dialog = window.findChildren(EventDialog)[0]
     name_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "name")
-    assert _DISABLED_STYLE_MARKER in name_btn.styleSheet()
+    assert ai_state_is(name_btn, AI_STATE_DISABLED)
 
     # Click while unconfigured → info box (auto-accepted), no request, field untouched
     name_btn.click()
@@ -74,7 +80,7 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert llm_vm.has_world_prompt
 
     # ── AI generation of a field through the (now active) assist button
-    assert _ACTIVE_STYLE_MARKER in name_btn.styleSheet()
+    assert ai_state_is(name_btn, AI_STATE_ACTIVE)
     name_btn.click()
     await wait_for(lambda: dialog.name_input.text() == CANNED_LLM_CONTENT)
     # The generation request carried the world prompt in the system message
@@ -203,7 +209,7 @@ async def test_single_generation_error_shows_warning_with_field_name(
     llm_vm.world_prompt = WORLD_PROMPT
     llm_vm.apply_config(LlmConfig(base_url=ENDPOINT, model=MODEL))
     await wait_for(lambda: llm_vm.status == llm_vm.STATUS_READY)
-    assert _ACTIVE_STYLE_MARKER in name_btn.styleSheet()
+    assert ai_state_is(name_btn, AI_STATE_ACTIVE)
 
     name_btn.click()
     await wait_for(lambda: any(kind == "warning" for kind, _t, _x in message_boxes))

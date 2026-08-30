@@ -6,7 +6,12 @@ from unittest.mock import patch
 import pytest
 from PySide6.QtWidgets import QMessageBox
 
-from app.presentation.views.ai_assist_button import EntityGenerateButton
+from app.presentation.views.ai_assist_button import (
+    AI_STATE_ACTIVE,
+    AI_STATE_DISABLED,
+    EntityGenerateButton,
+    ai_state_is,
+)
 
 
 @pytest.fixture
@@ -140,3 +145,19 @@ def test_single_in_flight_ended_reenables_button(button):
     button.set_single_in_flight(False)
     assert button.isEnabled()
     assert button.text() == "\u2728"
+
+
+def test_state_marker_agrees_with_the_painted_state_in_every_branch(button):
+    # aiState (read through ai_state_is, the marker check of W2a D5) is the e2e
+    # selector of this button, so it must track the painted style in all four
+    # branches.
+    button.update_llm_state("not_configured", False)
+    assert ai_state_is(button, AI_STATE_DISABLED)
+    button.update_llm_state("ready", True)
+    assert ai_state_is(button, AI_STATE_ACTIVE)
+    button.set_single_in_flight(True)
+    assert ai_state_is(button, AI_STATE_DISABLED)
+    assert not ai_state_is(button, AI_STATE_ACTIVE)
+    button.set_single_in_flight(False)
+    button.set_wave_running(True)
+    assert ai_state_is(button, AI_STATE_ACTIVE)

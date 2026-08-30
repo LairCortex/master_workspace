@@ -5,13 +5,14 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QDialog, QMainWindow, QMenuBar, QPlainTextEdit,
     QSplitter, QVBoxLayout, QWidget,
 )
 
+from app.presentation.theme.catalog import attach_theme
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_widget import TimelineWidget
@@ -173,16 +174,15 @@ class MainWindow(QMainWindow):
 
         self._file_handler: logging.FileHandler | None = None
 
-        menu_bar.setObjectName("themeMenu")
-        menu_bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        menu_bar.setObjectName("themeMenu")  # test identifier, not a style hook (W2a)
         self.setMenuBar(menu_bar)
 
         central = QWidget()
-        # W1 chrome containers (design D4): QSS goes on the central widget
-        # and the menu bar — never on the QMainWindow itself, so dialogs
-        # parented to the window keep the OS palette until W2.
-        central.setObjectName("themeChrome")
-        central.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # W2a: role-marked chrome containers (the QSS addresses [uiRole=...])
+        # — QSS goes on the central widget and the menu bar only, never on
+        # the QMainWindow itself, so dialogs parented to the window keep the
+        # OS palette until their own migration.
+        central.setObjectName("themeChrome")  # test identifier, not a style hook
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(4, 4, 4, 4)
@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         self.timeline_widget = TimelineWidget(timeline_vm)
         self.detail_panel = DetailPanel(detail_vm)
-        self.world_snapshot = WorldSnapshotWidget()
+        self.world_snapshot = WorldSnapshotWidget(theme=self._theme)
         self.timeline_widget.setMinimumWidth(220)
         self.detail_panel.setMinimumWidth(280)
         self.world_snapshot.setMinimumWidth(280)
@@ -214,8 +214,10 @@ class MainWindow(QMainWindow):
     def _apply_theme(self) -> None:
         """Push the generated QSS onto the two chrome containers (design D4)."""
         if self._theme is not None:
-            self._theme.register(self.centralWidget())
-            self._theme.register(self.menuBar())
+            # W2a: attach_theme stamps the uiRole property + registers (the
+            # objectNames stayed as test identifiers only).
+            attach_theme(self.centralWidget(), self._theme)
+            attach_theme(self.menuBar(), self._theme)
             # The check item mirrors the current theme even when some other
             # window switched it (e.g. the launcher on top of this window).
             self._theme.add_listener(self._sync_theme_action)

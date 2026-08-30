@@ -18,7 +18,9 @@ NO_WORLD_PROMPT_MESSAGE = (
     "Перейдите в меню LLM → Настройка LLM… и опишите ваш мир."
 )
 
-#: Shared button styles (the e2e suite greps for these rgba markers).
+#: Shared button styles. W2a: e2e assertions read the ``aiState`` dynamic
+#: property instead of grepping these rgba substrings; migrating the colors
+#: themselves to tokens is W2b work.
 ACTIVE_STYLE = (
     "QPushButton { background: rgba(91,155,213,0.25); border: 1px solid rgba(91,155,213,0.5);"
     " border-radius: 4px; font-size: 14px; }"
@@ -28,6 +30,25 @@ DISABLED_STYLE = (
     "QPushButton { background: rgba(128,128,128,0.15); border: 1px solid rgba(128,128,128,0.3);"
     " border-radius: 4px; font-size: 14px; color: rgba(128,128,128,0.6); }"
 )
+
+#: State marker of both AI buttons (W2a D5): tests select by marker, never by
+#: the rgba colors above. Read it only through ``ai_state_is``.
+AI_STATE_PROPERTY = "aiState"
+AI_STATE_ACTIVE = "active"
+AI_STATE_DISABLED = "disabled"
+
+
+def ai_state_is(widget: QWidget, state: str) -> bool:
+    """True when ``widget`` carries the ``aiState`` marker equal to ``state``.
+
+    This is the marker check the e2e selectors use, kept in one place. The
+    C++ original (``QObject::testProperty``) is protected and PySide6 does not
+    expose it, so the check is spelled out: the marker must be present among
+    the widget's dynamic properties and compare equal to ``state`` (a missing
+    marker is ``False``, not ``None == state`` games).
+    """
+    declared = {bytes(name).decode() for name in widget.dynamicPropertyNames()}
+    return AI_STATE_PROPERTY in declared and widget.property(AI_STATE_PROPERTY) == state
 
 
 class AiAssistButton(QPushButton):
@@ -102,6 +123,9 @@ class AiAssistButton(QPushButton):
         self._has_world_prompt = has_world_prompt
         is_active = status == "ready" and has_world_prompt
         self.setStyleSheet(self._ACTIVE_STYLE if is_active else self._DISABLED_STYLE)
+        # W2a e2e marker: tests switch on this property, not rgba substrings
+        # (the colors themselves migrate in W2b).
+        self.setProperty(AI_STATE_PROPERTY, AI_STATE_ACTIVE if is_active else AI_STATE_DISABLED)
 
     def set_generating(self, generating: bool) -> None:
         self._generating = generating
@@ -231,6 +255,7 @@ class EntityGenerateButton(QPushButton):
             self.setText(self.CANCEL_ICON)
             self.setToolTip(self.CANCEL_TOOLTIP)
             self.setStyleSheet(ACTIVE_STYLE)
+            self.setProperty(AI_STATE_PROPERTY, AI_STATE_ACTIVE)
             self.setEnabled(True)
             return
 
@@ -238,11 +263,14 @@ class EntityGenerateButton(QPushButton):
         self.setToolTip(self.IDLE_TOOLTIP)
         if self._single_in_flight:
             self.setStyleSheet(DISABLED_STYLE)
+            self.setProperty(AI_STATE_PROPERTY, AI_STATE_DISABLED)
             self.setEnabled(False)
             return
 
         is_ready = self._llm_status == "ready" and self._has_world_prompt
         self.setStyleSheet(ACTIVE_STYLE if is_ready else DISABLED_STYLE)
+        # W2a e2e marker (see AiAssistButton.update_llm_state), colors — W2b.
+        self.setProperty(AI_STATE_PROPERTY, AI_STATE_ACTIVE if is_ready else AI_STATE_DISABLED)
         # Clickable even when not ready: the click shows the hint message
         # (same behavior as the field buttons).
         self.setEnabled(True)
