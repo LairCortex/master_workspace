@@ -147,12 +147,12 @@ class ApplicationWiring:
 
         # A selection the ViewModel had to prune (the event fell out of the
         # visible set, e.g. after filtering) must leave the detail panel too:
-        # the canvas drops the id while re-rendering the new set, the panel
+        # the scale drops the id while re-modelling the new set, the panel
         # has no other reason to notice.
         def on_selected_event_changed():
             if timeline_vm.selected_event is None:
                 window.detail_panel.clear()
-                window.timeline_widget.canvas.set_selected(None)
+                window.timeline_widget.set_selected(None)
 
         timeline_vm.selected_event_changed.connect(on_selected_event_changed)
 
@@ -355,14 +355,14 @@ class ApplicationWiring:
             if entity_type == "event":
                 # Select by id and show details (plain await: the task of
                 # this handler already holds the session lock), then scroll
-                # the scale so the highlighted bar is visible (W3 D3). An id
-                # outside the visible selection leaves the panel untouched,
-                # as the row-based jump did before.
+                # the scale so the highlighted row is visible (W3b panel API).
+                # An id outside the visible selection leaves the panel
+                # untouched, as the row-based jump did before.
                 if any(ev.id == entity_id for ev in timeline_vm.events):
                     await on_event_selected(entity_id)
-                    canvas = window.timeline_widget.canvas
-                    canvas.set_selected(entity_id)
-                    canvas.scroll_to_event(entity_id)
+                    scale = window.timeline_widget
+                    scale.set_selected(entity_id)
+                    scale.scroll_to_event(entity_id)
             else:
                 # Plain await, not a new spawn: on_search_result's own task
                 # already holds the session lock (see _spawn at the connect

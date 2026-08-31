@@ -9,6 +9,7 @@ from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
+from app.presentation.views.timeline_rows import RowKind
 
 
 def _mock_event(id_=1, name="Battle"):
@@ -194,6 +195,86 @@ class TestTimelineViewModel:
         await vm.load_events()
         names = sorted(e.name for e in vm.events)
         assert names == ["Mid", "New"]
+
+    # ── derived visible rows (W3b task 4.1) ─────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_rows_without_filter_span_min_to_max_with_empty_days(self):
+        """No filter → rows cover min(start)…max(end|start); a gap day is
+        exactly one EMPTY_DAY row (spec «Диапазон без фильтра»)."""
+        service = AsyncMock()
+        e1 = _mock_event(1, "First")
+        e1.start_date = date(1200, 1, 1)
+        e1.end_date = date(1200, 1, 1)
+        e2 = _mock_event(2, "Third")
+        e2.start_date = date(1200, 1, 3)
+        e2.end_date = date(1200, 1, 3)
+        service.get_all_events.return_value = [e1, e2]
+        vm = TimelineViewModel(service)
+
+        await vm.load_events()
+
+        by_kind = [(r.kind, r.date) for r in vm.rows]
+        assert by_kind == [
+            (RowKind.EVENT, date(1200, 1, 1)),
+            (RowKind.EMPTY_DAY, date(1200, 1, 2)),  # the gap day, not collapsed
+            (RowKind.EVENT, date(1200, 1, 3)),
+        ]
+        assert [r.event_id for r in vm.rows] == [1, None, 2]
+
+    @pytest.mark.asyncio
+    async def test_rows_use_filter_range_even_when_empty(self):
+        """A live filter seeds the row range: a range with no events yields
+        empty-day rows for every day of it, not zero rows (spec «Пустой
+        диапазон фильтра»)."""
+        service = AsyncMock()
+        e1 = _mock_event(1, "Only")
+        e1.start_date = date(1200, 1, 1)
+        e1.end_date = date(1200, 1, 1)
+        service.get_all_events.return_value = [e1]
+        vm = TimelineViewModel(service)
+
+        await vm.load_events()
+        vm.filter_by_dates(date(1300, 1, 1), date(1300, 1, 3))
+
+        assert len(vm.events) == 0
+        assert [r.kind for r in vm.rows] == [RowKind.EMPTY_DAY] * 3
+        assert [r.date for r in vm.rows] == [
+            date(1300, 1, 1), date(1300, 1, 2), date(1300, 1, 3),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rows_without_events_without_filter_are_empty(self):
+        """No events and no filter → no range to enumerate → no rows."""
+        service = AsyncMock()
+        service.get_all_events.return_value = []
+        vm = TimelineViewModel(service)
+
+        await vm.load_events()
+
+        assert vm.rows == []
+
+    @pytest.mark.asyncio
+    async def test_rows_are_recomputed_on_filter_clear(self):
+        """Clearing the filter returns the derived rows to the sample's own
+        min–max range, consistent with the recomputed ``events``."""
+        service = AsyncMock()
+        e1 = _mock_event(1, "Only")
+        e1.start_date = date(1300, 1, 1)
+        e1.end_date = date(1300, 1, 1)
+        service.get_all_events.return_value = [e1]
+        vm = TimelineViewModel(service)
+
+        await vm.load_events()
+        vm.filter_by_dates(date(1200, 1, 1), date(1200, 1, 2))  # excludes e1
+        assert [r.kind for r in vm.rows] == [RowKind.EMPTY_DAY, RowKind.EMPTY_DAY]
+
+        vm.filter_by_dates(None, None)
+
+        assert len(vm.events) == 1
+        assert [r.kind for r in vm.rows] == [RowKind.EVENT]
+        assert vm.rows[0].event_id == 1
+
 
 
 # ── DetailViewModel ──────────────────────────────────────────────────────

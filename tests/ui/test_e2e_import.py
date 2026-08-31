@@ -26,7 +26,7 @@ async def test_xlsx_import_events_to_timeline(app, file_dialogs, wait_for):
     dialog.import_btn.click()
 
     # Imported events appear on the timeline (async import + info box auto-accepted)
-    canvas = window.timeline_widget.canvas
+    canvas = window.timeline_widget.rows_view
     await wait_for(lambda: len(canvas.events) == 2)
     names = [e.name for e in canvas.events]
     assert any("Взятие Штурмграда" in t for t in names)
@@ -78,7 +78,7 @@ async def test_xlsx_import_partial_errors_in_message(app, file_dialogs, wait_for
     assert "не задана дата начала" in text
 
     # Only the valid row made it to the timeline
-    canvas = window.timeline_widget.canvas
+    canvas = window.timeline_widget.rows_view
     await wait_for(lambda: len(canvas.events) == 1)
 
     # Dialog closed by the wiring's finally
@@ -102,4 +102,4 @@ async def test_xlsx_import_missing_file_shows_critical(app, file_dialogs, wait_f
     ))
     # Nothing imported, dialog closed by the wiring's finally
     await wait_for(lambda: not dialog.isVisible())
-    assert len(window.timeline_widget.canvas.events) == 0
+    assert len(window.timeline_widget.rows_view.events) == 0

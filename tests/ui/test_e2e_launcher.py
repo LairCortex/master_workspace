@@ -31,7 +31,7 @@ async def test_launcher_create_new_game(qapp, llm_client, tmp_games_dir, tmp_llm
     window = await application.start(dialog.selected_path)
     try:
         assert "Нове Королівство" in window.windowTitle()
-        assert len(window.timeline_widget.canvas.events) == 0
+        assert len(window.timeline_widget.rows_view.events) == 0
     finally:
         window.close()
         await application.shutdown()
@@ -67,7 +67,7 @@ async def test_launcher_open_existing_game_with_data(app, tmp_games_dir, wait_fo
     window2 = await application.start(launcher.selected_path)
     try:
         assert "Рассказ" in window2.windowTitle()
-        canvas = window2.timeline_widget.canvas
+        canvas = window2.timeline_widget.rows_view
         assert len(canvas.events) == 1
         assert canvas.events[0].name == "Взятие Штурмграда"
         assert not window.isVisible()  # previous window closed on switch

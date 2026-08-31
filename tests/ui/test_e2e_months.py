@@ -24,7 +24,7 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
         window, wait_for, "Фестиваль",
         start_date=QDate(1200, 5, 1), end_date=QDate(1200, 6, 20),
     )
-    canvas = window.timeline_widget.canvas
+    canvas = window.timeline_widget.rows_view
     await wait_for(lambda: helpers.has_event_named(window, "Фестиваль"))
     # The axis labels month boundaries through format_game_date with the game's
     # month names; the range start itself is never labeled (spec «Шкала времени»).
@@ -72,7 +72,7 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     await application.shutdown()
     window2 = await application.start(str(db_path))
     try:
-        canvas2 = window2.timeline_widget.canvas
+        canvas2 = window2.timeline_widget.rows_view
         await wait_for(lambda: f"01 {CUSTOM_MAY}-2 1200" in canvas2.axis_labels())
     finally:
         window.close()  # already closed by start(); safe no-op

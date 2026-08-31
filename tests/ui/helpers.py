@@ -57,59 +57,86 @@ def pick_menu_action(menu_qmenu, text: str) -> None:
     menu_qmenu.choose(chooser)
 
 
-# ── Timeline canvas interaction (W3: events are bars, not list rows) ──────
+# ── Timeline row interaction (W3b: events are list rows, not Gantt bars) ──
 
-def timeline_canvas(window) -> QWidget:
-    """The event scale canvas of the main window's timeline panel."""
-    return window.timeline_widget.canvas
+#: Left inset from the rail's right edge where a synthetic click lands — the
+#: rail zone itself is decorative and its presses are swallowed by the view,
+#: so a click must clear it to reach the row's text (row_center clamps this).
+_ROW_HIT_INSET = 12
+
+
+def timeline_view(window) -> QWidget:
+    """The vertical day-scale ``QListWidget`` of the main window's timeline."""
+    return window.timeline_widget.rows_view
 
 
 def has_event_named(window, name: str) -> bool:
-    """True when a bar for an event whose name contains ``name`` is rendered."""
-    return any(name in e.name for e in timeline_canvas(window).events)
+    """True when an event whose name contains ``name`` is on the scale."""
+    return any(name in e.name for e in timeline_view(window).events)
 
 
 def find_event_id(window, name: str) -> int:
-    return next(e.id for e in timeline_canvas(window).events if name in e.name)
+    return next(e.id for e in timeline_view(window).events if name in e.name)
 
 
-def bar_center(canvas, event_id: int) -> QPoint:
-    """Visible center of the bar for ``event_id`` (scroll-aware, W3 D8)."""
-    bar = canvas.plan.bar_for(event_id)
-    if bar is None:
-        raise AssertionError(f"event {event_id} has no bar in the current plan")
-    x = (bar.x0 + bar.x1) / 2.0
-    y = canvas.plan.metrics.axis_h + (bar.y_top + bar.height / 2.0) - canvas._scroll_y
-    return QPoint(int(x), int(y))
+def row_center(view, event_id: int) -> QPoint:
+    """Viewport point of the EVENT-row for ``event_id``, clear of the rail.
+
+    Scroll-aware: the caller scrolls the row into view first, then this reads
+    its laid-out (viewport) rect and lands inside the text zone — never on the
+    decorative date rail, whose presses the view ignores (spec «Рейка … клики
+    по ней не обрабатываются»).
+    """
+    idx = view.index_for_event(event_id)
+    if idx is None:
+        raise AssertionError(f"event {event_id} has no row in the current sample")
+    rect = view.visualItemRect(view.item(idx))
+    if not rect.isValid() or rect.isNull():
+        raise AssertionError(f"row {idx} for event {event_id} is not laid out")
+    x = max(view.rail_width() + _ROW_HIT_INSET, 0)
+    x = min(x, max(view.viewport().width() - 1, 0))
+    return QPoint(x, rect.center().y())
 
 
-def _send_mouse(canvas, point, etype, button):
-    QApplication.sendEvent(canvas, QMouseEvent(
-        etype, QPointF(point), canvas.mapToGlobal(point),
-        button, button, Qt.KeyboardModifier.NoModifier))
-    if etype == QEvent.Type.MouseButtonPress:
-        QApplication.sendEvent(canvas, QMouseEvent(
-            QEvent.Type.MouseButtonRelease, QPointF(point), canvas.mapToGlobal(point),
-            button, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+def _mouse(vp, point, etype, button, buttons):
+    QApplication.sendEvent(vp, QMouseEvent(
+        etype, QPointF(point), vp.mapToGlobal(point),
+        button, buttons, Qt.KeyboardModifier.NoModifier))
+
+
+def _press_and_release(view, point: QPoint) -> None:
+    """A full left click on the list viewport (drives the ``clicked`` signal)."""
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    vp = view.viewport()
+    _mouse(vp, point, QEvent.Type.MouseButtonPress, left, left)
+    _mouse(vp, point, QEvent.Type.MouseButtonRelease, left, none)
+
+
+def _double_click_at(view, point: QPoint) -> None:
+    """A full left double-click (press/release/DblClick/release) on the viewport."""
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    vp = view.viewport()
+    _mouse(vp, point, QEvent.Type.MouseButtonPress, left, left)
+    _mouse(vp, point, QEvent.Type.MouseButtonRelease, left, none)
+    _mouse(vp, point, QEvent.Type.MouseButtonDblClick, left, left)
+    _mouse(vp, point, QEvent.Type.MouseButtonRelease, left, none)
 
 
 def click_timeline_event(window, name: str) -> int:
-    """Single-click the middle of the event's bar; returns the event id."""
-    canvas = timeline_canvas(window)
+    """Single-click the EVENT row of ``name``; returns the event id."""
+    view = timeline_view(window)
     event_id = find_event_id(window, name)
-    canvas.scroll_to_event(event_id)
-    center = bar_center(canvas, event_id)
-    _send_mouse(canvas, center, QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton)
+    view.scroll_to_event(event_id)
+    _press_and_release(view, row_center(view, event_id))
     return event_id
 
 
 def double_click_timeline_event(window, name: str) -> int:
-    """Double-click the middle of the event's bar (edit dialog trigger)."""
-    canvas = timeline_canvas(window)
+    """Double-click the EVENT row of ``name`` (edit dialog trigger)."""
+    view = timeline_view(window)
     event_id = find_event_id(window, name)
-    canvas.scroll_to_event(event_id)
-    center = bar_center(canvas, event_id)
-    _send_mouse(canvas, center, QEvent.Type.MouseButtonDblClick, Qt.MouseButton.LeftButton)
+    view.scroll_to_event(event_id)
+    _double_click_at(view, row_center(view, event_id))
     return event_id
 
 

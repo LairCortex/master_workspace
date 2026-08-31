@@ -134,9 +134,9 @@ def accent_rgba(tokens: Tokens, theme: str, alpha: float) -> str:
 def token_rgb(tokens: Tokens, theme: str, key: str) -> Optional[tuple[int, int, int]]:
     """Token color as ``(r, g, b)`` for QPainter code outside QSS (W3 D4).
 
-    The timeline canvas paints bars/axis/grid with a QPen/QBrush, where QSS
-    roles do not reach — the screen asks the compiler for the token's RGB and
-    composes alphas itself (the same derivations ``accent_rgba`` spells for
+    The timeline delegate paints rows/rail/brackets with a QPen/QBrush, where
+    QSS roles do not reach — the screen asks the compiler for the token's RGB
+    and composes alphas itself (the same derivations ``accent_rgba`` spells for
     sheets, no new tokens). ``None`` when the value is not a hex color: the
     caller falls back to a neutral paint instead of inventing a color (D7).
     """
@@ -295,6 +295,12 @@ def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     top-level container, whose own background shows wherever the list does not
     reach) and ``MentionPopupListView`` (items/selection) — a rule for the list
     alone would leave an OS-palette strip inside the popup.
+
+    The timeline date-filter popover (W3b D9) follows the same recipe: the
+    ``_DateFilterPopup`` container and its ``_DateFilterResetButton`` are named
+    classes (a generic ``QPushButton`` rule must never enter this sheet — the
+    canvas proxies would pick it up), the embedded ``_CustomCalendar``s are
+    already covered by the ``QCalendarWidget`` rules above.
     """
     t = {key: values[theme] for key, values in tokens.items()}
     return f"""
@@ -353,6 +359,21 @@ MentionPopupListView::item {{
 MentionPopupListView::item:selected {{
     background: {t['color.accent']};
     color: {t['color.accent.fg']};
+}}
+_DateFilterPopup {{
+    background: {t['color.bg.surface']};
+    border: 1px solid {t['color.border']};
+}}
+_DateFilterPopup QLabel {{
+    background: transparent;
+    color: {t['color.fg.muted']};
+}}
+_DateFilterResetButton {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    padding: {t['space.xs']} {t['space.sm']};
 }}
 """.strip()
 

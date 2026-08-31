@@ -1,160 +1,213 @@
-"""W3 pixel acceptance: every canvas color is a live derivative of tokens.
+"""W3b pixel acceptance: every scale color is a live token derivative.
 
-Probes follow the W1/W2b pattern (``widget.grab()`` at device scale, zero
-tolerance, no golden files): the selected bar must equal the ``color.accent``
-token itself, the plain/hover fills the token's alpha composites over the
-``color.bg.surface`` it sits on, the grid hairline the ``color.border``
-composite — and rewriting ``color.accent`` in a copied token file must move
-all of them with no screen code touched (spec «Смена accent перекрашивает
-шкалу событий»).
+The horizontal Gantt canvas is gone; the panel body is a ``QListWidget`` whose
+``_RowDelegate`` paints the selection/hover wash, the date rail (day tick, month
+label, span bracket) and the ``start — end · name`` line, plus a sticky ``QLabel``
+band. Probes follow the W1/W2b pattern (``widget.grab()`` at device scale, zero
+tolerance, no golden files): a selected row's fill must equal the ``color.accent``
+token itself, an unselected row's surface the ``color.bg.surface`` token, the
+hover wash the accent derivative ``accent`` at ``ROW_HOVER_ALPHA`` over that
+surface, the rail ticks/brackets the ``color.border`` token, the rail month labels
+the ``color.fg.muted`` token and the sticky band its surface/accent/primary tokens
+— and rewriting ``color.accent`` in a copied token file must move the selection
+and the wash with no screen code touched (spec «Смена accent перекрашивает
+шкалу событий», «Токен-инвариант шкалы», «Вне скина» stays covered off-skin by the
+``test_no_chrome_hex`` grep invariant run separately).
 """
 from __future__ import annotations
 
 import json
 from datetime import date
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QColor
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from app.presentation.theme.compiler import tokens_file_path
 from app.presentation.views.timeline_widget import (
-    BAR_FILL_ALPHA,
-    BAR_HOVER_ALPHA,
-    TimelineCanvas,
+    EMPTY_HINT_TEXT,
+    ROW_HOVER_ALPHA,
+    TimelineWidget,
 )
 
 from tests.ui.test_theme_grab import (
     _composite_over,
-    _grab_scaled,
+    _contains_pixel,
     make_runtime,
     token_color,
 )
 
 
-def _evt(id_, name, start, end):
-    return SimpleNamespace(id=id_, name=name, start_date=start, end_date=end)
+def _evt(id_, start, end=None, name=None):
+    return SimpleNamespace(id=id_, start_date=start, end_date=end, name=name or f"E{id_}")
 
 
-def _canvas(qtbot, runtime, events, size=(320, 120)):
-    canvas = TimelineCanvas(theme=runtime)
-    canvas.resize(*size)
-    qtbot.addWidget(canvas)
-    canvas.set_events(events)
-    canvas.show()
-    qtbot.waitExposed(canvas)
-    return canvas
+def _scale(view):
+    """Logical→device factor of a viewport grab (dpr 2 on Retina, 1 offscreen)."""
+    image = view.viewport().grab().toImage()
+    return image.width() / max(view.viewport().width(), 1)
 
 
-def _probe(canvas, image, scale, logical_x, logical_y):
-    return image.pixelColor(int(logical_x * scale), int(logical_y * scale))
+def _hover_alpha(accent: QColor) -> int:
+    """The 8-bit alpha Qt gives to ``accent`` at ``ROW_HOVER_ALPHA``.
+
+    The widget builds the wash with ``setAlphaF(ROW_HOVER_ALPHA)``; Qt rounds
+    that to 64 (not the truncating ``int(0.25 * 255)`` = 63), so the expected
+    composite must use the same rounding to stay pixel-exact.
+    """
+    tint = QColor(accent)
+    tint.setAlphaF(ROW_HOVER_ALPHA)
+    return tint.alpha()
 
 
-def _move_over(canvas, x: float, y: float) -> None:
-    QApplication.sendEvent(canvas, QMouseEvent(
-        QEvent.Type.MouseMove, QPointF(x, y),
-        canvas.mapToGlobal(QPoint(int(x), int(y))),
+def _widget(qtbot, runtime, events, size=(440, 260)):
+    """A skinned TimelineWidget carrying ``events`` on the vertical scale."""
+    vm = MagicMock()
+    vm.events = []
+    widget = TimelineWidget(vm, theme=runtime)
+    qtbot.addWidget(widget)
+    widget.resize(*size)
+    widget.show()
+    qtbot.waitExposed(widget)
+    widget.update_events(events)
+    qtbot.waitExposed(widget)
+    return widget
+
+
+def _row_right_pixel(view, idx: int, scale: float) -> QColor:
+    """A no-text pixel of the row: the far right, clear of the elided text."""
+    vp = view.viewport()
+    rect = view.visualItemRect(view.item(idx))
+    image = vp.grab().toImage()
+    x = min(int((vp.width() - 6) * scale), image.width() - 1)
+    y = int(rect.center().y() * scale)
+    return image.pixelColor(x, y)
+
+
+def _move_over_row(view, idx: int) -> None:
+    vp = view.viewport()
+    x = vp.width() - 6
+    y = view.visualItemRect(view.item(idx)).center().y()
+    QApplication.sendEvent(vp, QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(x, y), vp.mapToGlobal(QPoint(x, y)),
         Qt.MouseButton.NoButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
     ))
 
 
-def test_accent_token_edit_recolors_the_scale_without_screen_changes(qtbot, tmp_path):
-    """Both themes: the edited accent shows up in selected + hover + fill."""
-    for theme in ("dark", "light"):
-        new_accent = "#0f8c3c" if theme == "dark" else "#c00f2e"
-        tokens = json.loads(tokens_file_path().read_text(encoding="utf-8"))
-        tokens["color.accent"][theme] = new_accent
-        tokens_path = tmp_path / f"tokens-{theme}.json"
-        tokens_path.write_text(json.dumps(tokens), encoding="utf-8")
-        runtime = make_runtime(tmp_path, theme, tokens_path=tokens_path)
-        canvas = _canvas(qtbot, runtime, [_evt(1, "Бой", date(1200, 1, 1), date(1200, 1, 31))])
-        image, scale = _grab_scaled(canvas)
-        bar = canvas.plan.bar_for(1)
-        probe_x = (bar.x0 + bar.x1) / 2.0
-        probe_y = canvas.plan.metrics.axis_h + bar.height - 22.0  # below the label band
-        # selected == the edited accent itself
-        canvas.set_selected(1)
-        image_sel, scale_sel = _grab_scaled(canvas)
-        assert _probe(canvas, image_sel, scale_sel, probe_x, probe_y) == QColor(new_accent)
-        # unselected fill == the edited accent at BAR_FILL_ALPHA over surface
-        canvas.set_selected(None)
-        image_plain, scale_plain = _grab_scaled(canvas)
-        plain = _probe(canvas, image_plain, scale_plain, probe_x, probe_y)
-        expected = _composite_over(
-            token_color("color.bg.surface", theme),
-            QColor(new_accent),
-            int(BAR_FILL_ALPHA * 255),
-        )
-        assert plain == expected, (theme, plain.getRgb(), expected.getRgb())
-        # hover fill == the token at BAR_HOVER_ALPHA
-        _move_over(canvas, probe_x, probe_y)
-        canvas.grab()  # repaint with the hover state
-        image_hover, scale_hover = _grab_scaled(canvas)
-        hovered = _probe(canvas, image_hover, scale_hover, probe_x, probe_y)
-        expected_hover = _composite_over(
-            token_color("color.bg.surface", theme),
-            QColor(new_accent),
-            int(BAR_HOVER_ALPHA * 255),
-        )
-        assert hovered == expected_hover, (theme, hovered.getRgb(), expected_hover.getRgb())
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_grid_hairline_is_the_border_token_composite(qtbot, tmp_path, theme):
-    """A month-boundary hairline between two bars paints border over surface."""
-    runtime = make_runtime(tmp_path, theme)
-    events = [
-        _evt(1, "Январь", date(1200, 1, 1), date(1200, 1, 10)),  # lane gap free:
-        _evt(2, "Март", date(1200, 3, 20), date(1200, 3, 31)),  # Feb 1 tick is bare
-    ]
-    canvas = _canvas(qtbot, runtime, events, size=(420, 90))
-    image, scale = _grab_scaled(canvas)
-    tick_x = int(canvas.plan.x_of(date(1200, 2, 1)))
-    surface = token_color("color.bg.surface", theme)
-    expected = _composite_over(
-        surface, token_color("color.border", theme), int(0.6 * 255)  # canvas grid alpha
-    )
-    bar_y = canvas.plan.metrics.axis_h + canvas.plan.lane_h - 4  # inside the lane,
-    hits = [
-        image.pixelColor(int((tick_x + dx) * scale), int(row * scale))
-        for dx in (0, 1)
-        for row in (bar_y, bar_y - 1)
-    ]
-    assert any(px == expected for px in hits), [px.getRgb() for px in hits]
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_empty_hint_is_the_muted_token(qtbot, tmp_path, theme):
-    """The empty-range hint renders in the fg.muted token (hint role color)."""
-    runtime = make_runtime(tmp_path, theme)
-    canvas = _canvas(qtbot, runtime, [])
-    image = canvas.grab().toImage()
-    muted = token_color("color.fg.muted", theme)
-    found = any(
-        image.pixelColor(x, y) == muted
+def _rail_has_token(view, color: QColor) -> bool:
+    """True when some rail-zone pixel equals ``color`` exactly (tick/bracket/label)."""
+    vp = view.viewport()
+    image = vp.grab().toImage()
+    rail_px = int(view.rail_width() * image.width() / max(vp.width(), 1))
+    return any(
+        image.pixelColor(x, y) == color
         for y in range(image.height())
-        for x in range(image.width())
+        for x in range(min(rail_px, image.width()))
     )
-    assert found, f"hint text must paint the muted token ({theme})"
+
+
+def _tokens_with_accent(tmp_path, theme: str, new_accent: str):
+    """A copied token file with ``color.accent`` retargeted for one theme."""
+    tokens = json.loads(tokens_file_path().read_text(encoding="utf-8"))
+    tokens["color.accent"][theme] = new_accent
+    path = tmp_path / f"tokens-{theme}.json"
+    path.write_text(json.dumps(tokens), encoding="utf-8")
+    return path
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_unselected_bar_fill_is_accent_derivative_both_themes(qtbot, tmp_path, theme):
-    """The plain fill and the month-free axis stay on token derivatives."""
+def test_selection_hover_and_surface_are_accent_derivatives(qtbot, tmp_path, theme):
+    """Empty row == surface, selected row == accent, hovered row == accent wash."""
     runtime = make_runtime(tmp_path, theme)
-    canvas = _canvas(qtbot, runtime, [_evt(1, "Зима", date(1200, 1, 1), date(1200, 1, 31))])
-    image, scale = _grab_scaled(canvas)
-    bar = canvas.plan.bar_for(1)
-    plain = _probe(
-        canvas, image, scale,
-        bar.x1 - 4.0,                       # clear of the label and the border
-        canvas.plan.metrics.axis_h + bar.height - 22.0,
-    )
     surface = token_color("color.bg.surface", theme)
-    expected = _composite_over(
-        surface, token_color("color.accent", theme), int(BAR_FILL_ALPHA * 255)
+    accent = token_color("color.accent", theme)
+    widget = _widget(qtbot, runtime, [_evt(1, date(1200, 1, 1), date(1200, 1, 20), "З")])
+    view = widget.rows_view
+    scale = _scale(view)
+
+    # unselected: the empty row region is the surface token (no per-row fill here)
+    assert _row_right_pixel(view, 0, scale) == surface, theme
+    assert _row_right_pixel(view, 1, scale) == surface, theme  # a later day, still a row
+
+    widget.set_selected(1)
+    assert _row_right_pixel(view, 0, scale) == accent, theme  # fill == accent itself
+
+    widget.set_selected(None)
+    _move_over_row(view, 0)
+    qtbot.wait(0)
+    expected_wash = _composite_over(surface, accent, _hover_alpha(accent))
+    assert _row_right_pixel(view, 0, scale) == expected_wash, theme
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_rail_ticks_brackets_and_month_label_come_from_tokens(qtbot, tmp_path, theme):
+    """The decorative rail paints border (ticks/brackets) and fg.muted (months)."""
+    runtime = make_runtime(tmp_path, theme)
+    widget = _widget(qtbot, runtime, [
+        _evt(1, date(1200, 1, 1), date(1200, 3, 30), "многодневка"),
+        _evt(2, date(1200, 2, 1), date(1200, 2, 3), "граница-месяца"),
+    ])
+    view = widget.rows_view
+
+    # day ticks + the multi-day bracket are the border token
+    assert _rail_has_token(view, token_color("color.border", theme)), theme
+
+    # scroll a first-of-month event into view so its rotated label has headroom
+    idx_feb = view.index_for_event(2)
+    view.scrollToItem(view.item(idx_feb), view.ScrollHint.PositionAtCenter)
+    qtbot.wait(0)
+    assert _rail_has_token(view, token_color("color.fg.muted", theme)), theme
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_sticky_band_is_surface_accent_and_primary_tokens(qtbot, tmp_path, theme):
+    """Sticky date: surface band, accent hairline, fg.primary date text."""
+    runtime = make_runtime(tmp_path, theme)
+    widget = _widget(qtbot, runtime, [_evt(1, date(1200, 1, 1), date(1200, 1, 20), "З")])
+    sticky = widget.rows_view.sticky_label
+    assert sticky.text()  # showing the top row's full game date
+    image = sticky.grab().toImage()
+    scale = image.width() / max(sticky.width(), 1)
+
+    assert image.pixelColor(int(4 * scale), int(2 * scale)) == token_color(
+        "color.bg.surface", theme
+    ), theme
+    assert _contains_pixel(image, token_color("color.fg.primary", theme)), theme
+    hairline = token_color("color.accent", theme)
+    bottom = image.height() - int(1 * scale)
+    assert any(image.pixelColor(x, bottom) == hairline for x in range(image.width())), theme
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_accent_token_edit_recolors_the_scale_without_screen_changes(qtbot, tmp_path, theme):
+    """A retargeted ``color.accent`` moves the selected fill and the hover wash."""
+    new_accent = "#0f8c3c" if theme == "dark" else "#c00f2e"
+    runtime = make_runtime(
+        tmp_path, theme, tokens_path=_tokens_with_accent(tmp_path, theme, new_accent)
     )
-    assert plain == expected, (plain.getRgb(), expected.getRgb())
+    widget = _widget(qtbot, runtime, [_evt(1, date(1200, 1, 1), date(1200, 1, 20), "Бой")])
+    view = widget.rows_view
+    scale = _scale(view)
+    surface = token_color("color.bg.surface", theme)
+
+    widget.set_selected(1)
+    assert _row_right_pixel(view, 0, scale) == QColor(new_accent), theme
+
+    widget.set_selected(None)
+    _move_over_row(view, 0)
+    qtbot.wait(0)
+    expected = _composite_over(surface, QColor(new_accent), _hover_alpha(QColor(new_accent)))
+    assert _row_right_pixel(view, 0, scale) == expected, theme
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_empty_hint_paints_the_muted_token(qtbot, tmp_path, theme):
+    """No events → the explanatory hint text renders in the fg.muted token."""
+    runtime = make_runtime(tmp_path, theme)
+    widget = _widget(qtbot, runtime, [])
+    hint = widget.rows_view.hint_label
+    assert hint.text() == EMPTY_HINT_TEXT
+    assert _contains_pixel(hint.grab().toImage(), token_color("color.fg.muted", theme)), theme

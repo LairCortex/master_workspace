@@ -50,7 +50,7 @@ async def test_filter_and_unknown_type_guards(app, wait_for):
     await helpers.create_event_via_ui(
         window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1)
     )
-    canvas = window.timeline_widget.canvas
+    canvas = window.timeline_widget.rows_view
     await wait_for(lambda: len(canvas.events) == 1)
 
     # A narrow date range hides the event; clearing brings it back
@@ -93,7 +93,7 @@ async def test_filtering_out_the_selected_event_clears_every_layer(app, wait_for
     await helpers.create_event_via_ui(
         window, wait_for, "Война", start_date=QDate(1300, 7, 1)
     )
-    canvas = window.timeline_widget.canvas
+    canvas = window.timeline_widget.rows_view
     await wait_for(lambda: len(canvas.events) == 1)
 
     event_id = helpers.click_timeline_event(window, "Война")
@@ -191,7 +191,7 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     await helpers.wait_until_settled()
     event_id = query_db(db_path, "SELECT id FROM events WHERE name = 'СобытиеПоиска'")[0][0]
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'ГеройПоиска'")[0][0]
-    canvas = window.timeline_widget.canvas
+    canvas = window.timeline_widget.rows_view
 
     # "event" result: the event's bar is selected on the scale (id-contract)
     window.search_bar.result_selected.emit("event", event_id)
