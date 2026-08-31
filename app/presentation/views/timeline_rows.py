@@ -10,8 +10,10 @@ derives its own: min(start) … max(end|start).
 
 ``prev_event_index`` / ``next_event_index`` are the jump helpers behind the
 panel's "to previous/next event" commands (empty runs are skipped, edges are
-inert). Everything is plain deterministic data, testable without a
-QApplication.
+inert). ``index_at_y`` / ``normalize_range`` are the rail's Qt-free geometry
+helpers behind the W3c rail interactions: a y→first-row-of-day hit-test that
+clamps to the list edges, and the (min, max) ordering of a drag pair.
+Everything is plain deterministic data, testable without a QApplication.
 """
 from __future__ import annotations
 
@@ -131,3 +133,34 @@ def next_event_index(rows: Sequence[Row], from_idx: int) -> int | None:
         if rows[idx].kind is RowKind.EVENT:
             return idx
     return None
+
+
+def index_at_y(rows: Sequence[Row], row_height: int, y: int) -> int | None:
+    """Index of the first row of the day sitting at viewport coordinate ``y``.
+
+    The rail's hit-test (W3c D3): rows are equal-height, so the row under the
+    cursor is ``y // row_height``. The result is clamped to the row block — a
+    coordinate above the head lands on the first day, one below the tail on
+    the last — which is what keeps a drag released outside the viewport on its
+    last visible day. The clamp is then walked back to the first row of that
+    row's day, so a click against the middle of a multi-event day anchors on
+    the day's head. ``None`` when there is nothing to map onto (no rows, or a
+    non-positive row height).
+    """
+    if not rows or row_height <= 0:
+        return None
+    idx = min(max(y // row_height, 0), len(rows) - 1)
+    day = rows[idx].date
+    while idx > 0 and rows[idx - 1].date == day:
+        idx -= 1
+    return idx
+
+
+def normalize_range(day_a: date, day_b: date) -> tuple[date, date]:
+    """Order a drag pair chronologically → ``(min, max)``.
+
+    A drag stretched bottom-up yields the same bounds as top-down, and a
+    single-day drag collapses to the day twice (spec «Drag снизу вверх
+    нормализуется»).
+    """
+    return (day_a, day_b) if day_a <= day_b else (day_b, day_a)

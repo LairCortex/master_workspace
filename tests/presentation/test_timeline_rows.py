@@ -1,4 +1,4 @@
-"""Unit tests for the Qt-free vertical-rows core (W3b 1.1–1.3).
+"""Unit tests for the Qt-free vertical-rows core (W3b 1.1–1.3, W3c 2.1).
 
 The module must import and run without a QApplication — enforced by this file
 being plain units (no qtbot, no Qt imports anywhere).
@@ -11,7 +11,9 @@ from app.presentation.views.timeline_rows import (
     Row,
     RowKind,
     build_rows,
+    index_at_y,
     next_event_index,
+    normalize_range,
     prev_event_index,
 )
 
@@ -177,3 +179,63 @@ def test_jump_only_lands_on_event_rows():
         assert prev_event_index(rows, nxt) == idx
         idx = nxt
     assert idx == 8  # two hops: 0 → 7 → 8, then no further event
+
+
+# ── W3c 2.1 rail geometry (design D3) ──────────────────────────────────────
+
+_RAIL_ROW_H = 24  # any fixed height works; the helpers are Qt-free math
+
+
+def _rail_rows() -> list[Row]:
+    """Day Jan 1: two events (idx 0–1); Jan 2: empty (2); Jan 3: three (3–5).
+
+    Day anchors: Jan 1 → 0, Jan 2 → 2, Jan 3 → 3; six rows in total.
+    """
+    return build_rows(
+        [
+            _Ev(1, date(1200, 1, 1)), _Ev(2, date(1200, 1, 1)),
+            _Ev(3, date(1200, 1, 3)), _Ev(4, date(1200, 1, 3)),
+            _Ev(5, date(1200, 1, 3)),
+        ],
+        range_start=date(1200, 1, 1),
+        range_end=date(1200, 1, 3),
+    )
+
+
+def test_index_at_y_normalizes_to_first_row_of_the_day():
+    """Spec «Якорь дня с несколькими событиями»: any row of a day → its head."""
+    rows = _rail_rows()
+    h = _RAIL_ROW_H
+    assert index_at_y(rows, h, 0) == 0        # first row of day Jan 1
+    assert index_at_y(rows, h, h) == 0        # second row of Jan 1 → its head
+    assert index_at_y(rows, h, 2 * h) == 2    # empty Jan 2 is a single row
+    assert index_at_y(rows, h, 3 * h) == 3    # head row of Jan 3
+    assert index_at_y(rows, h, 4 * h) == 3    # middle of Jan 3 → its head
+    assert index_at_y(rows, h, 5 * h) == 3    # last row of Jan 3 → its head
+    assert index_at_y(rows, h, 5 * h + h - 1) == 3  # bottom pixel of the tail
+
+
+def test_index_at_y_clamps_above_zero_and_below_the_tail():
+    """Release outside the list lands on the first/last day (W3c risks)."""
+    rows = _rail_rows()  # 6 rows, last day Jan 3 anchored at index 3
+    assert index_at_y(rows, _RAIL_ROW_H, -1) == 0
+    assert index_at_y(rows, _RAIL_ROW_H, -10 ** 6) == 0
+    assert index_at_y(rows, _RAIL_ROW_H, 6 * _RAIL_ROW_H) == 3      # one row past
+    assert index_at_y(rows, _RAIL_ROW_H, 10 ** 6) == 3              # far below
+
+
+def test_index_at_y_without_rows_or_height_is_none():
+    """Nothing to anchor on: empty rows (any y) or a non-positive height."""
+    assert index_at_y([], _RAIL_ROW_H, 0) is None
+    assert index_at_y([], _RAIL_ROW_H, -5) is None
+    assert index_at_y([], _RAIL_ROW_H, 10 ** 6) is None
+    assert index_at_y(_rail_rows(), 0, 0) is None
+    assert index_at_y(_rail_rows(), -_RAIL_ROW_H, 0) is None
+
+
+def test_normalize_range_orders_inverted_pairs_and_keeps_equal_days():
+    """Spec «Drag снизу вверх нормализуется» + «Однодневный drag»."""
+    early, late = date(1200, 1, 2), date(1200, 1, 9)
+    assert normalize_range(early, late) == (early, late)  # top-down unchanged
+    assert normalize_range(late, early) == (early, late)  # bottom-up → (min, max)
+    assert normalize_range(early, early) == (early, early)  # single-day drag

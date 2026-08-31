@@ -13,7 +13,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, Qt
+from PySide6.QtCore import QDate, QEvent, QModelIndex, QPoint, QPointF, Qt
 from PySide6.QtGui import (
     QColor, QMouseEvent, QPainter, QWheelEvent,
 )
@@ -29,7 +29,10 @@ from app.presentation.views.timeline_widget import (
     BRACKET_LANE_STEP,
     BRACKET_SERIF_W,
     BRACKET_X0,
+    DRAG_START_THRESHOLD_PX,
+    DRAG_WASH_ALPHA,
     EMPTY_HINT_TEXT,
+    FILTER_CHIP_ALL,
     MONTH_SHORT_FORM,
     RAIL_FIXED_ZONE,
     RAIL_MIN_WIDTH,
@@ -43,6 +46,7 @@ from app.presentation.views.timeline_widget import (
     TimelineListView,
     TimelineWidget,
     bracket_lanes,
+    filter_chip_text,
     rows_palette,
 )
 from app.presentation.views.timeline_rows import RowKind
@@ -96,6 +100,47 @@ def _double_click(widget, point: QPoint) -> None:
             etype, QPointF(point), widget.mapToGlobal(point),
             Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier,
         ))
+
+
+def _press_only(widget, point: QPoint) -> None:
+    """Bare left-button press at a viewport point (no release)."""
+    QApplication.sendEvent(widget, QMouseEvent(
+        QEvent.Type.MouseButtonPress, QPointF(point), widget.mapToGlobal(point),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    ))
+
+
+def _release_only(widget, point: QPoint) -> None:
+    """Bare left-button release at a viewport point (pairs with _press_only)."""
+    QApplication.sendEvent(widget, QMouseEvent(
+        QEvent.Type.MouseButtonRelease, QPointF(point), widget.mapToGlobal(point),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    ))
+
+
+def _move(widget, point: QPoint) -> None:
+    """A plain (buttonless) hover move at a viewport point."""
+    QApplication.sendEvent(widget, QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(point), widget.mapToGlobal(point),
+        Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    ))
+
+
+def _drag_move(widget, point: QPoint) -> None:
+    """A move with the left button held down — the drag phase (W3c D2)."""
+    QApplication.sendEvent(widget, QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(point), widget.mapToGlobal(point),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    ))
+
+
+def _rail_point(view, idx: int) -> QPoint:
+    """Middle of the rail zone against row ``idx`` (viewport coordinates)."""
+    return QPoint(view.rail_width() // 2, _row_center(view, idx).y())
 
 
 def _make_runtime(tmp_path, tokens_path=None) -> ThemeRuntime:
@@ -232,8 +277,10 @@ class TestListAndSignals:
         assert view.selected_id == 1
         assert view.selectedIndexes()[0].row() == 0  # the detail layer never moved
 
-    def test_click_on_decorative_rail_is_inert(self, qtbot):
-        """Spec «Рейка декоративная»: presses left of the text zone select nothing."""
+    def test_click_on_rail_never_selects_an_event(self, qtbot):
+        """Spec «Нажатие в рейке не выбирает событие» (W3c replaced «декоративная»):
+        the press against an event's line belongs to the rail — selection and
+        id-signals untouched (the jump itself is covered in TestRailInteractivity)."""
         view = _view(qtbot, [_evt(5, date(1200, 1, 1))])
         received: list[int] = []
         view.event_selected.connect(received.append)
@@ -727,6 +774,593 @@ class TestFilterWindowOnTheScale:
         assert panel.rows_view.currentRow() == 7
 
 
+# ── W3c 3.1–3.4 — rail interactivity: click-jump, follow-дата, mute dblclick ─
+
+class TestRailInteractivity:
+    def test_rail_press_arms_without_selecting_or_emitting(self, qtbot):
+        """Task 3.1: a press in the rail is armed and consumed — the base list
+        never sees it, so nothing selects and no id-signal leaves the view."""
+        view = _view(qtbot, [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 4))])
+        selected: list[int] = []
+        doubled: list[int] = []
+        view.event_selected.connect(selected.append)
+        view.event_double_clicked.connect(doubled.append)
+        # Qt defers the current-row assignment after a rebuild; read the base
+        # value instead of hardcoding it — what matters is press/release phases.
+        base_current = view.currentRow()
+        _press_only(view.viewport(), _rail_point(view, 0))
+        assert selected == [] and doubled == []
+        assert view.selected_id is None
+        assert view.currentRow() == base_current  # the press alone moves nothing
+        _release_only(view.viewport(), _rail_point(view, 0))
+        assert selected == [] and doubled == []
+        assert view.selectedIndexes() == []  # selection never moved
+        # The release jumped: day 1's row already sat at the top, so only the
+        # current row (the jump anchor) moved onto it (D4).
+        assert view.currentRow() == 0
+
+    def test_release_past_threshold_does_not_jump(self, qtbot):
+        """D2 click-phase boundary: a release past the drag-move threshold is
+        the range-drag's territory (tasks 4.x) — it must not jump in the meantime."""
+        view = _view(qtbot, [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 3))])
+        base_current = view.currentRow()
+        point = _rail_point(view, 0)
+        _press_only(view.viewport(), point)
+        _release_only(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX + 1))
+        assert view.currentRow() == base_current  # no jump: no anchor moved
+        assert view.verticalScrollBar().value() == 0
+        assert view.selected_id is None
+        assert view.selectedIndexes() == []
+
+    def test_click_jump_scrolls_empty_day_to_top_keeping_selection(self, qtbot):
+        """Spec «Клик по дню = прыжок скролла» + «Прыжок на пустой день»: the
+        empty day clicked in the rail becomes the top row under the sticky
+        date, while the selection stands and no id-signal is emitted."""
+        events = [_evt(1, date(1200, 1, 1)), _evt(9, date(1200, 1, 8))]
+        view = _view(qtbot, events, rows_visible=3)
+        received: list[int] = []
+        view.event_selected.connect(received.append)
+        view.set_selected(1)  # day 1's event is the pre-existing selection
+        _click(view, 2, x=view.rail_width() // 2)  # rail of day 3 — an empty day
+        assert view.verticalScrollBar().value() == 2
+        assert view.top_visible_index() == 2
+        assert view.rows[2].kind == RowKind.EMPTY_DAY  # the jumped target was empty
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 3))
+        assert view.currentRow() == 2  # reading position moved with the day
+        assert view.selected_id == 1  # selection and details never moved
+        assert view.selectedIndexes()[0].row() == 0
+        assert received == []
+
+    def test_click_jump_anchors_first_row_of_multi_event_day(self, qtbot):
+        """Spec «Якорь дня с несколькими событиями»: against day 2's *second*
+        row the day's *first* row is what lands on top."""
+        events = [
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 2), name="A"),
+            _evt(3, date(1200, 1, 2), name="B"),
+            _evt(4, date(1200, 1, 3)),
+        ]
+        view = _view(qtbot, events, rows_visible=3)
+        received: list[int] = []
+        view.event_selected.connect(received.append)
+        _click(view, 2, x=view.rail_width() // 2)  # the day's second row
+        assert view.verticalScrollBar().value() == 1  # day 2's first row on top
+        assert view.top_visible_index() == 1
+        assert view.currentRow() == 1  # reading anchor followed the day's head
+        assert view.rows[view.top_visible_index()].date == date(1200, 1, 2)
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 2))
+        assert received == [] and view.selected_id is None
+
+    def test_follow_sticky_shows_day_under_cursor_in_rail(self, qtbot):
+        """Spec «Follow-дата под курсором» (task 3.3): hovering the rail
+        rewrites the sticky text to the day under the cursor — while the
+        hover-wash row keeps moving exactly as before."""
+        events = [_evt(i, date(1200, 1, d)) for i, d in enumerate(range(1, 11), start=1)]
+        view = _view(qtbot, events, rows_visible=3)
+        view.verticalScrollBar().setValue(2)  # top row is day 3 — the sync text
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 3))
+        _move(view.viewport(), QPoint(view.rail_width() // 2, 60))
+        # viewport y 60 → viewport row 2 → model row 4 → day 5 (a day the top
+        # edge does not show) — the follow text, over the sync text (D5)
+        assert view.hover_index() == 4  # the wash row moved as before
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 5))
+
+    def test_follow_resumes_top_row_after_leaving_the_rail(self, qtbot):
+        """Spec «Возврат после выхода из рейки»: moving into the text zone, and
+        leaving the list, hand the sticky back to the top row's date (no drag
+        exists before tasks 4.x, so the leave always releases the follow)."""
+        events = [_evt(i, date(1200, 1, d)) for i, d in enumerate(range(1, 11), start=1)]
+        view = _view(qtbot, events, rows_visible=3)
+        view.verticalScrollBar().setValue(2)
+        rail_x = view.rail_width() // 2
+        _move(view.viewport(), QPoint(rail_x, 60))
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 5))
+        _move(view.viewport(), QPoint(view.rail_width() + 12, 60))  # into the text
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 3))
+        assert view.hover_index() == 4  # the wash row is unaffected by the follow
+        _move(view.viewport(), QPoint(rail_x, 60))  # back onto the rail
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 5))
+        QApplication.sendEvent(view, QEvent(QEvent.Type.Leave))
+        assert view.hover_index() == -1
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 3))
+
+    def test_double_click_in_rail_stays_mute_on_event_row(self, qtbot):
+        """Spec «Двойной клик в рейке глушится» + D8 (task 3.4): against an
+        EVENT row's rail — no selection, no editing."""
+        view = _view(qtbot, [_evt(8, date(1200, 1, 1), date(1200, 1, 3))])
+        selected: list[int] = []
+        doubled: list[int] = []
+        view.event_selected.connect(selected.append)
+        view.event_double_clicked.connect(doubled.append)
+        _double_click(view.viewport(), _rail_point(view, 0))
+        assert selected == [] and doubled == []
+        assert view.selected_id is None
+        assert view.selectedIndexes() == []
+
+
+# ── W3c 4.1–4.3 — range drag: threshold machine, wash band, single apply ────
+
+def _drag_applied(view) -> list[tuple]:
+    """Record every ``day_range_applied`` emit of ``view``."""
+    emitted: list[tuple] = []
+    view.day_range_applied.connect(lambda start, end: emitted.append((start, end)))
+    return emitted
+
+
+def _spread_view(qtbot, rows_visible=3, scroll=3, theme=None):
+    """A 12-day one-event-per-day scale row idx == day − 1, scrolled by default."""
+    view = _view(
+        qtbot,
+        [_evt(i, date(1200, 1, d)) for i, d in enumerate(range(1, 13), start=1)],
+        theme=theme,
+        rows_visible=rows_visible,
+    )
+    view.verticalScrollBar().setValue(scroll)
+    return view
+
+
+class TestRangeDragStateMachine:
+    """Task 4.1 (D2/D3/D5/D6): the threshold machine, its y-only visible clamp
+    and the follow day it keeps; the apply semantics of the release are the
+    next class's, the full acceptance runs are group 5's."""
+
+    def test_move_before_threshold_arms_nothing_and_release_jumps(self, qtbot):
+        """Task 4.1 «move до порога не создаёт диапазона»: sub-threshold moves
+        never open a band, and the release still resolves as the click-jump."""
+        view = _spread_view(qtbot)  # scroll 3: top visible row 3 = day 4
+        emitted = _drag_applied(view)
+        point = _rail_point(view, 5)  # day 6's rail
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        assert view.drag_range() is None  # 3 < threshold — no band
+        _drag_move(view.viewport(), point - QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        assert view.drag_range() is None  # neither above the press point
+        _release_only(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        assert emitted == []
+        assert view.verticalScrollBar().value() == 5  # …it was the click-jump
+        assert view.currentRow() == 5
+
+    def test_move_past_threshold_opens_and_normalises_drag_range(self, qtbot):
+        """D2/D6: the armed press past the threshold enters the drag mode; the
+        band is normalize(anchor, day under cursor) — a bottom-up pair
+        normalizes without inversion (spec «Drag снизу вверх нормализуется»)."""
+        view = _spread_view(qtbot, rows_visible=5, scroll=2)
+        emitted = _drag_applied(view)
+        point = _rail_point(view, 5)  # day 6's rail
+        _press_only(view.viewport(), point)
+        # One pixel below the threshold still no band…
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        assert view.drag_range() is None
+        # …exactly ON it opens, latched: a later move back under the threshold
+        # keeps the drag alive.
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX))
+        _drag_move(view.viewport(), point)
+        assert view.drag_range() == (date(1200, 1, 6), date(1200, 1, 6))
+        _drag_move(view.viewport(), QPoint(point.x(), _row_center(view, 6).y()))
+        assert view.drag_range() == (date(1200, 1, 6), date(1200, 1, 7))
+        # Only y is significant once dragging: the cursor left into the text
+        # zone, x beyond the rail changes nothing, y picks day 4 → inverted
+        # pair normalizes to (min, max).
+        _drag_move(
+            view.viewport(),
+            QPoint(view.width() - 5, _row_center(view, 3).y()),
+        )
+        assert view.drag_range() == (date(1200, 1, 4), date(1200, 1, 6))
+        # Moves emit nothing — the apply belongs to the release alone.
+        assert emitted == []
+
+    def test_release_outside_viewport_applies_last_visible_day(self, qtbot):
+        """Spec «Границы drag'а ограничены видимым»: a cursor past the bottom
+        edge (and a release outside the widget) applies the last VISIBLE day,
+        the sticky follows the clamped day, and nothing autoscrolls."""
+        view = _spread_view(qtbot)  # viewport rows: days 4, 5, 6 full + day 7 sliver
+        emitted = _drag_applied(view)
+        point = _rail_point(view, 5)  # anchor day 6
+        _press_only(view.viewport(), point)
+        below = view.viewport().height() + 30  # beyond the viewport's bottom edge
+        _drag_move(view.viewport(), QPoint(point.x(), below))
+        assert view.drag_range() == (date(1200, 1, 6), date(1200, 1, 7))
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 7))
+        scroll_before = view.verticalScrollBar().value()
+        # The release itself beyond the widget edges — same clamped boundary.
+        _release_only(view.viewport(), QPoint(point.x(), below + 40))
+        assert emitted == [(date(1200, 1, 6), date(1200, 1, 7))]
+        assert view.verticalScrollBar().value() == scroll_before  # no autoscroll
+        assert view.selectedIndexes() == [] and view.selected_id is None
+
+    def test_single_day_drag_resolves_to_the_click_jump(self, qtbot):
+        """Task 4.3 «однодневный drag = клик», view half: a past-threshold
+        drag that stayed on its day applies no filter — D4's jump instead."""
+        view = _spread_view(qtbot, scroll=0)
+        emitted = _drag_applied(view)
+        point = _rail_point(view, 1)  # day 2's row spans viewport y 24..47
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX))
+        assert view.drag_range() == (date(1200, 1, 2), date(1200, 1, 2))
+        _release_only(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX))
+        assert emitted == []  # not a filter gesture
+        assert view.drag_range() is None  # drag state gone with the gesture
+        assert view.verticalScrollBar().value() == 1  # the click-jump ran
+        assert view.currentRow() == 1
+
+    def test_follow_sticky_wins_leaving_the_rail_and_view(self, qtbot):
+        """Spec «Follow во время drag'а» (core of the D5 leave-guard): the
+        sticky keeps the clamp-followed day across the rail's edge, the text
+        zone and the whole-view Leave; after the release the hover rule is
+        back in charge."""
+        view = _spread_view(qtbot)
+        emitted = _drag_applied(view)
+        _press_only(view.viewport(), _rail_point(view, 5))  # anchor day 6
+        text_point = QPoint(view.rail_width() + 40, 75)  # text zone over day 7's sliver
+        _drag_move(view.viewport(), text_point)
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 7))
+        QApplication.sendEvent(view, QEvent(QEvent.Type.Leave))
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 7))
+        _release_only(view.viewport(), text_point)
+        assert emitted == [(date(1200, 1, 6), date(1200, 1, 7))]
+        # Drag over — the sticky returns to the top visible row's day (D5).
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 4))
+
+
+class TestRangeDragWashBand:
+    """Task 4.2 (D6): the delegate paints the accent-derived wash band over
+    every covered day — partially visible rows clip their slice — and the band
+    is gone again with the drag."""
+
+    def test_band_paints_covered_rows_including_partial(self, qtbot, tmp_path):
+        runtime = _make_runtime(tmp_path)  # on-skin: wash is an accent derivative
+        view = _spread_view(qtbot, theme=runtime)
+        # visible: day 4 (y 0..23), day 5 (24..47), day 6 (48..71), day 7 (72..79)
+        x = view.rail_width() + 3  # between the rail edge and the line text
+        plain_before = view.viewport().grab().toImage().pixelColor(x, 36)
+        _press_only(view.viewport(), _rail_point(view, 4))  # day 5…
+        _drag_move(view.viewport(), QPoint(view.rail_width() // 2, 75))  # …→ day 7
+
+        image = view.viewport().grab().toImage()
+        pal = view.paint_palette()
+        alpha = pal.drag_fill.alphaF()
+        assert 0.0 < alpha < 1.0  # the wash is a translucent accent derivative
+        base = pal.drag_fill
+        blended = QColor(
+            int(alpha * base.red() + (1 - alpha) * plain_before.red()),
+            int(alpha * base.green() + (1 - alpha) * plain_before.green()),
+            int(alpha * base.blue() + (1 - alpha) * plain_before.blue()),
+        )
+        for y in (36, 60):  # fully visible covered days 5 and 6
+            got = image.pixelColor(x, y)
+            for chan in ("red", "green", "blue"):
+                assert abs(getattr(got, chan)() - getattr(blended, chan)()) <= 2
+            assert (got.red(), got.green(), got.blue()) != (
+                plain_before.red(), plain_before.green(), plain_before.blue(),
+            )
+        stripped = image.pixelColor(x, 75)  # partially visible covered day 7
+        assert (stripped.red(), stripped.green(), stripped.blue()) != (
+            plain_before.red(), plain_before.green(), plain_before.blue(),
+        )
+        # Days the drag does not cover wear nothing.
+        assert image.pixelColor(x, 12) == plain_before  # day 4, out of the range
+
+        _release_only(view.viewport(), QPoint(view.rail_width() // 2, 75))
+        after = view.viewport().grab().toImage()
+        assert after.pixelColor(x, 36) == plain_before  # band washed off with the drag
+
+    def test_retheme_during_drag_repaints_band_without_touching_gesture(self,
+                                                                        qtbot,
+                                                                        tmp_path):
+        """Task 5.3 «Live-retheme во время активного drag'а»: a live token flip
+        mid-drag recolors the wash band pixels (new accent derivative), while
+        the gesture range, the scroll position and a pre-existing selection
+        all stand untouched."""
+        runtime = _make_runtime(tmp_path)
+        view = _spread_view(qtbot, theme=runtime)
+        _click(view, 5)  # a pre-existing selection (day 6), text zone, row visible
+        selection_row = view.selectedIndexes()[0].row()
+        _press_only(view.viewport(), _rail_point(view, 4))
+        _drag_move(view.viewport(), QPoint(view.rail_width() // 2, 60))
+        old_wash = view.paint_palette().drag_fill.name()
+        scroll_before = view.verticalScrollBar().value()
+        x = view.rail_width() + 3  # inside the band, beside the line text
+        wash_before = view.viewport().grab().toImage().pixelColor(x, 36)
+        assert runtime.toggle()  # dark ↔ light through the runtime listener
+
+        assert view.drag_range() == (date(1200, 1, 5), date(1200, 1, 6))
+        assert view.paint_palette().drag_fill.name() != old_wash
+        wash_after = view.viewport().grab().toImage().pixelColor(x, 36)
+        assert wash_after != wash_before  # the band is visibly repainted, not just renamed
+        assert view.verticalScrollBar().value() == scroll_before  # scroll intact
+        assert view.selected_id == 6  # the selection was never reset
+        assert view.selectedIndexes()[0].row() == selection_row
+
+    def test_drag_wash_alpha_is_a_plain_constant_both_modes(self):
+        """4.2: off-skin the band is the Qt-global with the same constant alpha,
+        on-skin an accent derivative — no hex, no OS palette anywhere."""
+        off = rows_palette(None)
+        # QColor stores alpha as one 8-bit byte — compare a byte off, not a bit.
+        assert off.drag_fill.alphaF() == pytest.approx(DRAG_WASH_ALPHA, abs=0.5 / 255)
+        import app.presentation.views.timeline_widget as mod
+
+        source = open(mod.__file__, encoding="utf-8").read()
+        assert ".palette(" not in source  # the hex/.palette() gate stays honest
+
+
+class TestRangeDragAppliesFilter:
+    """Task 4.3 (D6/D7): the panel consumes ``day_range_applied`` through the
+    very same ``_on_filter_range`` path — exactly one ``filter_changed`` per
+    release, the chip mirrors it, an active filter is replaced wholesale, and
+    the model rebuilds exactly once (no intermediate rebuilds while dragging)."""
+
+    _ALL = [_evt(i, date(1200, 1, d)) for i, d in enumerate(range(1, 13), start=1)]
+
+    def _wired_panel(self, qtbot, mocker):
+        """The app-side mirror: filter_changed → ViewModel-like date-window
+        filter → ``update_events`` into the same panel (see app wiring)."""
+        from unittest.mock import MagicMock
+
+        panel = TimelineWidget(MagicMock())
+        qtbot.addWidget(panel)
+        panel.resize(320, 420)  # tall enough for the gesture rows to sit on screen
+        panel.show()
+        received: list[tuple] = []
+
+        def on_filter(start, end):
+            received.append((start, end))
+            keep = [
+                e for e in self._ALL
+                if start is None or (start <= e.start_date <= end)
+            ]
+            panel.update_events(keep)
+
+        panel.filter_changed.connect(on_filter)
+        panel.update_events(self._ALL)  # before the spy: the initial build is not the drag's
+        rebuild = mocker.spy(panel.rows_view, "_rebuild")
+        return panel, received, rebuild
+
+    def test_release_applies_filter_once_chip_mirrors_model_rebuilds_once(self,
+                                                                          qtbot,
+                                                                          mocker):
+        panel, received, rebuild = self._wired_panel(qtbot, mocker)
+        view = panel.rows_view
+        rows_before = view.rows
+        _press_only(view.viewport(), _rail_point(view, 2))  # day 3
+        target = QPoint(view.rail_width() // 2, _row_center(view, 3).y())  # day 4
+        _drag_move(view.viewport(), target)
+        # No intermediate applies and no model churn while the button is held.
+        assert received == []
+        assert view.rows is rows_before
+        assert rebuild.call_count == 0
+
+        _release_only(view.viewport(), target)
+        assert received == [(date(1200, 1, 3), date(1200, 1, 4))]
+        assert panel.filter_chip.text() == filter_chip_text(
+            date(1200, 1, 3), date(1200, 1, 4)
+        )
+        assert panel._filter_range == (date(1200, 1, 3), date(1200, 1, 4))
+        assert rebuild.call_count == 1  # the model version moved exactly once
+        assert [row.date for row in view.rows] == [date(1200, 1, 3), date(1200, 1, 4)]
+
+    def test_drag_over_active_filter_replaces_the_bounds_wholly(self, qtbot, mocker):
+        """Spec «Перезапись активного фильтра»: the new range stands on its own,
+        the old bounds neither extend nor survive."""
+        panel, received, _ = self._wired_panel(qtbot, mocker)
+        panel.filter_popup.range_applied.emit(date(1200, 1, 2), date(1200, 1, 9))
+        assert received == [(date(1200, 1, 2), date(1200, 1, 9))]
+        view = panel.rows_view  # window days 2..9, row idx == day − 2
+        assert view.rows[0].date == date(1200, 1, 2) and view.rows[-1].date == date(1200, 1, 9)
+
+        _press_only(view.viewport(), _rail_point(view, 2))  # day 4
+        target = QPoint(view.rail_width() // 2, _row_center(view, 3).y())  # day 5
+        _drag_move(view.viewport(), target)
+        _release_only(view.viewport(), target)
+        assert received[-1] == (date(1200, 1, 4), date(1200, 1, 5))
+        assert panel._filter_range == (date(1200, 1, 4), date(1200, 1, 5))
+        assert panel.filter_chip.text() == filter_chip_text(
+            date(1200, 1, 4), date(1200, 1, 5)
+        )
+        assert [row.date for row in view.rows] == [date(1200, 1, 4), date(1200, 1, 5)]
+
+    def test_chip_mirrors_drag_range_and_popover_opens_with_it(self, qtbot, mocker):
+        """Spec «Чип зеркалит drag-диапазон»: after a rail-drag filter the chip
+        shows the very drag's bounds in the game format and the popover reopens
+        seeded with them — the same mirror a popover-set range gets."""
+        panel, received, _ = self._wired_panel(qtbot, mocker)
+        view = panel.rows_view
+        _press_only(view.viewport(), _rail_point(view, 2))  # day 3
+        target = QPoint(view.rail_width() // 2, _row_center(view, 4).y())  # day 5
+        _drag_move(view.viewport(), target)
+        _release_only(view.viewport(), target)
+        assert received == [(date(1200, 1, 3), date(1200, 1, 5))]
+        assert panel.filter_chip.text() == filter_chip_text(
+            date(1200, 1, 3), date(1200, 1, 5)
+        )  # the game-formatted mirror, «Все даты» fallback gone
+
+        panel.filter_chip.click()  # the popover's own open path, unmodified
+        assert panel.filter_popup.isVisible()
+        assert panel.filter_popup.start_calendar.selectedDate() == QDate(1200, 1, 3)
+        assert panel.filter_popup.end_calendar.selectedDate() == QDate(1200, 1, 5)
+
+    def test_reset_restores_both_entrances_alike(self, qtbot, mocker):
+        """Spec «Сброс касается обоих способов»: a drag-set filter clears
+        through the popover's reset like the chip's own."""
+        panel, received, _ = self._wired_panel(qtbot, mocker)
+        view = panel.rows_view
+        _press_only(view.viewport(), _rail_point(view, 1))  # day 2
+        target = QPoint(view.rail_width() // 2, _row_center(view, 3).y())  # day 4
+        _drag_move(view.viewport(), target)
+        _release_only(view.viewport(), target)
+        assert received[-1] == (date(1200, 1, 2), date(1200, 1, 4))
+
+        panel.filter_popup.reset_button.click()
+        assert received[-1] == (None, None)
+        assert panel.filter_chip.text() == FILTER_CHIP_ALL
+        assert [row.date for row in view.rows][0] == date(1200, 1, 1)
+        assert [row.date for row in view.rows][-1] == date(1200, 1, 12)
+
+    def test_single_day_drag_never_reaches_the_filter(self, qtbot, mocker):
+        """Task 4.3: «однодневный drag = клик» on the panel — no emit, no chip
+        touch, no rebuild; only the view scrolls."""
+        panel, received, rebuild = self._wired_panel(qtbot, mocker)
+        view = panel.rows_view
+        chip_before = panel.filter_chip.text()
+        _press_only(view.viewport(), _rail_point(view, 2))  # day 3, scroll 0
+        under = QPoint(view.rail_width() // 2, _row_center(view, 2).y() + DRAG_START_THRESHOLD_PX)
+        _drag_move(view.viewport(), under)
+        _release_only(view.viewport(), under)
+        assert received == []  # click, never a filter
+        assert panel.filter_chip.text() == chip_before
+        assert panel._filter_range == (None, None)
+        assert view.verticalScrollBar().value() == 0  # the tall panel shows every row
+        assert view.currentRow() == 2  # …so the jump shows up in the anchor only
+        assert view.drag_range() is None
+        assert rebuild.call_count == 0  # the click path never touches the model
+
+
+# ── W3c group 5 — spec-scenario acceptance & input-channel invariants ───────
+
+class TestScenarioAcceptanceW3c:
+    """Tasks 5.1/5.2: the spec-delta scenarios whose dedicated tests the earlier
+    groups left implicit (rail drag-continuation, bracket miss, visible-clamp
+    from above), plus the «nothing else changed» half of 5.2 — the right button
+    and modifier wheel keep their pre-W3c behavior, and there is no zoom."""
+
+    def test_rail_drag_continuation_never_selects_or_opens_the_event(self, qtbot):
+        """Spec «Нажатие в рейке не выбирает событие», drag continuation: a
+        gesture that grew from a rail press through the threshold into a range
+        drag still belongs to the rail — the pre-existing selection stays and
+        not one id-signal leaves the view."""
+        view = _view(
+            qtbot,
+            [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 3))],
+            rows_visible=3,
+        )
+        selected: list[int] = []
+        doubled: list[int] = []
+        applied: list[tuple] = []
+        view.event_selected.connect(selected.append)
+        view.event_double_clicked.connect(doubled.append)
+        view.day_range_applied.connect(lambda s, e: applied.append((s, e)))
+        view.set_selected(2)  # a pre-existing selection on day 3's row
+        _press_only(view.viewport(), _rail_point(view, 0))  # rail, day 1
+        _drag_move(view.viewport(), _row_center(view, 2))  # past the threshold
+        assert view.drag_range() == (date(1200, 1, 1), date(1200, 1, 3))
+        _release_only(view.viewport(), _row_center(view, 2))
+        assert selected == [] and doubled == []  # the rail never touches the contract
+        assert applied == [(date(1200, 1, 1), date(1200, 1, 3))]  # only its own channel
+        assert view.selected_id == 2
+        assert view.selectedIndexes()[0].row() == 2  # the details layer never moved
+
+    def test_press_next_to_bracket_lands_on_the_day_not_the_event(self, qtbot):
+        """Spec «Промах мимо привязки» (requirement «Привязка событий к рейке»):
+        the bracket owns no hit-target — a press on the rail flush against a
+        multi-day event's bracket is handled as its day (the click-jump ran),
+        the event is neither selected nor opened."""
+        view = _view(
+            qtbot,
+            [_evt(1, date(1200, 1, 1), date(1200, 1, 5), name="Поход")],
+            rows_visible=3,
+        )
+        assert view.bracket_lane(1) == 0  # lane-0 stroke at BRACKET_X0 + 0.5
+        selected: list[int] = []
+        doubled: list[int] = []
+        view.event_selected.connect(selected.append)
+        view.event_double_clicked.connect(doubled.append)
+        beside_bracket = QPoint(BRACKET_X0 + 4, _row_center(view, 2).y())
+        _press_only(view.viewport(), beside_bracket)  # inside the bracket's serif
+        _release_only(view.viewport(), beside_bracket)
+        assert selected == [] and doubled == []
+        assert view.selected_id is None and view.selectedIndexes() == []
+        assert view.verticalScrollBar().value() == 2  # the day's jump ran instead
+        assert view.top_visible_index() == 2
+        assert view.currentRow() == 2
+
+    def test_drag_past_top_edge_applies_first_visible_day(self, qtbot):
+        """Spec «Границы drag'а ограничены видимым», the top edge (the existing
+        bottom-edge twin lives in TestRangeDragStateMachine): a cursor dragged
+        above the viewport clamps to the first visible day, a release there
+        applies that boundary and nothing autoscrolls."""
+        view = _spread_view(qtbot)  # scroll 3: top visible row 3 = day 4
+        emitted = _drag_applied(view)
+        point = _rail_point(view, 5)  # anchor day 6
+        _press_only(view.viewport(), point)
+        above = -30  # above the viewport's top edge
+        _drag_move(view.viewport(), QPoint(point.x(), above))
+        assert view.drag_range() == (date(1200, 1, 4), date(1200, 1, 6))
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 4))
+        scroll_before = view.verticalScrollBar().value()
+        _release_only(view.viewport(), QPoint(point.x(), above - 20))
+        assert emitted == [(date(1200, 1, 4), date(1200, 1, 6))]
+        assert view.verticalScrollBar().value() == scroll_before  # no autoscroll
+        assert view.selectedIndexes() == [] and view.selected_id is None
+
+    def test_right_click_in_rail_never_arms_the_scale_gesture(self, qtbot):
+        """Task 5.2 / spec «Правый клик … ведёт себя как до изменения»: the rail
+        state machine arms on the left button only — a right press falls through
+        to the plain list exactly as in W3b (no jump, no band, no rail apply)."""
+        view = _spread_view(qtbot, scroll=0)
+        emitted = _drag_applied(view)
+        point = _rail_point(view, 2)  # day 3, fully visible: a jump would scroll to 2
+        for etype in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+            pressed = etype == QEvent.Type.MouseButtonPress
+            QApplication.sendEvent(view.viewport(), QMouseEvent(
+                etype, QPointF(point), view.viewport().mapToGlobal(point),
+                Qt.MouseButton.RightButton,
+                Qt.MouseButton.RightButton if pressed else Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            ))
+        assert view.drag_range() is None  # never armed
+        assert view.verticalScrollBar().value() == 0  # never jumped
+        assert emitted == []  # the rail applied nothing
+
+    def test_wheel_with_modifier_keeps_single_row_step_and_no_zoom(self, qtbot):
+        """Task 5.2 / spec «модификаторы шаг не меняют», «Зума не SHALL быть»:
+        Ctrl (the classic zoom chord), Alt and Shift wheels move exactly one
+        row like the bare wheel — and every row keeps its ROW_HEIGHT, nothing
+        in this view scales."""
+        events = [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 30))]
+        view = _view(qtbot, events, rows_visible=5)
+        bar = view.verticalScrollBar()
+        bar.setValue(0)
+        center = QPointF(view.viewport().rect().center())
+
+        def _wheel(angle: int, mods) -> None:
+            QApplication.sendEvent(view.viewport(), QWheelEvent(
+                center, view.viewport().mapToGlobal(center.toPoint()),
+                QPoint(0, 0), QPoint(0, angle),
+                Qt.MouseButton.NoButton, mods,
+                Qt.ScrollPhase.NoScrollPhase, False,
+            ))
+
+        for mods in (Qt.KeyboardModifier.ControlModifier,
+                     Qt.KeyboardModifier.AltModifier,
+                     Qt.KeyboardModifier.ShiftModifier):
+            before = bar.value()
+            _wheel(-120, mods)
+            assert bar.value() == before + 1  # one row per notch, modifier or not
+        assert all(
+            view.visualItemRect(view.item(i)).height() == ROW_HEIGHT
+            for i in range(view.count())
+        )  # no zoom: fixed heights survive every wheel chord
+
+
 # ── defensive guards (project gate: changed files hold 100% line coverage) ──
 
 class TestDefensiveGuards:
@@ -746,3 +1380,26 @@ class TestDefensiveGuards:
     def test_event_id_at_invalid_index_is_none(self):
         """The id-contract extractor treats invalid indices as no event."""
         assert TimelineListView._event_id_at(QModelIndex()) is None
+
+    def test_visible_cursor_day_without_rows_maps_to_no_day(self, qtbot):
+        """The drag's y→day map answers ``None`` when there is no model to
+        map onto — a gesture can never arm on an empty scale, so the guard
+        only surfaces if the model empties under a held press."""
+        view = _view(qtbot, [])
+        assert view._visible_cursor_day(10) is None
+
+    def test_refresh_sticky_keeps_text_without_row_data(self, qtbot):
+        """The sticky funnel ignores a top-row item stripped of its row data."""
+        view = _view(qtbot, [_evt(1, date(1200, 1, 1))])
+        before = view.sticky_label.text()
+        view.item(0).setData(ROLE_ROW, None)
+        view._refresh_sticky_text()  # no raise, no text change, still shown
+        assert view.sticky_label.text() == before
+        assert view.sticky_label.isVisible()
+
+    def test_jump_to_missing_row_is_an_inert_no_op(self, qtbot):
+        """The rail jump guard: an index without an item neither moves nor raises."""
+        view = _view(qtbot, [_evt(1, date(1200, 1, 1))])
+        view._jump_to_day_row(view.count())  # one past the model
+        assert view.verticalScrollBar().value() == 0
+        assert view.currentRow() == view.currentRow()  # nothing moved anywhere

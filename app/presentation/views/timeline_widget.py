@@ -7,11 +7,21 @@ the body is a ``QListWidget`` whose rows come from the Qt-free
 (event lines sorted ``(start, id)``, or a single empty-day placeholder of the
 same fixed height :data:`ROW_HEIGHT`). A ``QStyledItemDelegate`` paints the row
 text (``start — end · name`` via ``format_game_date``, open end ``— ``) and the
-decorative date rail (day tick, rotated month label once per month at its
-first day, event brackets over the spanned days). The rail handles no input.
-A sticky ``QLabel`` overlay pinned over the viewport top shows the full game
-date of the row under the top edge, hidden while the model is empty — the
-empty-state hint label stays. The header's date fields with apply/clear are
+date rail (day tick, rotated month label once per month at its
+first day, event brackets over the spanned days). The rail is the interactive
+scale zone (W3c D1): a left press inside it arms the rail gesture on the day
+under the cursor — releasing below the drag threshold jumps that day to the
+top (D4), a vertical move past it enters the range-drag mode (the covered days
+wear an accent wash band; on release the (min, max) day range applies exactly
+once through the panel's chip-filter channel, D6/D7, and a range that stayed
+within a single day degrades to the click-jump), and a double-click in the
+rail stays mute (D8); none of it ever selects or emits an id. A sticky
+``QLabel`` overlay pinned over the viewport
+top shows the full game date of the row under the top edge, or — while the
+cursor hovers the rail, and throughout an active range drag — the day under
+the cursor (D5 follow), hidden while
+the model is empty — the empty-state hint label stays. The header's date
+fields with apply/clear are
 gone (W3b D9): the range filter is one chip («Все даты» / game-formatted
 borders) opening a top-level two-calendar popover with live-apply, and the
 second header row carries the jump buttons (⤒/⤓, also ``Alt+Up``/``Alt+Down``
@@ -32,7 +42,7 @@ from datetime import date, timedelta
 from typing import Any, Sequence
 
 from PySide6.QtCore import (
-    QDate, QEvent, QModelIndex, QItemSelection, QItemSelectionModel, QPoint,
+    QDate, QModelIndex, QItemSelection, QItemSelectionModel, QPoint,
     QPointF, QSize, QSignalBlocker, Qt, Signal,
 )
 from PySide6.QtGui import QColor, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut
@@ -47,7 +57,8 @@ from app.presentation.theme.compiler import token_rgb
 from app.presentation.utils.date_utils import format_game_date, month_name
 from app.presentation.views.custom_date_edit import _CustomCalendar
 from app.presentation.views.timeline_rows import (
-    Row, RowKind, build_rows, next_event_index, prev_event_index,
+    Row, RowKind, build_rows, index_at_y, next_event_index, normalize_range,
+    prev_event_index,
 )
 
 #: Empty-selection hint shown while the list model is empty (spec: пустое
@@ -74,6 +85,17 @@ PEN_WIDTH = 1
 #: Fill alpha of the hovered row — an accent-token derivative spelled the way
 #: ``accent_rgba`` derives the washes for stylesheets (W3b D10).
 ROW_HOVER_ALPHA = 0.25
+
+#: Vertical move (px, viewport coords) a rail press may drift by and still be
+#: the click-jump (W3c D2); past this threshold the press has become the
+#: range-drag gesture whose wash/apply state machine lives below.
+DRAG_START_THRESHOLD_PX = 4
+
+#: Fill alpha of the range-drag wash band (W3c D6). Spelled the way
+#: ``accent_rgba`` derives sheet washes, a touch darker than
+#: :data:`ROW_HOVER_ALPHA` so the band stays visible under the hovered row's
+#: wash — the design open question, one knob, no contract.
+DRAG_WASH_ALPHA = 0.35
 
 # ── header filter chip / popover (W3b D9, tasks 3.1–3.2) ───────────────────
 #: Chip caption while no filter is applied; the caret marks it as a dropdown.
@@ -104,6 +126,21 @@ class _BracketSeg:
 
 
 @dataclass(frozen=True)
+class _RailPress:
+    """An armed left-button rail gesture (W3c D2).
+
+    ``anchor_index`` is the pressed day's first block row (normalized by the
+    ``index_at_y`` hit-test), ``press_y`` the viewport y the drag threshold
+    measures vertical moves from. A release below :data:`DRAG_START_THRESHOLD_PX`
+    resolves the arm as the click-jump; past it the range-drag state machine
+    (D2/D6) takes the same arm into its wash/apply phases.
+    """
+
+    anchor_index: int
+    press_y: int
+
+
+@dataclass(frozen=True)
 class _Palette:
     """QColors for one paint pass, all derived from tokens of the live theme."""
 
@@ -114,6 +151,7 @@ class _Palette:
     selected_fill: QColor  # selected row fill (color.accent)
     selected_text: QColor  # text over the accent fill (color.accent.fg)
     hover_fill: QColor     # accent derivative wash under the hovered row
+    drag_fill: QColor      # range-drag wash band over the covered days (D6)
     month_text: QColor     # month labels (color.fg.muted)
     hairline: QColor       # sticky band underline (color.accent)
 
@@ -158,6 +196,7 @@ def rows_palette(runtime) -> _Palette:
             selected_fill=_global(Qt.GlobalColor.gray),
             selected_text=_global(Qt.GlobalColor.white),
             hover_fill=_global(Qt.GlobalColor.gray, ROW_HOVER_ALPHA),
+            drag_fill=_global(Qt.GlobalColor.gray, DRAG_WASH_ALPHA),
             month_text=_global(Qt.GlobalColor.gray),
             hairline=_global(Qt.GlobalColor.gray),
         )
@@ -171,6 +210,7 @@ def rows_palette(runtime) -> _Palette:
         selected_fill=_from_rgb(accent),
         selected_text=_from_rgb(token_rgb(tokens, theme, "color.accent.fg")),
         hover_fill=_from_rgb(accent, ROW_HOVER_ALPHA),
+        drag_fill=_from_rgb(accent, DRAG_WASH_ALPHA),
         month_text=_from_rgb(token_rgb(tokens, theme, "color.fg.muted")),
         hairline=_from_rgb(accent),
     )
@@ -261,6 +301,12 @@ class _RowDelegate(QStyledItemDelegate):
             painter.fillRect(option.rect, palette.selected_fill)
         elif hovered:
             painter.fillRect(option.rect, palette.hover_fill)
+        drag = view.drag_range()
+        if drag is not None and drag[0] <= row.date <= drag[1]:
+            # D6: the live range-drag band over every day it covers — the same
+            # view state the hover wash reads; each covered row fills its own
+            # slice, so partially visible rows clip the band automatically.
+            painter.fillRect(option.rect, palette.drag_fill)
         self._paint_rail(painter, option, index, row, palette)
         if row.kind is RowKind.EVENT:
             self._paint_line(painter, option, row, palette, selected)
@@ -330,13 +376,20 @@ class TimelineListView(QListWidget):
 
     Signals carry **event ids** (the W3 id-contract): a click on an EVENT row
     emits ``event_selected(id)``, a double-click emits ``event_double_clicked``;
-    empty-day rows are inert (disabled flags — not selectable, not clickable),
-    clicks on the decorative rail are swallowed. Selection and scrolling are
-    the view's own; the panel drives them through the public API below.
+    empty-day rows are inert (disabled flags — not selectable, not clickable).
+    The rail zone left of the text is the interactive scale (W3c D1): presses
+    there arm the rail gesture on the day under the cursor — a release below
+    the drag threshold jumps that day to the top of the view (D4) without
+    touching the selection or the id-signals, a vertical move past it enters
+    the range-drag mode (D2/D6) whose normalized day range is emitted *once*
+    on release as ``day_range_applied(start, end)`` (D7), and a double-click
+    stays mute (D8). Selection and scrolling are the view's own; the panel
+    drives them through the public API below.
     """
 
     event_selected = Signal(int)  # event_id
     event_double_clicked = Signal(int)  # event_id
+    day_range_applied = Signal(object, object)  # rail drag range (start, end)
 
     def __init__(self, theme=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -350,6 +403,9 @@ class TimelineListView(QListWidget):
         self._hover_row = -1
         self._palette = rows_palette(None)
         self._rail_w = RAIL_MIN_WIDTH
+        self._rail_press: _RailPress | None = None  # armed rail gesture (W3c D2)
+        self._drag_range: tuple[date, date] | None = None  # live range drag (D6)
+        self._follow_day: date | None = None  # sticky follow while on the rail (D5)
 
         self.setObjectName("timelineList")
         set_role(self, "list")
@@ -365,7 +421,6 @@ class TimelineListView(QListWidget):
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerItem)
         self.setMouseTracking(True)  # hover wash under the cursor (accent derivative)
         self.setItemDelegate(_RowDelegate(self))
-        self.viewport().installEventFilter(self)
 
         # D7: the sticky overlay is a scroll-area child pinned above the
         # viewport; the viewport gets a top margin of exactly its height, so
@@ -533,6 +588,11 @@ class TimelineListView(QListWidget):
     def hover_index(self) -> int:
         return self._hover_row
 
+    def drag_range(self) -> tuple[date, date] | None:
+        """The days an active range-drag covers (D6), inclusive at both ends —
+        the delegate's wash-band state (``None`` when no drag is in flight)."""
+        return self._drag_range
+
     def axis_labels(self) -> list[str]:
         """Month rail labels of the current sample, game-formatted, one per month.
 
@@ -573,6 +633,9 @@ class TimelineListView(QListWidget):
 
         indices_by_day: dict[date, list[int]] = defaultdict(list)
         self._index_by_event = {}
+        self._rail_press = None  # stale day anchors must not outlive the model
+        self._drag_range = None  # ...nor may a wash band paint onto a new scale
+        self._follow_day = None
         for idx, row in enumerate(self._rows):
             indices_by_day[row.date].append(idx)
             if row.event_id is not None:
@@ -724,28 +787,201 @@ class TimelineListView(QListWidget):
         if self.count() == 0:
             self._sticky.hide()  # hidden while empty, the hint stays (spec)
             return
-        item = self.itemAt(viewport.rect().topLeft())
-        if item is None:  # scrolled fully past the end — keep the last date
-            self._sticky.show()
-            return
-        row = item.data(ROLE_ROW)
-        if isinstance(row, Row):
+        self._refresh_sticky_text()
+
+    def _refresh_sticky_text(self) -> None:
+        """The sticky date: the top row's day (sync) with the follow day over
+        it while the rail hover is active (W3c D5).
+
+        One funnel for both writers — a scroll/reload sync and a hover update
+        can never leave each other's text stale (design risk note): sync runs
+        first, follow wins while set.
+        """
+        if self._follow_day is not None:
+            text = format_game_date(self._follow_day)
+        else:
+            item = self.itemAt(self.viewport().rect().topLeft())
+            if item is None:  # scrolled fully past the end — keep the last date
+                self._sticky.show()
+                return
+            row = item.data(ROLE_ROW)
+            if not isinstance(row, Row):
+                self._sticky.show()
+                return
             text = format_game_date(row.date)
-            if self._sticky.text() != text:
-                self._sticky.setText(text)
+        if self._sticky.text() != text:
+            self._sticky.setText(text)
         self._sticky.show()
 
+    def _rail_index_at(self, y: int) -> int | None:
+        """First row of the day at the rail's viewport y (W3c D3).
+
+        Equal-height rows make the hit-test pure division; the scrollbar rides
+        on as whole rows (ScrollPerItem), and ``index_at_y`` clamps to the row
+        block — which is what keeps presses/releases outside the laid-out
+        range on their nearest day.
+        """
+        return index_at_y(
+            self._rows, ROW_HEIGHT, y + ROW_HEIGHT * self.verticalScrollBar().value()
+        )
+
+    def _visible_cursor_day(self, y: int) -> date | None:
+        """The day a range-drag maps to (D6): only ``y`` is significant and it
+        is clamped to the viewport, so a cursor past an edge resolves to that
+        edge's last visible day — which is what a release outside the list
+        applies. ``None`` when there is no model to map onto.
+        """
+        if not self._rows:
+            return None
+        bottom = max(self.viewport().height() - 1, 0)
+        idx = self._rail_index_at(min(max(y, 0), bottom))
+        return None if idx is None else self._rows[idx].date
+
+    def _update_follow_day(self, pos: QPoint) -> None:
+        """D5 follow flag: while the cursor sits in the rail the overlay shows
+        the day under it; anywhere else it falls back to the top row's date.
+        During an active range drag :meth:`mouseMoveEvent` keeps the flag set
+        past the rail's edge (and across :meth:`leaveEvent`) on its own."""
+        idx = self._rail_index_at(pos.y()) if pos.x() < self.rail_width() else None
+        day = self._rows[idx].date if idx is not None else None
+        if day != self._follow_day:
+            self._follow_day = day
+            self._refresh_sticky_text()
+
+    def _jump_to_day_row(self, idx: int) -> None:
+        """The click-jump (W3c D4): the pressed day becomes the top row under
+        the sticky date and the current row (the jump anchor) follows it.
+
+        PositionAtTop — pinned to the top edge, not centered, so the day's
+        whole context below stays on screen. The reading position moves via
+        the selection model with ``NoUpdate`` because the gesture *navigates*:
+        ``QListView::setCurrentIndex`` follows its default command and would
+        also *select* the landed row (and refuse to move onto a disabled
+        empty-day row), while the spec keeps the selection, ``_selected_id``
+        and the id-signals untouched.
+        """
+        item = self.item(idx)
+        if item is None:
+            return
+        self.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtTop)
+        selection = self.selectionModel()
+        if selection is not None:
+            selection.setCurrentIndex(
+                self.model().index(idx, 0),
+                QItemSelectionModel.SelectionFlag.NoUpdate,
+            )
+
+    def mousePressEvent(self, event) -> None:  # Qt API name
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.position().x() < self.rail_width()
+        ):
+            # W3c D1: the rail owns its zone — the press arms the click/drag
+            # gesture on the day under the cursor and never reaches the base
+            # class, so a rail press selects nothing and emits no ``clicked``.
+            anchor = self._rail_index_at(int(event.position().y()))
+            self._rail_press = None if anchor is None else _RailPress(
+                anchor_index=anchor, press_y=int(event.position().y()),
+            )
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # Qt API name
+        press = self._rail_press
+        if press is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._rail_press = None
+            # D6: the drag state is dropped *before* the resolve — the apply
+            # emit may synchronously rebuild the model, and no stale wash may
+            # survive into (or repaint over) the new scale.
+            drag, self._drag_range = self._drag_range, None
+            y = int(event.position().y())
+            if drag is not None:
+                anchor_day = self._rows[press.anchor_index].date
+                end_day = self._visible_cursor_day(y)
+                # D6/D7: a day-crossing drag applies exactly once, here, on
+                # the release position (a cursor past an edge lands on the
+                # last visible day). A range that stayed inside one day is
+                # the click-jump instead (spec «Однодневный drag равен клику»).
+                start, end = normalize_range(
+                    anchor_day, anchor_day if end_day is None else end_day
+                )
+                if start == end:
+                    self._jump_to_day_row(press.anchor_index)
+                else:
+                    self.day_range_applied.emit(start, end)
+                if self.count():  # the emit path may have rebuilt the model
+                    self._update_follow_day(event.position().toPoint())
+            elif abs(y - press.press_y) < DRAG_START_THRESHOLD_PX:
+                # D2: the release decision splits on the drag threshold —
+                # under it this is the click-jump (D4).
+                self._jump_to_day_row(press.anchor_index)
+            # D2: a past-threshold release with no drag move under it stays
+            # consumed inert — the base class never sees any rail release, so
+            # the list can neither select nor start a gesture from the rail.
+            self.viewport().update()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # Qt API name
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.position().x() < self.rail_width()
+        ):
+            event.accept()  # D8: a rail double-click stays mute — no select, no edit
+            return
+        super().mouseDoubleClickEvent(event)
+
     def mouseMoveEvent(self, event) -> None:  # Qt API name
-        row = self.indexAt(event.position().toPoint()).row()
+        pos = event.position().toPoint()
+        row = self.indexAt(pos).row()
         if row != self._hover_row:
             self._hover_row = row
             self.viewport().update()
+        press = self._rail_press
+        if press is not None and bool(event.buttons() & Qt.MouseButton.LeftButton):
+            # D1: the rail consumed the press, so it owns every with-button
+            # move too — the base class must not select, rubber-band or
+            # auto-scroll from a rail gesture (W3b hover machinery is driven
+            # by buttonless moves and stays intact).
+            if (
+                self._drag_range is not None
+                or abs(pos.y() - press.press_y) >= DRAG_START_THRESHOLD_PX
+            ):
+                # D2/D6: past the threshold the gesture is a range drag —
+                # latched until release, only y significant (clamped to the
+                # viewport: no autoscroll exists, so the clamp stays glued to
+                # the same visible days for the whole gesture), normalized
+                # against the armed anchor day.
+                day = self._visible_cursor_day(pos.y())
+                if day is not None:
+                    self._drag_range = normalize_range(
+                        self._rows[press.anchor_index].date, day
+                    )
+                    if self._follow_day != day:
+                        # D5: the sticky follows the drag's day past the
+                        # rail's edge — into the text zone and beyond alike.
+                        self._follow_day = day
+                        self._refresh_sticky_text()
+                    self.viewport().update()
+            else:
+                self._update_follow_day(pos)
+            event.accept()
+            return
+        self._update_follow_day(pos)
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:  # Qt API name
         if self._hover_row != -1:
             self._hover_row = -1
             self.viewport().update()
+        if self._follow_day is not None and self._drag_range is None:
+            # No gesture is active: leaving the list hands the sticky overlay
+            # back to the top row's date (D5). An active range drag keeps the
+            # follow flag set across the leave (spec «Follow во время drag'а»).
+            self._follow_day = None
+            self._refresh_sticky_text()
         super().leaveEvent(event)
 
     def wheelEvent(self, event) -> None:  # Qt API name
@@ -763,19 +999,6 @@ class TimelineListView(QListWidget):
         bar = self.verticalScrollBar()
         bar.setValue(bar.value() + (1 if angle < 0 else -1))
         event.accept()
-
-    def eventFilter(self, watched, event) -> bool:  # Qt API name
-        # The rail is decorative (spec): presses left of the text zone must not
-        # select, click or double-click anything.
-        if watched is self.viewport() and event.type() in (
-            QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick,
-        ):
-            if (
-                event.button() == Qt.MouseButton.LeftButton
-                and event.position().x() < self.rail_width()
-            ):
-                return True
-        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event) -> None:  # Qt API name
         super().resizeEvent(event)
@@ -1007,6 +1230,10 @@ class TimelineWidget(QWidget):
         self.rows_view = TimelineListView(theme=self._theme)
         self.rows_view.event_selected.connect(self.event_selected.emit)
         self.rows_view.event_double_clicked.connect(self.event_double_clicked.emit)
+        # D7: the rail drag is the filter's second entrance — the exact same
+        # apply path as the popover, so the chip mirrors it and the panel's
+        # single filter_changed contract stays untouched.
+        self.rows_view.day_range_applied.connect(self._on_filter_range)
         layout.addWidget(self.rows_view, 1)
 
     def _on_add_context_menu(self, pos) -> None:

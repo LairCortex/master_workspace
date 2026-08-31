@@ -60,8 +60,9 @@ def pick_menu_action(menu_qmenu, text: str) -> None:
 # ── Timeline row interaction (W3b: events are list rows, not Gantt bars) ──
 
 #: Left inset from the rail's right edge where a synthetic click lands — the
-#: rail zone itself is decorative and its presses are swallowed by the view,
-#: so a click must clear it to reach the row's text (row_center clamps this).
+#: rail zone belongs to the W3c scale gestures (click-jump/drag navigate,
+#: never select), so a click meant for the row's text must clear it
+#: (row_center clamps this).
 _ROW_HIT_INSET = 12
 
 
@@ -84,8 +85,8 @@ def row_center(view, event_id: int) -> QPoint:
 
     Scroll-aware: the caller scrolls the row into view first, then this reads
     its laid-out (viewport) rect and lands inside the text zone — never on the
-    decorative date rail, whose presses the view ignores (spec «Рейка … клики
-    по ней не обрабатываются»).
+    date rail, which navigates instead of selecting (spec «Нажатие в рейке не
+    выбирает событие»).
     """
     idx = view.index_for_event(event_id)
     if idx is None:
