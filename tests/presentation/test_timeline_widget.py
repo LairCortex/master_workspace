@@ -529,6 +529,17 @@ class TestStickyDate:
         assert view.verticalScrollBar().value() == 0
         assert view.sticky_label.text() == format_game_date(date(1200, 3, 5))
 
+    def test_overlays_never_eat_mouse_events(self, qtbot):
+        """Spec «Липкая дата» (W3c clause «не перехватывать мышиные события»):
+        the sticky band and the empty-state hint that replaces it stay
+        transparent to the mouse — input can only belong to the list below."""
+        view = _view(qtbot, [_evt(1, date(1200, 1, 1))])
+        assert view.sticky_label.testAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        view.update_events([])
+        assert view.hint_label.testAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
 
 # ── 2.5 — public panel API ─────────────────────────────────────────────────
 

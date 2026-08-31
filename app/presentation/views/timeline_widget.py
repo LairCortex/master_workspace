@@ -405,7 +405,7 @@ class TimelineListView(QListWidget):
         self._rail_w = RAIL_MIN_WIDTH
         self._rail_press: _RailPress | None = None  # armed rail gesture (W3c D2)
         self._drag_range: tuple[date, date] | None = None  # live range drag (D6)
-        self._follow_day: date | None = None  # sticky follow while on the rail (D5)
+        self._follow_y: int | None = None  # rail cursor y the sticky follows (D5)
 
         self.setObjectName("timelineList")
         set_role(self, "list")
@@ -721,9 +721,13 @@ class TimelineListView(QListWidget):
     def _reveal_row(self, idx: int) -> None:
         """Move the reading position to ``idx`` (D8): scroll + jump anchor.
 
-        Only the *current* index and the scroll move — the selection (and
-        with it the detail panel, which listens to the id signals) stays
-        untouched: the jump commands navigate, they do not select.
+        The id-contract stays untouched — ``_selected_id`` is not moved and
+        no id-signal fires, so the detail panel keeps its event: the jump
+        commands navigate, they do not select. The plain ``setCurrentIndex``
+        this W3b command predates moves Qt's own current/highlight bookkeeping
+        along to the row (unlike the rail jump, :meth:`_jump_to_day_row`,
+        which anchors through ``NoUpdate``); only the reading position is
+        semantically meaningful here (task 5.2: jump kept as-is in W3c).
         """
         with QSignalBlocker(self):
             self.setCurrentIndex(self.model().index(idx, 0))
