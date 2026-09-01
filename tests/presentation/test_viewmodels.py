@@ -1,15 +1,16 @@
 """Tests for ViewModels — TDD: tests first."""
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
+from app.presentation.viewmodels.timeline_viewmodel import EntityKind, TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
-from app.presentation.views.timeline_rows import RowKind
+from app.presentation.views.timeline_rows import NO_GROUP_KEY, RowKind, ScaleUnit
 
 
 def _mock_event(id_=1, name="Battle"):
@@ -274,6 +275,201 @@ class TestTimelineViewModel:
         assert len(vm.events) == 1
         assert [r.kind for r in vm.rows] == [RowKind.EVENT]
         assert vm.rows[0].event_id == 1
+
+    # ── W4 scale ladder: unit / group_by / descent (tasks 4.1–4.3) ─────────
+
+    @staticmethod
+    def _w2_events():
+        """Two one-day events in distinct months of 1200 (January + March)."""
+        e1 = _mock_event(1, "Winter council")
+        e1.start_date = date(1200, 1, 5)
+        e1.end_date = date(1200, 1, 5)
+        e2 = _mock_event(2, "Spring fair")
+        e2.start_date = date(1200, 3, 7)
+        e2.end_date = date(1200, 3, 7)
+        return e1, e2
+
+    @staticmethod
+    def _vm_with(*events):
+        service = AsyncMock()
+        service.get_all_events.return_value = list(events)
+        return service, TimelineViewModel(service)
+
+    @pytest.mark.asyncio
+    async def test_unit_and_group_by_default_and_are_not_serialized(self):
+        """Fresh ViewModel always opens «сутки · выкл» — the view knobs are
+        plain in-memory state, never restored from anywhere (spec «Вид не
+        переживает перезапуск»)."""
+        service, _ = self._vm_with()
+        first = TimelineViewModel(service)
+        first.unit = ScaleUnit.YEAR
+        first.group_by = EntityKind.LOCATION
+
+        reopened = TimelineViewModel(service)
+        assert reopened.unit is ScaleUnit.DAY
+        assert reopened.group_by is None
+
+    @pytest.mark.asyncio
+    async def test_changing_unit_remodels_rows_touching_neither_filter_nor_selection(self):
+        """Task 4.1: unit is a pure row projection — the visible sample, the
+        filter window and the selection survive the rung change."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.filter_by_dates(date(1200, 1, 1), date(1200, 3, 31))
+        vm.select_event_by_id(e1.id)
+
+        events_before = list(vm.events)
+        rows_day_before = list(vm.rows)
+        events_signals: list = []
+        selection_signals: list = []
+        vm.events_changed.connect(lambda: events_signals.append(1))
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.unit = ScaleUnit.MONTH
+
+        assert vm.unit is ScaleUnit.MONTH
+        # the projection rolled up to months, window aligned to month edges
+        assert [(r.kind, r.date, r.unit_count) for r in vm.rows] == [
+            (RowKind.UNIT, date(1200, 1, 1), 1),
+            (RowKind.UNIT, date(1200, 2, 1), 0),  # empty month stays a stub
+            (RowKind.UNIT, date(1200, 3, 1), 1),
+        ]
+        # …while filter, sample and selection stayed exactly where they were
+        assert vm.events == events_before
+        assert vm.selected_event is e1
+        assert events_signals == [1]
+        assert selection_signals == []
+
+        vm.unit = ScaleUnit.DAY  # and the daily projection survives the round trip
+        assert vm.rows == rows_day_before
+        assert vm.selected_event is e1
+
+    @pytest.mark.asyncio
+    async def test_group_by_is_assembled_from_domain_relations(self):
+        """Task 4.1: the VM materializes «event → group names» from the domain
+        links; the core sections by them (event in every linked section,
+        «Без привязки» last)."""
+        e1, e2 = self._w2_events()
+        e1.characters = [SimpleNamespace(name="Ариз")]
+        e2.locations = [SimpleNamespace(name="Рыночная площадь")]
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+
+        vm.unit = ScaleUnit.MONTH
+        vm.group_by = EntityKind.CHARACTER
+
+        # e1 → section «Ариз» (January); e2 has no character → «Без привязки»
+        # (March); February is touched by neither and never surfaces inside a
+        # section (spec «Пустой месяц не показан в секции»).
+        assert [(r.kind, r.group_key, r.date) for r in vm.rows] == [
+            (RowKind.SECTION, "Ариз", date(1200, 1, 1)),
+            (RowKind.UNIT, "Ариз", date(1200, 1, 1)),
+            (RowKind.SECTION, NO_GROUP_KEY, date(1200, 3, 1)),
+            (RowKind.UNIT, NO_GROUP_KEY, date(1200, 3, 1)),
+        ]
+        assert [r.unit_count for r in vm.rows if r.kind is RowKind.UNIT] == [1, 1]
+
+        # switching the grouped kind re-reads the other relation
+        vm.group_by = EntityKind.LOCATION
+        assert [r.group_key for r in vm.rows] == [
+            "Рыночная площадь", "Рыночная площадь", NO_GROUP_KEY, NO_GROUP_KEY,
+        ]
+        assert [r.date for r in vm.rows] == [
+            date(1200, 3, 1), date(1200, 3, 1), date(1200, 1, 1), date(1200, 1, 1),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_external_selection_from_month_drops_the_ladder(self):
+        """Task 4.2: selecting an id while on MONTH sets unit=DAY, the event's
+        row enters ``rows`` and the selection lands on it (spec «Внешний выбор
+        с крупной ступени спускает лестницу»)."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.unit = ScaleUnit.MONTH
+        assert [r.event_id for r in vm.rows] == [None, None, None]
+
+        events_signals: list = []
+        selection_signals: list = []
+        vm.events_changed.connect(lambda: events_signals.append(1))
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.select_event_by_id(e2.id)
+
+        assert vm.unit is ScaleUnit.DAY
+        assert e2.id in [r.event_id for r in vm.rows]
+        assert vm.selected_event is e2
+        # rows were re-modelled before the selection was asserted (D4 order)
+        assert events_signals == [1]
+        assert selection_signals == [1]
+
+    @pytest.mark.asyncio
+    async def test_out_of_filter_selection_clears_without_descending(self):
+        """Task 4.2: an id outside the filtered sample still clears the
+        selection (emitted, so every layer follows) — and does not spend a
+        pointless ladder descent."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.unit = ScaleUnit.MONTH
+        vm.select_event_by_id(e1.id)
+        await vm.load_events()  # re-validate keeps the DAY ladder it forced
+
+        vm.unit = ScaleUnit.MONTH
+        vm.filter_by_dates(date(1200, 1, 1), date(1200, 1, 31))  # e2 falls out
+        selection_signals: list = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.select_event_by_id(e2.id)  # not in the visible set anymore
+
+        assert vm.selected_event is None
+        assert selection_signals == [1]  # the prune is announced (panel follows)
+        assert vm.unit is ScaleUnit.MONTH  # a miss does not move the ladder
+
+        # the same event leaving the sample *while selected* (filter tightened)
+        # also clears in every layer — and the internal revalidation, unlike an
+        # external selection, never drags the ladder down.
+        vm.unit = ScaleUnit.MONTH
+        vm.select_event_by_id(e1.id)  # back in: the ladder drops to DAY for it
+        assert vm.unit is ScaleUnit.DAY
+        selection_signals.clear()
+        vm.filter_by_dates(date(1200, 3, 1), date(1200, 3, 31))  # e1 falls out
+        assert vm.selected_event is None
+        assert selection_signals == [1]  # announced to the panel/widget layers
+        assert vm.unit is ScaleUnit.DAY  # the rung is nobody's business here
+
+    @pytest.mark.asyncio
+    async def test_changing_view_knobs_keeps_selection_and_filter(self):
+        """Task 4.3: unit/group_by changes re-model ``rows`` without ever
+        resetting the selected event or the live filter."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.filter_by_dates(date(1200, 1, 1), date(1200, 3, 31))
+        vm.select_event_by_id(e2.id)
+
+        selection_signals: list = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.unit = ScaleUnit.YEAR
+        assert vm.selected_event is e2
+        assert [e.id for e in vm.events] == [e1.id, e2.id]  # filter intact
+
+        vm.group_by = EntityKind.CHARACTER  # selection now sits in …
+        assert vm.selected_event is e2
+        assert any(r.group_key == NO_GROUP_KEY for r in vm.rows)
+
+        vm.unit = ScaleUnit.DAY  # … and back down, still the same event
+        assert vm.selected_event is e2
+        # the full filtered daily window is back, both event rows in place
+        assert [(r.date, r.event_id) for r in vm.rows if r.kind is RowKind.EVENT] == [
+            (date(1200, 1, 5), e1.id),
+            (date(1200, 3, 7), e2.id),
+        ]
+        assert vm.rows[0].date == date(1200, 1, 1)
+        assert vm.rows[-1].date == date(1200, 3, 31)  # filter window intact
+        assert selection_signals == []  # the selection never blinked
 
 
 

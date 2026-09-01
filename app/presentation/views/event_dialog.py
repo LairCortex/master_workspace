@@ -5,7 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QDate, QEvent, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFormLayout,
+    QCheckBox, QComboBox, QDialog, QFormLayout,
     QHBoxLayout, QLineEdit,
     QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -13,8 +13,13 @@ from PySide6.QtWidgets import (
 from app.presentation.theme.catalog import attach_theme, title
 from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
 from app.presentation.views.custom_date_edit import CustomDateEdit
+from app.presentation.views.event_types_dialog import NO_TYPE_TEXT, type_dot_icon
 from app.presentation.views.mention_text_edit import MentionTextEdit
 from app.presentation.views.related_section import RelatedSection
+
+#: Second itemData role of the type combo: the type's palette color index, so
+#: live re-theming can repaint the dots without keeping a parallel list (W4).
+ROLE_COLOR_INDEX = Qt.ItemDataRole.UserRole + 1
 
 # (public widget attribute, attr key, entity type, tab label)
 _TABS: list[tuple[str, str, str, str]] = [
@@ -51,6 +56,9 @@ class EventDialog(QDialog):
         self._entity_button: EntityGenerateButton | None = None
         self._save_locked: bool = False
         self._close_guard: object | None = None
+        # W4 6.3: the type selector's selected value survives a (re)fill by id;
+        # ``populate`` may run before or after the game's types arrive.
+        self._pending_type_id: int | None = None
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
         self._init_ui()
@@ -60,10 +68,15 @@ class EventDialog(QDialog):
         self.backstory_input.mention_clicked.connect(self.mention_clicked)
 
     def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
+        """One attach point: the chrome container carries the whole sheet (D1).
+
+        The type combo's dots are painted outside QSS (item icons), so the
+        dialog also subscribes to the runtime to repaint them on a live swap.
+        """
         if self._theme is not None:
             attach_theme(self.chrome, self._theme)
             self._theme.apply()
+            self._theme.add_listener(self._restyle_type_icons)
 
     def _init_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -100,6 +113,13 @@ class EventDialog(QDialog):
         self.no_end_date_cb.toggled.connect(_on_no_end_toggled)
         end_row.addWidget(self.no_end_date_cb)
         form.addRow("Дата конца:", end_row)
+
+        # W4 6.3: the event type is optional; the current game's set is filled
+        # by the wiring via set_event_types(), «Без типа» is always available.
+        self.type_combo = QComboBox()
+        self.type_combo.setObjectName("eventTypeCombo")
+        self.type_combo.addItem(NO_TYPE_TEXT, None)
+        form.addRow("Тип:", self.type_combo)
 
         lbl = title("Описание (обязательные поля)")
         # The old inline style carried 10px of top margin; restored as a
@@ -159,6 +179,11 @@ class EventDialog(QDialog):
         self.setWindowTitle("Редактировать событие")
 
         self.name_input.setText(getattr(event, "name", ""))
+        # W4: the type may arrive before or after set_event_types filled the
+        # combo — remembering the id lets either call order land on the item.
+        event_type = getattr(event, "event_type", None)
+        self._pending_type_id = getattr(event_type, "id", None)
+        self._apply_type_selection()
         if hasattr(event, "start_date") and event.start_date:
             self.start_date_input.setDate(
                 QDate(event.start_date.year, event.start_date.month, event.start_date.day)
@@ -187,6 +212,43 @@ class EventDialog(QDialog):
         return self._event_id
 
     # ── Public API for wiring (same shape as EntityCardDialog) ────────────
+
+    # ── Event type selector (W4 6.3) ───────────────────────────────────────
+
+    def set_event_types(self, types, current_type_id: int | None = None) -> None:
+        """(Re)fill the selector with «Без типа» + the game's current set.
+
+        Items carry the type id (``currentData``) and a dot icon of the type's
+        chart token (off-skin: numbered gray sample, D5). No colorpicker path
+        exists — the palette is the only choice (spec «Палитра, а не
+        colorpicker»).
+        """
+        if current_type_id is not None:
+            self._pending_type_id = current_type_id
+        combo = self.type_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(NO_TYPE_TEXT, None)
+        for t in types:
+            combo.addItem(type_dot_icon(self._theme, t.color_index), t.name, t.id)
+            combo.setItemData(combo.count() - 1, t.color_index, ROLE_COLOR_INDEX)
+        combo.blockSignals(False)
+        self._apply_type_selection()
+
+    def _apply_type_selection(self) -> None:
+        index = self.type_combo.findData(self._pending_type_id)
+        self.type_combo.setCurrentIndex(index if index != -1 else 0)
+
+    def _restyle_type_icons(self) -> None:
+        """Live re-theme: repaint the combo's dots with the new chart tokens."""
+        combo = self.type_combo
+        for i in range(combo.count()):
+            color_index = combo.itemData(i, ROLE_COLOR_INDEX)
+            if color_index is not None:
+                combo.setItemData(
+                    i, type_dot_icon(self._theme, color_index),
+                    Qt.ItemDataRole.DecorationRole,
+                )
 
     def set_available_entities(self, attr: str, entities: list[Any]) -> None:
         section = self._sections.get(attr)
@@ -222,6 +284,8 @@ class EventDialog(QDialog):
             "backstory": self.backstory_input.getContent().strip(),
             "start_date": self.start_date_input.date().toPython(),
             "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
+            # W4: None = «Без типа» — a valid, round-trippable state.
+            "event_type_id": self.type_combo.currentData(),
         }
         if self._event_id is not None:
             data["event_id"] = self._event_id

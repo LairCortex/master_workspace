@@ -156,6 +156,13 @@ async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     window = await application.start(str(db_path))
     yield application, window
     window.close()
+    # Drain the wiring's spawned session tasks before closing the session:
+    # a dialog-open load task still in flight would otherwise race
+    # ``session.close()`` mid-query (IllegalStateChangeError at teardown).
+    # Tests that click into session-touching flows already wait when they
+    # assert on the effect; this covers tasks nobody waited on.
+    from tests.ui import helpers
+    await helpers.wait_until_settled()
     await application.shutdown()
 
 

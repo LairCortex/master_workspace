@@ -6,6 +6,7 @@ import pytest
 from app.domain.entities.base import BaseEntity
 from app.domain.entities.description import Description
 from app.domain.entities.event import Event
+from app.domain.entities.event_type import EventType
 from app.domain.entities.organization import Organization
 from app.domain.entities.character import Character
 from app.domain.entities.item import Item
@@ -52,6 +53,7 @@ class TestEvent:
         assert e.music_url is None
         assert e.ratings == []
 
+
     def test_event_requires_name(self):
         with pytest.raises(ValueError, match="name"):
             Event(
@@ -97,6 +99,40 @@ class TestEvent:
                 start_date=date(1200, 6, 1),
                 end_date=date(1200, 1, 1),
             )
+
+    def test_event_has_no_type_by_default(self):
+        e = Event(
+            name="Quiet Day",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 1, 1),
+        )
+        assert e.event_type is None
+
+    def test_event_with_assigned_type(self):
+        t = EventType(name="Побочное", color_index=2)
+        e = Event(
+            name="Side Job",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 1, 1),
+            event_type=t,
+        )
+        assert e.event_type is t
+
+
+# --- EventType (W4) ---
+
+class TestEventType:
+    def test_create_event_type(self):
+        t = EventType(name="Слух", color_index=3, sort_order=2, id=7)
+        assert t.name == "Слух"
+        assert t.color_index == 3
+        assert t.sort_order == 2
+        assert t.id == 7
+
+    def test_event_type_defaults(self):
+        t = EventType(name="Находка", color_index=6)
+        assert t.sort_order == 0
+        assert t.id is None
 
 
 # --- Organization ---

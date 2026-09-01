@@ -1,5 +1,6 @@
 """Design-token theme runtime (W1, catalog roles in W2a)."""
 from app.presentation.theme.compiler import (
+    CHART_TOKEN_KEYS,
     REQUIRED_TOKEN_KEYS,
     THEMES,
     accent_rgba,
@@ -14,6 +15,7 @@ from app.presentation.theme.runtime import APP_CSS_PATH, ThemeRuntime
 
 __all__ = [
     "APP_CSS_PATH",
+    "CHART_TOKEN_KEYS",
     "REQUIRED_TOKEN_KEYS",
     "THEMES",
     "ThemeRuntime",

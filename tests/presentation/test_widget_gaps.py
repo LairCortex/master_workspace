@@ -275,11 +275,31 @@ class TestTimelineContextMenuGap:
         vm.events = []
         w = TimelineWidget(vm)
         qtbot.addWidget(w)
-        _stub_timeline_menu(monkeypatch, lambda menu: menu.actions()[-1])
+        # W4 added «Типы событий…» past the create items — resolve by text.
+        _stub_timeline_menu(
+            monkeypatch,
+            lambda menu: next(a for a in menu.actions() if a.text() == "Новый предмет"),
+        )
         received = []
         w.add_entity_requested.connect(received.append)
         w._on_add_context_menu(w.add_button.rect().center())
-        assert received == ["item"]  # "Новый предмет" is the last menu action
+        assert received == ["item"]  # "Новый предмет" stays in the menu (W4 6.2)
+
+    def test_context_menu_event_types_entry(self, qtbot, monkeypatch):
+        # W4 6.2: «Типы событий…» opens the set editor via its own signal.
+        vm = MagicMock()
+        vm.events = []
+        w = TimelineWidget(vm)
+        qtbot.addWidget(w)
+        _stub_timeline_menu(
+            monkeypatch,
+            lambda menu: w.event_types_action,
+        )
+        received: list = []
+        w.event_types_requested.connect(lambda: received.append(1))
+        w.add_event_requested.connect(lambda: received.append("event"))
+        w._on_add_context_menu(w.add_button.rect().center())
+        assert received == [1]
 
     def test_context_menu_no_action_emits_nothing(self, qtbot, monkeypatch):
         vm = MagicMock()

@@ -4,9 +4,21 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, List, Sequence
 
+from sqlalchemy import select
+
 from app.application.services.entity_service import EntityService
+from app.infrastructure.db.models import EventModel
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
+from app.infrastructure.repositories.event_type_repository import EventTypeRepository
+
+# color_index addresses color.chart.{1..8} tokens (W4); no colorpicker exists.
+COLOR_INDEX_MIN = 1
+COLOR_INDEX_MAX = 8
+
+#: ``update_event_with_relations`` default: leave the event's type untouched.
+#: A plain ``None`` default could not tell "no type" from "caller predates W4".
+_TYPE_UNSET = object()
 
 
 class EventService:
@@ -18,6 +30,7 @@ class EventService:
         character_service: EntityService,
         item_service: EntityService,
         location_service: EntityService,
+        event_type_repo: EventTypeRepository | None = None,
     ) -> None:
         self._event_repo = event_repo
         self._desc_repo = description_repo
@@ -25,6 +38,11 @@ class EventService:
         self._character_service = character_service
         self._item_service = item_service
         self._location_service = location_service
+        # Types share the event session; default-constructed for callers that
+        # predate W4 (manual DI passes the repo explicitly in main.py).
+        if event_type_repo is None:
+            event_type_repo = EventTypeRepository(event_repo._session)
+        self._event_type_repo = event_type_repo
 
     async def create_event(
         self,
@@ -59,6 +77,73 @@ class EventService:
     async def get_events_at_date(self, target_date: date) -> Sequence:
         return await self._event_repo.get_events_at_date(target_date)
 
+    # ── Event types (W4) ───────────────────────────────────────────────────
+
+    async def get_event_types(self) -> Sequence:
+        """The game's event types in display order."""
+        return await self._event_type_repo.get_all_ordered()
+
+    async def save_event_type(
+        self,
+        name: str,
+        color_index: int,
+        sort_order: int | None = None,
+        type_id: int | None = None,
+    ):
+        """Create (``type_id=None``) or update an event type; committed.
+
+        ``color_index`` must address one of the eight chart tokens (1..8);
+        anything else raises ``ValueError``. Without an explicit ``sort_order``
+        new types are appended after the current last one.
+        """
+        if (
+            isinstance(color_index, bool)
+            or not isinstance(color_index, int)
+            or not COLOR_INDEX_MIN <= color_index <= COLOR_INDEX_MAX
+        ):
+            raise ValueError(
+                f"color_index must be an int in "
+                f"{COLOR_INDEX_MIN}..{COLOR_INDEX_MAX}, got {color_index!r}"
+            )
+        if type_id is not None:
+            kwargs: dict[str, Any] = {"name": name, "color_index": color_index}
+            if sort_order is not None:
+                kwargs["sort_order"] = sort_order
+            obj = await self._event_type_repo.update(type_id, **kwargs)
+        else:
+            if sort_order is None:
+                sort_order = await self._event_type_repo.next_sort_order()
+            obj = await self._event_type_repo.create(
+                name=name, color_index=color_index, sort_order=sort_order,
+            )
+        await self._session.commit()
+        return obj
+
+    async def delete_event_type(self, type_id: int) -> bool:
+        """Delete a type, first unbinding every event that had it (W4 spec).
+
+        Unbind (``event_type_id = NULL`` through the ORM, so already-loaded
+        event objects stay truthful in this session) and the type's DELETE
+        run in one transaction; events themselves are never touched beyond
+        that column.
+        """
+        session = self._session
+        try:
+            events = (await session.execute(
+                select(EventModel).where(EventModel.event_type_id == type_id)
+            )).scalars().all()
+            for event in events:
+                # The relationship (not just the FK column) is mutated: the
+                # app session never expires instances, so a bulk UPDATE would
+                # leave loaded events pointing at a deleted type in memory.
+                event.event_type = None
+            deleted = await self._event_type_repo.delete(type_id)
+            await session.commit()
+            return deleted
+        except Exception:
+            await session.rollback()
+            return False
+
     # M2M collection attribute names (kept 1:1 with the main.py closures)
     RELATION_ATTRS = ["organizations", "characters", "items", "locations"]
 
@@ -77,12 +162,14 @@ class EventService:
         characteristics: str,
         backstory: str,
         relations: dict,
+        event_type_id: int | None = None,
     ):
         """Create an event (with description) and sync all four M2M collections.
 
         1:1 port of the on_saved closure in main.py: commit on success,
         rollback on error (error is swallowed, None is returned — the old
-        closure did not re-raise and did not notify the user).
+        closure did not re-raise and did not notify the user). The optional
+        ``event_type_id`` (W4) assigns a type at creation (None = без типа).
         """
         try:
             event = await self.create_event(
@@ -91,8 +178,11 @@ class EventService:
                 backstory=backstory,
                 start_date=start_date,
                 end_date=end_date,
+                event_type_id=event_type_id,
             )
-            await self._session.refresh(event, attribute_names=self.RELATION_ATTRS)
+            await self._session.refresh(
+                event, attribute_names=self.RELATION_ATTRS + ["event_type"],
+            )
             await self.apply_event_relations(
                 event,
                 relations.get("organizations", []),
@@ -115,27 +205,33 @@ class EventService:
         characteristics: str,
         backstory: str,
         relations: dict,
+        event_type_id: Any = _TYPE_UNSET,
     ):
         """Update event fields + description and resync all four M2M collections.
 
         1:1 port of the on_event_updated closure in main.py. Returns the
         updated event, or None if the event is missing / an error occurred
-        (rollback + silent fail, as before).
+        (rollback + silent fail, as before). W4: an explicit ``event_type_id``
+        (id or None for «без типа») reassigns the type; callers that predate
+        the feature leave the sentinel and keep the current one.
         """
         try:
-            await self.update_event(
-                event_id,
-                name=name,
-                start_date=start_date,
-                end_date=end_date,
-            )
+            fields: dict[str, Any] = {
+                "name": name, "start_date": start_date, "end_date": end_date,
+            }
+            if event_type_id is not _TYPE_UNSET:
+                fields["event_type_id"] = event_type_id
+            await self.update_event(event_id, **fields)
             updated_event = await self.get_event(event_id)
             if updated_event and updated_event.description:
                 updated_event.description.characteristics = characteristics
                 updated_event.description.backstory = backstory
 
             # Sync M2M relationships
-            await self._session.refresh(updated_event, attribute_names=self.RELATION_ATTRS)
+            await self._session.refresh(
+                updated_event,
+                attribute_names=self.RELATION_ATTRS + ["event_type"],
+            )
             await self.apply_event_relations(
                 updated_event,
                 relations.get("organizations", []),

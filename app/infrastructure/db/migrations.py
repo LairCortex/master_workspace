@@ -75,7 +75,28 @@ _MIGRATIONS = [
     ("organizations", "image_id", "INTEGER REFERENCES images(id)"),
     ("characters", "image_id", "INTEGER REFERENCES images(id)"),
     ("locations", "image_id", "INTEGER REFERENCES images(id)"),
+    ("events", "event_type_id", "INTEGER REFERENCES event_types(id) ON DELETE SET NULL"),
 ]
+
+# NRI defaults seeded once per game into an empty `event_types` set (W4).
+# color_index is a 1-based index into the color.chart.1..8 token palette.
+_DEFAULT_EVENT_TYPES = ("Сюжет", "Побочное", "Слух", "Встреча", "Ров будней", "Находка")
+
+
+async def _seed_default_event_types(conn) -> None:
+    """Seed the six default event types, but only into an empty table.
+
+    Guard «только пустая таблица»: user edits (renames, deletions down to a
+    single remaining type) are never overwritten on later startups.
+    """
+    count = (await conn.exec_driver_sql("SELECT COUNT(*) FROM event_types")).scalar()
+    if count:
+        return
+    for i, name in enumerate(_DEFAULT_EVENT_TYPES):
+        await conn.exec_driver_sql(
+            "INSERT INTO event_types (name, color_index, sort_order) VALUES (?, ?, ?)",
+            (name, i + 1, i),
+        )
 
 
 async def _migrate_legacy_images(engine, image_dir: Path) -> None:
@@ -135,6 +156,10 @@ async def init_db(engine, image_dir: Path | str | None = None) -> None:
     # Migrate end_date NOT NULL → nullable
     async with engine.begin() as conn:
         await _migrate_nullable_end_dates(conn)
+
+    # Seed the six default event types into an empty set (W4, idempotent)
+    async with engine.begin() as conn:
+        await _seed_default_event_types(conn)
 
     if image_dir is not None:
         await _migrate_legacy_images(engine, Path(image_dir))

@@ -18,6 +18,7 @@ from app.infrastructure.db.models import GameSettingsModel
 from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
+from app.infrastructure.repositories.event_type_repository import EventTypeRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
@@ -156,6 +157,7 @@ class Application:
         char_repo = CharacterRepository(self._session)
         item_repo = ItemRepository(self._session)
         loc_repo = LocationRepository(self._session)
+        event_type_repo = EventTypeRepository(self._session)
 
         # Services
         self._entity_services = self._build_entity_services()
@@ -166,6 +168,7 @@ class Application:
             character_service=self._entity_services["character"],
             item_service=self._entity_services["item"],
             location_service=self._entity_services["location"],
+            event_type_repo=event_type_repo,
         )
         search_service = SearchService(
             event=event_repo,

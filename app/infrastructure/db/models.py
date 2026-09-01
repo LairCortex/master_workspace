@@ -119,6 +119,23 @@ class ImageModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class EventTypeModel(Base):
+    """A per-game event type (W4).
+
+    ``color_index`` targets a ``color.chart.{1..8}`` token (1-based);
+    ``sort_order`` is the user-editable display order. Rows reach existing
+    game DBs via ``create_all`` in ``init_db()``, which also seeds the six
+    NRI defaults once the table is created empty.
+    """
+
+    __tablename__ = "event_types"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    color_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
 class EventModel(Base):
     __tablename__ = "events"
 
@@ -127,8 +144,13 @@ class EventModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Optional type (W4); deleting a type unlinks events (SET NULL).
+    event_type_id: Mapped[int | None] = mapped_column(
+        ForeignKey("event_types.id", ondelete="SET NULL"), nullable=True, default=None,
+    )
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
+    event_type: Mapped[EventTypeModel | None] = relationship(lazy="selectin")
     organizations: Mapped[list[OrganizationModel]] = relationship(
         secondary=event_organization, back_populates="events", lazy="selectin",
     )

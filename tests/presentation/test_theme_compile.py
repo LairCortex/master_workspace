@@ -1,6 +1,7 @@
 """Tests for theme tokens parsing and in-memory QSS/CSS compilation (W1 D1/D2/D7, W2a)."""
 from __future__ import annotations
 
+import colorsys
 import json
 import re
 
@@ -10,6 +11,7 @@ import pytest
 from PySide6.QtGui import QColor
 
 from app.presentation.theme.compiler import (
+    CHART_TOKEN_KEYS,
     REQUIRED_TOKEN_KEYS,
     THEMES as COMPILER_THEMES,
     accent_rgba,
@@ -18,6 +20,7 @@ from app.presentation.theme.compiler import (
     compile_qss,
     css_var_name,
     load_tokens,
+    token_rgb,
     tokens_file_path,
 )
 from app.presentation.theme.runtime import APP_CSS_PATH
@@ -40,10 +43,12 @@ def test_repo_tokens_parse_and_cover_all_d1_keys():
 
 
 def test_d1_key_list_is_exact():
-    # Names are fixed by design D1 (W1) + W2a D4 catalog roles; change only
-    # together with the design. Every key here is read by a QSS/CSS rule —
-    # unread tokens (W2a review: rating endpoints, mono family) are rejected:
-    # they only tighten validation, so they join in W2b with their screens.
+    # Names are fixed by design D1 (W1) + W2a D4 catalog roles + the W4 chart
+    # palette (ui-theme delta: «color.chart.1…8 обязательна»); change only
+    # together with the design. Every key is read — by a QSS/CSS rule, a named
+    # runtime reader (RUNTIME_READ_TOKENS) or the timeline/type-dialog delegate
+    # (chart, W4). Unread roles (W2a review: rating endpoints, mono family) are
+    # rejected: they only tighten validation, so they join with their screens.
     assert set(REQUIRED_TOKEN_KEYS) == {
         "color.bg.canvas",
         "color.bg.surface",
@@ -65,6 +70,7 @@ def test_d1_key_list_is_exact():
         "font.size.lg",
         "font.size.xl",
         "font.weight.bold",
+        *CHART_TOKEN_KEYS,
     }
 
 
@@ -81,13 +87,21 @@ def test_every_required_token_is_read_by_a_generated_style(tokens):
     # Guard against re-introducing dead tokens: each key must appear either as
     # a literal in the compiled QSS (sheetworks embed token values), as a
     # custom property the repo app.css body actually references, or be read by
-    # a named runtime reader (RUNTIME_READ_TOKENS).
+    # a named runtime reader (RUNTIME_READ_TOKENS). The chart palette is the
+    # one exception fixed by the ui-theme spec (W4): its readers are the event
+    # timeline and the event-types dialog, and chrome rules must *not* read it
+    # (spec «Chart-токен не протёк в chrome», scan in test_chart_palette_is_not_read_by_chrome).
+    # Chart keys still hand their value to the web player as a CSS custom
+    # property, so :root must declare all eight.
     import importlib
 
     qss = compile_qss(tokens, "dark") + compile_popup_qss(tokens, "dark")
     css_root = compile_css_root(tokens, "dark")
     body = APP_CSS_PATH.read_text(encoding="utf-8")
     for key in REQUIRED_TOKEN_KEYS:
+        if key in CHART_TOKEN_KEYS:
+            assert f"{css_var_name(key)}:" in css_root, key
+            continue
         if key in RUNTIME_READ_TOKENS:
             reader = importlib.import_module(RUNTIME_READ_TOKENS[key])
             source = pathlib.Path(reader.__file__).read_text(encoding="utf-8")
@@ -268,6 +282,112 @@ def test_css_root_switches_theme(tokens):
     assert f"--color-bg-canvas: {tokens['color.bg.canvas']['light']};" in css_light
 
 
+# ── chart palette (W4 ui-theme delta: «color.chart.1…8» обязательна) ─────────
+
+# Design D6 thresholds, fixed as constants here (the "pixel test" of the
+# spec scenario «Chart-палитра обязательна и различима»): a category color
+# must separate from its theme's surface by more than a WCAG-style contrast
+# floor; the eight hues must stay eye-separable, with lightness variation;
+# and a key's light/dark pair must keep the same hue (color meaning).
+MIN_CONTRAST_ON_SURFACE = 3.0
+MIN_HUE_SEPARATION = 30.0
+MIN_LIGHTNESS_SPREAD = 10.0
+MAX_LIGHT_DARK_HUE_SHIFT = 15.0
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def chan(c: int) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b)
+
+
+def _contrast_ratio(rgb_a, rgb_b) -> float:
+    l1, l2 = sorted((_relative_luminance(rgb_a), _relative_luminance(rgb_b)), reverse=True)
+    return (l1 + 0.05) / (l2 + 0.05)
+
+
+def _hue_lightness(rgb: tuple[int, int, int]) -> tuple[float, float]:
+    """``(r, g, b)`` → ``(hue degrees, lightness 0..100)``."""
+    h, l, _s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    return h * 360, l * 100
+
+
+def _hue_distance(a: float, b: float) -> float:
+    diff = abs(a - b) % 360
+    return min(diff, 360 - diff)
+
+
+# 1.1 — the generator round-trips all eight pairs in both themes: parse →
+# token_rgb (the delegate's reader) → compiled CSS custom property.
+def test_chart_palette_round_trips_through_the_generator(tokens):
+    assert CHART_TOKEN_KEYS == tuple(f"color.chart.{i}" for i in range(1, 9))
+    for key in CHART_TOKEN_KEYS:
+        assert key in tokens
+        for theme in ("light", "dark"):
+            value = tokens[key][theme]
+            color = QColor(value)
+            assert color.isValid(), (key, theme, value)
+            assert token_rgb(tokens, theme, key) == (color.red(), color.green(), color.blue())
+            css_root = compile_css_root(tokens, theme)
+            assert f"  {css_var_name(key)}: {value};" in css_root
+
+
+# 1.2 — readability: every chart value has a contrast floor against its own
+# theme's ``color.bg.surface`` (spec «различимы на фоне color.bg.surface»).
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chart_colors_contrast_with_their_surface(tokens, theme):
+    surface = token_rgb(tokens, theme, "color.bg.surface")
+    assert surface is not None
+    for key in CHART_TOKEN_KEYS:
+        rgb = token_rgb(tokens, theme, key)
+        assert rgb is not None, (key, theme)
+        assert _contrast_ratio(rgb, surface) > MIN_CONTRAST_ON_SURFACE, (key, theme)
+
+
+# 1.2 — the eight are mutually separable: hue spread + lightness variation
+# (design D6 a), and a key's pair keeps its hue across themes (D6 c).
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chart_hues_are_spread_and_lightness_varies(tokens, theme):
+    hls = [_hue_lightness(token_rgb(tokens, theme, key)) for key in CHART_TOKEN_KEYS]
+    hues = sorted(h for h, _l in hls)
+    gaps = [
+        _hue_distance(hues[i], hues[i + 1]) for i in range(len(hues) - 1)
+    ] + [_hue_distance(hues[-1], hues[0])]
+    assert min(gaps) >= MIN_HUE_SEPARATION
+    lightnesses = [l for _h, l in hls]
+    assert max(lightnesses) - min(lightnesses) >= MIN_LIGHTNESS_SPREAD
+
+
+def test_chart_pairs_keep_their_hue_across_themes(tokens):
+    for key in CHART_TOKEN_KEYS:
+        hue_light = _hue_lightness(token_rgb(tokens, "light", key))[0]
+        hue_dark = _hue_lightness(token_rgb(tokens, "dark", key))[0]
+        assert _hue_distance(hue_light, hue_dark) <= MAX_LIGHT_DARK_HUE_SHIFT, key
+
+
+# 1.2 — spec «Chart-токен не протёк в chrome»: neither chrome sheet embeds a
+# chart value, and the repo CSS body never references a chart property — the
+# palette is eaten only by the event timeline and the event-types dialog.
+# Values are kept distinct, so a literal substring scan is unambiguous.
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chart_palette_is_not_read_by_chrome(tokens, theme):
+    all_values = [tokens[key][name] for key in CHART_TOKEN_KEYS for name in ("light", "dark")]
+    assert len(set(all_values)) == 2 * len(CHART_TOKEN_KEYS)  # distinct scan targets
+    chrome = compile_qss(tokens, theme) + compile_popup_qss(tokens, theme)
+    body = APP_CSS_PATH.read_text(encoding="utf-8")
+    css_root = compile_css_root(tokens, theme)
+    for key in CHART_TOKEN_KEYS:
+        for name in ("light", "dark"):
+            assert tokens[key][name] not in chrome, (key, name)
+        var = css_var_name(key)
+        assert var not in body, key
+        # the value still reaches the web player through the generated :root
+        assert f"{var}: {tokens[key][theme]};" in css_root
+
+
 # ── invalid token files (D7: invalid as a whole) ─────────────────────────────
 
 def test_missing_file_is_invalid(tmp_path):
@@ -325,6 +445,25 @@ def test_token_value_not_light_dark_strings_is_invalid(tmp_path, mutate):
     path = tmp_path / "tokens.json"
     data = {k: {"light": "#fff", "dark": "#000"} for k in REQUIRED_TOKEN_KEYS}
     mutate(data)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert load_tokens(path) is None
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda d: d.pop("color.chart.5"),                      # chart токена нет
+        lambda d: d["color.chart.3"].pop("light"),             # пары light/dark неполная
+        lambda d: d["color.chart.8"].__setitem__("dark", 7),   # не строка
+        lambda d: d.__setitem__("color.chart.1", "#c62828"),   # не объект
+    ],
+)
+def test_missing_or_broken_chart_token_invalidates_the_whole_theme(tmp_path, corrupt):
+    # W4 ui-theme delta: chart-палитра обязательна — отсутствие или порча
+    # любого color.chart.* гасит тему по общей судьбе «Битые токены» (D7).
+    path = tmp_path / "tokens.json"
+    data = {k: {"light": "#fff", "dark": "#000"} for k in REQUIRED_TOKEN_KEYS}
+    corrupt(data)
     path.write_text(json.dumps(data), encoding="utf-8")
     assert load_tokens(path) is None
 

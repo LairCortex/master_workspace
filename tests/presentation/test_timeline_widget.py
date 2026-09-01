@@ -25,10 +25,13 @@ from app.presentation.theme.compiler import token_rgb, tokens_file_path
 from app.presentation.utils.date_utils import (
     format_game_date, get_custom_months, month_name, set_custom_months,
 )
+from app.presentation.viewmodels.timeline_viewmodel import EntityKind
+from app.presentation.theme.compiler import CHART_TOKEN_KEYS
 from app.presentation.views.timeline_widget import (
     BRACKET_LANE_STEP,
     BRACKET_SERIF_W,
     BRACKET_X0,
+    DOT_SIZE,
     DRAG_START_THRESHOLD_PX,
     DRAG_WASH_ALPHA,
     EMPTY_HINT_TEXT,
@@ -43,13 +46,14 @@ from app.presentation.views.timeline_widget import (
     ROLE_SHOW_TICK,
     ROW_HEIGHT,
     STICKY_HEIGHT,
+    TEXT_LEFT_PAD,
     TimelineListView,
     TimelineWidget,
     bracket_lanes,
     filter_chip_text,
     rows_palette,
 )
-from app.presentation.views.timeline_rows import RowKind
+from app.presentation.views.timeline_rows import RowKind, ScaleUnit
 
 
 @pytest.fixture(autouse=True)
@@ -404,6 +408,25 @@ class TestRailGeometry:
 
 # ── 2.3 — token colors, live re-theme, off-skin ────────────────────────────
 
+@pytest.fixture
+def pen_colors(monkeypatch):
+    """Capture every color the painter is set to during the test."""
+    colors: list = []
+    real_set_pen = QPainter.setPen
+
+    def spy(self, *args):
+        if args:
+            pen = args[0]
+            if isinstance(pen, QColor):
+                colors.append(pen)
+            elif hasattr(pen, "color"):
+                colors.append(pen.color())
+        return real_set_pen(self, *args)
+
+    monkeypatch.setattr(QPainter, "setPen", spy)
+    return colors
+
+
 class TestTheme:
     def test_selected_pixel_is_accent_in_both_themes_and_choice_survives(
         self, qtbot, tmp_path
@@ -461,6 +484,64 @@ class TestTheme:
         assert palette.selected_text == QColor(Qt.GlobalColor.white)
         assert palette.selected_fill == QColor(Qt.GlobalColor.gray)
         assert palette.hover_fill.alphaF() < 1.0
+
+    def test_off_skin_palette_covers_the_w4_chart_and_unit_fields(self):
+        """Task 7.2: the fields the W4 delegate added fall back to the same
+        named Qt globals — all eight chart slots and both muted texts."""
+        palette = rows_palette(None)
+        gray = QColor(Qt.GlobalColor.gray)
+        assert palette.unit_muted == gray
+        assert palette.type_dot_muted == gray
+        assert set(palette.type_dots) == set(CHART_TOKEN_KEYS)
+        assert all(color == gray for color in palette.type_dots.values())
+
+    def test_off_skin_delegate_paints_events_units_and_sections_on_qt_globals(
+        self, qtbot, pen_colors
+    ):
+        """Task 7.2/spec «Вне скина» на пути делегата W4: без рантайма рисуются
+        строка события с точкой типа (пиксель — Qt gray), позиции единиц/секций
+        — тексты пенятся Qt-глобалами, падений нет."""
+        events = [
+            SimpleNamespace(
+                id=1, name="Поход", start_date=date(1200, 1, 5), end_date=None,
+                event_type=SimpleNamespace(name="Слух", color_index=3),
+                characters=[SimpleNamespace(name="Анна")],
+                locations=[], organizations=[], items=[],
+            ),
+            SimpleNamespace(
+                id=2, name="Сход", start_date=date(1200, 1, 9), end_date=None,
+                event_type=None, characters=[], locations=[],
+                organizations=[], items=[],
+            ),
+        ]
+        view = TimelineListView(theme=None)  # no runtime at all → off-skin
+        view.resize(300, ROW_HEIGHT * 6 + STICKY_HEIGHT + 8)
+        qtbot.addWidget(view)
+        view.show()
+        view.update_events(events)  # DAY rung: both type dots paint
+        image = view.viewport().grab().toImage()
+        scale = image.width() / max(view.viewport().width(), 1)
+        gray = QColor(Qt.GlobalColor.gray)
+        x_dot = int((view.rail_width() + TEXT_LEFT_PAD + DOT_SIZE // 2) * scale)
+        for event_id in (1, 2):  # typed and untyped both degrade to gray
+            rect = view.visualItemRect(view.item(view.index_for_event(event_id)))
+            assert image.pixelColor(
+                x_dot, int(rect.center().y() * scale)
+            ) == gray, event_id
+
+        # MONTH rung (no grouping): the filled unit and the muted empty stub
+        # run through the same delegate paths, pens from Qt globals (D7).
+        view.update_events(events, date(1200, 1, 1), date(1200, 2, 28))
+        view.set_view(ScaleUnit.MONTH)
+        view.viewport().grab().toImage()
+        # SECTION headers follow (grouping on, still off-skin)
+        view.set_view(group_by=EntityKind.CHARACTER)
+        view.viewport().grab().toImage()
+        kinds = {row.kind for row in view.rows}
+        assert {RowKind.UNIT, RowKind.SECTION} <= kinds
+        # black = filled unit / section / line text, gray = muted stub & rail
+        assert QColor(Qt.GlobalColor.black) in pen_colors
+        assert QColor(Qt.GlobalColor.gray) in pen_colors
 
     def test_unparsable_accent_token_falls_back_neutrally(self, qtbot, tmp_path):
         """Spec «Вне скина» (token unparsable): neutral Qt gray, never an invented color."""
@@ -1342,10 +1423,11 @@ class TestScenarioAcceptanceW3c:
         assert emitted == []  # the rail applied nothing
 
     def test_wheel_with_modifier_keeps_single_row_step_and_no_zoom(self, qtbot):
-        """Task 5.2 / spec «модификаторы шаг не меняют», «Зума не SHALL быть»:
-        Ctrl (the classic zoom chord), Alt and Shift wheels move exactly one
-        row like the bare wheel — and every row keeps its ROW_HEIGHT, nothing
-        in this view scales."""
+        """W4 rewrote this scenario half-by-half: «иные модификаторы шаг
+        прокрутки менять НЕ SHALL» — Alt and Shift wheels still move exactly
+        one row; «Ctrl/Cmd + колесо SHALL менять ступень … и SHALL не трогать
+        прокрутку» — the Ctrl wheel steps the ladder instead of scrolling, and
+        every row keeps its ROW_HEIGHT (continuous zoom still does not exist)."""
         events = [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 30))]
         view = _view(qtbot, events, rows_visible=5)
         bar = view.verticalScrollBar()
@@ -1360,12 +1442,19 @@ class TestScenarioAcceptanceW3c:
                 Qt.ScrollPhase.NoScrollPhase, False,
             ))
 
-        for mods in (Qt.KeyboardModifier.ControlModifier,
-                     Qt.KeyboardModifier.AltModifier,
+        for mods in (Qt.KeyboardModifier.AltModifier,
                      Qt.KeyboardModifier.ShiftModifier):
             before = bar.value()
             _wheel(-120, mods)
             assert bar.value() == before + 1  # one row per notch, modifier or not
+        # Ctrl zooms: the scrollbar never moves, the rung does.
+        bar.setValue(0)
+        _wheel(-120, Qt.KeyboardModifier.ControlModifier)  # wheel down = coarser
+        assert bar.value() == 0
+        assert view.scale_unit is ScaleUnit.MONTH
+        _wheel(120, Qt.KeyboardModifier.ControlModifier)  # wheel up = finer
+        assert bar.value() == 0
+        assert view.scale_unit is ScaleUnit.DAY
         assert all(
             view.visualItemRect(view.item(i)).height() == ROW_HEIGHT
             for i in range(view.count())

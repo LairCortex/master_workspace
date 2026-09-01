@@ -28,6 +28,19 @@ second header row carries the jump buttons (⤒/⤓, also ``Alt+Up``/``Alt+Down`
 while the panel has focus) that hop over empty days to the nearest event row
 (D8).
 
+W4 grew this single widget into the whole scale ladder (design D1/D2): the row
+model asks the Qt-free core for ``DAY``/``MONTH``/``YEAR`` rungs, the delegate
+paints UNIT positions («Март 1245 · 4 события» / muted «нет событий»), SECTION
+headers (title weight) and the event type dot (``color.chart.*`` token, muted
+for untyped events — «Оформление шкалы из токенов»). Ctrl/Cmd + wheel steps the
+ladder with an anchor (zoom-in: unit under the sticky, zoom-out: first visible
+date), a click on a month/year position zooms in one step anchored there, and
+the rail drag on large rungs maps unit pairs to full-date filters (1-е число /
+last-day, 1 янв / 31 дек) through the unchanged chip channel. The panel header
+carries the «сутки · месяц · год» and grouping switchers; both write through
+the ViewModel's ``unit``/``group_by`` setters (the single mutation point) and
+never drop the selection, the filter or the reading anchor.
+
 Colors are token derivatives only (W3b D10): every paint color is a
 ``token_rgb`` derivation with alphas spelled the way ``accent_rgba`` spells
 them for sheets, the off-skin fallback uses named Qt globals, and nothing here
@@ -43,22 +56,25 @@ from typing import Any, Sequence
 
 from PySide6.QtCore import (
     QDate, QModelIndex, QItemSelection, QItemSelectionModel, QPoint,
-    QPointF, QSize, QSignalBlocker, Qt, Signal,
+    QPointF, QRect, QSize, QSignalBlocker, Qt, Signal,
 )
-from PySide6.QtGui import QColor, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import (
+    QAction, QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QMenu, QPushButton, QStyledItemDelegate,
-    QStyle, QVBoxLayout, QWidget,
+    QStyle, QToolButton, QVBoxLayout, QWidget,
 )
 
 from app.presentation.theme.catalog import attach_theme, hint, set_role, title
-from app.presentation.theme.compiler import token_rgb
+from app.presentation.theme.compiler import CHART_TOKEN_KEYS, token_rgb
 from app.presentation.utils.date_utils import format_game_date, month_name
+from app.presentation.viewmodels.timeline_viewmodel import EntityKind
 from app.presentation.views.custom_date_edit import _CustomCalendar
 from app.presentation.views.timeline_rows import (
-    Row, RowKind, build_rows, index_at_y, next_event_index, normalize_range,
-    prev_event_index,
+    Row, RowKind, ScaleUnit, bracket_lanes, build_rows, index_at_y,
+    next_event_index, normalize_range, prev_event_index,
 )
 
 #: Empty-selection hint shown while the list model is empty (spec: пустое
@@ -77,10 +93,20 @@ RAIL_LABEL_INSET = 24      # x of the rotated month label's baseline (rail-right
 BRACKET_X0 = 6             # first bracket lane x
 BRACKET_LANE_STEP = 5      # overlapping brackets take neighbouring lanes (D6)
 BRACKET_SERIF_W = 6        # horizontal serif at the span's start/end day
-BRACKET_MAX_LANES = 4      # lanes before assignment wraps around
 MONTH_SHORT_FORM = 3       # first letters of a month name in the short form
 TEXT_LEFT_PAD = 8
 PEN_WIDTH = 1
+
+#: W4 D7: square event type-dot side, painted left of the line text (over a
+#: selection it keeps its token color and gets no outline).
+DOT_SIZE = 8
+DOT_TEXT_GAP = 4           # gap between the type dot and the line text
+#: All text rungs (event lines, unit positions, sections) share one indent so
+#: the ladder reads as one column regardless of the row kind.
+TEXT_INDENT = TEXT_LEFT_PAD + DOT_SIZE + DOT_TEXT_GAP
+
+#: Ladder order of the W4 scale (index grows towards coarser rungs).
+LADDER: tuple[ScaleUnit, ...] = (ScaleUnit.DAY, ScaleUnit.MONTH, ScaleUnit.YEAR)
 
 #: Fill alpha of the hovered row — an accent-token derivative spelled the way
 #: ``accent_rgba`` derives the washes for stylesheets (W3b D10).
@@ -114,6 +140,33 @@ ROLE_ROW = Qt.ItemDataRole.UserRole + 1        # timeline_rows.Row
 ROLE_BRACKETS = Qt.ItemDataRole.UserRole + 2   # tuple[_BracketSeg, ...]
 ROLE_SHOW_TICK = Qt.ItemDataRole.UserRole + 3  # first row of its day
 ROLE_SHOW_MONTH = Qt.ItemDataRole.UserRole + 4  # first row of a month
+ROLE_SHOW_YEAR = Qt.ItemDataRole.UserRole + 5  # W4: year label rung (Jan on
+                                               # MONTH, every row on YEAR)
+
+#: ``set_view`` sentinel discriminating "keep the knob" from an explicit
+#: ``None`` (grouping off) — a plain ``None`` default could not clear grouping.
+_KEEP = object()
+
+#: Header ladder switcher captions, ladder order (spec «Переключатели ступени
+#: и группировки в шапке»).
+LADDER_CAPTIONS: tuple[tuple[ScaleUnit, str], ...] = (
+    (ScaleUnit.DAY, "сутки"),
+    (ScaleUnit.MONTH, "месяц"),
+    (ScaleUnit.YEAR, "год"),
+)
+#: Header grouping switcher options: ``None`` is grouping off.
+GROUPING_CAPTIONS: dict = {
+    None: "выкл",
+    EntityKind.CHARACTER: "персонажи",
+    EntityKind.LOCATION: "локации",
+    EntityKind.ORGANIZATION: "организации",
+    EntityKind.ITEM: "предметы",
+}
+#: Menu order of the grouping options (task 5.7 enumerates them this way).
+GROUPING_ORDER: tuple = (
+    None, EntityKind.CHARACTER, EntityKind.LOCATION,
+    EntityKind.ORGANIZATION, EntityKind.ITEM,
+)
 
 
 @dataclass(frozen=True)
@@ -154,6 +207,10 @@ class _Palette:
     drag_fill: QColor      # range-drag wash band over the covered days (D6)
     month_text: QColor     # month labels (color.fg.muted)
     hairline: QColor       # sticky band underline (color.accent)
+    # ── W4 D5/D7: type dots and the large-rung positions ───────────────────
+    unit_muted: QColor             # empty unit stub caption (color.fg.muted)
+    type_dot_muted: QColor         # type dot of an untyped event (color.fg.muted)
+    type_dots: dict                # ``color.chart.k`` token key → QColor (8)
 
 
 def _from_rgb(rgb, alpha: float = 1.0) -> QColor:
@@ -199,9 +256,15 @@ def rows_palette(runtime) -> _Palette:
             drag_fill=_global(Qt.GlobalColor.gray, DRAG_WASH_ALPHA),
             month_text=_global(Qt.GlobalColor.gray),
             hairline=_global(Qt.GlobalColor.gray),
+            # No tokens to derive chart colors from — every dot falls back to
+            # the same named Qt global as the muted text (spec «Вне скина»).
+            unit_muted=_global(Qt.GlobalColor.gray),
+            type_dot_muted=_global(Qt.GlobalColor.gray),
+            type_dots={key: _global(Qt.GlobalColor.gray) for key in CHART_TOKEN_KEYS},
         )
     tokens, theme = runtime.tokens, runtime.theme
     accent = token_rgb(tokens, theme, "color.accent")
+    muted = token_rgb(tokens, theme, "color.fg.muted")
     return _Palette(
         background=_from_rgb(token_rgb(tokens, theme, "color.bg.surface")),
         rail=_from_rgb(token_rgb(tokens, theme, "color.border")),
@@ -211,8 +274,16 @@ def rows_palette(runtime) -> _Palette:
         selected_text=_from_rgb(token_rgb(tokens, theme, "color.accent.fg")),
         hover_fill=_from_rgb(accent, ROW_HOVER_ALPHA),
         drag_fill=_from_rgb(accent, DRAG_WASH_ALPHA),
-        month_text=_from_rgb(token_rgb(tokens, theme, "color.fg.muted")),
+        month_text=_from_rgb(muted),
         hairline=_from_rgb(accent),
+        unit_muted=_from_rgb(muted),
+        type_dot_muted=_from_rgb(muted),
+        # The mandatory W4 chart palette: dot k of a typed row is exactly
+        # ``color.chart.k`` of the live theme (spec «Цвет типа равен токену»).
+        type_dots={
+            key: _from_rgb(token_rgb(tokens, theme, key))
+            for key in CHART_TOKEN_KEYS
+        },
     )
 
 
@@ -241,38 +312,77 @@ def _month_labels(day: date) -> tuple[str, str]:
     return full, short
 
 
-def bracket_lanes(events: Sequence[Any], range_end: date | None) -> dict[int, int]:
-    """Deterministic rail lane per event bracket.
+def unit_caption(day: date, unit: ScaleUnit) -> str:
+    """Game caption of a ladder position: day date / «Март 1245» / «1245».
 
-    Brackets spanning the same day must not collide (spec «Пересекающиеся
-    привязки»): events are taken in ``(start, id)`` order and each takes the
-    first lane whose last bracket already ended before its start; when all
-    :data:`BRACKET_MAX_LANES` lanes are busy the assignment wraps — the
-    overlap is then visually accepted, still deterministically.
-
-    An open end reaches ``range_end`` without asserting a "current" date; a
-    one-day span owns no bracket lane (its day tick already marks it, spec
-    «Привязка событий к рейке»).
+    The month name comes from the live game map (``month_name``), so custom
+    months ride the ladder exactly like the W3b rail did (spec «Игровые
+    месяцы»); re-read per call, a rename repaints without a rebuild.
     """
-    spans: list[tuple[Any, date]] = []
-    for event in events:
-        if range_end is None:
-            continue
-        eff_end = range_end if event.end_date is None else min(event.end_date, range_end)
-        if eff_end > event.start_date:
-            spans.append((event, eff_end))
-    spans.sort(key=lambda pair: (pair[0].start_date, pair[0].id))
-    lane_free_until: dict[int, date] = {}
-    lanes: dict[int, int] = {}
-    for event, eff_end in spans:
-        lane = next(
-            (cand for cand in range(BRACKET_MAX_LANES)
-             if lane_free_until.get(cand, event.start_date) < event.start_date),
-            len(lanes) % BRACKET_MAX_LANES,
+    if unit is ScaleUnit.MONTH:
+        return f"{month_name(day.month)} {day.year}"
+    if unit is ScaleUnit.YEAR:
+        return str(day.year)
+    return format_game_date(day)
+
+
+def _events_phrase(count: int) -> str:
+    """RU count phrase for the unit stub counter («4 события», «1 событие»)."""
+    if count % 100 in range(11, 15):
+        return "событий"
+    last = count % 10
+    if last == 1:
+        return "событие"
+    if 2 <= last <= 4:
+        return "события"
+    return "событий"
+
+
+def _unit_line(row: Row) -> str:
+    """UNIT position text: «Март 1245 · 4 события» / «… · нет событий»."""
+    count = row.unit_count or 0
+    tail = f"{count} {_events_phrase(count)}" if count else "нет событий"
+    return f"{unit_caption(row.date, row.unit)} · {tail}"
+
+
+def _unit_first(day: date, unit: ScaleUnit) -> date:
+    """First day of the ladder unit ``unit`` containing ``day``."""
+    if unit is ScaleUnit.MONTH:
+        return date(day.year, day.month, 1)
+    if unit is ScaleUnit.YEAR:
+        return date(day.year, 1, 1)
+    return day
+
+
+def _unit_last(day: date, unit: ScaleUnit) -> date:
+    """Last day of the ladder unit ``unit`` containing ``day`` — the drag's
+    emit-time normalization target (1-е число … last-day, 1 янв … 31 дек)."""
+    if unit is ScaleUnit.MONTH:
+        following = date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+        return following - timedelta(days=1)
+    if unit is ScaleUnit.YEAR:
+        return date(day.year, 12, 31)
+    return day
+
+
+def build_event_groups(
+    events: Sequence[Any], group_by: EntityKind | None
+) -> dict[int, tuple[str, ...]] | None:
+    """Materialize the «event id → entity names» map ``build_rows`` consumes.
+
+    Duck-typed off the domain relations (W4 D8) exactly like the ViewModel's
+    own map, so list-only samples without links simply land in «Без привязки».
+    """
+    if group_by is None:
+        return None
+    attr = group_by.event_attr
+    return {
+        e.id: tuple(
+            name for link in (getattr(e, attr, None) or ())
+            if (name := getattr(link, "name", ""))
         )
-        lane_free_until[lane] = eff_end
-        lanes[event.id] = lane
-    return lanes
+        for e in events
+    }
 
 
 class _RowDelegate(QStyledItemDelegate):
@@ -306,10 +416,16 @@ class _RowDelegate(QStyledItemDelegate):
             # D6: the live range-drag band over every day it covers — the same
             # view state the hover wash reads; each covered row fills its own
             # slice, so partially visible rows clip the band automatically.
+            # On the large rungs the pair holds unit anchors, so the band
+            # washes exactly the covered unit positions (W4 5.6).
             painter.fillRect(option.rect, palette.drag_fill)
         self._paint_rail(painter, option, index, row, palette)
         if row.kind is RowKind.EVENT:
             self._paint_line(painter, option, row, palette, selected)
+        elif row.kind is RowKind.UNIT:
+            self._paint_unit(painter, option, row, palette)
+        elif row.kind is RowKind.SECTION:
+            self._paint_section(painter, option, row, palette)
         painter.restore()
 
     def _paint_rail(self, painter, option, index, row: Row, palette: _Palette) -> None:
@@ -337,16 +453,25 @@ class _RowDelegate(QStyledItemDelegate):
                         QPointF(x, y), QPointF(x + BRACKET_SERIF_W, y),
                     )
         if index.data(ROLE_SHOW_MONTH):
-            self._paint_month_label(painter, option, index, row, rail_w, palette)
+            full, short = _month_labels(row.date)
+            self._paint_rotated_label(painter, option, rail_w, palette, full, short)
+        if index.data(ROLE_SHOW_YEAR):
+            # W4 5.2: the year rail label — January's unit position on MONTH,
+            # every position on the YEAR rung — where DAY paints its month.
+            self._paint_rotated_label(
+                painter, option, rail_w, palette, str(row.date.year),
+                str(row.date.year),
+            )
 
-    def _paint_month_label(self, painter, option, index, row, rail_w, palette) -> None:
-        """Rotated month label climbing from the month's first-day tick (D6).
+    def _paint_rotated_label(
+        self, painter, option, rail_w, palette, full: str, short: str
+    ) -> None:
+        """Rotated rail label climbing from its tick (D6).
 
         Drawn bottom-to-top so it bleeds into the already-painted rows above
         instead of being overpainted by the next row; when the headroom above
         is not enough for the full label, the short form is used.
         """
-        full, short = _month_labels(row.date)
         fm = QFontMetrics(option.font)
         label = full if option.rect.top() >= fm.horizontalAdvance(full) else short
         painter.setPen(QPen(palette.month_text))
@@ -356,18 +481,67 @@ class _RowDelegate(QStyledItemDelegate):
         painter.drawText(0, 0, label)
         painter.restore()
 
-    def _paint_line(self, painter, option, row: Row, palette: _Palette, selected: bool) -> None:
-        """The ``start — end · name`` line, elided at the panel edge (tooltip holds all)."""
-        rail_w = self._view.rail_width()
-        rect = option.rect.adjusted(rail_w + TEXT_LEFT_PAD, 0, -TEXT_LEFT_PAD, 0)
+    def _draw_text(
+        self, painter, option, text: str, color, *, bold: bool = False
+    ) -> None:
+        """One elided text run at the shared ladder indent (tooltip holds all)."""
+        rect = option.rect.adjusted(
+            self._view.rail_width() + TEXT_INDENT, 0, -TEXT_LEFT_PAD, 0
+        )
         fm = QFontMetrics(option.font)
-        line = _row_line(row)
-        elided = fm.elidedText(line, Qt.TextElideMode.ElideRight, max(rect.width(), 0))
-        painter.setPen(QPen(palette.selected_text if selected else palette.row_text))
+        elided = fm.elidedText(text, Qt.TextElideMode.ElideRight, max(rect.width(), 0))
+        font = option.font
+        if bold:
+            font = QFont(option.font)
+            font.setBold(True)  # SECTION = title weight (W4 D7)
+        painter.setPen(QPen(color))
+        painter.save()
+        painter.setFont(font)
         painter.drawText(
             rect,
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
             elided,
+        )
+        painter.restore()
+
+    def _paint_line(self, painter, option, row: Row, palette: _Palette, selected: bool) -> None:
+        """The ``start — end · name`` line prefixed by the event type dot (W4).
+
+        The dot square is token-derived (``color.chart.k`` via the row's
+        ``token_key``, muted when the event is untyped); it is a bare fill with
+        no pen, so it survives the selection wash without an outline (D7)."""
+        rail_w = self._view.rail_width()
+        dot_key = row.token_key
+        dot = (
+            palette.type_dots.get(dot_key, palette.type_dot_muted)
+            if dot_key else palette.type_dot_muted
+        )
+        rect = option.rect
+        painter.fillRect(
+            QRect(
+                rail_w + TEXT_LEFT_PAD,
+                rect.center().y() - DOT_SIZE // 2,
+                DOT_SIZE, DOT_SIZE,
+            ),
+            dot,
+        )
+        self._draw_text(
+            painter, option, _row_line(row),
+            palette.selected_text if selected else palette.row_text,
+        )
+
+    def _paint_unit(self, painter, option, row: Row, palette: _Palette) -> None:
+        """UNIT position: «Март 1245 · 4 события», an empty stub muted (D7)."""
+        filled = bool(row.unit_count)
+        self._draw_text(
+            painter, option, _unit_line(row),
+            palette.row_text if filled else palette.unit_muted,
+        )
+
+    def _paint_section(self, painter, option, row: Row, palette: _Palette) -> None:
+        """SECTION header: the group name in the title weight (D7)."""
+        self._draw_text(
+            painter, option, row.group_key or "", palette.row_text, bold=True,
         )
 
 
@@ -390,6 +564,8 @@ class TimelineListView(QListWidget):
     event_selected = Signal(int)  # event_id
     event_double_clicked = Signal(int)  # event_id
     day_range_applied = Signal(object, object)  # rail drag range (start, end)
+    scale_changed = Signal(object)  # ScaleUnit after a gesture stepped the
+                                    # ladder (Ctrl/Cmd wheel, unit click — 5.4/5.5)
 
     def __init__(self, theme=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -406,6 +582,12 @@ class TimelineListView(QListWidget):
         self._rail_press: _RailPress | None = None  # armed rail gesture (W3c D2)
         self._drag_range: tuple[date, date] | None = None  # live range drag (D6)
         self._follow_y: int | None = None  # rail cursor y the sticky follows (D5)
+        # W4 D2 view knobs (mirror of the ViewModel's — the VM setter stays the
+        # single mutation point; these drive build_rows and the gestures):
+        self._unit: ScaleUnit = ScaleUnit.DAY
+        self._group_by: EntityKind | None = None
+        self._range: tuple[date | None, date | None] = (None, None)
+        self._press_index = -1  # text-zone press the release may zoom on (5.5)
 
         self.setObjectName("timelineList")
         set_role(self, "list")
@@ -457,6 +639,16 @@ class TimelineListView(QListWidget):
         return self._rows
 
     @property
+    def scale_unit(self) -> ScaleUnit:
+        """The ladder rung the list currently renders (W4 D2)."""
+        return self._unit
+
+    @property
+    def grouping(self) -> EntityKind | None:
+        """The entity kind the list is grouped by (``None`` = off)."""
+        return self._group_by
+
+    @property
     def selected_id(self) -> int | None:
         return self._selected_id
 
@@ -472,18 +664,35 @@ class TimelineListView(QListWidget):
 
     @staticmethod
     def _version_of(
-        events: Sequence[Any], range_start: date | None, range_end: date | None
+        events: Sequence[Any],
+        range_start: date | None,
+        range_end: date | None,
+        unit: ScaleUnit = ScaleUnit.DAY,
+        group_by: EntityKind | None = None,
     ) -> tuple:
-        """The rebuild key: the ``(id, start, end, name)`` set plus its window.
+        """The rebuild key: the ``(id, start, end, name, color)`` set plus window.
 
         The visible range is part of the version (not just the events): the
         same sample under a different filter range is a different scale — the
-        filter's empty days must appear whether or not the events moved.
+        filter's empty days must appear whether or not the events moved. The
+        W4 knobs join the key so a ladder/grouping change is never swallowed
+        by the identical-sample fast path — and so does the type's palette
+        index, because assigning/re-coloring a type repaints the row dots
+        without any name or date moving (task 6.2/6.3 duck-typed: a test
+        double without ``event_type`` carries the stable ``None`` facet).
         """
         return (
-            tuple((e.id, e.start_date, e.end_date, e.name) for e in events),
+            tuple(
+                (
+                    e.id, e.start_date, e.end_date, e.name,
+                    getattr(getattr(e, "event_type", None), "color_index", None),
+                )
+                for e in events
+            ),
             range_start,
             range_end,
+            unit,
+            group_by,
         )
 
     def update_events(
@@ -507,7 +716,9 @@ class TimelineListView(QListWidget):
         pruned never keeps a stale offset).
         """
         events = tuple(events)
-        version = self._version_of(events, range_start, range_end)
+        version = self._version_of(
+            events, range_start, range_end, self._unit, self._group_by
+        )
         if version == self._version:
             # Same set — but game month names can move while no event does
             # (month settings reload identical events): repaint the rail
@@ -516,7 +727,12 @@ class TimelineListView(QListWidget):
             self.viewport().update()
             return
         self._rebuild(events, range_start, range_end)
-        if self._selected_id is not None and self._selected_id not in self._index_by_event:
+        # W4: an event without a *row* still has its selection pending on the
+        # large rungs (UNIT positions own no event lines), so pruning follows
+        # the sample membership, not the row index — only an event that left
+        # the visible sample is forgotten (spec «Фильтр исключил выбранное»).
+        visible_ids = {e.id for e in events}
+        if self._selected_id is not None and self._selected_id not in visible_ids:
             self._selected_id = None  # excluded from the visible sample (spec)
         if self._selected_id is not None:
             self._apply_selection(scroll=True)
@@ -524,6 +740,38 @@ class TimelineListView(QListWidget):
             with QSignalBlocker(self.verticalScrollBar()):
                 self.verticalScrollBar().setValue(0)
             self._sync_overlays()
+
+    def set_view(
+        self,
+        unit: ScaleUnit = _KEEP,
+        group_by=_KEEP,
+        anchor_date: date | None = None,
+    ) -> None:
+        """Switch the ladder knob (W4 D2) without touching filter or selection.
+
+        The ViewModel owns the truth — its ``unit``/``group_by`` setters call
+        this to reflect a change (and the panel drives gestures through the
+        same door). The re-model keeps the reading position: the position
+        containing the pre-switch top date (or an explicit ``anchor_date`` for
+        a gesture's unit anchor) lands back under the sticky band, and a
+        selection that still owns a row stays highlighted and visible.
+        """
+        unit = self._unit if unit is _KEEP else unit
+        group_by = self._group_by if group_by is _KEEP else group_by
+        knobs_changed = unit is not self._unit or group_by is not self._group_by
+        if not knobs_changed and anchor_date is None:
+            return
+        anchor = anchor_date if isinstance(anchor_date, date) else self._top_date()
+        if knobs_changed:
+            self._unit = unit
+            self._group_by = group_by
+            self._rebuild(self._events, self._range[0], self._range[1])
+        if anchor is not None:
+            idx = self._unit_index_at(anchor)
+            if idx is not None:
+                self._jump_to_day_row(idx)
+        if knobs_changed:
+            self._reassert_selection()
 
     def set_selected(self, event_id: int | None) -> None:
         """Highlight ``event_id`` from the outside (search jump, prune-to-None).
@@ -544,21 +792,27 @@ class TimelineListView(QListWidget):
             return
         self.scrollToItem(self.item(idx), QAbstractItemView.ScrollHint.PositionAtCenter)
 
-    def jump_prev_event(self) -> None:
+    def jump_prev_event(self) -> bool:
         """Scroll to the nearest EVENT row before the visible position (D8).
 
         Runs of empty days are skipped; at the head of the sample the command
-        is inert (``prev_event_index`` returns ``None``).
+        is inert (``prev_event_index`` returns ``None``). On MONTH/YEAR there
+        are no EVENT rows at all, so the ``False`` return tells the panel to
+        drop the ladder first (W4 D4/spec «Прыжок с месяцной ступени»).
         """
         idx = prev_event_index(self._rows, self._jump_base_index())
         if idx is not None:
             self._reveal_row(idx)
+            return True
+        return False
 
-    def jump_next_event(self) -> None:
+    def jump_next_event(self) -> bool:
         """Mirror of :meth:`jump_prev_event` towards the tail of the sample."""
         idx = next_event_index(self._rows, self._jump_base_index())
         if idx is not None:
             self._reveal_row(idx)
+            return True
+        return False
 
     def index_for_event(self, event_id: int) -> int | None:
         """Row index of ``event_id`` in the current model (``None`` → absent)."""
@@ -618,26 +872,40 @@ class TimelineListView(QListWidget):
     ) -> None:
         """Rebuild the Qt list from ``build_rows`` (O(range + events), see risks).
 
-        Explicit bounds (a live filter) enumerate exactly those days, empty
-        ones included; omitted, the sample's own min–max owns the range.
+        Explicit bounds (a live filter) enumerate exactly the units/days of the
+        window those days bound, empty ones included; omitted, the sample's own
+        min–max owns the range. The current ladder rung and grouping (W4 D1)
+        decide the row model; the window is remembered on ``self._range`` so
+        :meth:`set_view` can re-model it under new knobs.
         """
         self._events = events
-        self._version = self._version_of(events, range_start, range_end)
-        rows = build_rows(events, range_start, range_end)
+        self._version = self._version_of(
+            events, range_start, range_end, self._unit, self._group_by
+        )
+        self._range = (range_start, range_end)
+        rows = build_rows(
+            events, range_start, range_end,
+            unit=self._unit, groups=build_event_groups(events, self._group_by),
+        )
         self._rows = tuple(rows)
         # Open-end brackets reach the last day of the visible range — the
         # filter bound when one is live, otherwise what build_rows derived
-        # (max(end|start)). The last row is exactly that edge.
+        # (max(end|start)). The last row is exactly that edge (unit rungs:
+        # the first day of the last unit, which maps onto that unit).
         range_end_eff = rows[-1].date if rows else None
-        self._lanes = bracket_lanes(events, range_end_eff)
+        self._lanes = bracket_lanes(events, range_end_eff, self._unit)
 
         indices_by_day: dict[date, list[int]] = defaultdict(list)
+        indices_by_unit: dict[date, int] = {}
         self._index_by_event = {}
         self._rail_press = None  # stale day anchors must not outlive the model
         self._drag_range = None  # ...nor may a wash band paint onto a new scale
         self._follow_day = None
+        self._press_index = -1
         for idx, row in enumerate(self._rows):
             indices_by_day[row.date].append(idx)
+            if row.kind is RowKind.UNIT:
+                indices_by_unit.setdefault(row.date, idx)
             if row.event_id is not None:
                 self._index_by_event[row.event_id] = idx
 
@@ -651,17 +919,32 @@ class TimelineListView(QListWidget):
                 range_end_eff if event.end_date is None
                 else min(event.end_date, range_end_eff)
             )
-            day = event.start_date
-            while day <= span_end:
-                for idx in indices_by_day.get(day, ()):
-                    segs_by_row[idx].append(
-                        _BracketSeg(
-                            lane=lane,
-                            serif_top=day == event.start_date,
-                            serif_bottom=day == span_end,
+            if self._unit is ScaleUnit.DAY:
+                day = event.start_date
+                while day <= span_end:
+                    for idx in indices_by_day.get(day, ()):
+                        segs_by_row[idx].append(
+                            _BracketSeg(
+                                lane=lane,
+                                serif_top=day == event.start_date,
+                                serif_bottom=day == span_end,
+                            )
                         )
-                    )
-                day += one_day
+                    day += one_day
+            else:
+                # W4 3.4/D7: the span paints every unit position it touches —
+                # serifs at the first and last touched unit of the window.
+                first_unit = _unit_first(event.start_date, self._unit)
+                last_unit = _unit_first(span_end, self._unit)
+                for unit_date, idx in indices_by_unit.items():
+                    if first_unit <= unit_date <= last_unit:
+                        segs_by_row[idx].append(
+                            _BracketSeg(
+                                lane=lane,
+                                serif_top=unit_date == first_unit,
+                                serif_bottom=unit_date == last_unit,
+                            )
+                        )
 
         with QSignalBlocker(self):
             self.clear()
@@ -671,16 +954,32 @@ class TimelineListView(QListWidget):
                 if row.kind is RowKind.EVENT:
                     item.setToolTip(_row_tooltip(row))
                 else:
-                    # Empty days are not selectable, not clickable, not even
-                    # keyboard-reachable (spec «Пустая позиция не выбирается»).
+                    # Empty days, unit positions and section heads are not
+                    # selectable, not clickable, not even keyboard-reachable
+                    # (spec «Пустая позиция не выбирается»; a unit click is
+                    # the zoom gesture, handled by the view itself).
                     item.setFlags(Qt.ItemFlag.NoItemFlags)
                 item.setData(ROLE_ROW, row)
                 item.setData(ROLE_BRACKETS, tuple(segs_by_row.get(idx, ())))
                 prev_row = self._rows[idx - 1] if idx else None
                 first_of_day = prev_row is None or prev_row.date != row.date
-                item.setData(ROLE_SHOW_TICK, first_of_day)
-                # One month label per month, only at its first day (spec).
-                item.setData(ROLE_SHOW_MONTH, first_of_day and row.date.day == 1)
+                if self._unit is ScaleUnit.DAY:
+                    show_tick = first_of_day
+                    # One month label per month, only at its first day (spec).
+                    show_month = first_of_day and row.date.day == 1
+                    show_year = False
+                else:
+                    # W4 5.2: one tick per unit position; a year label once a
+                    # year on MONTH (January's unit), on every position of the
+                    # YEAR rung. Section heads are heads, not units — no tick.
+                    show_tick = row.kind is RowKind.UNIT
+                    show_month = False
+                    show_year = row.kind is RowKind.UNIT and (
+                        self._unit is ScaleUnit.YEAR or row.date.month == 1
+                    )
+                item.setData(ROLE_SHOW_TICK, show_tick)
+                item.setData(ROLE_SHOW_MONTH, show_month)
+                item.setData(ROLE_SHOW_YEAR, show_year)
                 self.addItem(item)
         self._recompute_rail_width()
         self._sync_overlays()
@@ -794,15 +1093,16 @@ class TimelineListView(QListWidget):
         self._refresh_sticky_text()
 
     def _refresh_sticky_text(self) -> None:
-        """The sticky date: the top row's day (sync) with the follow day over
-        it while the rail hover is active (W3c D5).
+        """The sticky date: the top row's unit (sync) with the follow unit
+        over it while the rail hover is active (W3c D5).
 
         One funnel for both writers — a scroll/reload sync and a hover update
         can never leave each other's text stale (design risk note): sync runs
-        first, follow wins while set.
+        first, follow wins while set. On the W4 large rungs the caption is the
+        unit's own signature, day rung keeps the full game date (5.3).
         """
         if self._follow_day is not None:
-            text = format_game_date(self._follow_day)
+            text = unit_caption(self._follow_day, self._unit)
         else:
             item = self.itemAt(self.viewport().rect().topLeft())
             if item is None:  # scrolled fully past the end — keep the last date
@@ -812,7 +1112,7 @@ class TimelineListView(QListWidget):
             if not isinstance(row, Row):
                 self._sticky.show()
                 return
-            text = format_game_date(row.date)
+            text = unit_caption(row.date, self._unit)
         if self._sticky.text() != text:
             self._sticky.setText(text)
         self._sticky.show()
@@ -875,6 +1175,73 @@ class TimelineListView(QListWidget):
                 QItemSelectionModel.SelectionFlag.NoUpdate,
             )
 
+    # ── ladder internals (W4 5.3–5.5) ───────────────────────────────────────
+
+    def _top_date(self) -> date | None:
+        """Date of the date under the sticky band (top visible row, else head)."""
+        if not self._rows:
+            return None
+        return self._rows[max(self.top_visible_index(), 0)].date
+
+    def _unit_index_at(self, day: date) -> int | None:
+        """Index of the position whose unit contains ``day`` (nearest if the
+        sample starts later) — the ladder's re-entry anchor."""
+        if not self._rows:
+            return None
+        idx = 0
+        for i, row in enumerate(self._rows):
+            if row.date <= day:
+                idx = i
+            else:
+                break
+        return idx
+
+    def _reassert_selection(self) -> None:
+        """Re-highlight the pending selection after a ladder re-model.
+
+        On a rung where the event owns no line the highlight simply has no
+        row to paint (``_apply_selection`` clears the Qt selection while
+        ``_selected_id`` stays pending — task 4.3/5.7: switching never drops
+        the selection), and returning to DAY brings the row back.
+        """
+        if self._selected_id is None:
+            return
+        self._apply_selection(scroll=False)
+        idx = self._index_by_event.get(self._selected_id)
+        if idx is not None:
+            self.scrollToItem(
+                self.item(idx), QAbstractItemView.ScrollHint.EnsureVisible
+            )
+
+    def _zoomed_unit(self, steps: int) -> ScaleUnit | None:
+        """The rung ``steps`` positions along the ladder (negative = finer),
+        ``None`` when the step would leave «сутки · месяц · год»."""
+        idx = LADDER.index(self._unit) + steps
+        if not 0 <= idx < len(LADDER):
+            return None
+        return LADDER[idx]
+
+    def _step_scale(self, finer: bool) -> None:
+        """Ctrl/Cmd + wheel one notch: one ladder step with the W4 anchor —
+        zooming in anchors on the unit under the sticky label, zooming out on
+        the first visible date; the scroll step itself never moves (spec
+        «Колесо с Ctrl меняет ступень, а не прокрутку»)."""
+        unit = self._zoomed_unit(-1 if finer else 1)
+        if unit is None:
+            return  # DAY is the bottom of the ladder: zoom-out beyond it is inert
+        anchor = self._top_date()
+        self.set_view(unit=unit, anchor_date=anchor)
+        self.scale_changed.emit(unit)
+
+    def zoom_into_unit(self, unit_date: date) -> None:
+        """Click on a month/year position: zoom in one rung anchored there
+        (spec «Клик по месяцу приближает»), without any selection/id signal."""
+        unit = self._zoomed_unit(-1)
+        if unit is None:
+            return
+        self.set_view(unit=unit, anchor_date=unit_date)
+        self.scale_changed.emit(unit)
+
     def mousePressEvent(self, event) -> None:  # Qt API name
         if (
             event.button() == Qt.MouseButton.LeftButton
@@ -883,10 +1250,26 @@ class TimelineListView(QListWidget):
             # W3c D1: the rail owns its zone — the press arms the click/drag
             # gesture on the day under the cursor and never reaches the base
             # class, so a rail press selects nothing and emits no ``clicked``.
+            self._press_index = -1
             anchor = self._rail_index_at(int(event.position().y()))
             self._rail_press = None if anchor is None else _RailPress(
                 anchor_index=anchor, press_y=int(event.position().y()),
             )
+            event.accept()
+            return
+        # W4 5.5: a left press on a UNIT position belongs to the zooming click
+        # (disabled rows never select/click via the base machinery anyway) —
+        # consume it here so the re-model on release can never leave a stale
+        # pressed index behind.
+        pressed = (
+            self.indexAt(event.position().toPoint()).row()
+            if event.button() == Qt.MouseButton.LeftButton else -1
+        )
+        self._press_index = pressed
+        if (
+            0 <= pressed < len(self._rows)
+            and self._rows[pressed].kind is RowKind.UNIT
+        ):
             event.accept()
             return
         super().mousePressEvent(event)
@@ -913,12 +1296,17 @@ class TimelineListView(QListWidget):
                 if start == end:
                     self._jump_to_day_row(press.anchor_index)
                 else:
-                    self.day_range_applied.emit(start, end)
+                    # W4 D3: on the large rungs the pair holds unit anchors —
+                    # the emit normalizes them to full dates (1-е число /
+                    # last-day месяца, 1 янв / 31 дек года). DAY is unchanged.
+                    self.day_range_applied.emit(start, _unit_last(end, self._unit))
                 if self.count():  # the emit path may have rebuilt the model
                     self._update_follow_day(event.position().toPoint())
             elif abs(y - press.press_y) < DRAG_START_THRESHOLD_PX:
                 # D2: the release decision splits on the drag threshold —
-                # under it this is the click-jump (D4).
+                # under it this is the click-jump (D4); on the large rungs the
+                # same jump runs per unit (W4 5.5, spec «Прыжок на пустой
+                # день» — любой ступени).
                 self._jump_to_day_row(press.anchor_index)
             # D2: a past-threshold release with no drag move under it stays
             # consumed inert — the base class never sees any rail release, so
@@ -926,6 +1314,21 @@ class TimelineListView(QListWidget):
             self.viewport().update()
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton:
+            pressed = self._press_index
+            self._press_index = -1
+            idx = self.indexAt(event.position().toPoint()).row()
+            if (
+                0 <= pressed < len(self._rows)
+                and idx == pressed
+                and self._rows[pressed].kind is RowKind.UNIT
+            ):
+                # W4 5.5: a click on a month/year position zooms one step with
+                # that unit as anchor — a position is never a selection, so
+                # the base class (and its id-signals) never sees this release.
+                self.zoom_into_unit(self._rows[pressed].date)
+                event.accept()
+                return
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # Qt API name
@@ -993,10 +1396,19 @@ class TimelineListView(QListWidget):
 
         ``ScrollPerItem`` alone is not enough: Qt multiplies a notch by the
         platform's wheel-scroll-lines setting (3 lines/notch on macOS), so the
-        step is pinned here to a single row in either direction. Zoom does not
-        exist (spec): modifiers do not change the step either.
+        step is pinned here to a single row in either direction. Ctrl/Cmd +
+        колесо no longer scrolls at all — it steps the W4 ladder (5.4),
+        zooming in on wheel-up; the other modifiers keep the plain one-row
+        step (spec «иные модификаторы шаг прокрутки менять НЕ SHALL»).
         """
         angle = event.angleDelta().y()
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+        ):
+            if angle != 0:
+                self._step_scale(finer=angle > 0)
+            event.accept()  # the wheel belongs to the ladder while Ctrl rides
+            return
         if angle == 0:  # e.g. a horizontal trackpad glide — leave it to Qt
             super().wheelEvent(event)
             return
@@ -1144,6 +1556,7 @@ class TimelineWidget(QWidget):
     event_double_clicked = Signal(int)  # event_id
     add_event_requested = Signal()
     add_entity_requested = Signal(str)  # entity_type: character/location/organization/item
+    event_types_requested = Signal()  # W4 6.2: «Типы событий…» from the «+» menu
     filter_changed = Signal(object, object)  # (start_date | None, end_date | None)
 
     def __init__(
@@ -1200,9 +1613,51 @@ class TimelineWidget(QWidget):
         header.addWidget(self.add_button)
         layout.addLayout(header)
 
+        # W4 6.2: «Типы событий…» joins the «+» context menu (member action so
+        # tests can enumerate it; the menu's own exec result drives the emit,
+        # mirroring the five create items — the action itself stays unconnected
+        # to avoid a double signal when Qt triggers it from the menu).
+        self.event_types_action = QAction("Типы событий…", self)
+        self.event_types_action.setObjectName("eventTypesAction")
+
         # Header row 2 (task 3.1/D8) — jump navigation in the slot the removed
         # «Применить»/«Очистить» pair occupied; shortcuts mirror the buttons.
+        # W4 5.7: the ladder and grouping switchers join this row without
+        # displacing the chip/«+»/jump controls; checked state mirrors the
+        # ViewModel knobs and survives every re-model.
         nav_row = QHBoxLayout()
+        self.scale_buttons: dict[ScaleUnit, QPushButton] = {}
+        for unit, caption in LADDER_CAPTIONS:
+            button = QPushButton(caption)
+            button.setObjectName(f"scale{unit.value.title()}Button")
+            button.setCheckable(True)
+            button.setToolTip(f"Ступень шкалы: {caption}")
+            button.clicked.connect(
+                lambda _checked=False, u=unit: self._on_scale_chosen(u)
+            )
+            self.scale_buttons[unit] = button
+            nav_row.addWidget(button)
+        self.scale_buttons[ScaleUnit.DAY].setChecked(True)
+        nav_row.addSpacing(6)
+        self.group_button = QToolButton()
+        self.group_button.setObjectName("groupSwitchButton")
+        self.group_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.group_button.setToolTip("Группировка по сущностям")
+        group_menu = QMenu(self.group_button)
+        self.group_actions: dict = {}
+        for kind in GROUPING_ORDER:
+            action = group_menu.addAction(GROUPING_CAPTIONS[kind])
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, k=kind: self._on_group_chosen(k)
+            )
+            self.group_actions[kind] = action
+        self.group_actions[None].setChecked(True)
+        self.group_button.setMenu(group_menu)
+        self.group_button.setText(
+            f"группа: {GROUPING_CAPTIONS[None]} \u25be"
+        )
+        nav_row.addWidget(self.group_button)
         nav_row.addStretch()
         self.jump_prev_button = QPushButton("⤒")
         self.jump_prev_button.setFixedSize(30, 30)
@@ -1238,7 +1693,64 @@ class TimelineWidget(QWidget):
         # apply path as the popover, so the chip mirrors it and the panel's
         # single filter_changed contract stays untouched.
         self.rows_view.day_range_applied.connect(self._on_filter_range)
+        # W4 5.4–5.5: a wheel/click ladder step inside the list is mirrored
+        # into the ViewModel (its setter stays the single mutation point).
+        self.rows_view.scale_changed.connect(self._on_view_scale_changed)
         layout.addWidget(self.rows_view, 1)
+
+    # ── W4 ladder switchers (tasks 5.4/5.5/5.7) ──────────────────────────
+
+    def _view_knobs(self) -> tuple | None:
+        """The ViewModel's ladder knobs, or ``None`` while the VM is a stand-in
+        (test doubles expose a MagicMock ``unit`` that no ladder recognizes)."""
+        unit = getattr(self._vm, "unit", None)
+        group_by = getattr(self._vm, "group_by", None)
+        if not isinstance(unit, ScaleUnit):
+            return None
+        if group_by is not None and not isinstance(group_by, EntityKind):
+            return None
+        return unit, group_by
+
+    def _sync_from_vm(self) -> None:
+        """Reflect the ViewModel's knobs into the list and the switchers.
+
+        The VM is the single mutation point: header clicks write ``vm.unit``
+        /``vm.group_by`` (its setters rebuild rows, keep selection + filter —
+        tasks 4.1/4.3) and this method mirrors the result into the list via
+        :meth:`TimelineListView.set_view` (anchor-keeping, selection-pending).
+        """
+        knobs = self._view_knobs()
+        if knobs is None:
+            return
+        unit, group_by = knobs
+        self.rows_view.set_view(unit=unit, group_by=group_by)
+        self._sync_switcher(unit, group_by)
+
+    def _sync_switcher(self, unit: ScaleUnit, group_by) -> None:
+        for rung, button in self.scale_buttons.items():
+            button.setChecked(rung is unit)
+        for kind, action in self.group_actions.items():
+            action.setChecked(kind is group_by)
+        self.group_button.setText(
+            f"группа: {GROUPING_CAPTIONS[group_by]} \u25be"
+        )
+
+    def _on_scale_chosen(self, unit: ScaleUnit) -> None:
+        """Header ladder click: write through the VM, then mirror (5.7)."""
+        self._vm.unit = unit
+        self._sync_from_vm()
+
+    def _on_group_chosen(self, kind) -> None:
+        """Header grouping click: same write-through path as the ladder (5.7)."""
+        self._vm.group_by = kind
+        self._sync_from_vm()
+
+    def _on_view_scale_changed(self, unit) -> None:
+        """The list stepped the ladder itself (Ctrl/Cmd wheel, unit click):
+        mirror into the VM without echoing a re-model back into the list."""
+        self._vm.unit = unit
+        knobs = self._view_knobs()
+        self._sync_switcher(*(knobs or (unit, None)))
 
     def _on_add_context_menu(self, pos) -> None:
         menu = QMenu(self)
@@ -1247,6 +1759,8 @@ class TimelineWidget(QWidget):
         act_loc = menu.addAction("Новая локация")
         act_org = menu.addAction("Новая организация")
         act_item = menu.addAction("Новый предмет")
+        menu.addSeparator()
+        menu.addAction(self.event_types_action)
 
         global_pos = self.add_button.mapToGlobal(pos)
         action = menu.exec(global_pos)
@@ -1260,6 +1774,8 @@ class TimelineWidget(QWidget):
             self.add_entity_requested.emit("organization")
         elif action is act_item:
             self.add_entity_requested.emit("item")
+        elif action is self.event_types_action:
+            self.event_types_requested.emit()
 
     # ── public panel API (task 2.5; mirrors the list's contract) ────────────
 
@@ -1269,25 +1785,50 @@ class TimelineWidget(QWidget):
         The panel's own filter window rides along: with a live chip range the
         scale enumerates exactly those days — the filter's empty days included
         (spec «Пустые и фильтрационные состояния»); without a filter the sample
-        derives its own min–max.
+        derives its own min–max. The ViewModel's ladder knobs ride along too
+        (a reload never silently returns to «сутки»).
         """
+        self._sync_from_vm()
         start, end = self._filter_range
         self.rows_view.update_events(events, start, end)
 
     def set_selected(self, event_id: int | None) -> None:
-        """Highlight ``event_id`` (idempotent); revealed if not already visible."""
+        """Highlight ``event_id`` (idempotent); revealed if not already visible.
+
+        An external selection first mirrors the ViewModel's knobs: an id
+        arriving from search/jump while the VM has descended the ladder (its
+        ``_ensure_day_unit_for`` already moved ``unit`` to DAY) must find the
+        EVENT row the descent just modelled (spec «Внешний выбор с крупной
+        ступени спускает лестницу»).
+        """
+        self._sync_from_vm()
         self.rows_view.set_selected(event_id)
 
     def scroll_to_event(self, event_id: int) -> None:
         """Scroll the scale just enough to reveal the event's row."""
         self.rows_view.scroll_to_event(event_id)
 
+    # ── ladder-aware jump commands (W4 «Прыжок с месяцной ступени») ────────
+
+    def _descend_for_jump(self) -> None:
+        """Unit rungs own no EVENT rows — drop the VM's ladder to DAY and
+        re-model before retrying the jump (spec «Навигация к событиям»); a
+        no-op when DAY is already current or the VM is a test stand-in."""
+        self._vm.unit = ScaleUnit.DAY
+        self._sync_from_vm()
+
     def jump_prev_event(self) -> None:
         """Scroll to the nearest EVENT row before the visible position."""
+        if self.rows_view.jump_prev_event():
+            return
+        self._descend_for_jump()
         self.rows_view.jump_prev_event()
 
     def jump_next_event(self) -> None:
         """Scroll to the nearest EVENT row after the visible position."""
+        if self.rows_view.jump_next_event():
+            return
+        self._descend_for_jump()
         self.rows_view.jump_next_event()
 
     def _on_chip_clicked(self) -> None:

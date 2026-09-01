@@ -11,11 +11,12 @@ from typing import Any, Coroutine
 
 from PySide6.QtWidgets import QMessageBox
 
-from app.application.services.event_service import EventService
+from app.application.services.event_service import EventService, _TYPE_UNSET
 from app.application.services.xlsx_import_service import XlsxImportService
 from app.infrastructure.db.models import DescriptionModel
 from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED_CONFIG
 from app.presentation.views.event_dialog import EventDialog
+from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
 
 
@@ -215,10 +216,32 @@ class ApplicationWiring:
                 list(await self._app._entity_services["location"].get_all()),
             )
 
+        async def _load_types_into_dialog(dialog):
+            """Fill the event dialog's type selector with the game's set (W4)."""
+            dialog.set_event_types(list(await event_service.get_event_types()))
+
+        async def _reload_timeline():
+            """Re-read events and re-render the scale (selection/filter kept)."""
+            await timeline_vm.load_events()
+            window.timeline_widget.update_events(timeline_vm.events)
+
+        # ── Event types (W4 6.1/6.2): dialog entry in the panel's «+» menu ──
+        def on_event_types():
+            dialog = EventTypesDialog(
+                event_service, run=self._spawn, parent=window,
+                theme=self._app._theme,
+            )
+
+            dialog.types_changed.connect(lambda: self._spawn(_reload_timeline()))
+            dialog.open()
+
+        window.timeline_widget.event_types_requested.connect(on_event_types)
+
         # Add event button
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
             self._spawn(_load_available_into_dialog(dialog))
+            self._spawn(_load_types_into_dialog(dialog))
             self._app._wire_mentions_for_dialog(dialog, on_entity_click)
             self._app._wire_ai_buttons(dialog)
 
@@ -236,6 +259,7 @@ class ApplicationWiring:
                     characteristics=data.pop("characteristics", ""),
                     backstory=data.pop("backstory", ""),
                     relations=relations,
+                    event_type_id=data.pop("event_type_id", None),
                 )
                 await timeline_vm.load_events()
                 window.timeline_widget.update_events(timeline_vm.events)
@@ -298,6 +322,9 @@ class ApplicationWiring:
                     return
                 dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
                 await _load_available_into_dialog(dialog)
+                # Types before populate: the selector gets the game's set, then
+                # populate() preselects this event's current type (W4 6.3).
+                dialog.set_event_types(list(await event_service.get_event_types()))
                 dialog.populate(event)
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
                 self._app._wire_ai_buttons(dialog)
@@ -318,6 +345,7 @@ class ApplicationWiring:
                         characteristics=data.pop("characteristics", ""),
                         backstory=data.pop("backstory", ""),
                         relations=relations,
+                        event_type_id=data.pop("event_type_id", _TYPE_UNSET),
                     )
                     await timeline_vm.load_events()
                     window.timeline_widget.update_events(timeline_vm.events)

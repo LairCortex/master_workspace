@@ -37,6 +37,16 @@ log = logging.getLogger(__name__)
 # (never ``color.font.family.mono`` → ``--color-font-family-mono``), and
 # ``color.rating.low/high`` are real colors — the content tints that
 # ``detail_panel.rating_to_color`` paints from.
+# The chromatic palette of W4 (add-event-timeline-scale-views-w4, ui-theme
+# delta): eight paired colors for user-data categories (event types). Unlike
+# the roles above they are never read by a chrome QSS rule or the app.css
+# body — their readers are the event timeline delegate and the event-types
+# dialog (via ``token_rgb``), yet they stay required: their absence kills the
+# theme like any other token, and every key still becomes a CSS custom
+# property for the web player. Values must stay distinguishable on
+# ``color.bg.surface`` of their own theme (enforced in the test suite).
+CHART_TOKEN_KEYS: tuple[str, ...] = tuple(f"color.chart.{i}" for i in range(1, 9))
+
 REQUIRED_TOKEN_KEYS: tuple[str, ...] = (
     "color.bg.canvas",
     "color.bg.surface",
@@ -58,6 +68,7 @@ REQUIRED_TOKEN_KEYS: tuple[str, ...] = (
     "font.size.lg",
     "font.size.xl",
     "font.weight.bold",
+    *CHART_TOKEN_KEYS,
 )
 
 Tokens = dict[str, dict[str, str]]
