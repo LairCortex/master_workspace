@@ -1,81 +1,34 @@
-"""Pure row model of the vertical event timeline (W3b D3, W4 scale ladder) — no Qt imports.
+"""Pure row model of the vertical event timeline — no Qt imports.
 
-Input: event-like objects (anything exposing ``id``/``start_date``/
-``end_date``/``name``, e.g. domain ``Event`` instances), plus an optional
-visible range and the W4 view knobs — the *scale unit* (сутки/месяц/год) and a
-per-event entity grouping map. Output: ``build_rows``.
+redesign-timeline-day-ladder (design D2): the ladder core is ``build_rows`` —
+sticky day headers with per-day *duplicates* of every event card (an open
+event runs to the tape's ``content_bottom``), collapsing eventless gaps,
+month/year period levels with per-period counters, ``hide_empty`` windowing of
+empty positions, plus the pure zoom/drop helpers (``zoom_target``/
+``zoom_level``, ``drop_actions``/``apply_drop_action``). Input contract:
+event-like objects (anything exposing ``id``/``start_date``/``end_date``/
+``name``, e.g. domain ``Event`` instances), the «Выбор даты» navigation
+``window`` and the view knobs — the ladder *level* (сутки/месяц/год) and the
+hide-empty toggle.
 
-* ``unit=DAY`` (the default, the whole W3b/W3c contract): one entry per
-  calendar day of the range; an EVENT row per event starting that day (sorted
-  ``(start, id)``) or a single EMPTY_DAY row. Events stand only at their start
-  position regardless of duration; empty days never collapse. Without an
-  explicit range the sample derives its own: min(start) … max(end|start).
-* ``unit=MONTH``/``YEAR``: every calendar unit of the window (bounds aligned to
-  unit edges) gets exactly one UNIT row — an empty unit stays as a stub with
-  ``unit_count=0``. An event touches every unit whose extent crosses
-  ``[start, end|range_end]`` (an open end is anchored at the window's end).
-* ``groups`` (event id → entity names): on DAY it only reorders events inside
-  a day by ``(has_group, group_name, start, id)``; on MONTH/YEAR the list is
-  sectioned — a SECTION header per entity, alphabetical, «Без привязки» last,
-  inside each section only the units its events touched (an event is counted
-  into every section it is linked to).
-
-EVENT rows carry ``token_key`` — ``"color.chart.{color_index}"`` when the event
-has a ``event_type.color_index`` (duck-typed, the core never imports the
+Event cards carry ``token_key`` — ``"color.chart.{color_index}"`` when the
+event has a ``event_type.color_index`` (duck-typed, the core never imports the
 domain), ``None`` otherwise — so delegates color type dots without knowing
-about types (W4 D5).
-
-``prev_event_index`` / ``next_event_index`` are the jump helpers behind the
-panel's "to previous/next event" commands (empty runs are skipped, edges are
-inert; on MONTH/YEAR there are no EVENT rows at all, so they hand back ``None``
-and the view reads that as "drop the ladder a step"). ``index_at_y`` /
-``normalize_range`` are the rail's Qt-free geometry helpers behind the W3c rail
-interactions: a y→first-row-of-the-position's-unit hit-test that clamps to the
-list edges, and the (min, max) ordering of a drag pair. The equal-height-rows
-contract (``y // row_height``) is invariant to row kind. ``bracket_lanes`` is
-the rail-bracket lane packer (W3b D6, moved into the core by W4 D7): events in
-``(start, id)`` order take the first free lane, the assignment wraps around
-:data:`BRACKET_MAX_LANES`; in unit mode a span is mapped to
-``[first_unit, last_unit]`` before packing. The W5 drag-editing geometry lives
-here too: ``target_day`` (target day under the cursor, extrapolated past the
-block's edges by :data:`EXTRAPOLATION_STEP_PX`), ``translate_span`` (shift a
-closed span, duration intact) and the ``serif_targets``/``serif_hit`` pair
-behind the bottom-serif stretch handle (D8). Everything is plain deterministic
-data, testable without a QApplication.
+about types. The pre-redesign side rail — its geometry hit-tests, lane packing
+and stretch handles — was deleted with the rail (design D9); only the helpers
+the drop gesture still uses survived (``clamp_calendar``, ``translate_span``).
+All of this is plain deterministic data, testable without a QApplication.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import Enum
-from typing import Mapping, Protocol, Sequence
+from typing import Protocol, Sequence
 
-#: Group key (and section header) collecting events with no link of the
-#: grouped kind — always the last section (spec «Группировка по сущностям»).
-NO_GROUP_KEY = "Без привязки"
+from app.presentation.utils.date_utils import format_game_date, month_name
 
-#: Rail bracket lanes before the assignment wraps around (W3b D6 / W4 3.4).
-BRACKET_MAX_LANES = 4
-
-#: First bracket lane x and the x step of the neighbouring lanes (W5 1.4:
-#: moved out of the widget so the Qt-free serif hit-test (D8) computes the
-#: same centers the delegate paints; the view imports these back for painting).
-BRACKET_X0 = 6
-BRACKET_LANE_STEP = 5
-
-#: Pixel pitch a drag target extrapolates by past the row block (W5 D7):
-#: the equal-height row pitch — intentionally equal to the view's
-#: ``ROW_HEIGHT`` (the core cannot import the view; the view hands its
-#: ``ROW_HEIGHT`` to :func:`target_day` as ``row_height``).
-EXTRAPOLATION_STEP_PX = 24
-
-#: Half-width of the bottom-serif drag handle's hit zone (W5 D7): a press at
-#: ``|x - center| ≤ SERIF_HIT_PX`` from the serif's lane center arms the
-#: end-stretch gesture, everything beside it stays the rail's (spec
-#: «Промах мимо засечки остаётся рейкой»).
-SERIF_HIT_PX = 4
-
-#: Inclusive calendar bounds of ``CustomDateEdit`` (W5 D2/D7). A drag target
+#: Inclusive calendar bounds of ``CustomDateEdit`` (W5 D2/D7). A drop target
 #: never leaves this interval — the gesture cannot mint a date the card
 #: cannot display.
 CALENDAR_MIN = date(100, 1, 1)
@@ -83,60 +36,24 @@ CALENDAR_MAX = date(9999, 12, 31)
 
 
 class ScaleUnit(Enum):
-    """One rung of the W4 view ladder: the unit a position stands for."""
+    """One rung of the view ladder: the unit a position stands for."""
 
     DAY = "day"
     MONTH = "month"
     YEAR = "year"
 
 
-class RowKind(Enum):
-    """Row type: an event line, an empty day, a unit position, a section head."""
-
-    EVENT = "event"
-    EMPTY_DAY = "empty_day"
-    UNIT = "unit"
-    SECTION = "section"
-
-
 class _EventLike(Protocol):
     """The minimal shape ``build_rows`` reads off an event.
 
     An optional ``event_type`` attribute (duck-typed, ``.color_index`` read off
-    it) only decorates EVENT rows with ``token_key``; doubles may omit it.
+    it) only decorates event cards with ``token_key``; doubles may omit it.
     """
 
     id: int
     start_date: date
     end_date: date | None
     name: str
-
-
-@dataclass(frozen=True)
-class Row:
-    """One list position: event line, empty day, unit position or section head.
-
-    ``date`` is the position anchor: the day (DAY rungs) or the first day of
-    the unit this row stands for. An EVENT row repeats the event's own
-    ``start``/``end`` (``end`` stays ``None`` for an open end), its ``name``
-    and its type-dot ``token_key`` so delegates never reach back into the
-    domain objects. An EMPTY_DAY row carries ``event_id=None``, ``start`` equal
-    to its day and an empty name. A UNIT row carries ``unit`` plus the
-    ``unit_count`` of events touching it (0 → the muted empty stub); a SECTION
-    row carries the section's ``group_key``. On sectioned rungs UNIT rows
-    repeat the owning ``group_key``.
-    """
-
-    kind: RowKind
-    date: date
-    event_id: int | None = None
-    start: date | None = None
-    end: date | None = None
-    name: str = ""
-    unit: ScaleUnit = ScaleUnit.DAY
-    unit_count: int | None = None
-    group_key: str | None = None
-    token_key: str | None = None
 
 
 def _unit_start(day: date, unit: ScaleUnit) -> date:
@@ -159,16 +76,6 @@ def _next_unit_start(unit_first: date, unit: ScaleUnit) -> date:
     return unit_first + timedelta(days=1)
 
 
-def _iter_window_units(range_start: date, range_end: date, unit: ScaleUnit) -> list[date]:
-    """First days of every unit of ``unit`` overlapping [range_start, range_end]."""
-    starts: list[date] = []
-    cursor = _unit_start(range_start, unit)
-    while cursor <= range_end:
-        starts.append(cursor)
-        cursor = _next_unit_start(cursor, unit)
-    return starts
-
-
 def _event_token_key(event: _EventLike) -> str | None:
     """Type-dot token of an event ("color.chart.N"), None when untyped.
 
@@ -182,260 +89,6 @@ def _event_token_key(event: _EventLike) -> str | None:
     return f"color.chart.{color_index}"
 
 
-def _group_names(groups: Mapping[int, Sequence[str]] | None, event_id: int) -> tuple[str, ...]:
-    """Names of the groups ``event_id`` belongs to, «Без привязки» normalized away.
-
-    An empty mapping result means "no link" and lands the event in the
-    NO_GROUP_KEY section instead of letting a literal name sort alphabetically.
-    """
-    if groups is None:
-        return ()
-    return tuple(name for name in groups.get(event_id, ()) if name and name != NO_GROUP_KEY)
-
-
-def build_rows(
-    events: Sequence[_EventLike],
-    range_start: date | None = None,
-    range_end: date | None = None,
-    unit: ScaleUnit = ScaleUnit.DAY,
-    groups: Mapping[int, Sequence[str]] | None = None,
-) -> list[Row]:
-    """Lay ``events`` out as rows of the scale ladder ``unit``.
-
-    Range resolution (all rungs): each bound defaults to the sample's own edge
-    — the earliest ``start_date`` and the latest ``end_date`` (an open event
-    contributes only its start to the maximum, never a synthetic future). An
-    explicit pair of bounds (a live filter) enumerates the window even when no
-    event falls inside it (spec «Пустой диапазон фильтра»). No events and no
-    bounds → no rows; inverted explicit bounds → no rows.
-
-    ``unit=DAY`` reproduces the W3b/W3c output exactly when ``groups`` is
-    ``None``: one block per day, EVENT rows sorted ``(start, id)`` or one
-    EMPTY_DAY; ``groups`` then only reorders events inside each day by
-    ``(has_group, group_name, start, id)`` (spec «Сутки остаются хронологией»).
-
-    ``unit=MONTH``/``YEAR`` enumerates every unit of the window (edges aligned
-    to unit boundaries) as a UNIT row with its ``unit_count``; ``groups``
-    sections the list instead — SECTION header, then only the units that
-    section touched, the event counted into every section it links to.
-    """
-    ordered = sorted(events, key=lambda e: (e.start_date, e.id))
-
-    if range_start is None and ordered:
-        range_start = min(e.start_date for e in ordered)
-    if range_end is None and ordered:
-        range_end = max(e.end_date if e.end_date is not None else e.start_date for e in ordered)
-    if range_start is None or range_end is None or range_end < range_start:
-        return []
-
-    if unit is ScaleUnit.DAY:
-        return _build_day_rows(ordered, range_start, range_end, groups)
-    return _build_unit_rows(ordered, range_start, range_end, unit, groups)
-
-
-def _build_day_rows(
-    ordered: Sequence[_EventLike],
-    range_start: date,
-    range_end: date,
-    groups: Mapping[int, Sequence[str]] | None,
-) -> list[Row]:
-    """The W3b/W3c daily layout — bit-for-bit identical without ``groups``."""
-
-    def day_sort_key(event: _EventLike) -> tuple[int, str, date, int]:
-        names = _group_names(groups, event.id)
-        return (0 if names else 1, names[0] if names else "", event.start_date, event.id)
-
-    by_start_day: dict[date, list[_EventLike]] = {}
-    for event in ordered:
-        by_start_day.setdefault(event.start_date, []).append(event)
-    if groups is not None:
-        # Grouping never moves days around, it only orders events inside a day
-        # (spec «Сутки остаются хронологией»): linked first by group name,
-        # then unlinked by (start, id).
-        for day_events in by_start_day.values():
-            day_events.sort(key=day_sort_key)
-
-    rows: list[Row] = []
-    day = range_start
-    one_day = timedelta(days=1)
-    while day <= range_end:
-        day_events = by_start_day.get(day, ())
-        if day_events:
-            rows.extend(
-                Row(
-                    kind=RowKind.EVENT,
-                    date=day,
-                    event_id=event.id,
-                    start=event.start_date,
-                    end=event.end_date,
-                    name=event.name,
-                    token_key=_event_token_key(event),
-                )
-                for event in day_events
-            )
-        else:
-            rows.append(Row(kind=RowKind.EMPTY_DAY, date=day, start=day))
-        day += one_day
-    return rows
-
-
-def _touches(event: _EventLike, unit_first: date, unit_last: date, window_end: date) -> bool:
-    """Whether the event's interval crosses the unit [unit_first, unit_last].
-
-    The interval is ``[start, end]``, an open end anchored at the window's end
-    (W4 3.2) — an ongoing event is painted through the very last unit.
-    """
-    eff_end = window_end if event.end_date is None else event.end_date
-    return event.start_date <= unit_last and eff_end >= unit_first
-
-
-def _build_unit_rows(
-    ordered: Sequence[_EventLike],
-    range_start: date,
-    range_end: date,
-    unit: ScaleUnit,
-    groups: Mapping[int, Sequence[str]] | None,
-) -> list[Row]:
-    """MONTH/YEAR layout: one UNIT row per window unit, optionally sectioned."""
-    units = _iter_window_units(range_start, range_end, unit)
-
-    def unit_counts(members: Sequence[_EventLike]) -> list[tuple[date, int]]:
-        counts: list[tuple[date, int]] = []
-        for first in units:
-            last = _next_unit_start(first, unit) - timedelta(days=1)
-            count = sum(1 for e in members if _touches(e, first, last, range_end))
-            counts.append((first, count))
-        return counts
-
-    if groups is None:
-        return [
-            Row(kind=RowKind.UNIT, date=first, unit=unit, unit_count=count)
-            for first, count in unit_counts(ordered)
-        ]
-
-    sections: dict[str, list[_EventLike]] = {}
-    for event in ordered:
-        names = _group_names(groups, event.id) or (NO_GROUP_KEY,)
-        for name in names:
-            sections.setdefault(name, []).append(event)
-
-    ordered_keys = sorted(name for name in sections if name != NO_GROUP_KEY)
-    if NO_GROUP_KEY in sections:
-        ordered_keys.append(NO_GROUP_KEY)
-
-    rows: list[Row] = []
-    for name in ordered_keys:
-        # Inside a section only the units its own events touched (spec
-        # «Пустой месяц не показан в секции»); a section whose events all
-        # live outside the window owns no position and is skipped.
-        touched = [
-            (first, count)
-            for first, count in unit_counts(sections[name])
-            if count > 0
-        ]
-        if not touched:
-            continue
-        rows.append(Row(kind=RowKind.SECTION, date=touched[0][0], unit=unit, group_key=name))
-        rows.extend(
-            Row(kind=RowKind.UNIT, date=first, unit=unit, unit_count=count, group_key=name)
-            for first, count in touched
-        )
-    return rows
-
-
-def prev_event_index(rows: Sequence[Row], from_idx: int) -> int | None:
-    """Index of the nearest EVENT row strictly before ``from_idx``.
-
-    Runs of empty days are skipped; nothing before the head → ``None``
-    (the jump command stays inert at the edges). A MONTH/YEAR model carries no
-    EVENT rows at all, so the helpers never invent an event target there — the
-    view reads ``None`` as "drop the ladder to DAY first".
-    """
-    for idx in range(min(from_idx, len(rows)) - 1, -1, -1):
-        if rows[idx].kind is RowKind.EVENT:
-            return idx
-    return None
-
-
-def next_event_index(rows: Sequence[Row], from_idx: int) -> int | None:
-    """Index of the nearest EVENT row strictly after ``from_idx``.
-
-    Mirror of :func:`prev_event_index`; nothing after the tail → ``None``.
-    """
-    for idx in range(max(from_idx, -1) + 1, len(rows)):
-        if rows[idx].kind is RowKind.EVENT:
-            return idx
-    return None
-
-
-def index_at_y(rows: Sequence[Row], row_height: int, y: int) -> int | None:
-    """Index of the first row of the unit sitting at viewport coordinate ``y``.
-
-    The rail's hit-test (W3c D3): rows are equal-height regardless of kind —
-    the contract W4 keeps intact — so the row under the cursor is
-    ``y // row_height``. The result is clamped to the row block — a
-    coordinate above the head lands on the first position, one below the tail
-    on the last — which is what keeps a drag released outside the viewport on
-    its last visible unit. The clamp is then walked back to the first row of
-    that row's own date block, so a click against the middle of a multi-event
-    day anchors on the day's head; on unit rungs a position is a single row
-    (a contiguous date block is the section head plus its same-dated unit, the
-    block's head is a valid jump anchor). ``None`` when there is nothing to map
-    onto (no rows, or a non-positive row height).
-    """
-    if not rows or row_height <= 0:
-        return None
-    idx = min(max(y // row_height, 0), len(rows) - 1)
-    day = rows[idx].date
-    while idx > 0 and rows[idx - 1].date == day:
-        idx -= 1
-    return idx
-
-
-def normalize_range(day_a: date, day_b: date) -> tuple[date, date]:
-    """Order a drag pair chronologically → ``(min, max)``.
-
-    A drag stretched bottom-up yields the same bounds as top-down, and a
-    single-day drag collapses to the day twice (spec «Drag снизу вверх
-    нормализуется»). Unit rungs pass unit anchor dates through the same helper;
-    snapping the anchors to full unit boundaries (1-е число / last-day) is the
-    view's emit-time mapping (W4 D3), not this pair ordering.
-    """
-    return (day_a, day_b) if day_a <= day_b else (day_b, day_a)
-
-
-def target_day(
-    rows: Sequence[Row], row_height: int, y: int, scroll: int = 0
-) -> date | None:
-    """The day a drag points at — viewport ``y`` over the scrolled model (W5 D2).
-
-    Inside the row block this is the :func:`index_at_y` hit-test on the equal
-    -height contract (whole-row ``scroll``, floor division rides negative y
-    into negative steps): the day of the row under the cursor. Past the edges
-    there is no row to hit-test, so the target is *extrapolated* from the
-    model's own edge day — every :data:`EXTRAPOLATION_STEP_PX`-sized pitch
-    beyond the head steps one earlier day back, beyond the tail one later day
-    on (``ceil(Δy / pitch)`` days, spelled as the same floor-division step).
-    Crossing month/December→January/February-29 needs no rules of its own:
-    plain calendar arithmetic walks the steps (spec «без специальных правил»).
-    ``None`` only for a non-positive pitch or an empty model — the edge days
-    themselves always extend, which is what lets a release outside the list
-    commit on its extrapolated target (spec «Release вне списка — обычный
-    commit»). Drag editing is a DAY-rung gesture; the row model handed in is
-    the daily one. Every result is clamped to :data:`CALENDAR_MIN` /
-    :data:`CALENDAR_MAX` (inside the block and past the edges alike).
-    """
-    if not rows or row_height <= 0:
-        return None
-    pitch = row_height  # the view passes its ROW_HEIGHT == EXTRAPOLATION_STEP_PX
-    row = (y + scroll * pitch) // pitch
-    if 0 <= row < len(rows):
-        return clamp_calendar(rows[row].date)
-    if row < 0:  # ceil(-content/pitch) == -row steps above the head day
-        return _shift_day(rows[0].date, row)
-    return _shift_day(rows[-1].date, row - (len(rows) - 1))
-
-
 def clamp_calendar(day: date) -> date:
     """Clip ``day`` to :data:`CALENDAR_MIN` … :data:`CALENDAR_MAX` (W5 1.5)."""
     if day < CALENDAR_MIN:
@@ -445,137 +98,486 @@ def clamp_calendar(day: date) -> date:
     return day
 
 
-def _shift_day(day: date, steps: int) -> date:
-    """``day + steps``, clamped; ``OverflowError`` at the datetime edges."""
-    try:
-        shifted = day + timedelta(days=steps)
-    except OverflowError:
-        return CALENDAR_MIN if steps < 0 else CALENDAR_MAX
-    return clamp_calendar(shifted)
-
-
 def translate_span(start: date, end: date, delta_days: int) -> tuple[date, date]:
     """Shift a closed span by ``delta_days``, duration intact (W5 1.3).
 
     Both bounds move by the same amount, so the length never changes and the
     pair never inverts (for a closed input, ``end ≥ start`` is
     shift-invariant). This layer is *only* the shift — clamping to the model
-    or the filter is the view/wiring's business, not the arithmetic's.
+    or the view's window clamp is the view/wiring's business, not the arithmetic's.
     """
     shift = timedelta(days=delta_days)
     return start + shift, end + shift
 
 
-def bracket_lanes(
-    events: Sequence[_EventLike],
-    range_end: date | None,
-    unit: ScaleUnit = ScaleUnit.DAY,
-) -> dict[int, int]:
-    """Deterministic rail lane per event bracket (moved into the core by W4 3.4).
+# ── the day-ladder contract (design D2/D5/D6) ────────────────────────────────
+# Sticky day sections with per-day card duplicates, collapsing eventless gaps,
+# month/year period levels with counters, the zoom/drop pure helpers and the
+# ``hide_empty`` / window knobs. All positions are equal-height by construction
+# — the row TYPE is the height invariant (the view renders every ladder row at
+# ROW_HEIGHT).
 
-    Brackets spanning the same position must not collide (spec «Пересекающиеся
-    привязки»): events are taken in ``(start, id)`` order and each takes the
-    first lane whose last bracket already ended before its start; when all
-    :data:`BRACKET_MAX_LANES` lanes are busy the assignment wraps — the
-    overlap is then visually accepted, still deterministically.
+#: An eventless run LONGER than this many days collapses into a single
+#: :class:`GapCollapsedRow` position (spec «Лента времени», design D2).
+GAP_COLLAPSE_DAYS = 14
 
-    An open end reaches ``range_end`` without asserting a "current" date; a
-    span of a single position owns no bracket lane (on DAY its day tick
-    already marks it, spec «Привязка событий к рейке»). ``unit=MONTH``/``YEAR``
-    maps the span onto ``[first_unit, last_unit]`` — bracketing units the span
-    touches (spec «Скобка через месяцы») — otherwise the packing is unchanged.
-    """
-    if range_end is None:
-        return {}
-    spans: list[tuple[_EventLike, date]] = []
-    for event in events:
-        first_unit = _unit_start(event.start_date, unit)
-        eff_end = range_end if event.end_date is None else min(event.end_date, range_end)
-        last_unit = _unit_start(eff_end, unit)
-        if last_unit > first_unit:
-            spans.append((event, last_unit))
-    spans.sort(key=lambda pair: (pair[0].start_date, pair[0].id))
-    lane_free_until: dict[int, date] = {}
-    lanes: dict[int, int] = {}
-    for event, last_unit in spans:
-        first_unit = _unit_start(event.start_date, unit)
-        lane = next(
-            (cand for cand in range(BRACKET_MAX_LANES)
-             if lane_free_until.get(cand, first_unit) < first_unit),
-            len(lanes) % BRACKET_MAX_LANES,
-        )
-        lane_free_until[lane] = last_unit
-        lanes[event.id] = lane
-    return lanes
+#: The ladder knob of the core: the three period rungs (сутки/месяц/год).
+Level = ScaleUnit
+
+
+class DropAction(Enum):
+    """One mutation the drop gesture's release menu can commit (D5)."""
+
+    MOVE = "move"
+    EXTEND_DOWN = "extend_down"
+    START_EARLIER = "start_earlier"
 
 
 @dataclass(frozen=True)
-class SerifTarget:
-    """One draggable bottom serif (W5 D8): which event, which row, which lane.
+class DayHeaderRow:
+    """Sticky section head of one day (daily level); ``date`` is the day."""
 
-    ``center_x`` is the x the delegate paints that serif at — the single
-    source of truth both painter and hit-test share (no "serif is there but
-    the hit zone is elsewhere" drift).
+    date: date
+
+
+@dataclass(frozen=True)
+class EventRow:
+    """One event card sitting in one day — a multi-day event repeats.
+
+    ``date`` is the day this duplicate card belongs to; ``start``/``end``
+    mirror the event's REAL bounds (``end is None`` = open, the delegate
+    paints the «бессрочно» mark from it), so every card of one event reads
+    identical and any edit acts on the whole record. ``token_key`` is the
+    duck-typed ``"color.chart.N"`` type-dot token (``None`` = untyped).
     """
 
+    date: date
     event_id: int
-    row_index: int
-    lane: int
-
-    @property
-    def center_x(self) -> int:
-        return BRACKET_X0 + self.lane * BRACKET_LANE_STEP
+    start: date
+    end: date | None
+    name: str
+    token_key: str | None = None
 
 
-def serif_targets(
-    rows: Sequence[Row],
-    events: Sequence[_EventLike],
-    lanes: Mapping[int, int],
-) -> dict[int, tuple[SerifTarget, ...]]:
-    """row index → the bottom serifs painted there, for the stretch hit-test.
+@dataclass(frozen=True)
+class EmptyDayRow:
+    """The one-and-only placeholder position of an eventless day."""
 
-    A target exists exactly where ``_rebuild`` paints a ``serif_bottom``
-    segment of a **closed multi-day** span (D8): on the last row of the span's
-    end day, on the event's bracket lane, with the same clamp to the model's
-    last day the painter applies (an end beyond the window serifs on the edge
-    row). One-day spans own no handle (and usually no lane at all), and open
-    ends stay pure decoration — both excluded even if a lane is handed in
-    (spec «Засечка открытой скобки не ручка», «Однодневное нельзя растянуть»).
-    Two spans ending on one day stack up as a tuple, input order kept.
+    date: date
+
+
+@dataclass(frozen=True)
+class GapCollapsedRow:
+    """One position standing for an eventless run longer than the threshold.
+
+    ``date``/``end`` are the gap's real bounds — the delegate formats them
+    with the game calendar; the row answers no event selection.
     """
-    targets: dict[int, list[SerifTarget]] = {}
-    if not rows or not lanes:
-        return {}
-    last_index_by_date = {row.date: idx for idx, row in enumerate(rows)}
-    window_end = rows[-1].date  # the edge open/crossing spans clamp onto
+
+    date: date
+    end: date
+
+
+@dataclass(frozen=True)
+class PeriodHeaderRow:
+    """Sticky header of one month/year period (MONTH/YEAR levels)."""
+
+    date: date  # first day of the period
+    level: ScaleUnit
+
+
+@dataclass(frozen=True)
+class PeriodCardRow:
+    """The one clickable card of a period: ``count`` events cross it.
+
+    ``count == 0`` is the muted «нет событий» position — still a position,
+    still drills a level down (design D6).
+    """
+
+    date: date  # first day of the period
+    level: ScaleUnit
+    count: int
+
+
+#: Union of every ladder position type (the equal-height contract: the view
+#: paints each of these at exactly one ROW_HEIGHT).
+LadderRow = DayHeaderRow | EventRow | EmptyDayRow | GapCollapsedRow | PeriodHeaderRow | PeriodCardRow
+
+_ONE_DAY = timedelta(days=1)
+
+
+# ── sticky overlay state (design D3: the two push-out QLabel captions) ──────
+
+
+def is_header_row(row: object) -> bool:
+    """Whether ``row`` opens a sticky section (day or period header)."""
+    return isinstance(row, DayHeaderRow | PeriodHeaderRow)
+
+
+def header_caption(row: DayHeaderRow | PeriodHeaderRow) -> str:
+    """The game-calendar caption of a section header row.
+
+    Re-reads the live month map on every call (a month rename repaints without
+    a rebuild): full game date per day, «Март 1245» per month, «1245» per year
+    (spec «Липкий заголовок периода», «Игровые месяцы»).
+    """
+    if isinstance(row, PeriodHeaderRow):
+        if row.level is ScaleUnit.MONTH:
+            return f"{month_name(row.date.month)} {row.date.year}"
+        return str(row.date.year)
+    return format_game_date(row.date)
+
+
+@dataclass(frozen=True)
+class StickyState:
+    """Core-side truth behind the view's two sticky overlays (design D3).
+
+    ``current_index``/``current_text`` describe the header of the section the
+    tape's top edge sits in (``None``/``""`` while no section has started —
+    e.g. the tape opens on a collapsed gap); ``next_index``/``next_text`` are
+    the chasing header the view animates its second label with (``None`` when
+    the current section runs to the end of the tape).
+    """
+
+    current_index: int | None
+    current_text: str
+    next_index: int | None
+    next_text: str
+
+
+def sticky_state(rows: Sequence[LadderRow], first_visible_index: int) -> StickyState:
+    """The sticky captions for a tape scrolled so ``first_visible_index`` is
+    the top row (design D3 — the equal-height contract makes the view's
+    top-row hit-test this index; a negative/out-of-range value is clamped).
+
+    Pure and Qt-free: the view owns geometry and the ~120 ms push-out
+    animation, the core owns *what* the two overlays say — the section header
+    of the row at the top edge and the header coming up behind it.
+    """
+    if not rows:
+        return StickyState(None, "", None, "")
+    top = min(max(first_visible_index, 0), len(rows) - 1)
+    current_index = next(
+        (i for i in range(top, -1, -1) if is_header_row(rows[i])), None
+    )
+    start = 0 if current_index is None else current_index + 1
+    next_index = next(
+        (i for i in range(start, len(rows)) if is_header_row(rows[i])), None
+    )
+    return StickyState(
+        current_index,
+        header_caption(rows[current_index]) if current_index is not None else "",
+        next_index,
+        header_caption(rows[next_index]) if next_index is not None else "",
+    )
+
+
+def _add_one_year(day: date) -> date:
+    """``day`` one calendar year later clamped to the calendar edge; Feb 29
+    lands on Feb 28 of the flat year."""
+    if day.year >= CALENDAR_MAX.year:
+        return CALENDAR_MAX  # there is no year 10000 to shift into
+    try:
+        return day.replace(year=day.year + 1)
+    except ValueError:  # Feb 29 → the flat year has no such day
+        return day.replace(year=day.year + 1, day=28)
+
+
+def content_bottom(events: Sequence[_EventLike]) -> date:
+    """The tape's bottom edge — the last day any card may stand on (D2).
+
+    ``max(latest closed end_date, latest open start + 1 year)`` clamped to
+    :data:`CALENDAR_MAX`; the bottom therefore never precedes the latest
+    start (open + 1 year always does). An empty sample bottoms at
+    :data:`CALENDAR_MIN` (an empty tape has no content); moving an event past
+    the bottom re-derives a lower bottom on the next rebuild — days grow in.
+    """
+    bottom = CALENDAR_MIN
     for event in events:
-        lane = lanes.get(event.id)
-        if lane is None:
-            continue  # spans without a bracket have no serif to press either
-        if event.end_date is None or event.end_date <= event.start_date:
-            continue  # decoration only: open end or one-day pin
-        row_index = last_index_by_date.get(min(event.end_date, window_end))
-        if row_index is None:
-            continue  # the clamped end day is not part of this model
-        targets.setdefault(row_index, []).append(
-            SerifTarget(event_id=event.id, row_index=row_index, lane=lane)
-        )
-    return {idx: tuple(items) for idx, items in targets.items()}
+        if event.end_date is not None:
+            candidate = event.end_date
+        else:
+            candidate = _add_one_year(event.start_date)
+        if candidate > bottom:
+            bottom = candidate
+    return clamp_calendar(bottom)
 
 
-def serif_hit(
-    targets: Sequence[SerifTarget], x: int
-) -> SerifTarget | None:
-    """The serif whose vertical hit strip contains ``x``, else ``None``.
+def _range_for(
+    events: Sequence[_EventLike],
+    window: tuple[date | None, date | None] | None,
+) -> tuple[date, date] | None:
+    """The day span the ladder enumerates, ``None`` when it owns no position.
 
-    A press within :data:`SERIF_HIT_PX` of a serif's center arms the
-    end-stretch; every other x in the rail keeps jumping/filter-dragging as
-    before (spec «Промах мимо засечки остаётся рейкой»). Overlapping lane
-    strips (lanes sit :data:`BRACKET_LANE_STEP` apart, the strip is wider)
-    resolve to the first target in input order — deterministic, like the
-    lane packer itself.
+    With a complete window (both bounds, the «Выбор даты» selection or a
+    drilled period) → exactly the window's days, clamped to the calendar.
+    Without one (``None``/partial) → the content span: from the earliest event
+    start down to :func:`content_bottom`; no events at all → ``None`` (an
+    empty tape shows only the view-level hint). Inverted bounds → ``None``.
     """
-    for target in targets:
-        if abs(x - target.center_x) <= SERIF_HIT_PX:
-            return target
-    return None
+    if window is not None:
+        win_start, win_end = window
+        if win_start is not None and win_end is not None:
+            win_start = clamp_calendar(win_start)
+            win_end = clamp_calendar(win_end)
+            if win_end < win_start:
+                return None
+            return win_start, win_end
+    if not events:
+        return None
+    range_start = clamp_calendar(min(e.start_date for e in events))
+    range_end = content_bottom(events)
+    if range_end < range_start:
+        return None
+    return range_start, range_end
+
+
+def build_rows(
+    events: Sequence[_EventLike],
+    window: tuple[date | None, date | None] | None = None,
+    level: ScaleUnit = ScaleUnit.DAY,
+    hide_empty: bool = False,
+) -> list[LadderRow]:
+    """Lay ``events`` out as the ladder's positions at ``level`` (design D2).
+
+    * Range — :func:`_range_for`: the window's days, or the content span from
+      the earliest start down to :func:`content_bottom` («дно ленты» without a
+      window). Events are visible by OVERLAP with the range
+      (``start <= range_end and (end is None or end >= range_start)``): one
+      crossing the left edge enters with its cards inside the window, one
+      running past the right edge is clipped to it, an open end runs to the
+      bottom.
+    * DAY — per day: :class:`DayHeaderRow` then one :class:`EventRow` per
+      covering event in ``(start_date, id)`` order, or one
+      :class:`EmptyDayRow`; an eventless run longer than
+      :data:`GAP_COLLAPSE_DAYS` days stands as a single
+      :class:`GapCollapsedRow` carrying its bounds.
+    * MONTH/YEAR — per period: :class:`PeriodHeaderRow` plus one
+      :class:`PeriodCardRow` counting the UNIQUE events crossing the period;
+      an empty period keeps its («нет событий») position.
+    * ``hide_empty`` — cuts :class:`EmptyDayRow`/:class:`GapCollapsedRow` and
+      empty :class:`PeriodCardRow` (with their headers); days of cards, the
+      window and everything else are untouched, disabling restores all.
+    """
+    ordered = sorted(events, key=lambda e: (e.start_date, e.id))
+    span = _range_for(ordered, window)
+    if span is None:
+        return []
+    range_start, range_end = span
+    if level is ScaleUnit.DAY:
+        return _build_day_ladder(ordered, range_start, range_end, hide_empty)
+    return _build_period_ladder(ordered, range_start, range_end, level, hide_empty)
+
+
+def _build_day_ladder(
+    ordered: Sequence[_EventLike],
+    range_start: date,
+    range_end: date,
+    hide_empty: bool,
+) -> list[LadderRow]:
+    """Daily level: header + per-day card duplicates, empties, collapsed gaps.
+
+    Membership of a day in an event's card run changes only at an event start
+    or the day after its (clipped) end, so the sweep walks the constant-
+    coverage segments between those boundary days instead of every single day
+    of a potentially millennia-wide range.
+    """
+    # (event, first card day, last card day) clipped into the range; the
+    # overlap rule of the docstring is exactly ``s <= e`` here.
+    runs: list[tuple[_EventLike, date, date]] = []
+    for event in ordered:
+        end_clipped = range_end if event.end_date is None else min(event.end_date, range_end)
+        if event.start_date > range_end or end_clipped < range_start:
+            continue  # no overlap with the range — not visible at all
+        runs.append((event, event.start_date, end_clipped))
+
+    boundaries = {range_start}
+    boundaries.update(s for _e, s, _end in runs if s > range_start)
+    boundaries.update(end + _ONE_DAY for _e, _s, end in runs if end < range_end)
+    ordered_bounds = sorted(b for b in boundaries if range_start <= b <= range_end)
+
+    rows: list[LadderRow] = []
+    for idx, segment_start in enumerate(ordered_bounds):
+        segment_end = ordered_bounds[idx + 1] - _ONE_DAY if idx + 1 < len(ordered_bounds) else range_end
+        covering = [event for event, s, end in runs if s <= segment_start <= end]
+        if covering:  # order inherited from ``runs`` = (start_date, id)
+            day = segment_start
+            while day <= segment_end:
+                rows.append(DayHeaderRow(date=day))
+                rows.extend(
+                    EventRow(
+                        date=day,
+                        event_id=event.id,
+                        start=event.start_date,
+                        end=event.end_date,
+                        name=event.name,
+                        token_key=_event_token_key(event),
+                    )
+                    for event in covering
+                )
+                day += _ONE_DAY
+            continue
+        if hide_empty:  # empty days and collapses are cut wholesale
+            continue
+        run = (segment_end - segment_start).days + 1
+        if run > GAP_COLLAPSE_DAYS:
+            rows.append(GapCollapsedRow(date=segment_start, end=segment_end))
+        else:
+            day = segment_start
+            while day <= segment_end:
+                rows.append(DayHeaderRow(date=day))
+                rows.append(EmptyDayRow(date=day))
+                day += _ONE_DAY
+    return rows
+
+
+def _build_period_ladder(
+    ordered: Sequence[_EventLike],
+    range_start: date,
+    range_end: date,
+    level: ScaleUnit,
+    hide_empty: bool,
+) -> list[LadderRow]:
+    """MONTH/YEAR level: header + one counter card per window period."""
+    rows: list[LadderRow] = []
+    cursor = _unit_start(range_start, level)
+    while True:
+        try:
+            next_first: date | None = _next_unit_start(cursor, level)
+        except ValueError:  # 9999-12 overflow: this period reaches the edge
+            next_first = None
+        period_last = (next_first - _ONE_DAY) if next_first is not None else CALENDAR_MAX
+        # The card/header anchor is the period's own first day (a drill-in
+        # derives «окно = период» straight off it); the count only sees the
+        # part of the period that lies inside the visible range.
+        first = max(cursor, range_start)
+        last = min(period_last, range_end)
+        count = len({
+            event.id for event in ordered
+            if event.start_date <= last
+            and (event.end_date is None or event.end_date >= first)
+        })
+        if not (hide_empty and count == 0):  # a hidden «нет событий» loses its
+            rows.append(PeriodHeaderRow(date=cursor, level=level))  # header too
+            rows.append(PeriodCardRow(date=cursor, level=level, count=count))
+        if next_first is None or next_first > range_end:
+            break  # the period just emitted ended the range
+        cursor = next_first
+    return rows
+
+
+def zoom_level(level: ScaleUnit, delta: int) -> ScaleUnit:
+    """Rung after ``delta`` zoom steps (design D6): + zooms in toward DAY.
+
+    ``delta`` counts rungs (the view passes its wheel notches normalized to
+    ±1 per event); coarser lives higher in the ladder (DAY→MONTH→YEAR), so a
+    negative delta steps out and a positive one in, the ladder clamping at
+    both ends and ``0`` being the identity.
+    """
+    ladder = (ScaleUnit.DAY, ScaleUnit.MONTH, ScaleUnit.YEAR)
+    index = min(max(ladder.index(level) - delta, 0), len(ladder) - 1)
+    return ladder[index]
+
+
+def zoom_target(level: ScaleUnit, anchor_row: LadderRow | None) -> date | None:
+    """The period the wheel zoom anchors on, from the row under the cursor.
+
+    Zoom-out keeps the anchor's unit on top: a daily row (header/card/empty
+    day) anchors on its MONTH, a monthly period row on its YEAR; the YEAR
+    rung has nothing coarser and anchors on its own period. A collapsed gap
+    or no row under the cursor gives ``None`` — the view then zooms without
+    an anchor (spec pins anchors only for cards and headers).
+    """
+    if anchor_row is None or isinstance(anchor_row, GapCollapsedRow):
+        return None
+    day = anchor_row.date
+    if level is ScaleUnit.DAY:
+        return _unit_start(day, ScaleUnit.MONTH)
+    if level is ScaleUnit.MONTH:
+        return _unit_start(day, ScaleUnit.YEAR)
+    return day
+
+
+def period_span(row: LadderRow | None) -> tuple[date, date] | None:
+    """The whole calendar period ``row`` stands on, ``None`` for non-period rows.
+
+    The row's ``date`` is already its period's first day, so the span runs
+    from it to the day before the next unit (the 9999-12/9999 edge clamps to
+    :data:`CALENDAR_MAX`). Both writers of «окно = период» read this: the drill
+    click and the inward Alt/Opt wheel (spec «Приближение от карточки события»:
+    «ступень — сутки, окно — август»). A period HEADER anchors like its card
+    (spec «Лестница ступеней просмотра»: «над sticky/секционным заголовком —
+    в период этого заголовка»); day-level rows own no period span.
+    """
+    if not isinstance(row, (PeriodHeaderRow, PeriodCardRow)):
+        return None
+    try:
+        period_end = _next_unit_start(row.date, row.level) - _ONE_DAY
+    except ValueError:  # the period reaches the calendar's upper edge
+        period_end = CALENDAR_MAX
+    return (row.date, clamp_calendar(period_end))
+
+
+def drill_target(period_row: PeriodCardRow) -> tuple[ScaleUnit, tuple[date, date]]:
+    """What a drill click on ``period_row`` installs (design D6, task 4.2).
+
+    The pair is ``(deeper_level, window)``: the level one rung finer than the
+    card's own (year → month, month → day) and the window equal to the card's
+    whole period (spec «Проваливание выставляет окно»). A drill never selects,
+    it only re-models: the view applies the pair through its knobs and the
+    ViewModel mirrors it.
+    """
+    deeper = zoom_level(period_row.level, 1)
+    window = period_span(period_row)
+    assert window is not None  # a PeriodCardRow always owns a span
+    return deeper, window
+
+
+def drop_actions(
+    event: _EventLike, target_day: date
+) -> dict[DropAction, bool]:
+    """Which release-menu items ``event`` earns at ``target_day`` (D5).
+
+    * «Перенести» — always;
+    * «Расширить вниз» — closed events only, and only below the current end
+      (an open end reaches the bottom already — nothing to extend);
+    * «Начать раньше» — any event, only above the current start.
+    A target inside the span therefore yields MOVE only; a same-day re-drop
+    yields MOVE only as well (the view skips the menu against the source day).
+    The target is calendar-clamped before it is compared.
+    """
+    target = clamp_calendar(target_day)
+    return {
+        DropAction.MOVE: True,
+        DropAction.EXTEND_DOWN: event.end_date is not None and target > event.end_date,
+        DropAction.START_EARLIER: target < event.start_date,
+    }
+
+
+def apply_drop_action(
+    event: _EventLike, action: DropAction | str, target_day: date
+) -> tuple[date, date | None]:
+    """The new ``(start, end)`` of applying ``action`` at ``target_day``.
+
+    Every result is clamped to the app calendar and never inverts:
+    * MOVE — ``start :=`` target, the duration rides along (an event open at
+      one end stays open), a shift against the edge clips the far bound;
+    * EXTEND_DOWN — closed events only (an open end raises ``ValueError``,
+      mirroring :func:`drop_actions`), ``end :=`` the target, held ≥ start,
+      ``start`` untouched;
+    * START_EARLIER — ``start :=`` the target, held ≤ the old start (open
+      ends stay open), ``end`` untouched.
+    """
+    action = DropAction(action)
+    target = clamp_calendar(target_day)
+    start, end = event.start_date, event.end_date
+    if action is DropAction.MOVE:
+        if end is None:
+            return target, None
+        new_start, new_end = translate_span(start, end, (target - start).days)
+        return clamp_calendar(new_start), clamp_calendar(new_end)
+    if action is DropAction.EXTEND_DOWN:
+        if end is None:
+            raise ValueError("an open-ended event has no end to extend down to")
+        return start, max(target, start)
+    return min(target, start), end

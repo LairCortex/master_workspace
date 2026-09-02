@@ -145,7 +145,7 @@ def accent_rgba(tokens: Tokens, theme: str, alpha: float) -> str:
 def token_rgb(tokens: Tokens, theme: str, key: str) -> Optional[tuple[int, int, int]]:
     """Token color as ``(r, g, b)`` for QPainter code outside QSS (W3 D4).
 
-    The timeline delegate paints rows/rail/brackets with a QPen/QBrush, where
+    The timeline delegate paints its ladder rows with a QPen/QBrush, where
     QSS roles do not reach — the screen asks the compiler for the token's RGB
     and composes alphas itself (the same derivations ``accent_rgba`` spells for
     sheets, no new tokens). ``None`` when the value is not a hex color: the
@@ -307,8 +307,9 @@ def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     reach) and ``MentionPopupListView`` (items/selection) — a rule for the list
     alone would leave an OS-palette strip inside the popup.
 
-    The timeline date-filter popover (W3b D9) follows the same recipe: the
-    ``_DateFilterPopup`` container and its ``_DateFilterResetButton`` are named
+    The timeline «Выбор даты» popover (W3b D9, renamed in task 7.2) follows the
+    same recipe: the ``_DateWindowPopup`` container and its
+    ``_DateWindowResetButton`` are named
     classes (a generic ``QPushButton`` rule must never enter this sheet — the
     canvas proxies would pick it up), the embedded ``_CustomCalendar``s are
     already covered by the ``QCalendarWidget`` rules above.
@@ -371,15 +372,15 @@ MentionPopupListView::item:selected {{
     background: {t['color.accent']};
     color: {t['color.accent.fg']};
 }}
-_DateFilterPopup {{
+_DateWindowPopup {{
     background: {t['color.bg.surface']};
     border: 1px solid {t['color.border']};
 }}
-_DateFilterPopup QLabel {{
+_DateWindowPopup QLabel {{
     background: transparent;
     color: {t['color.fg.muted']};
 }}
-_DateFilterResetButton {{
+_DateWindowResetButton {{
     background: {t['color.bg.surface']};
     color: {t['color.fg.primary']};
     border: 1px solid {t['color.border']};

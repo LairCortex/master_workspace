@@ -1,18 +1,16 @@
-"""W3b pixel acceptance: every scale color is a live token derivative.
+"""Pixel acceptance for the day-ladder tape: every color is a live token.
 
-The horizontal Gantt canvas is gone; the panel body is a ``QListWidget`` whose
-``_RowDelegate`` paints the selection/hover wash, the date rail (day tick, month
-label, span bracket) and the ``start — end · name`` line, plus a sticky ``QLabel``
-band. Probes follow the W1/W2b pattern (``widget.grab()`` at device scale, zero
-tolerance, no golden files): a selected row's fill must equal the ``color.accent``
-token itself, an unselected row's surface the ``color.bg.surface`` token, the
-hover wash the accent derivative ``accent`` at ``ROW_HOVER_ALPHA`` over that
-surface, the rail ticks/brackets the ``color.border`` token, the rail month labels
-the ``color.fg.muted`` token and the sticky band its surface/accent/primary tokens
-— and rewriting ``color.accent`` in a copied token file must move the selection
-and the wash with no screen code touched (spec «Смена accent перекрашивает
-шкалу событий», «Токен-инвариант шкалы», «Вне скина» stays covered off-skin by the
-``test_no_chrome_hex`` grep invariant run separately).
+redesign-timeline-day-ladder (task 3.1) rewrote the delegate: the rail probes
+(ticks/ties/month labels) retired with the rail. Painted now and probed
+here: the event card wash (surface / accent selection / accent-derivative
+hover), the type dot — exactly ``color.chart.k`` of the live theme (spec
+«Цвет типа равен токену») with untyped events landing on ``color.fg.muted``
+(spec «Метка типа на карточке»), the muted placeholder/gap/counter captions,
+the sticky band (surface + accent hairline + fg.primary caption) and the
+empty-state hint. Rewriting ``color.accent`` in a copied token file must move
+the selection and the hover wash with no screen code touched (spec «Смена
+accent перекрашивает шкалу», «Токен-инвариант шкалы»; the «Вне скина» grep
+invariant lives in ``test_no_chrome_hex``).
 """
 from __future__ import annotations
 
@@ -27,9 +25,14 @@ from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from app.presentation.theme.compiler import tokens_file_path
+from app.presentation.views.timeline_rows import (
+    EmptyDayRow, GapCollapsedRow, PeriodCardRow, ScaleUnit,
+)
 from app.presentation.views.timeline_widget import (
+    DOT_SIZE,
     EMPTY_HINT_TEXT,
     ROW_HOVER_ALPHA,
+    TEXT_LEFT_PAD,
     TimelineWidget,
 )
 
@@ -41,8 +44,10 @@ from tests.ui.test_theme_grab import (
 )
 
 
-def _evt(id_, start, end=None, name=None):
-    return SimpleNamespace(id=id_, start_date=start, end_date=end, name=name or f"E{id_}")
+def _evt(id_, start, end=None, name=None, color_index=None):
+    event = SimpleNamespace(id=id_, start_date=start, end_date=end, name=name or f"E{id_}")
+    event.event_type = None if color_index is None else SimpleNamespace(color_index=color_index)
+    return event
 
 
 def _scale(view):
@@ -64,7 +69,7 @@ def _hover_alpha(accent: QColor) -> int:
 
 
 def _widget(qtbot, runtime, events, size=(440, 260)):
-    """A skinned TimelineWidget carrying ``events`` on the vertical scale."""
+    """A skinned TimelineWidget carrying ``events`` on the day-ladder tape."""
     vm = MagicMock()
     vm.events = []
     widget = TimelineWidget(vm, theme=runtime)
@@ -87,6 +92,16 @@ def _row_right_pixel(view, idx: int, scale: float) -> QColor:
     return image.pixelColor(x, y)
 
 
+def _type_dot_pixel(view, idx: int, scale: float) -> QColor:
+    """The pixel at the center of the type dot of the card at ``idx``."""
+    vp = view.viewport()
+    rect = view.visualItemRect(view.item(idx))
+    image = vp.grab().toImage()
+    x = int((TEXT_LEFT_PAD + DOT_SIZE // 2) * scale)
+    y = int(rect.center().y() * scale)
+    return image.pixelColor(x, y)
+
+
 def _move_over_row(view, idx: int) -> None:
     vp = view.viewport()
     x = vp.width() - 6
@@ -97,15 +112,18 @@ def _move_over_row(view, idx: int) -> None:
     ))
 
 
-def _rail_has_token(view, color: QColor) -> bool:
-    """True when some rail-zone pixel equals ``color`` exactly (tick/bracket/label)."""
+def _row_contains(view, idx: int, color: QColor) -> bool:
+    """True when any pixel of row ``idx`` equals ``color`` exactly."""
     vp = view.viewport()
+    rect = view.visualItemRect(view.item(idx))
     image = vp.grab().toImage()
-    rail_px = int(view.rail_width() * image.width() / max(vp.width(), 1))
+    scale = image.width() / max(vp.width(), 1)
+    top = int(rect.top() * scale)
+    bottom = min(int(rect.bottom() * scale), image.height() - 1)
     return any(
         image.pixelColor(x, y) == color
-        for y in range(image.height())
-        for x in range(min(rail_px, image.width()))
+        for y in range(top, bottom + 1)
+        for x in range(image.width())
     )
 
 
@@ -119,47 +137,72 @@ def _tokens_with_accent(tmp_path, theme: str, new_accent: str):
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_selection_hover_and_surface_are_accent_derivatives(qtbot, tmp_path, theme):
-    """Empty row == surface, selected row == accent, hovered row == accent wash."""
+def test_surface_selection_and_hover_are_accent_derivatives(qtbot, tmp_path, theme):
+    """Header/card surface == surface token, selected card == accent, hovered
+    card == the accent derivative wash (spec «Токен-инвариант шкалы»)."""
     runtime = make_runtime(tmp_path, theme)
     surface = token_color("color.bg.surface", theme)
     accent = token_color("color.accent", theme)
     widget = _widget(qtbot, runtime, [_evt(1, date(1200, 1, 1), date(1200, 1, 20), "З")])
     view = widget.rows_view
     scale = _scale(view)
+    card = view.index_for_event(1)  # row 0 is the day header
+    assert card == 1
 
-    # unselected: the empty row region is the surface token (no per-row fill here)
+    # unselected: neither the header nor the card paints a wash — surface
     assert _row_right_pixel(view, 0, scale) == surface, theme
-    assert _row_right_pixel(view, 1, scale) == surface, theme  # a later day, still a row
+    assert _row_right_pixel(view, card, scale) == surface, theme
 
     widget.set_selected(1)
-    assert _row_right_pixel(view, 0, scale) == accent, theme  # fill == accent itself
+    assert _row_right_pixel(view, card, scale) == accent, theme  # accent itself
 
     widget.set_selected(None)
-    _move_over_row(view, 0)
+    _move_over_row(view, card)
     qtbot.wait(0)
     expected_wash = _composite_over(surface, accent, _hover_alpha(accent))
-    assert _row_right_pixel(view, 0, scale) == expected_wash, theme
+    assert _row_right_pixel(view, card, scale) == expected_wash, theme
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_rail_ticks_brackets_and_month_label_come_from_tokens(qtbot, tmp_path, theme):
-    """The decorative rail paints border (ticks/brackets) and fg.muted (months)."""
+def test_type_dot_is_the_chart_token_muted_when_untyped(qtbot, tmp_path, theme):
+    """Spec «Цвет типа равен токену» / «Метка типа на карточке»: the dot of a
+    type-k card == color.chart.k of the live theme; no type → fg.muted dot."""
     runtime = make_runtime(tmp_path, theme)
     widget = _widget(qtbot, runtime, [
-        _evt(1, date(1200, 1, 1), date(1200, 3, 30), "многодневка"),
-        _evt(2, date(1200, 2, 1), date(1200, 2, 3), "граница-месяца"),
+        _evt(1, date(1200, 1, 1), date(1200, 1, 1), "Слух", color_index=3),
+        _evt(2, date(1200, 1, 2), date(1200, 1, 2), "Без типа"),
     ])
     view = widget.rows_view
+    scale = _scale(view)
+    typed = view.index_for_event(1)
+    untyped = view.index_for_event(2)
+    assert _type_dot_pixel(view, typed, scale) == token_color("color.chart.3", theme), theme
+    assert _type_dot_pixel(view, untyped, scale) == token_color("color.fg.muted", theme), theme
 
-    # day ticks + the multi-day bracket are the border token
-    assert _rail_has_token(view, token_color("color.border", theme)), theme
 
-    # scroll a first-of-month event into view so its rotated label has headroom
-    idx_feb = view.index_for_event(2)
-    view.scrollToItem(view.item(idx_feb), view.ScrollHint.PositionAtCenter)
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_empty_placeholder_gap_and_counter_captions_use_the_muted_token(qtbot, tmp_path, theme):
+    """«нет события» / collapsed-gap / «нет событий» rows paint fg.muted text."""
+    runtime = make_runtime(tmp_path, theme)
+    widget = _widget(qtbot, runtime, [
+        _evt(1, date(1200, 1, 1), date(1200, 1, 1)),
+        _evt(2, date(1200, 1, 3), date(1200, 1, 3)),
+        _evt(3, date(1200, 3, 1), date(1200, 3, 1)),  # gap Jan 4 … Feb 29
+    ])
+    view = widget.rows_view
+    muted = token_color("color.fg.muted", theme)
+    empty_idx = next(i for i, r in enumerate(view.rows) if isinstance(r, EmptyDayRow))
+    gap_idx = next(i for i, r in enumerate(view.rows) if isinstance(r, GapCollapsedRow))
+    assert _row_contains(view, empty_idx, muted), theme
+    assert _row_contains(view, gap_idx, muted), theme
+
+    view.set_knobs(level=ScaleUnit.MONTH)
     qtbot.wait(0)
-    assert _rail_has_token(view, token_color("color.fg.muted", theme)), theme
+    empty_period = next(
+        i for i, r in enumerate(view.rows)
+        if isinstance(r, PeriodCardRow) and r.count == 0
+    )
+    assert _row_contains(view, empty_period, muted), theme
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
@@ -192,15 +235,16 @@ def test_accent_token_edit_recolors_the_scale_without_screen_changes(qtbot, tmp_
     view = widget.rows_view
     scale = _scale(view)
     surface = token_color("color.bg.surface", theme)
+    card = view.index_for_event(1)
 
     widget.set_selected(1)
-    assert _row_right_pixel(view, 0, scale) == QColor(new_accent), theme
+    assert _row_right_pixel(view, card, scale) == QColor(new_accent), theme
 
     widget.set_selected(None)
-    _move_over_row(view, 0)
+    _move_over_row(view, card)
     qtbot.wait(0)
     expected = _composite_over(surface, QColor(new_accent), _hover_alpha(QColor(new_accent)))
-    assert _row_right_pixel(view, 0, scale) == expected, theme
+    assert _row_right_pixel(view, card, scale) == expected, theme
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])

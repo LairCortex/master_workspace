@@ -154,17 +154,19 @@ class ApplicationWiring:
             lambda event_id: self._spawn(on_event_selected(event_id))
         )
 
-        # Date range filter
-        def on_filter_changed(start, end):
-            timeline_vm.filter_by_dates(start, end)
+        # «Выбор даты» window (task 7.1): the panel's single window_changed
+        # channel writes the ViewModel's navigation window (None bounds =
+        # «Все дни»), the tape re-models over the overlap-visible sample.
+        def on_window_changed(start, end):
+            timeline_vm.window = (start, end)
             window.timeline_widget.update_events(timeline_vm.events)
 
-        window.timeline_widget.filter_changed.connect(on_filter_changed)
+        window.timeline_widget.window_changed.connect(on_window_changed)
 
         # A selection the ViewModel had to prune (the event fell out of the
-        # visible set, e.g. after filtering) must leave the detail panel too:
-        # the scale drops the id while re-modelling the new set, the panel
-        # has no other reason to notice.
+        # visible set, e.g. after a window move) must leave the detail panel
+        # too: the scale drops the id while re-modelling the new set, the
+        # panel has no other reason to notice.
         def on_selected_event_changed():
             if timeline_vm.selected_event is None:
                 window.detail_panel.clear()
@@ -236,7 +238,7 @@ class ApplicationWiring:
             dialog.set_event_types(list(await event_service.get_event_types()))
 
         async def _reload_timeline():
-            """Re-read events and re-render the scale (selection/filter kept)."""
+            """Re-read events and re-render the scale (selection/window kept)."""
             await timeline_vm.load_events()
             window.timeline_widget.update_events(timeline_vm.events)
 
@@ -386,9 +388,16 @@ class ApplicationWiring:
         )
 
         async def on_event_dates_moved(event_id, start, end):
-            """W5: one write of dates from a scale drag, under the session lock."""
+            """Drop-gesture commit (task 5.3), under the session lock.
+
+            The ACTIVE «Выбор даты» window first grows to cover the new dates
+            (:meth:`cover_window_for_span`), then one write, one reload and
+            the selection raised. A failure rolls the dates back, reloads the
+            old tape and shows exactly one modal error dialog — the widened
+            window deliberately remains (spec «Сбой сохранения откатывает и
+            сообщает»)."""
             start_d, end_d = _as_date(start), _as_date(end)
-            window.timeline_widget.cover_filter_for_span(start_d, end_d)
+            window.timeline_widget.cover_window_for_span(start_d, end_d)
             try:
                 if end_d is None:
                     await event_service.update_event(event_id, start_date=start_d)
@@ -420,6 +429,41 @@ class ApplicationWiring:
             lambda eid, start, end: self._spawn(on_event_dates_moved(eid, start, end))
         )
 
+        async def on_event_create_at(day, name):
+            """Inline commit from an empty day (task 6.1), under the session lock.
+
+            An empty field or a missing day is a no-op (spec «Пустое поле не
+            создаёт»); otherwise ``vm.create_event_at`` writes a one-day event
+            at the clicked day, reloads and selects it — then the panel draws
+            the fresh tape, reveals and highlights the new card and opens it in
+            the detail panel (spec «Быстрое создание»). A write failure reloads
+            the old tape and shows exactly one modal error (mirrors the
+            date-move failure path); the session is left usable by the VM's
+            rollback."""
+            day_d = _as_date(day)
+            name_s = (name or "").strip()
+            if day_d is None or not name_s:
+                return
+            try:
+                event = await timeline_vm.create_event_at(day_d, name_s)
+            except Exception as exc:  # noqa: BLE001
+                await timeline_vm.load_events()
+                window.timeline_widget.update_events(timeline_vm.events)
+                QMessageBox.critical(
+                    window, "Ошибка", f"Не удалось создать событие: {exc}",
+                )
+                return
+            if event is None:
+                return
+            window.timeline_widget.update_events(timeline_vm.events)
+            window.timeline_widget.set_selected(event.id)
+            await detail_vm.load_details(event.id)
+            window.detail_panel.show_event(detail_vm.event)
+
+        window.timeline_widget.event_create_requested.connect(
+            lambda day, name: self._spawn(on_event_create_at(day, name))
+        )
+
         # Search
         async def on_search(query):
             await search_vm.search(query)
@@ -434,11 +478,21 @@ class ApplicationWiring:
                 # Select by id and show details (plain await: the task of
                 # this handler already holds the session lock), then scroll
                 # the scale so the highlighted row is visible (W3b panel API).
-                # An id outside the visible selection leaves the panel
-                # untouched, as the row-based jump did before.
-                if any(ev.id == entity_id for ev in timeline_vm.events):
+                # The gate checks the WHOLE sample, not the windowed slice:
+                # a result the current rung/window excludes must still reach
+                # ``select_event_by_id``, whose descent drops to «сутки» and
+                # resets «Все дни» before the selection lands (spec «Внешний
+                # выбор с крупной ступени спускает лестницу»). An id the
+                # timeline never held stays a plain miss — the tape untouched.
+                if any(ev.id == entity_id for ev in timeline_vm.all_events):
                     await on_event_selected(entity_id)
                     scale = window.timeline_widget
+                    # The descent may have re-opened the tape to «Все дни»:
+                    # the list repaints from the ViewModel before the
+                    # highlight — the same sample push every other mutation
+                    # path performs, otherwise the re-modelled card would
+                    # exist in the VM but not on the tape.
+                    scale.update_events(timeline_vm.events)
                     scale.set_selected(entity_id)
                     scale.scroll_to_event(entity_id)
             else:

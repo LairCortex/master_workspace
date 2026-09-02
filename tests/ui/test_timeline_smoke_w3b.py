@@ -2,7 +2,7 @@
 
 Offscreen scripted pass of the scenarios the reviewer walks with a real mouse
 in the GUI: the timeline at 220 px on a year-long sample; chip+popover live
-filter then reset; ``Alt+Up``/``Alt+Down`` jump over the empty-day corridor;
+window then reset; ``Alt+Up``/``Alt+Down`` jump over the empty-day corridor;
 live theme toggle with an event selected keeps both the selection and the
 scroll offset while repainting the tokens. Every assertion mirrors a click the
 user sees, so this stands in for the manual smoke run in CI.
@@ -15,7 +15,8 @@ from PySide6.QtCore import QDate, QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
-from app.presentation.views.timeline_widget import FILTER_CHIP_ALL, filter_chip_text
+from app.presentation.views.timeline_rows import EventRow, GapCollapsedRow
+from app.presentation.views.timeline_widget import WINDOW_CHIP_ALL, window_chip_text
 
 from tests.ui import helpers
 
@@ -42,7 +43,7 @@ async def test_full_contour_smoke(app, wait_for, qtbot):
     panel.setFixedWidth(220)
     QApplication.processEvents()
     assert panel.width() == 220
-    assert view.width() > 0 and view.viewport().width() > view.rail_width()
+    assert view.width() > 0 and view.viewport().width() > 0
 
     try:
         # ── year-long sample (~360 rows, three events half a year apart)
@@ -58,34 +59,45 @@ async def test_full_contour_smoke(app, wait_for, qtbot):
             window, wait_for, "Конец Года",
             start_date=QDate(1200, 12, 31), end_date=QDate(1200, 12, 31),
         )
-        assert len(view.rows) > 200  # the year really expands into hundreds of rows
+        # The year materializes as day rows with every >14-day run collapsed.
+        assert len(view.rows) > 30
+        assert any(isinstance(r, GapCollapsedRow) for r in view.rows)
         sticky = view.sticky_label
         assert sticky.isVisible() and sticky.text()  # sticky band shows the top-day date
 
         # ── chip + popover: two calendar taps apply live (no «Применить»)
         start, end = date(1200, 1, 1), date(1200, 3, 1)
-        panel.filter_popup.start_calendar.clicked.emit(QDate(start.year, start.month, start.day))
-        panel.filter_popup.start_calendar.clicked.emit(QDate(end.year, end.month, end.day))
-        await wait_for(lambda: panel.filter_chip.text() == filter_chip_text(start, end))
-        # The filtered set keeps only the January event (scale re-built to its span).
+        panel.window_popup.start_calendar.clicked.emit(QDate(start.year, start.month, start.day))
+        panel.window_popup.start_calendar.clicked.emit(QDate(end.year, end.month, end.day))
+        await wait_for(lambda: panel.window_chip.text() == window_chip_text(start, end))
+        # The window keeps only the January event (tape re-modelled to it).
         await wait_for(lambda: len(view.events) == 1)
         assert view.events[0].name == "Начало Года"
         assert all(
             start <= r.date <= end for r in view.rows
-        ), "every visible day stays inside the filtered range"
+        ), "every visible day stays inside the window"
 
-        # ── reset inside the popover → «Все даты» and back to the full year
-        panel.filter_popup.reset_button.click()
-        await wait_for(lambda: panel.filter_chip.text() == FILTER_CHIP_ALL)
+        # ── reset inside the popover → «Все дни» and back to the full year
+        panel.window_popup.reset_button.click()
+        await wait_for(lambda: panel.window_chip.text() == WINDOW_CHIP_ALL)
         await wait_for(lambda: len(view.events) == 3)
-        await wait_for(lambda: len(view.rows) > 200)
+        await wait_for(lambda: any(
+            isinstance(r, GapCollapsedRow) for r in view.rows
+        ) and len(view.rows) > 30)
 
         # ── Alt+Down jumps over the empty-days corridor to the next event row
         i_head = view.index_for_event(_event_id_named(view, "Начало Года"))
         i_mid = view.index_for_event(_event_id_named(view, "Середина Лета"))
-        assert i_head is not None and i_mid is not None and i_mid - i_head > 100
+        assert i_head is not None and i_mid is not None and i_mid > i_head
+        assert any(
+            isinstance(r, GapCollapsedRow) for r in view.rows[i_head:i_mid]
+        ), 'the collapsed corridor sits between the two event cards'
         view.verticalScrollBar().setValue(0)
         view.setCurrentRow(i_head)
+        # Panel-scoped Alt shortcuts (WidgetWithChildrenShortcut) need an
+        # active window with focus inside the panel (dialogs stole both).
+        window.activateWindow()
+        view.setFocus()
         QApplication.processEvents()
         _press_alt(view, Qt.Key.Key_Down)
         QApplication.processEvents()
@@ -96,7 +108,10 @@ async def test_full_contour_smoke(app, wait_for, qtbot):
 
         _press_alt(view, Qt.Key.Key_Up)
         QApplication.processEvents()
-        assert view.currentRow() == i_head, "Alt+Up returns to the previous event"
+        landed = view.rows[view.currentRow()]
+        assert isinstance(landed, EventRow) and landed.event_id == _event_id_named(
+            view, "Начало Года"
+        ), "Alt+Up lands on a card of the previous event"
 
         # ── live theme toggle with a selection: palette rebuilds, selection and
         # scroll are preserved (spec «Живая ре-тема», «Выбранное событие в обеих темах»)

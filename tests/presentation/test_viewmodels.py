@@ -1,16 +1,22 @@
 """Tests for ViewModels — TDD: tests first."""
 from datetime import date
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.presentation.viewmodels.timeline_viewmodel import EntityKind, TimelineViewModel
+from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
-from app.presentation.views.timeline_rows import NO_GROUP_KEY, RowKind, ScaleUnit
+from app.presentation.views.timeline_rows import (
+    DayHeaderRow,
+    EmptyDayRow,
+    EventRow,
+    PeriodCardRow,
+    PeriodHeaderRow,
+    ScaleUnit,
+)
 
 
 def _mock_event(id_=1, name="Battle"):
@@ -19,6 +25,7 @@ def _mock_event(id_=1, name="Battle"):
     e.name = name
     e.start_date = date(1200, 1, 1)
     e.end_date = date(1200, 12, 31)
+    e.event_type = None
     e.organizations = []
     e.characters = []
     e.items = []
@@ -26,9 +33,33 @@ def _mock_event(id_=1, name="Battle"):
     return e
 
 
+def _span(id_, name, start, end):
+    """Plain event double on explicit dates (the ladder reads id/dates/name only)."""
+    e = MagicMock()
+    e.id = id_
+    e.name = name
+    e.start_date = start
+    e.end_date = end
+    e.event_type = None
+    return e
+
+
 # ── TimelineViewModel ────────────────────────────────────────────────────
 
 class TestTimelineViewModel:
+    @staticmethod
+    def _w2_events():
+        """Two one-day events in distinct months of 1200 (January + March)."""
+        e1 = _span(1, "Winter council", date(1200, 1, 5), date(1200, 1, 5))
+        e2 = _span(2, "Spring fair", date(1200, 3, 7), date(1200, 3, 7))
+        return e1, e2
+
+    @staticmethod
+    def _vm_with(*events):
+        service = AsyncMock()
+        service.get_all_events.return_value = list(events)
+        return service, TimelineViewModel(service)
+
     @pytest.mark.asyncio
     async def test_load_events(self):
         service = AsyncMock()
@@ -36,6 +67,41 @@ class TestTimelineViewModel:
         vm = TimelineViewModel(service)
         await vm.load_events()
         assert len(vm.events) == 2
+
+    @pytest.mark.asyncio
+    async def test_view_state_defaults_and_is_not_serialized(self):
+        """Spec «Вид не переживает перезапуск»: a fresh ViewModel always opens
+        «сутки · Все дни · тумблер выключен» — level/window/hide_empty are
+        plain session state, never restored from anywhere."""
+        service, _ = self._vm_with()
+        first = TimelineViewModel(service)
+        first.level = ScaleUnit.YEAR
+        first.window = (date(1200, 1, 1), date(1200, 3, 31))
+        first.hide_empty = True
+
+        reopened = TimelineViewModel(service)
+        assert reopened.level is ScaleUnit.DAY
+        assert reopened.window is None
+        assert reopened.hide_empty is False
+
+    @pytest.mark.asyncio
+    async def test_load_resets_level_but_keeps_window_and_toggle(self):
+        """Design D7: the rung re-defaults to DAY on every load, while the
+        «Выбор даты» window and the hide toggle live on for the session."""
+        e1, _ = self._w2_events()
+        service, vm = self._vm_with(e1)
+        await vm.load_events()
+        vm.level = ScaleUnit.MONTH
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))
+        vm.hide_empty = True
+
+        await vm.load_events()
+
+        assert vm.level is ScaleUnit.DAY
+        assert vm.window == (date(1200, 1, 1), date(1200, 1, 31))
+        assert vm.hide_empty is True
+
+    # ── selection (W3 id-contract) ──────────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_select_event_by_id(self):
@@ -64,86 +130,24 @@ class TestTimelineViewModel:
         assert vm.selected_event is None
 
     @pytest.mark.asyncio
-    async def test_select_event_by_id_respects_visible_filter(self):
-        service = AsyncMock()
-        e1 = _mock_event(1, "Early")
-        e1.start_date = date(1100, 1, 1)
-        e1.end_date = date(1100, 6, 1)
-        e2 = _mock_event(2, "Mid")
-        e2.start_date = date(1200, 1, 1)
-        e2.end_date = date(1200, 12, 31)
-        service.get_all_events.return_value = [e1, e2]
-        vm = TimelineViewModel(service)
+    async def test_unknown_id_miss_clears_without_touching_knobs(self):
+        """A miss is nobody's business to descend for: an id no event owns
+        clears the selection (announced) and leaves level and window exactly
+        where they were."""
+        e1, _ = self._w2_events()
+        service, vm = self._vm_with(e1)
         await vm.load_events()
-        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))
-        # id 1 is loaded but not visible → the miss clears (W3: visible set)
-        vm.select_event_by_id(1)
+        vm.level = ScaleUnit.MONTH
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))
+        selection_signals: list = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.select_event_by_id(999)
+
         assert vm.selected_event is None
-
-    @pytest.mark.asyncio
-    async def test_filter_by_dates(self):
-        service = AsyncMock()
-        e1 = _mock_event(1, "Early")
-        e1.start_date = date(1100, 1, 1)
-        e1.end_date = date(1100, 6, 1)
-        e2 = _mock_event(2, "Mid")
-        e2.start_date = date(1200, 1, 1)
-        e2.end_date = date(1200, 12, 31)
-        e3 = _mock_event(3, "Late")
-        e3.start_date = date(1300, 1, 1)
-        e3.end_date = date(1300, 12, 31)
-        service.get_all_events.return_value = [e1, e2, e3]
-        vm = TimelineViewModel(service)
-        await vm.load_events()
-        assert len(vm.events) == 3
-
-        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))
-        assert len(vm.events) == 1
-        assert vm.events[0].name == "Mid"
-
-    @pytest.mark.asyncio
-    async def test_filter_clear(self):
-        service = AsyncMock()
-        e1 = _mock_event(1, "A")
-        e1.start_date = date(1100, 1, 1)
-        e1.end_date = date(1100, 6, 1)
-        e2 = _mock_event(2, "B")
-        e2.start_date = date(1200, 1, 1)
-        e2.end_date = date(1200, 12, 31)
-        service.get_all_events.return_value = [e1, e2]
-        vm = TimelineViewModel(service)
-        await vm.load_events()
-
-        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))
-        assert len(vm.events) == 1
-
-        vm.filter_by_dates(None, None)
-        assert len(vm.events) == 2
-
-    @pytest.mark.asyncio
-    async def test_filter_prunes_selection_that_left_the_visible_set(self):
-        service = AsyncMock()
-        e1 = _mock_event(1, "Early")
-        e1.start_date = date(1100, 1, 1)
-        e1.end_date = date(1100, 6, 1)
-        e2 = _mock_event(2, "Mid")
-        e2.start_date = date(1200, 1, 1)
-        e2.end_date = date(1200, 12, 31)
-        service.get_all_events.return_value = [e1, e2]
-        vm = TimelineViewModel(service)
-        await vm.load_events()
-        vm.select_event_by_id(1)
-        signals: list = []
-        vm.selected_event_changed.connect(lambda: signals.append(1))
-
-        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))  # e1 falls out
-
-        # The canvas drops an invisible id on set_events; the VM must not keep
-        # holding it (task 3.3: an id-contract selection lives exactly as long as
-        # its event is visible), and the pruning has to be announced so the
-        # canvas and the detail panel can follow.
-        assert vm.selected_event is None
-        assert signals == [1]
+        assert selection_signals == [1]  # the clear is announced (panel follows)
+        assert vm.level is ScaleUnit.MONTH
+        assert vm.window == (date(1200, 1, 1), date(1200, 1, 31))
 
     @pytest.mark.asyncio
     async def test_reload_keeps_selection_that_is_still_visible(self):
@@ -160,93 +164,234 @@ class TestTimelineViewModel:
         assert vm.selected_event.id == 2
         assert signals == [1]  # re-asserted once, never pruned
 
-    @pytest.mark.asyncio
-    async def test_filter_no_match(self):
-        service = AsyncMock()
-        e1 = _mock_event(1, "Only")
-        e1.start_date = date(1200, 1, 1)
-        e1.end_date = date(1200, 12, 31)
-        service.get_all_events.return_value = [e1]
-        vm = TimelineViewModel(service)
-        await vm.load_events()
-
-        vm.filter_by_dates(date(1300, 1, 1), date(1400, 1, 1))
-        assert len(vm.events) == 0
+    # ── external selections descend the ladder (task 2.2) ───────────────────
 
     @pytest.mark.asyncio
-    async def test_filter_persists_after_reload(self):
-        service = AsyncMock()
-        e1 = _mock_event(1, "Early")
-        e1.start_date = date(1100, 1, 1)
-        e1.end_date = date(1100, 6, 1)
-        e2 = _mock_event(2, "Mid")
-        e2.start_date = date(1200, 1, 1)
-        e2.end_date = date(1200, 12, 31)
-        service.get_all_events.return_value = [e1, e2]
-        vm = TimelineViewModel(service)
+    async def test_external_selection_from_month_descends_to_day(self):
+        """Selection from the month step descends to days: setting level=DAY
+        puts the event into ``rows``, then selects it (spec «External selection
+        from a coarse step descends the ladder»), without touching it on its own
+        window."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
         await vm.load_events()
-        vm.filter_by_dates(date(1150, 1, 1), date(1250, 12, 31))
-        assert [e.name for e in vm.events] == ["Mid"]
+        vm.level = ScaleUnit.MONTH
+        assert not any(isinstance(r, EventRow) for r in vm.rows)
 
-        # Simulate reload after creating a new event in the same range
-        e3 = _mock_event(3, "New")
-        e3.start_date = date(1200, 5, 1)
-        e3.end_date = date(1200, 5, 10)
-        service.get_all_events.return_value = [e1, e2, e3]
-        await vm.load_events()
-        names = sorted(e.name for e in vm.events)
-        assert names == ["Mid", "New"]
+        events_signals: list = []
+        selection_signals: list = []
+        vm.events_changed.connect(lambda: events_signals.append(1))
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
 
-    # ── derived visible rows (W3b task 4.1) ─────────────────────────────────
+        vm.select_event_by_id(e2.id)
+
+        assert vm.level is ScaleUnit.DAY
+        assert e2.id in [r.event_id for r in vm.rows if isinstance(r, EventRow)]
+        assert vm.selected_event is e2
+        # rows were re-modelled before the selection was asserted (D4 order)
+        assert events_signals == [1]
+        assert selection_signals == [1]
 
     @pytest.mark.asyncio
-    async def test_rows_without_filter_span_min_to_max_with_empty_days(self):
-        """No filter → rows cover min(start)…max(end|start); a gap day is
-        exactly one EMPTY_DAY row (spec «Диапазон без фильтра»)."""
-        service = AsyncMock()
-        e1 = _mock_event(1, "First")
-        e1.start_date = date(1200, 1, 1)
-        e1.end_date = date(1200, 1, 1)
-        e2 = _mock_event(2, "Third")
-        e2.start_date = date(1200, 1, 3)
-        e2.end_date = date(1200, 1, 3)
-        service.get_all_events.return_value = [e1, e2]
-        vm = TimelineViewModel(service)
+    async def test_external_selection_inside_window_keeps_window(self):
+        """An event already visible inside the window is selected without
+        spending a reset: neither the window nor the rung moves (spec «Selection
+        from search»)."""
+        e1, _ = self._w2_events()
+        service, vm = self._vm_with(e1)
+        await vm.load_events()
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))
+        rows_before = vm.rows
 
+        vm.select_event_by_id(e1.id)
+
+        assert vm.selected_event is e1
+        assert vm.window == (date(1200, 1, 1), date(1200, 1, 31))
+        assert vm.rows is rows_before  # nothing to re-model for it
+
+    @pytest.mark.asyncio
+    async def test_external_selection_outside_window_resets_window_then_selects(self):
+        """An event excluded by the window is not represented → «All days»:
+        level=DAY, window=None, and only then the selection (spec «When an
+        external selection from a coarse step descends the ladder» + task 2.2:
+        outside-window selection from search)."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))  # e2 sits outside it
+
+        vm.select_event_by_id(e2.id)
+
+        assert vm.window is None  # reset to «Все дни»
+        assert vm.level is ScaleUnit.DAY
+        assert vm.selected_event is e2
+        assert e2.id in [r.event_id for r in vm.rows if isinstance(r, EventRow)]
+
+    # ── window semantics (design D7, spec «Window, empty positions…») ───────
+
+    @pytest.mark.asyncio
+    async def test_window_keeps_events_that_overlap_it(self):
+        """Spec «Event crossing the window is visible in the window»: an event
+        starting before and ending after the window crosses it through all its
+        days and stays in the sample; a fully outside event leaves it."""
+        crossing = _span(1, "Crossing", date(1200, 7, 1), date(1200, 9, 5))
+        outside = _span(2, "Outside", date(1201, 5, 1), date(1201, 5, 9))
+        service, vm = self._vm_with(crossing, outside)
         await vm.load_events()
 
-        by_kind = [(r.kind, r.date) for r in vm.rows]
-        assert by_kind == [
-            (RowKind.EVENT, date(1200, 1, 1)),
-            (RowKind.EMPTY_DAY, date(1200, 1, 2)),  # the gap day, not collapsed
-            (RowKind.EVENT, date(1200, 1, 3)),
+        vm.window = (date(1200, 8, 10), date(1200, 8, 20))
+
+        assert [e.id for e in vm.events] == [1]
+        cards = [r for r in vm.rows if isinstance(r, EventRow)]
+        assert {r.event_id for r in cards} == {1}
+        # every window day carries the card (spec «crosses through all days»)
+        assert len(cards) == 11
+
+    @pytest.mark.asyncio
+    async def test_empty_window_shows_placeholders_and_prunes_selection(self):
+        """Spec «Empty window shows the emptiness»: a valid day range with no
+        events keeps its days as empty placeholders, and the selection an
+        excluded window resets in every layer (announced — the spec «Window
+        excluded the selected event»; the window itself keeps painting days)."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))  # e1 in, e2 out
+        assert [e.id for e in vm.events] == [e1.id]
+        vm.select_event_by_id(e1.id)  # the selected event is inside the window
+        prune_signals: list = []
+        vm.selected_event_changed.connect(lambda: prune_signals.append(1))
+
+        vm.window = (date(1200, 2, 1), date(1200, 2, 3))
+
+        assert vm.events == []
+        assert vm.selected_event is None  # excluded → dropped in every layer
+        assert prune_signals == [1]  # …and the drop is announced (panel follows)
+        assert [(type(r), r.date) for r in vm.rows] == [
+            (DayHeaderRow, date(1200, 2, 1)), (EmptyDayRow, date(1200, 2, 1)),
+            (DayHeaderRow, date(1200, 2, 2)), (EmptyDayRow, date(1200, 2, 2)),
+            (DayHeaderRow, date(1200, 2, 3)), (EmptyDayRow, date(1200, 2, 3)),
         ]
-        assert [r.event_id for r in vm.rows] == [1, None, 2]
+        # …and the selection does not revive on its own when the days return
+        vm.window = None
+        assert vm.selected_event is None
+        assert [e.id for e in vm.events] == [e1.id, e2.id]
 
     @pytest.mark.asyncio
-    async def test_rows_use_filter_range_even_when_empty(self):
-        """A live filter seeds the row range: a range with no events yields
-        empty-day rows for every day of it, not zero rows (spec «Пустой
-        диапазон фильтра»)."""
-        service = AsyncMock()
-        e1 = _mock_event(1, "Only")
-        e1.start_date = date(1200, 1, 1)
-        e1.end_date = date(1200, 1, 1)
-        service.get_all_events.return_value = [e1]
-        vm = TimelineViewModel(service)
+    async def test_window_and_level_setters_emit_events_changed(self):
+        """Every knob setter re-models ``rows`` and announces them exactly
+        once; an unchanged value is a complete no-op."""
+        e1, _ = self._w2_events()
+        service, vm = self._vm_with(e1)
+        await vm.load_events()
+        signals: list = []
+        vm.events_changed.connect(lambda: signals.append(1))
+
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))
+        vm.level = ScaleUnit.MONTH
+        vm.hide_empty = True
+        assert signals == [1, 1, 1]
+
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))  # the same window
+        vm.level = ScaleUnit.MONTH  # the same rung
+        vm.hide_empty = True  # the same toggle state
+        assert signals == [1, 1, 1]  # no rebuild, no echo
+
+    # ── rows projection via the day-ladder core (design D2/D7) ──────────────
+
+    @pytest.mark.asyncio
+    async def test_rows_without_window_lay_days_events_and_placeholders(self):
+        """No window → the content span min(start)…bottom; day headers with
+        event cards, the gap day one exact placeholder (spec «Диапазон без
+        окна» in the new layout)."""
+        e1 = _span(1, "First", date(1200, 1, 1), date(1200, 1, 1))
+        e2 = _span(2, "Third", date(1200, 1, 3), date(1200, 1, 3))
+        service, vm = self._vm_with(e1, e2)
 
         await vm.load_events()
-        vm.filter_by_dates(date(1300, 1, 1), date(1300, 1, 3))
 
-        assert len(vm.events) == 0
-        assert [r.kind for r in vm.rows] == [RowKind.EMPTY_DAY] * 3
-        assert [r.date for r in vm.rows] == [
-            date(1300, 1, 1), date(1300, 1, 2), date(1300, 1, 3),
+        assert [(type(r), r.date, getattr(r, "event_id", None)) for r in vm.rows] == [
+            (DayHeaderRow, date(1200, 1, 1), None),
+            (EventRow, date(1200, 1, 1), 1),
+            (DayHeaderRow, date(1200, 1, 2), None),
+            (EmptyDayRow, date(1200, 1, 2), None),  # the gap day, not collapsed
+            (DayHeaderRow, date(1200, 1, 3), None),
+            (EventRow, date(1200, 1, 3), 2),
         ]
 
     @pytest.mark.asyncio
-    async def test_rows_without_events_without_filter_are_empty(self):
-        """No events and no filter → no range to enumerate → no rows."""
+    async def test_month_rung_rolls_days_up_to_counter_cards(self):
+        """MONTH level paints header+card per period with the crossing-event
+        counter; the empty February keeps its «no events» stub position (spec
+        «Empty month on the month step»); sample and selection are untouched."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.select_event_by_id(e1.id)
+        events_before = list(vm.events)
+        selection_signals: list = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.level = ScaleUnit.MONTH
+
+        assert [(type(r), r.date, getattr(r, "count", None)) for r in vm.rows] == [
+            (PeriodHeaderRow, date(1200, 1, 1), None),
+            (PeriodCardRow, date(1200, 1, 1), 1),
+            (PeriodHeaderRow, date(1200, 2, 1), None),
+            (PeriodCardRow, date(1200, 2, 1), 0),   # «no events» stub
+            (PeriodHeaderRow, date(1200, 3, 1), None),
+            (PeriodCardRow, date(1200, 3, 1), 1),
+        ]
+        assert vm.events == events_before
+        assert vm.selected_event is e1  # the rung is nobody's business here
+        assert selection_signals == []
+
+        vm.level = ScaleUnit.DAY  # …and the daily projection comes back
+        assert not any(
+            isinstance(r, (PeriodHeaderRow, PeriodCardRow)) for r in vm.rows
+        )
+        assert {r.event_id for r in vm.rows if isinstance(r, EventRow)} == {e1.id, e2.id}
+        assert vm.selected_event is e1
+
+    @pytest.mark.asyncio
+    async def test_hide_empty_cuts_empty_positions_on_both_levels(self):
+        """Spec «Empty days disappear» + «Empty periods disappear» for the VM
+        knob: turning the toggle hides empty days (with their headers) and
+        «no events» periods, turning it off returns them; the selection never
+        blinks."""
+        e1 = _span(1, "New year", date(1200, 1, 1), date(1200, 1, 1))
+        e2 = _span(2, "Third day", date(1200, 1, 3), date(1200, 1, 3))
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        vm.window = (date(1200, 1, 1), date(1200, 1, 3))  # Jan 2 is the empty day
+        vm.select_event_by_id(e1.id)
+        assert sum(1 for r in vm.rows if isinstance(r, EmptyDayRow)) == 1
+        assert len(vm.rows) == 6  # two days with cards, one placeholder day
+        selection_signals: list = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+
+        vm.hide_empty = True
+
+        assert not any(isinstance(r, EmptyDayRow) for r in vm.rows)
+        assert len(vm.rows) == 4  # the empties left the tape with their headers
+        assert [e.id for e in vm.events] == [e1.id, e2.id]  # sample never moved
+        assert selection_signals == []  # the toggle never touches the selection
+
+        selection_signals.clear()
+        vm.level = ScaleUnit.MONTH
+        vm.window = (date(1200, 1, 1), date(1200, 3, 31))
+        # the window change re-asserts the surviving selection exactly once
+        # (legacy emitting semantics: the signal fires, the event never blinks)
+        assert selection_signals == [1]
+        assert [r.count for r in vm.rows if isinstance(r, PeriodCardRow)] == [2]
+        vm.hide_empty = False  # the empty months' «no events» stubs are back
+        assert [r.count for r in vm.rows if isinstance(r, PeriodCardRow)] == [2, 0, 0]
+        assert vm.selected_event is e1
+
+    @pytest.mark.asyncio
+    async def test_rows_without_events_without_window_are_empty(self):
+        """No events and no window → no span to enumerate → no rows (the
+        text hint is the view's overlay, not a row)."""
         service = AsyncMock()
         service.get_all_events.return_value = []
         vm = TimelineViewModel(service)
@@ -256,220 +401,103 @@ class TestTimelineViewModel:
         assert vm.rows == []
 
     @pytest.mark.asyncio
-    async def test_rows_are_recomputed_on_filter_clear(self):
-        """Clearing the filter returns the derived rows to the sample's own
-        min–max range, consistent with the recomputed ``events``."""
+    async def test_rows_are_recomputed_on_window_clear(self):
+        """Clearing the window returns the tape from the window's days to the
+        sample's own content span, consistent with the recomputed ``events``."""
+        e1 = _span(1, "Only", date(1300, 1, 1), date(1300, 1, 1))
+        service, vm = self._vm_with(e1)
+
+        await vm.load_events()
+        vm.window = (date(1200, 1, 1), date(1200, 1, 2))  # beyond event e1
+        assert not any(isinstance(r, EventRow) for r in vm.rows)
+
+        vm.window = None  # «Все дни»: the window resets
+
+        assert [e.id for e in vm.events] == [1]
+        cards = [r for r in vm.rows if isinstance(r, EventRow)]
+        assert [(r.date, r.event_id) for r in cards] == [(date(1300, 1, 1), 1)]
+
+    @pytest.mark.asyncio
+    async def test_identical_reload_does_not_rebuild_rows(self):
+        """The ``_version_of`` memo behind the rows re-model (design «update_events
+        no-op for the same slice»): an identical sample at identical knobs
+        rebuilds nothing; a window change does (so the memo never swallows the
+        new fields)."""
+        e1, e2 = self._w2_events()
+        service, vm = self._vm_with(e1, e2)
+        await vm.load_events()
+        rows_before = vm.rows
+
+        await vm.load_events()  # identical sample, knobs the same
+
+        assert vm.rows is rows_before  # no re-model: the same row list
+
+        vm.window = (date(1200, 1, 1), date(1200, 1, 31))  # the new key field
+
+        assert vm.rows is not rows_before
+        assert [e.id for e in vm.events] == [e1.id]
+
+    # ── inline creation from an empty day (task 6.1, design D4) ────────────────
+
+    @staticmethod
+    def _create_service(new_event):
+        """A service double that records the create call and reloads to
+        ``[new_event]``; its shared session's commit/rollback are spies."""
         service = AsyncMock()
-        e1 = _mock_event(1, "Only")
-        e1.start_date = date(1300, 1, 1)
-        e1.end_date = date(1300, 1, 1)
-        service.get_all_events.return_value = [e1]
+        service.get_all_events.return_value = [new_event]
+        service.create_event = AsyncMock(return_value=new_event)
+        service._session = MagicMock()
+        service._session.commit = AsyncMock()
+        service._session.rollback = AsyncMock()
+        return service
+
+    @pytest.mark.asyncio
+    async def test_create_event_at_writes_a_single_day_event_then_selects(self):
+        """Spec «Быстрое создание»: Enter on the empty-day field writes one
+        event with ``start == end == the clicked day`` and no type, commits,
+        reloads and selects the new record."""
+        day = date(1200, 8, 14)
+        new = _span(3, "Засека", day, day)
+        service = self._create_service(new)
         vm = TimelineViewModel(service)
 
-        await vm.load_events()
-        vm.filter_by_dates(date(1200, 1, 1), date(1200, 1, 2))  # excludes e1
-        assert [r.kind for r in vm.rows] == [RowKind.EMPTY_DAY, RowKind.EMPTY_DAY]
+        event = await vm.create_event_at(day, "Засека")
 
-        vm.filter_by_dates(None, None)
-
-        assert len(vm.events) == 1
-        assert [r.kind for r in vm.rows] == [RowKind.EVENT]
-        assert vm.rows[0].event_id == 1
-
-    # ── W4 scale ladder: unit / group_by / descent (tasks 4.1–4.3) ─────────
-
-    @staticmethod
-    def _w2_events():
-        """Two one-day events in distinct months of 1200 (January + March)."""
-        e1 = _mock_event(1, "Winter council")
-        e1.start_date = date(1200, 1, 5)
-        e1.end_date = date(1200, 1, 5)
-        e2 = _mock_event(2, "Spring fair")
-        e2.start_date = date(1200, 3, 7)
-        e2.end_date = date(1200, 3, 7)
-        return e1, e2
-
-    @staticmethod
-    def _vm_with(*events):
-        service = AsyncMock()
-        service.get_all_events.return_value = list(events)
-        return service, TimelineViewModel(service)
+        assert event is new and vm.selected_event is new
+        service.create_event.assert_awaited_once_with(
+            name="Засека", characteristics="", backstory="",
+            start_date=day, end_date=day, event_type_id=None,
+        )
+        service._session.commit.assert_awaited_once()
+        # reload landed the card and the selection followed it
+        assert [e.id for e in vm.events] == [3]
+        assert isinstance(vm.rows[1], EventRow) and vm.rows[1].event_id == 3
 
     @pytest.mark.asyncio
-    async def test_unit_and_group_by_default_and_are_not_serialized(self):
-        """Fresh ViewModel always opens «сутки · выкл» — the view knobs are
-        plain in-memory state, never restored from anywhere (spec «Вид не
-        переживает перезапуск»)."""
-        service, _ = self._vm_with()
-        first = TimelineViewModel(service)
-        first.unit = ScaleUnit.YEAR
-        first.group_by = EntityKind.LOCATION
+    async def test_create_event_at_whitespace_name_creates_nothing(self):
+        """Spec «Пустое поле не создаёт»: an empty/whitespace name is not a
+        create — no write, no commit, no reload, no selection."""
+        service = self._create_service(_span(3, "x", date(1200, 8, 14), date(1200, 8, 14)))
+        vm = TimelineViewModel(service)
 
-        reopened = TimelineViewModel(service)
-        assert reopened.unit is ScaleUnit.DAY
-        assert reopened.group_by is None
+        assert await vm.create_event_at(date(1200, 8, 14), "   ") is None
 
-    @pytest.mark.asyncio
-    async def test_changing_unit_remodels_rows_touching_neither_filter_nor_selection(self):
-        """Task 4.1: unit is a pure row projection — the visible sample, the
-        filter window and the selection survive the rung change."""
-        e1, e2 = self._w2_events()
-        service, vm = self._vm_with(e1, e2)
-        await vm.load_events()
-        vm.filter_by_dates(date(1200, 1, 1), date(1200, 3, 31))
-        vm.select_event_by_id(e1.id)
-
-        events_before = list(vm.events)
-        rows_day_before = list(vm.rows)
-        events_signals: list = []
-        selection_signals: list = []
-        vm.events_changed.connect(lambda: events_signals.append(1))
-        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
-
-        vm.unit = ScaleUnit.MONTH
-
-        assert vm.unit is ScaleUnit.MONTH
-        # the projection rolled up to months, window aligned to month edges
-        assert [(r.kind, r.date, r.unit_count) for r in vm.rows] == [
-            (RowKind.UNIT, date(1200, 1, 1), 1),
-            (RowKind.UNIT, date(1200, 2, 1), 0),  # empty month stays a stub
-            (RowKind.UNIT, date(1200, 3, 1), 1),
-        ]
-        # …while filter, sample and selection stayed exactly where they were
-        assert vm.events == events_before
-        assert vm.selected_event is e1
-        assert events_signals == [1]
-        assert selection_signals == []
-
-        vm.unit = ScaleUnit.DAY  # and the daily projection survives the round trip
-        assert vm.rows == rows_day_before
-        assert vm.selected_event is e1
-
-    @pytest.mark.asyncio
-    async def test_group_by_is_assembled_from_domain_relations(self):
-        """Task 4.1: the VM materializes «event → group names» from the domain
-        links; the core sections by them (event in every linked section,
-        «Без привязки» last)."""
-        e1, e2 = self._w2_events()
-        e1.characters = [SimpleNamespace(name="Ариз")]
-        e2.locations = [SimpleNamespace(name="Рыночная площадь")]
-        service, vm = self._vm_with(e1, e2)
-        await vm.load_events()
-
-        vm.unit = ScaleUnit.MONTH
-        vm.group_by = EntityKind.CHARACTER
-
-        # e1 → section «Ариз» (January); e2 has no character → «Без привязки»
-        # (March); February is touched by neither and never surfaces inside a
-        # section (spec «Пустой месяц не показан в секции»).
-        assert [(r.kind, r.group_key, r.date) for r in vm.rows] == [
-            (RowKind.SECTION, "Ариз", date(1200, 1, 1)),
-            (RowKind.UNIT, "Ариз", date(1200, 1, 1)),
-            (RowKind.SECTION, NO_GROUP_KEY, date(1200, 3, 1)),
-            (RowKind.UNIT, NO_GROUP_KEY, date(1200, 3, 1)),
-        ]
-        assert [r.unit_count for r in vm.rows if r.kind is RowKind.UNIT] == [1, 1]
-
-        # switching the grouped kind re-reads the other relation
-        vm.group_by = EntityKind.LOCATION
-        assert [r.group_key for r in vm.rows] == [
-            "Рыночная площадь", "Рыночная площадь", NO_GROUP_KEY, NO_GROUP_KEY,
-        ]
-        assert [r.date for r in vm.rows] == [
-            date(1200, 3, 1), date(1200, 3, 1), date(1200, 1, 1), date(1200, 1, 1),
-        ]
-
-    @pytest.mark.asyncio
-    async def test_external_selection_from_month_drops_the_ladder(self):
-        """Task 4.2: selecting an id while on MONTH sets unit=DAY, the event's
-        row enters ``rows`` and the selection lands on it (spec «Внешний выбор
-        с крупной ступени спускает лестницу»)."""
-        e1, e2 = self._w2_events()
-        service, vm = self._vm_with(e1, e2)
-        await vm.load_events()
-        vm.unit = ScaleUnit.MONTH
-        assert [r.event_id for r in vm.rows] == [None, None, None]
-
-        events_signals: list = []
-        selection_signals: list = []
-        vm.events_changed.connect(lambda: events_signals.append(1))
-        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
-
-        vm.select_event_by_id(e2.id)
-
-        assert vm.unit is ScaleUnit.DAY
-        assert e2.id in [r.event_id for r in vm.rows]
-        assert vm.selected_event is e2
-        # rows were re-modelled before the selection was asserted (D4 order)
-        assert events_signals == [1]
-        assert selection_signals == [1]
-
-    @pytest.mark.asyncio
-    async def test_out_of_filter_selection_clears_without_descending(self):
-        """Task 4.2: an id outside the filtered sample still clears the
-        selection (emitted, so every layer follows) — and does not spend a
-        pointless ladder descent."""
-        e1, e2 = self._w2_events()
-        service, vm = self._vm_with(e1, e2)
-        await vm.load_events()
-        vm.unit = ScaleUnit.MONTH
-        vm.select_event_by_id(e1.id)
-        await vm.load_events()  # re-validate keeps the DAY ladder it forced
-
-        vm.unit = ScaleUnit.MONTH
-        vm.filter_by_dates(date(1200, 1, 1), date(1200, 1, 31))  # e2 falls out
-        selection_signals: list = []
-        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
-
-        vm.select_event_by_id(e2.id)  # not in the visible set anymore
-
+        service.create_event.assert_not_called()
+        service._session.commit.assert_not_called()
+        service.get_all_events.assert_not_called()  # not even a reload
         assert vm.selected_event is None
-        assert selection_signals == [1]  # the prune is announced (panel follows)
-        assert vm.unit is ScaleUnit.MONTH  # a miss does not move the ladder
-
-        # the same event leaving the sample *while selected* (filter tightened)
-        # also clears in every layer — and the internal revalidation, unlike an
-        # external selection, never drags the ladder down.
-        vm.unit = ScaleUnit.MONTH
-        vm.select_event_by_id(e1.id)  # back in: the ladder drops to DAY for it
-        assert vm.unit is ScaleUnit.DAY
-        selection_signals.clear()
-        vm.filter_by_dates(date(1200, 3, 1), date(1200, 3, 31))  # e1 falls out
-        assert vm.selected_event is None
-        assert selection_signals == [1]  # announced to the panel/widget layers
-        assert vm.unit is ScaleUnit.DAY  # the rung is nobody's business here
 
     @pytest.mark.asyncio
-    async def test_changing_view_knobs_keeps_selection_and_filter(self):
-        """Task 4.3: unit/group_by changes re-model ``rows`` without ever
-        resetting the selected event or the live filter."""
-        e1, e2 = self._w2_events()
-        service, vm = self._vm_with(e1, e2)
-        await vm.load_events()
-        vm.filter_by_dates(date(1200, 1, 1), date(1200, 3, 31))
-        vm.select_event_by_id(e2.id)
+    async def test_create_event_at_trims_the_name_before_writing(self):
+        """The name is stripped so a padded draft does not persist stray
+        whitespace (the field's own display is trimmed the same way)."""
+        day = date(1200, 9, 1)
+        service = self._create_service(_span(4, "Tavern", day, day))
+        vm = TimelineViewModel(service)
 
-        selection_signals: list = []
-        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+        await vm.create_event_at(day, "  Tavern  ")
 
-        vm.unit = ScaleUnit.YEAR
-        assert vm.selected_event is e2
-        assert [e.id for e in vm.events] == [e1.id, e2.id]  # filter intact
-
-        vm.group_by = EntityKind.CHARACTER  # selection now sits in …
-        assert vm.selected_event is e2
-        assert any(r.group_key == NO_GROUP_KEY for r in vm.rows)
-
-        vm.unit = ScaleUnit.DAY  # … and back down, still the same event
-        assert vm.selected_event is e2
-        # the full filtered daily window is back, both event rows in place
-        assert [(r.date, r.event_id) for r in vm.rows if r.kind is RowKind.EVENT] == [
-            (date(1200, 1, 5), e1.id),
-            (date(1200, 3, 7), e2.id),
-        ]
-        assert vm.rows[0].date == date(1200, 1, 1)
-        assert vm.rows[-1].date == date(1200, 3, 31)  # filter window intact
-        assert selection_signals == []  # the selection never blinked
+        assert service.create_event.await_args.kwargs["name"] == "Tavern"
 
 
 

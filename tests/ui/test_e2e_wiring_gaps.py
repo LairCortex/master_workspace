@@ -1,7 +1,7 @@
 """E2E gap-fillers for ApplicationWiring and Application handlers.
 
 Branches no user scenario in the main E2E set exercises: unknown-type
-guards, rollback-on-failure paths, date filtering, search-result
+guards, rollback-on-failure paths, the date window, search-result
 selection, the create-related flow, snapshot dispatch, mention search
 and the AI-button error paths.
 """
@@ -17,6 +17,7 @@ from app.application.services.event_service import EventService
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
+from app.presentation.views.timeline_rows import ScaleUnit
 
 from tests.ui import helpers
 from tests.ui.conftest import query_db
@@ -45,20 +46,23 @@ async def _open_entity_card(window, wait_for, entity_type: str, entity_id: int) 
     )
 
 
-async def test_filter_and_unknown_type_guards(app, wait_for):
+async def test_window_and_unknown_type_guards(app, wait_for):
     application, window = app
+    # A closed 1300 event: a window that does not cross it excludes it under
+    # the day-ladder overlap visibility (an open end would reach into 1400).
     await helpers.create_event_via_ui(
-        window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1)
+        window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1),
+        end_date=QDate(1300, 7, 1),
     )
     canvas = window.timeline_widget.rows_view
     await wait_for(lambda: len(canvas.events) == 1)
 
     # A narrow date range hides the event; clearing brings it back
-    window.timeline_widget.filter_changed.emit(
+    window.timeline_widget.window_changed.emit(
         datetime.date(1400, 1, 1), datetime.date(1400, 12, 31)
     )
     await wait_for(lambda: len(canvas.events) == 0)
-    window.timeline_widget.filter_changed.emit(None, None)
+    window.timeline_widget.window_changed.emit(None, None)
     await wait_for(lambda: len(canvas.events) == 1)
 
     # Unknown entity type from the "+" menu: guard, no dialog
@@ -83,15 +87,18 @@ async def test_filter_and_unknown_type_guards(app, wait_for):
     assert not [d for d in window.findChildren(EntityCardDialog) if d.isVisible()]
 
 
-async def test_filtering_out_the_selected_event_clears_every_layer(app, wait_for):
+async def test_window_out_of_the_selected_event_clears_every_layer(app, wait_for):
     """The selection is id-centered in all three layers (task 3.3).
 
-    A filter that drops the selected event used to leave the ViewModel and the
+    A window that drops the selected event used to leave the ViewModel and the
     detail panel holding an object the canvas had already forgotten.
     """
     application, window = app
+    # Closed event: the 1400 window excludes it (no overlap); an open end
+    # would cross the window and keep it visible (day-ladder semantics).
     await helpers.create_event_via_ui(
-        window, wait_for, "Война", start_date=QDate(1300, 7, 1)
+        window, wait_for, "Война", start_date=QDate(1300, 7, 1),
+        end_date=QDate(1300, 7, 1),
     )
     canvas = window.timeline_widget.rows_view
     await wait_for(lambda: len(canvas.events) == 1)
@@ -100,7 +107,7 @@ async def test_filtering_out_the_selected_event_clears_every_layer(app, wait_for
     await wait_for(lambda: "Война" in window.detail_panel.title_label.text())
     assert canvas.selected_id == event_id
 
-    window.timeline_widget.filter_changed.emit(
+    window.timeline_widget.window_changed.emit(
         datetime.date(1400, 1, 1), datetime.date(1400, 12, 31)
     )
     await wait_for(lambda: len(canvas.events) == 0)
@@ -205,6 +212,56 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
         d.isVisible() and d.name_input.text() == "ГеройПоиска"
         for d in window.findChildren(EntityCardDialog)
     ))
+
+
+async def test_search_result_descends_ladder_past_an_excluding_window(
+    app, wait_for
+):
+    """Spec «Внешний выбор с крупной ступени спускает лестницу» through the
+    REAL search channel (regression: the wiring once gated on the windowed
+    slice, silently dropping results the active «Выбор даты» window excluded).
+
+    «Ранний» is cut out by a June-only window while the ladder stands on
+    «месяц»; its search result must still descend to сутки, reset the window
+    to «Все дни», repaint the tape and land the highlight on its card."""
+    application, window = app
+    widget = window.timeline_widget
+    view = widget.rows_view
+    await helpers.create_event_via_ui(
+        window, wait_for, "Ранний",
+        start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 1),
+    )
+    await helpers.create_event_via_ui(
+        window, wait_for, "Поздний",
+        start_date=QDate(1200, 6, 1), end_date=QDate(1200, 6, 1),
+    )
+    await helpers.wait_until_settled()
+    early_id = helpers.find_event_id(window, "Ранний")
+
+    # The user drills the window onto June and zooms out to «месяц»: «Ранний»
+    # leaves both the window and the visible sample (but not the VM's sample).
+    widget._on_window_range(datetime.date(1200, 6, 1), datetime.date(1200, 6, 30))
+    await helpers.wait_until_settled()
+    vm = application._wiring._timeline_vm
+    vm.level = __import__(
+        "app.presentation.views.timeline_rows", fromlist=["ScaleUnit"]
+    ).ScaleUnit.MONTH
+    widget.update_events(vm.events)
+    await helpers.wait_until_settled()
+    assert view.level.name == "MONTH"
+    assert all(e.name != "Ранний" for e in view.events)  # excluded by the window
+
+    # …and the search result for that very event must still reach it.
+    window.search_bar.result_selected.emit("event", early_id)
+    await helpers.wait_until_settled()
+
+    assert vm.level.name == "DAY"                      # ladder descended
+    assert vm.window is None                           # «Все дни» reset
+    assert view.level.name == "DAY"                    # the tape followed
+    assert view.window == (None, None)
+    assert view.selected_id == early_id                # card highlighted
+    assert view.index_for_event(early_id) is not None  # …and pictured, visible
+    assert vm.selected_event is not None and vm.selected_event.name == "Ранний"
 
 
 async def test_create_related_entity_from_card(app, wait_for, menu_qmenu, modal_qdialog):

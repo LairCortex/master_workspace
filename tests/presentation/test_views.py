@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
 
 from app.presentation.views.main_window import MainWindow
-from app.presentation.views.timeline_widget import TimelineWidget, filter_chip_text
+from app.presentation.views.timeline_widget import TimelineWidget, window_chip_text
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.event_dialog import EventDialog
@@ -507,16 +507,16 @@ class TestTimelineWidget:
         vm.events = []
         w = TimelineWidget(vm)
         qtbot.addWidget(w)
-        assert w.filter_chip.text() == filter_chip_text(None, None)
+        assert w.window_chip.text() == window_chip_text(None, None)
         assert w.jump_prev_button is not None and w.jump_next_button is not None
-        for gone in ("filter_start", "filter_end", "filter_button", "clear_filter_button"):
+        for gone in ("date_start", "date_end", "apply_button", "clear_button"):
             assert not hasattr(w, gone)
         # The popover carries the two game calendars (task 3.2).
-        assert w.filter_popup is not None
-        assert w.filter_popup.start_calendar is not None
-        assert w.filter_popup.end_calendar is not None
+        assert w.window_popup is not None
+        assert w.window_popup.start_calendar is not None
+        assert w.window_popup.end_calendar is not None
 
-    def test_timeline_filter_signal(self, qtbot):
+    def test_timeline_window_signal(self, qtbot):
         """W3b 3.2: two taps apply live — first start, second end + close."""
         vm = MagicMock()
         vm.events = []
@@ -525,36 +525,36 @@ class TestTimelineWidget:
 
         from PySide6.QtCore import QDate
         received = []
-        w.filter_changed.connect(lambda s, e: received.append((s, e)))
-        w.filter_popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
+        w.window_changed.connect(lambda s, e: received.append((s, e)))
+        w.window_popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
         assert received == []  # start alone does not apply yet
-        w.filter_popup.start_calendar.clicked.emit(QDate(1300, 12, 31))
+        w.window_popup.start_calendar.clicked.emit(QDate(1300, 12, 31))
 
         assert received == [(date(1200, 1, 1), date(1300, 12, 31))]
-        assert not w.filter_popup.isVisible()
-        assert w.filter_chip.text() == filter_chip_text(
+        assert not w.window_popup.isVisible()
+        assert w.window_chip.text() == window_chip_text(
             date(1200, 1, 1), date(1300, 12, 31)
         )
 
-    def test_timeline_clear_filter_signal(self, qtbot):
-        """W3b 3.2: «Сбросить» inside the popover → (None, None) + «Все даты»."""
+    def test_timeline_clear_window_signal(self, qtbot):
+        """W3b 3.2 / task 7.1: «Сбросить» inside the popover → (None, None) + «Все дни»."""
         vm = MagicMock()
         vm.events = []
         w = TimelineWidget(vm)
         qtbot.addWidget(w)
 
         from PySide6.QtCore import QDate
-        w.filter_popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
-        w.filter_popup.start_calendar.clicked.emit(QDate(1300, 12, 31))
+        w.window_popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
+        w.window_popup.start_calendar.clicked.emit(QDate(1300, 12, 31))
 
         received = []
-        w.filter_changed.connect(lambda s, e: received.append((s, e)))
-        w.filter_popup.show()  # reopen it — «Сбросить» lives inside the popover
-        w.filter_popup.reset_button.click()
+        w.window_changed.connect(lambda s, e: received.append((s, e)))
+        w.window_popup.show()  # reopen it — «Сбросить» lives inside the popover
+        w.window_popup.reset_button.click()
 
         assert received == [(None, None)]
-        assert not w.filter_popup.isVisible()
-        assert w.filter_chip.text() == filter_chip_text(None, None)
+        assert not w.window_popup.isVisible()
+        assert w.window_chip.text() == window_chip_text(None, None)
 
     def test_list_widget_is_gone(self, qtbot):
         # W3 breaking contract: the row-based QListWidget is fully removed.

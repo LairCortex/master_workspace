@@ -224,10 +224,11 @@ def test_popup_sheet_covers_every_popup_category(tokens, theme):
     # the mention popup: container background *and* list items (both classes)
     assert "_MentionPopup {" in sheet
     assert "MentionPopupListView" in sheet
-    # the timeline filter popover (W3b D9): container + named reset button
+    # the timeline «Выбор даты» popover (W3b D9, renamed by 7.2): container
+    # + named reset button
     # (the sheet must stay free of generic QPushButton rules)
-    assert "_DateFilterPopup {" in sheet
-    assert "_DateFilterResetButton {" in sheet
+    assert "_DateWindowPopup {" in sheet
+    assert "_DateWindowResetButton {" in sheet
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])

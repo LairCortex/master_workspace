@@ -45,7 +45,8 @@ def _type_dot_pixel(window, name: str):
     rect = view.visualItemRect(view.item(idx))
     image = view.viewport().grab().toImage()
     scale = image.width() / max(view.viewport().width(), 1)
-    x = int((view.rail_width() + TEXT_LEFT_PAD + DOT_SIZE // 2) * scale)
+    # The rail is gone (task 3.1): the dot sits at the module's text padding.
+    x = int((TEXT_LEFT_PAD + DOT_SIZE // 2) * scale)
     y = int(rect.center().y() * scale)
     return image.pixelColor(x, y)
 

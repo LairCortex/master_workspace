@@ -57,13 +57,12 @@ def pick_menu_action(menu_qmenu, text: str) -> None:
     menu_qmenu.choose(chooser)
 
 
-# ── Timeline row interaction (W3b: events are list rows, not Gantt bars) ──
+# ── Timeline row interaction (day-ladder: events are cards in day sections) ──
 
-#: Left inset from the rail's right edge where a synthetic click lands — the
-#: rail zone belongs to the W3c scale gestures (click-jump/drag navigate,
-#: never select), so a click meant for the row's text must clear it
-#: (row_center clamps this).
-_ROW_HIT_INSET = 12
+#: Left inset into the card's text zone where a synthetic click lands — the
+#: type dot sits further left, and a point on the name is the click a user
+#: makes (the old rail zone is deleted with the rail, task 3.1).
+_ROW_HIT_INSET = 14
 
 
 def timeline_view(window) -> QWidget:
@@ -81,12 +80,11 @@ def find_event_id(window, name: str) -> int:
 
 
 def row_center(view, event_id: int) -> QPoint:
-    """Viewport point of the EVENT-row for ``event_id``, clear of the rail.
+    """Viewport point of the event-card row for ``event_id``, in the text zone.
 
     Scroll-aware: the caller scrolls the row into view first, then this reads
-    its laid-out (viewport) rect and lands inside the text zone — never on the
-    date rail, which navigates instead of selecting (spec «Нажатие в рейке не
-    выбирает событие»).
+    its laid-out (viewport) rect and lands inside the name — right of the type
+    dot, on the card proper (the old rail zone is gone, task 3.1).
     """
     idx = view.index_for_event(event_id)
     if idx is None:
@@ -94,7 +92,7 @@ def row_center(view, event_id: int) -> QPoint:
     rect = view.visualItemRect(view.item(idx))
     if not rect.isValid() or rect.isNull():
         raise AssertionError(f"row {idx} for event {event_id} is not laid out")
-    x = max(view.rail_width() + _ROW_HIT_INSET, 0)
+    x = max(_ROW_HIT_INSET, 0)
     x = min(x, max(view.viewport().width() - 1, 0))
     return QPoint(x, rect.center().y())
 

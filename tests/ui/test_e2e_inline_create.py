@@ -1,0 +1,124 @@
+"""Group 6 e2e: inline create from an empty day (task 6.1, design D4).
+
+Full user path through the wiring: click the «нет события» row → the reused
+inline field opens on it → Enter commits ``event_create_requested`` →
+``vm.create_event_at`` writes a single-day untyped event, reloads and selects
+it → the new card is visible and washed, the detail panel is filled, and the
+row is committed in the DB. An empty draft is not a create.
+"""
+from __future__ import annotations
+
+import datetime
+
+from PySide6.QtCore import QDate, QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+
+from app.presentation.views.timeline_rows import EmptyDayRow
+from tests.ui import helpers
+from tests.ui.conftest import query_db
+
+
+def _ymd(value) -> str:
+    return str(value)[:10]
+
+
+def _press_and_release(view, point) -> None:
+    """A full left click on the list viewport at ``point`` (drives ``clicked``)."""
+    vp = view.viewport()
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+    for kind, buttons in (
+        (QEvent.Type.MouseButtonPress, left),
+        (QEvent.Type.MouseButtonRelease, none),
+    ):
+        helpers._mouse(vp, point, kind, left, buttons)
+
+
+def _click_empty_day(window, day) -> None:
+    """Scroll the given day's placeholder into view and click it."""
+    view = window.timeline_widget.rows_view
+    idx = next(
+        i for i, r in enumerate(view.rows)
+        if isinstance(r, EmptyDayRow) and r.date == day
+    )
+    view.scrollToItem(view.item(idx))
+    point = view.visualItemRect(view.item(idx)).center()
+    _press_and_release(view, point)
+
+
+async def test_inline_create_from_empty_day(app, wait_for):
+    """Spec «Быстрое создание»: Enter in the empty-day field creates a
+    14–14 event without a type, reloads the tape, and selects the new card."""
+    application, window = app
+    await helpers.create_event_via_ui(
+        window, wait_for, "Anchor",
+        start_date=QDate(1200, 3, 1),
+        end_date=QDate(1200, 3, 1),
+    )
+    widget = window.timeline_widget
+    view = widget.rows_view
+    await wait_for(lambda: len(view.events) == 1)
+    # Pin a 6-day window so the eventless Mar 2..Mar 6 stand as placeholders.
+    widget._on_window_range(
+        datetime.date(1200, 3, 1), datetime.date(1200, 3, 6),
+    )
+    await helpers.wait_until_settled()
+    assert any(
+        isinstance(r, EmptyDayRow) and r.date == datetime.date(1200, 3, 3)
+        for r in view.rows
+    )
+
+    _click_empty_day(window, datetime.date(1200, 3, 3))
+    assert view.inline_editor.isVisible()
+    assert view.editing_day == datetime.date(1200, 3, 3)
+
+    view.inline_editor.setText("Засека")
+    view.inline_editor.returnPressed.emit()
+    await helpers.wait_until_settled()
+
+    assert helpers.has_event_named(window, "Засека")
+    eid = helpers.find_event_id(window, "Засека")
+    # The new event is selected and its card is pictured (spec «карточка
+    # видна и выбрана»).
+    assert view.selected_id == eid
+    assert view.index_for_event(eid) is not None
+    assert not view.inline_editor.isVisible()  # the field dismissed itself
+
+    row = query_db(
+        application._db_path,
+        "SELECT start_date, end_date, event_type_id FROM events WHERE id = ?",
+        (eid,),
+    )[0]
+    assert _ymd(row[0]) == "1200-03-03"  # start == end == the clicked day
+    assert _ymd(row[1]) == "1200-03-03"
+    assert row[2] is None  # no type on an inline quick create
+
+
+async def test_inline_create_empty_draft_creates_nothing(app, wait_for):
+    """Spec «Пустое поле не создаёт»: an empty inline field dismissed on Enter
+    adds no event and leaves the selected detail panel untouched."""
+    application, window = app
+    await helpers.create_event_via_ui(
+        window, wait_for, "Anchor",
+        start_date=QDate(1200, 3, 1),
+        end_date=QDate(1200, 3, 1),
+    )
+    widget = window.timeline_widget
+    view = widget.rows_view
+    await wait_for(lambda: len(view.events) == 1)
+    widget._on_window_range(
+        datetime.date(1200, 3, 1), datetime.date(1200, 3, 6),
+    )
+    await helpers.wait_until_settled()
+    before = {e.id for e in view.events}
+
+    _click_empty_day(window, datetime.date(1200, 3, 3))
+    assert view.inline_editor.isVisible()
+    view.inline_editor.returnPressed.emit()  # empty draft
+    await helpers.wait_until_settled()
+
+    assert {e.id for e in view.events} == before  # nothing added
+    assert not view.inline_editor.isVisible()
+    rows = query_db(
+        application._db_path, "SELECT COUNT(*) FROM events", ()
+    )[0][0]
+    assert rows == len(before)
