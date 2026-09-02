@@ -202,13 +202,8 @@ async def test_switch_game_with_dirty_editor_reject_keeps_game(app, dialog_input
     window.switch_game_action.trigger()
     await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
     launcher = window.findChildren(GameLauncherDialog)[0]
-    beta = next(
-        launcher.list_widget.item(i)
-        for i in range(launcher.list_widget.count())
-        if "beta" in launcher.list_widget.item(i).text()
-    )
-    helpers.select_item(launcher.list_widget, beta)
-    launcher.open_button.click()
+    helpers.select_launcher_game(launcher, "beta")
+    helpers.open_launcher_game(launcher)
     assert launcher.selected_path == path_b
 
     await wait_for(lambda: len(calls) >= 1)  # dirty prompt shown and answered No
@@ -237,13 +232,8 @@ async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(
     window.switch_game_action.trigger()
     await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
     launcher = window.findChildren(GameLauncherDialog)[0]
-    beta = next(
-        launcher.list_widget.item(i)
-        for i in range(launcher.list_widget.count())
-        if "beta" in launcher.list_widget.item(i).text()
-    )
-    helpers.select_item(launcher.list_widget, beta)
-    launcher.open_button.click()
+    helpers.select_launcher_game(launcher, "beta")
+    helpers.open_launcher_game(launcher)
 
     await wait_for(lambda: application._window is not window and "beta" in application._window.windowTitle())
 
@@ -372,13 +362,8 @@ async def test_games_have_their_own_sheet_lists(
     window.switch_game_action.trigger()
     await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
     launcher = window.findChildren(GameLauncherDialog)[0]
-    beta = next(
-        launcher.list_widget.item(i)
-        for i in range(launcher.list_widget.count())
-        if "beta" in launcher.list_widget.item(i).text()
-    )
-    helpers.select_item(launcher.list_widget, beta)
-    launcher.open_button.click()
+    helpers.select_launcher_game(launcher, "beta")
+    helpers.open_launcher_game(launcher)
     assert launcher.selected_path == path_b
 
     await wait_for(
@@ -671,13 +656,8 @@ async def test_switch_game_with_dirty_fill_reject_keeps_game(
     window.switch_game_action.trigger()
     await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
     launcher = window.findChildren(GameLauncherDialog)[0]
-    beta = next(
-        launcher.list_widget.item(i)
-        for i in range(launcher.list_widget.count())
-        if "beta" in launcher.list_widget.item(i).text()
-    )
-    helpers.select_item(launcher.list_widget, beta)
-    launcher.open_button.click()
+    helpers.select_launcher_game(launcher, "beta")
+    helpers.open_launcher_game(launcher)
     await wait_for(lambda: len(calls) >= 1)
 
     assert application._window is window

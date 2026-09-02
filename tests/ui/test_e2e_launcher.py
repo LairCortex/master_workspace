@@ -13,17 +13,21 @@ from tests.ui import helpers
 
 async def test_launcher_create_new_game(qapp, llm_client, tmp_games_dir, tmp_llm_config, dialog_input, wait_for):
     """Scenario 1: new game in launcher → main window with the name in title, empty timeline."""
-    dialog = GameLauncherDialog()
+    from app.presentation.theme import get_default_theme
+
+    dialog = GameLauncherDialog(theme=get_default_theme())
     try:
-        assert dialog.list_widget.count() == 0  # empty temporary games dir
+        assert helpers.launcher_game_names(dialog) == []  # empty temporary games dir
 
         dialog_input["answer"] = ("Нове Королівство", True)
-        dialog.new_button.click()
+        # «Новая игра» — the island emits createRequested(""); the controller
+        # asks QInputDialog (stubbed), creates via the VM and opens it at once.
+        dialog.vm.createRequested.emit("")
 
         # the game catalog dir is created in the (temporary) games dir and selected
         assert dialog.selected_path == str(tmp_games_dir / "Нове Королівство" / "game.db")
         assert (tmp_games_dir / "Нове Королівство" / "game.db").exists()
-        assert dialog.list_widget.count() == 1  # list refreshed
+        assert helpers.launcher_game_names(dialog) == ["Нове Королівство"]  # refreshed
     finally:
         dialog.close()
 
@@ -48,16 +52,16 @@ async def test_launcher_open_existing_game_with_data(app, tmp_games_dir, wait_fo
     )
 
     # Copy the game into the (temporary) games dir — where the launcher looks.
+    from app.presentation.theme import get_default_theme
+
     lib_path = tmp_games_dir / "Рассказ.db"
     shutil.copyfile(application._db_path, lib_path)
 
-    launcher = GameLauncherDialog(parent=window)
+    launcher = GameLauncherDialog(parent=window, theme=get_default_theme())
     try:
-        assert launcher.list_widget.count() == 1
-        item = launcher.list_widget.item(0)
-        assert "Рассказ" in item.text()
-        helpers.select_item(launcher.list_widget, item)
-        launcher.open_button.click()
+        assert helpers.launcher_game_names(launcher) == ["Рассказ"]
+        helpers.select_launcher_game(launcher, "Рассказ")
+        helpers.open_launcher_game(launcher)
         assert launcher.selected_path == str(lib_path)
     finally:
         launcher.close()
@@ -95,14 +99,10 @@ async def test_switch_game_from_menu(qapp, llm_client, tmp_games_dir, tmp_llm_co
         window.switch_game_action.trigger()
         await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
         launcher = window.findChildren(GameLauncherDialog)[0]
-        assert launcher.list_widget.count() == 2  # alpha and beta from the tmp games dir
-        beta = next(
-            launcher.list_widget.item(i)
-            for i in range(launcher.list_widget.count())
-            if "beta" in launcher.list_widget.item(i).text()
-        )
-        helpers.select_item(launcher.list_widget, beta)
-        launcher.open_button.click()
+        # alpha and beta from the tmp games dir (newest-first, so set-compared)
+        assert set(helpers.launcher_game_names(launcher)) == {"alpha", "beta"}
+        helpers.select_launcher_game(launcher, "beta")
+        helpers.open_launcher_game(launcher)
         assert launcher.selected_path == str(path_b)
 
         # The switch is async (shutdown → start); wait for the new window.

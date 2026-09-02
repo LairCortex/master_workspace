@@ -32,6 +32,23 @@ a = Analysis(
          "app/presentation/views/table_host/web"),
         ("app/presentation/theme/tokens.json",
          "app/presentation/theme"),
+        # QML islands load their sources from the filesystem via
+        # QQuickWidget.setSource — .qml files are data, never PYZ modules, so
+        # they must ship explicitly. Destination = the package dir because
+        # engine.QML_IMPORT_PATH derives from the module __file__ PyInstaller
+        # assigns under sys._MEIPASS (checked by
+        # tests/test_spec_qml_bundle.py; list .py/__pycache__ stay out of the
+        # bundle — the package modules already live in the PYZ).
+        ("app/presentation/qml/LauncherRoot.qml",
+         "app/presentation/qml"),
+        # Qt Quick *QML plugins* (QtQuick, QtQuick.Controls.Basic,
+        # QtQuick.Layouts, templates, …) are NOT listed here: PyInstaller's
+        # bundled hook-PySide6.QtQml runs collect_qtqml_files(), which scans
+        # Qt's QmlImportsPath for qmldir plugin dirs and re-homes them under
+        # PySide6/qml; the PySide6 runtime hook registers that tree in
+        # QML2_IMPORT_PATH (both split trees on macOS .app). The QtQml
+        # hiddenimport below anchors that hook. Finding fixed in
+        # tests/test_spec_qml_bundle.py.
     ],
     hiddenimports=[
         "aiosqlite",
@@ -46,6 +63,15 @@ a = Analysis(
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
+        # Qt Quick shell (change add-qml-shell-launcher-pilot-q1): the QML
+        # engine/island modules the launcher needs. QtQml additionally keeps
+        # hook-PySide6.QtQml — and with it the automatic collection of every
+        # qmldir QML plugin — guaranteed in the build even if the analysis
+        # graph of a future refactor stops importing it directly.
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtQuickControls2",
+        "PySide6.QtQuickWidgets",
     ],
     hookspath=[],
     hooksconfig={},
@@ -97,7 +123,7 @@ if sys.platform == "darwin":
         icon=None,
         bundle_identifier="com.nri.scenario-manager",
         info_plist={
-            "CFBundleShortVersionString": "0.16.0",
+            "CFBundleShortVersionString": "0.17.0",
             "NSHighResolutionCapable": True,
         },
     )

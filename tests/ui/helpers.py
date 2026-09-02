@@ -149,6 +149,33 @@ def select_item(list_widget: QListWidget, item) -> None:
     list_widget.setCurrentItem(item)
 
 
+# ── QML launcher (Q1): the island is Qt Quick, addressed through the VM ─────
+#
+# The launcher content moved to a QML island (QDialog-wrapper). The old
+# ``list_widget``/``open_button`` addresses are gone; the app-and-test
+# address is now the launcher's view model + its controller: ``set_selected``
+# is the row tap, ``_open_selected`` is the «Открыть»/Enter path (emits
+# ``game_selected`` and accepts). Same user semantics, new address.
+
+def launcher_game_names(launcher) -> list[str]:
+    """Game names listed by the launcher, in display order (newest first)."""
+    return [game["name"] for game in launcher.vm.games]
+
+
+def select_launcher_game(launcher, needle: str) -> str:
+    """Select the first row whose name contains ``needle``; return its path."""
+    for index, game in enumerate(launcher.vm.games):
+        if needle in game["name"]:
+            launcher.vm.set_selected(index)
+            return game["path"]
+    raise AssertionError(f"no launcher row matches {needle!r} in {launcher_game_names(launcher)}")
+
+
+def open_launcher_game(launcher) -> None:
+    """Trigger the launcher's «Открыть»/Enter action on the current selection."""
+    launcher._open_selected()
+
+
 def detail_panel_names(detail_list: QListWidget) -> list[str]:
     """Names shown in a DetailPanel entity list (first label of each item widget)."""
     names: list[str] = []

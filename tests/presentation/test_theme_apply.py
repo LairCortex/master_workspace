@@ -46,28 +46,23 @@ def make_main_window(theme):
     )
 
 
-# ── launcher chrome ────────────────────────────────────────────────────────
+# ── launcher surface (Q1: QML island, skinned by the palette — not QSS) ──────
 
-def test_launcher_has_theme_chrome_container(qtbot, runtime):
+def test_launcher_has_no_theme_chrome_and_no_qss(qtbot, runtime):
+    # Spec ui-theme «Область применения QSS»: the launcher content is a QML
+    # island painted by the palette; it attaches NO chrome and carries NO QSS.
+    from PySide6.QtQuickWidgets import QQuickWidget
+
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
-    chrome = dlg.findChild(QWidget, "themeChrome")
-    assert chrome is not None
-
-
-def test_launcher_theme_chrome_carries_generated_qss(qtbot, runtime, canvas_dark):
-    dlg = GameLauncherDialog(theme=runtime)
-    qtbot.addWidget(dlg)
-    chrome = dlg.findChild(QWidget, "themeChrome")  # objectName: identifier only
-    assert canvas_dark in chrome.styleSheet()
-    # W2a: QSS addresses the role property, not the objectName.
-    assert 'QWidget[uiRole="chrome"]' in chrome.styleSheet()
-
-
-def test_launcher_dialog_itself_has_no_qss(qtbot, runtime):
-    dlg = GameLauncherDialog(theme=runtime)
-    qtbot.addWidget(dlg)
+    assert dlg.findChild(QWidget, "themeChrome") is None
     assert dlg.styleSheet() == ""
+    assert isinstance(dlg.quick, QQuickWidget)
+    # The compiled chrome QSS must not have leaked anywhere into the dialog.
+    canvas = runtime.tokens["color.bg.canvas"]["dark"]
+    assert canvas not in dlg.styleSheet()
+    for child in dlg.findChildren(QWidget):
+        assert canvas not in child.styleSheet()
 
 
 # ── main window chrome ─────────────────────────────────────────────────────
@@ -142,14 +137,29 @@ def broken_runtime(tmp_path):
     )
 
 
-def test_launcher_toggle_writes_pref_and_switches_qss(qtbot, runtime, canvas_light):
+def test_launcher_toggle_writes_pref_and_switches_palette(qtbot, runtime):
+    from PySide6.QtGui import QColor
+    from tests.presentation.qml_helpers import island_toggle_text
+
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
-    dlg.theme_toggle_button.click()
+    dlg.show()
+    dark_surface = QColor(runtime.tokens["color.bg.surface"]["dark"])
+    # Island painted from the dark palette before any toggle.
+    qtbot.waitUntil(lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == dark_surface)
+
+    dlg._root.themeToggleRequested.emit()  # the island's own toggle drives this
+
     assert runtime.theme == "light"
     assert runtime.prefs.config_file.exists()
-    chrome = dlg.findChild(QWidget, "themeChrome")
-    assert canvas_light in chrome.styleSheet()
+    # The island re-syncs from the palette signal — no re-creation, no QSS.
+    assert dlg._root.property("currentTheme") == "light"
+    assert island_toggle_text(dlg.quick) == "Тёмная тема"
+    light_surface = QColor(runtime.tokens["color.bg.surface"]["light"])
+    assert light_surface != dark_surface
+    qtbot.waitUntil(
+        lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == light_surface
+    )
 
 
 def test_main_window_toggle_action_writes_pref_and_switches_qss(
@@ -175,13 +185,21 @@ def test_main_window_toggle_action_reflects_current_theme(qtbot, tmp_path):
 
 
 def test_launcher_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
+    from PySide6.QtQuickWidgets import QQuickWidget
+    from tests.presentation.qml_helpers import island_toggle_text
+
     dlg = GameLauncherDialog(theme=broken_runtime)
     qtbot.addWidget(dlg)
-    dlg.theme_toggle_button.click()
+    # Off-skin (D7): the island still loads, controls basic, nothing throws.
+    assert dlg.quick.status() == QQuickWidget.Status.Ready
+    assert dlg.quick.errors() == []
+    dlg._root.themeToggleRequested.emit()
     assert broken_runtime.theme == "dark"
     assert not broken_runtime.prefs.config_file.exists()
-    chrome = dlg.findChild(QWidget, "themeChrome")
-    assert chrome.styleSheet() == ""
+    # No QSS anywhere (the launcher never attached the chrome).
+    assert dlg.styleSheet() == ""
+    # Off-skin the toggle still names the theme it *would* switch to.
+    assert island_toggle_text(dlg.quick) == "Светлая тема"
 
 
 def test_main_window_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
@@ -201,10 +219,17 @@ def test_runtime_starts_dark_when_preference_file_is_not_utf8(qtbot, tmp_path):
     runtime = ThemeRuntime(prefs=UiPrefsManager(broken), tokens_path=tokens_file_path())
     assert runtime.theme == "dark"
     assert runtime.is_valid is True
-    # Constructing the chrome is what used to crash the whole process.
+    # Constructing the launcher is what used to crash the whole process; the
+    # QML island loads and paints the dark surface from the palette.
+    from PySide6.QtGui import QColor
+    from PySide6.QtQuickWidgets import QQuickWidget
+
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
-    assert dlg.chrome.styleSheet() != ""
+    dlg.show()
+    assert dlg.quick.status() == QQuickWidget.Status.Ready
+    dark_surface = QColor(runtime.tokens["color.bg.surface"]["dark"])
+    qtbot.waitUntil(lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == dark_surface)
 
 
 # ── the preference is read once and kept in memory (no disk per repaint) ────
@@ -326,29 +351,60 @@ def test_launcher_toggle_updates_main_window_check_item(qtbot, runtime):
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     assert window.theme_toggle_action.isChecked() is False
-    dlg.theme_toggle_button.click()
+    dlg._root.themeToggleRequested.emit()
     assert window.theme_toggle_action.isChecked() is True
 
 
-def test_main_window_toggle_updates_launcher_button_text(qtbot, runtime):
+def test_main_window_toggle_updates_launcher_island_label(qtbot, runtime):
+    # ui-theme «Смена из главного окна при открытом лаунчере»: the launcher
+    # repaints via the palette signal and its toggle shows the new target.
+    from tests.presentation.qml_helpers import island_toggle_text
+
     window = make_main_window(runtime)
     qtbot.addWidget(window)
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
-    assert dlg.theme_toggle_button.text() == "Светлая тема"
+    assert island_toggle_text(dlg.quick) == "Светлая тема"
     window.theme_toggle_action.trigger()
-    assert dlg.theme_toggle_button.text() == "Тёмная тема"
+    assert island_toggle_text(dlg.quick) == "Тёмная тема"
+    assert dlg._root.property("currentTheme") == "light"
+
+
+def test_main_window_toggle_repaints_open_launcher(qtbot, runtime):
+    # The same ui-theme scenario, pinned by a pixel rather than a label: the
+    # open island takes the new surface token with no re-creation.
+    from PySide6.QtGui import QColor
+
+    window = make_main_window(runtime)
+    qtbot.addWidget(window)
+    dlg = GameLauncherDialog(theme=runtime)
+    qtbot.addWidget(dlg)
+    dlg.show()
+    dark = QColor(runtime.tokens["color.bg.surface"]["dark"])
+    qtbot.waitUntil(lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == dark)
+    root_before = dlg.quick.rootObject()
+
+    window.theme_toggle_action.trigger()  # switched from the main window
+
+    light = QColor(runtime.tokens["color.bg.surface"]["light"])
+    qtbot.waitUntil(
+        lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == light
+    )
+    assert dlg.quick.rootObject() is root_before  # same island, no re-creation
 
 
 def test_broken_tokens_leave_both_switches_untouched(qtbot, broken_runtime):
+    from tests.presentation.qml_helpers import island_toggle_text
+
     window = make_main_window(broken_runtime)
     qtbot.addWidget(window)
     dlg = GameLauncherDialog(theme=broken_runtime)
     qtbot.addWidget(dlg)
-    dlg.theme_toggle_button.click()
+    dlg._root.themeToggleRequested.emit()
     window.theme_toggle_action.trigger()
     assert window.theme_toggle_action.isChecked() is False
-    assert dlg.theme_toggle_button.text() == "Светлая тема"
+    assert island_toggle_text(dlg.quick) == "Светлая тема"
+
 
 
 # ── app-wide popup sheet (W2a D2) ──────────────────────────────────────────

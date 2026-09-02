@@ -11,6 +11,16 @@ The character-sheet canvas (``character_sheet/canvas*``) is whitelisted: its
 QPainter colors are scene content, off-skin by design (D5), as are the paper
 and D1 CSS surfaces it renders. Comments are invisible to the AST; docstrings
 may mention old hexes (migration history) and are skipped.
+
+QML islands (task 7.1, spec ui-theme «Зачистка QML-исходников», qml-shell
+«Мост токенов»): a text pass over ``app/presentation/qml/**.qml`` forbids the
+same offenses in the QML dialect — hex color literals (``#rgb``/``#rrggbb``
+and alpha forms, ``0xRRGGBB[AA]``), JS-side color construction
+(``Qt.rgba``/``Qt.hsla``/``Qt.hsv``/``Qt.tint`` — design D3 keeps the Python
+compiler the only color engine), ``SystemPalette`` (the QML analogue of
+``palette()``) and any color-valued string literal that is not one of the
+named Qt globals the off-skin fallbacks use: themed properties read the
+palette bridge only (``LauncherRoot.qml`` header pins its fallback set).
 """
 from __future__ import annotations
 
@@ -18,9 +28,12 @@ import ast
 import re
 from pathlib import Path
 
+import app.presentation.qml as qml_pkg
 import app.presentation.views as views_pkg
+from PySide6.QtGui import QColor
 
 VIEWS_DIR = Path(views_pkg.__file__).resolve().parent
+QML_DIR = Path(qml_pkg.__file__).resolve().parent
 
 HEX_COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
 
@@ -81,3 +94,155 @@ def test_no_hex_literals_or_palette_calls_in_chrome_views():
             continue
         violations.extend(_violations(path))
     assert not violations, "chrome must read colors from tokens:\n" + "\n".join(violations)
+
+
+# ---------------------------------------------------------------------------
+# Task 7.1: the same invariant over the QML island sources.
+# ---------------------------------------------------------------------------
+
+# Hex color literals: #rgb/#rgba/#rrggbb/#rrggbbaa strings and 0xRRGGBB[AA]
+# integer colors (a legal QML color-slot form, e.g. `color: 0xff8800`).
+QML_HEX_COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
+QML_HEX_INT_RE = re.compile(r"\b0[xX][0-9a-fA-F]{6,8}\b")
+# JS-side color construction — design D3 keeps the Python theme compiler the
+# only color engine; hover/pressed derivatives arrive precomputed in tokens.
+QML_JS_COLOR_FN_RE = re.compile(r"\bQt\s*\.\s*(rgba|hsla|hsv|tint)\s*\(")
+# OS-palette reads in QML — the analogue of the forbidden widgets palette().
+QML_OS_PALETTE_RE = re.compile(r"\bSystemPalette\b")
+QML_STRING_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'')
+QML_NAME_RE = re.compile(r"^[A-Za-z]+$")
+
+# The literal colors an island source may contain at all: exactly the named
+# Qt globals the off-skin (empty-palette, design D7) fallbacks degrade to —
+# the set LauncherRoot.qml's header pins — plus "transparent" (a named QColor
+# with alpha 0 used as "no fill", not a skin color). Every theme-driven value
+# comes from the palette bridge instead.
+OFF_SKIN_NAMED_GLOBALS = {"white", "black", "gray", "lightgray", "transparent"}
+
+
+def _blank(text: str) -> str:
+    """Comment text with newlines preserved (line numbers stay true)."""
+    return "".join(ch if ch == "\n" else " " for ch in text)
+
+
+def _qml_code(text: str) -> str:
+    """QML source with comments blanked out, string literals kept.
+
+    QML has no AST here; comments are narration (may mention hexes, e.g. the
+    invariant itself) and must stay invisible to the scan, exactly like
+    docstrings in the Python pass above.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if ch in "\"'":  # string literal: kept verbatim, may contain //
+            j = i + 1
+            while j < n and text[j] != ch:
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+        elif ch == "/" and nxt == "/":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out.append(_blank(text[i:j]))
+            i = j
+        elif ch == "/" and nxt == "*":
+            j = text.find("*/", i + 2)
+            j = n if j == -1 else j + 2
+            out.append(_blank(text[i:j]))
+            i = j
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _qml_violations(path: Path) -> list[str]:
+    code = _qml_code(path.read_text(encoding="utf-8"))
+    found: list[str] = []
+    for lineno, line in enumerate(code.splitlines(), 1):
+        for m in QML_HEX_COLOR_RE.finditer(line):
+            found.append(f"{path.name}:{lineno}: hex literal {m.group(0)!r}")
+        for m in QML_HEX_INT_RE.finditer(line):
+            found.append(f"{path.name}:{lineno}: hex color literal {m.group(0)!r}")
+        for m in QML_JS_COLOR_FN_RE.finditer(line):
+            found.append(f"{path.name}:{lineno}: Qt.{m.group(1)}() color construction")
+        for m in QML_OS_PALETTE_RE.finditer(line):
+            found.append(f"{path.name}:{lineno}: SystemPalette (OS palette read)")
+        for m in QML_STRING_RE.finditer(line):
+            value = m.group(0)[1:-1]
+            if not QML_NAME_RE.match(value) or not QColor.isValidColorName(value):
+                continue  # not a color-valued literal
+            if value not in OFF_SKIN_NAMED_GLOBALS:
+                found.append(f"{path.name}:{lineno}: color {value!r} outside the palette")
+    return found
+
+
+def test_qml_islands_scan_actual_files():
+    # A typo in the glob must not silently scan nothing (same guard as above).
+    scanned = sorted(QML_DIR.rglob("*.qml"))
+    names = {p.name for p in scanned}
+    assert "LauncherRoot.qml" in names
+    assert scanned, "no qml sources under app/presentation/qml"
+
+
+def test_off_skin_named_globals_are_real_qt_color_names():
+    # The whitelist earns its name: every entry resolves via Qt's own color
+    # database as a named color (not hex, not a palette read).
+    for name in OFF_SKIN_NAMED_GLOBALS:
+        assert QColor.isValidColorName(name), f"{name!r} is not a Qt color name"
+        assert QColor(name).isValid()
+        assert QML_NAME_RE.match(name)
+
+
+def test_qml_scanner_detects_planted_violations(tmp_path):
+    # Self-check: the regex pass must catch each offense — and must NOT see
+    # the hex narrated inside a comment.
+    bad = tmp_path / "Bad.qml"
+    bad.write_text(
+        'import QtQuick\n'
+        'Rectangle {\n'
+        '    color: "#ff0000"\n'
+        '    border.color: "#abc"\n'
+        '    property color c: 0x00ff00\n'
+        '    radius: Qt.rgba(1, 0, 0, 1)\n'
+        '    color: "tomato"\n'
+        '    SystemPalette { id: pal }\n'
+        '    // hex "#000000" here is narration, invisible to the scan\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    violations = _qml_violations(bad)
+    joined = "\n".join(violations)
+    assert len(violations) == 6, joined
+    assert "#ff0000" in joined and "#abc" in joined and "0x00ff00" in joined
+    assert "Qt.rgba" in joined and "tomato" in joined and "SystemPalette" in joined
+    assert "#000000" not in joined  # comment narration stayed invisible
+
+
+def test_qml_islands_carry_no_hex_or_off_palette_colors():
+    violations: list[str] = []
+    for path in sorted(QML_DIR.rglob("*.qml")):
+        violations.extend(_qml_violations(path))
+    assert not violations, "qml islands must read colors from the palette:\n" + "\n".join(violations)
+
+
+# Binding-contract counterpart of the color scan: spec qml-shell «Контракт
+# биндингов» (scenario «Sync-вход достаточен») forbids await-constructs in
+# qml — QML may only touch synchronous slots/properties of the VM. Comments
+# are blanked first (same _qml_code as above), so narration like "never an
+# async entry" stays invisible; the Python half of the contract is pinned by
+# test_launcher_viewmodel.test_vm_methods_are_all_sync.
+QML_ASYNC_RE = re.compile(r"\b(?:async|await)\b")
+
+
+def test_qml_islands_do_not_use_async_await_syntax():
+    violations: list[str] = []
+    for path in sorted(QML_DIR.rglob("*.qml")):
+        code = _qml_code(path.read_text(encoding="utf-8"))
+        for lineno, line in enumerate(code.splitlines(), 1):
+            if QML_ASYNC_RE.search(line):
+                violations.append(f"{path.name}:{lineno}: async/await in qml")
+    assert not violations, "qml may call sync entrances only:\n" + "\n".join(violations)

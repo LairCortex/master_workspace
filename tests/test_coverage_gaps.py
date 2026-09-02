@@ -57,14 +57,11 @@ async def test_llm_viewmodel_json_fallbacks(qapp):
 
 
 # ── dialogs: guards outside the happy path ────────────────────────────────
-
-def test_launcher_open_without_selection(qapp, monkeypatch):
-    import app.presentation.views.game_launcher_dialog as gl
-
-    monkeypatch.setattr(gl, "list_games", lambda: [])
-    dlg = gl.GameLauncherDialog()
-    dlg._on_open()  # no current item → early return
-    assert dlg._selected_path is None
+# (The old ``_on_open`` no-selection guard lived on the removed widgets
+# dialog; the QML launcher's "open without a selection is a no-op" is now
+# enforced by the island (tests/presentation/test_launcher_qml) and the
+# wrapper's Enter path (tests/presentation/test_views — Enter without
+# selection), so no separate private-method probe is needed here.)
 
 
 async def test_llm_setup_dialog_guards(qapp):

@@ -8,6 +8,7 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
+from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
 
@@ -63,6 +64,7 @@ from app.presentation.views.main_window import MainWindow
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.theme import ThemeRuntime, get_default_theme
+from app.presentation.qml import setup_qml_shell
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
@@ -100,6 +102,9 @@ class Application:
         self._window: MainWindow | None = None
         self._db_path: str | None = None
         self._image_store: ImageStore | None = None
+        # QML shell (design D2): the one process engine, built in start(),
+        # survives game switches; islands are handed it like the theme.
+        self._qml_engine: QQmlEngine | None = None
 
         self._config_manager = LlmConfigManager()
         # Design tokens theme (W1): one runtime for Qt chrome and table CSS.
@@ -124,6 +129,11 @@ class Application:
         self._table_host: TableHostService | None = None
         self._table_host_panel: TableHostPanel | None = None
 
+    @property
+    def qml_engine(self) -> QQmlEngine | None:
+        """The shared QML engine, set once start() ran (design D2)."""
+        return self._qml_engine
+
     async def start(self, db_path: str) -> MainWindow:
         """Initialize DB, create all layers, show main window.
 
@@ -133,6 +143,9 @@ class Application:
         invariant (``startup_gc``) → build layers → show the window.
         """
         self._close_sheet_windows()
+        # QML shell (design D2): the single process-wide engine, up before
+        # any island can load — idempotent across game switches.
+        self._qml_engine = setup_qml_shell(self._qapp, self._theme)
         db_path = str(ensure_game_directory(db_path))
         self._db_path = db_path
         db_url = get_db_url(db_path)
@@ -1127,7 +1140,15 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
     theme = get_default_theme()
     application = Application(app, theme=theme)
 
-    # Show launcher (theme applied immediately; toggle lives on the chrome).
+    # Push the app-wide popup sheet before the launcher opens. The launcher's
+    # QML content is skinned by the palette (Q1), but its native popups —
+    # QInputDialog / QMessageBox / QFileDialog — are widgets fed by this sheet;
+    # the old widgets launcher used to trigger the push through its chrome.
+    theme.apply()
+
+    # Show launcher. Its content is a QML island (the constructor raises the
+    # shared engine, idempotent with Application.start below — the launcher is
+    # shown before start(), so it must set the shell up itself).
     launcher = GameLauncherDialog(theme=theme)
     launcher.exec()
     if not launcher.selected_path:

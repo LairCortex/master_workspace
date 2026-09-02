@@ -79,30 +79,23 @@ def _composite_over(backdrop: QColor, color: QColor, alpha: int) -> QColor:
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_launcher_chrome_pixel_is_canvas_token(qtbot, tmp_path, theme):
-    runtime = make_runtime(tmp_path, theme)
-    dlg = GameLauncherDialog(theme=runtime)
-    qtbot.addWidget(dlg)
-    dlg.show()
-    qtbot.waitExposed(dlg)
-    image = dlg.chrome.grab().toImage()
-    # Inside chrome's own 8px layout margin: background, never a child widget.
-    assert image.pixelColor(4, 4) == canvas_color(theme)
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_launcher_shows_no_os_palette_band_around_chrome(qtbot, tmp_path, theme):
-    # Design D4: the chrome container covers the whole dialog layout. Any
-    # default layout margin would show the OS palette as a frame — the
-    # chrome-only pixel check above cannot see that strip.
+def test_launcher_shows_no_os_palette_band_around_qml_island(qtbot, tmp_path, theme):
+    # spec ui-theme «Лаунчер без полосы палитры ОС» (Q1): the content is a
+    # QQuickWidget island skinned by the palette for QML. The wrapper pins
+    # the dialog layout margins to 0, so the *dialog's own edge pixels* must
+    # already be the island background (color.bg.surface) — a leftover
+    # layout margin or widgets chrome would expose the OS palette as a
+    # frame strip (and a QSS leak would paint canvas, not surface).
     runtime = make_runtime(tmp_path, theme)
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     dlg.show()
     qtbot.waitExposed(dlg)
     image = dlg.grab().toImage()
+    surface = token_color("color.bg.surface", theme)
+    assert surface != canvas_color(theme)  # the two checks below must differ
     for x, y in ((0, 0), (1, 1), (1, image.height() - 2), (image.width() - 2, 1)):
-        assert image.pixelColor(x, y) == canvas_color(theme), (x, y)
+        assert image.pixelColor(x, y) == surface, (x, y)
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])

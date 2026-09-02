@@ -207,7 +207,18 @@ class TestMainWindowLogToggleCleanup:
         assert handlers == []
 
 
-# ── GameLauncherDialog ─────────────────────────────────────────────────────
+# ── GameLauncherDialog (Q1: QDialog-wrapper + QML island, group 6) ──────────
+#
+# The widget content is gone; these are the *same* launcher scenarios the old
+# widget dialog tested, now addressed through the new contract (spec
+# game-launcher): the wrapper owns the ``game_selected``/``selected_path``
+# surface, the island is Qt Quick, and the controller reacts to the VM's
+# ``*Requested`` signals with native popups. The dialog is driven through its
+# view model and root object — the addresses QML and the app actually use.
+
+ISLAND_TOGGLE_OFFER_LIGHT = "Светлая тема"   # app default is dark
+ISLAND_TOGGLE_OFFER_DARK = "Тёмная тема"
+
 
 class TestGameLauncherDialog:
     @pytest.fixture(autouse=True)
@@ -217,144 +228,35 @@ class TestGameLauncherDialog:
             lambda: tmp_path / "games",
         )
         self._tmp = tmp_path / "games"
+        self._scratch = tmp_path  # outside the games dir: never listed
 
-    def test_creates(self, qtbot):
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        assert w is not None
-        assert "Выбор игры" in w.windowTitle()
+    @pytest.fixture
+    def runtime(self, tmp_path):
+        from app.infrastructure.ui_prefs.config import UiPrefsManager
+        from app.presentation.theme.compiler import tokens_file_path
+        from app.presentation.theme.runtime import ThemeRuntime
 
-    def test_shows_empty_list(self, qtbot):
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        assert w.list_widget.count() == 0
-
-    def test_shows_existing_games(self, qtbot):
-        self._tmp.mkdir(parents=True)
-        (self._tmp / "Campaign.db").touch()
-        (self._tmp / "Test.db").touch()
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        assert w.list_widget.count() == 2
-
-    def test_selected_path_none_by_default(self, qtbot):
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        assert w.selected_path is None
-
-    def test_game_selected_signal_on_open(self, qtbot):
-        self._tmp.mkdir(parents=True)
-        (self._tmp / "Campaign.db").touch()
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w.list_widget.setCurrentRow(0)
-        with qtbot.waitSignal(w.game_selected, timeout=1000):
-            w._on_open()
-        assert w.selected_path is not None
-        assert "Campaign" in w.selected_path
-
-    def test_has_import_button(self, qtbot):
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        assert hasattr(w, "import_button")
-        assert w.import_button.text() == "Импорт"
-
-    # -- create new game ----------------------------------------------------
-
-    def test_on_new_creates_and_selects(self, qtbot, mocker):
-        mocker.patch(
-            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
-            return_value=("Fresh", True),
+        return ThemeRuntime(
+            prefs=UiPrefsManager(tmp_path / "ui.json"),
+            tokens_path=tokens_file_path(),
         )
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        with qtbot.waitSignal(w.game_selected, timeout=1000):
-            w._on_new()
-        assert w.selected_path is not None
-        assert w.selected_path.endswith("game.db")
-        assert "Fresh" in w.selected_path
-        assert w.list_widget.count() == 1
 
-    def test_on_new_duplicate_shows_warning(self, qtbot, mocker):
-        self._tmp.mkdir(parents=True, exist_ok=True)
-        (self._tmp / "Old.db").touch()
-        mocker.patch(
-            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
-            return_value=("Old", True),
+    @pytest.fixture
+    def broken_runtime(self, tmp_path):
+        from app.infrastructure.ui_prefs.config import UiPrefsManager
+        from app.presentation.theme.runtime import ThemeRuntime
+
+        bad = tmp_path / "tokens.json"
+        bad.write_text("{not json", encoding="utf-8")
+        return ThemeRuntime(
+            prefs=UiPrefsManager(tmp_path / "ui.json"), tokens_path=bad,
         )
-        warn = mocker.patch.object(QMessageBox, "warning")
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w._on_new()
-        warn.assert_called_once()
-        assert w.selected_path is None
-
-    def test_on_new_empty_name_is_noop(self, qtbot, mocker):
-        mocker.patch(
-            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
-            return_value=("   ", True),
-        )
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w._on_new()
-        assert w.selected_path is None
-        assert w.list_widget.count() == 0
-
-    def test_on_new_dialog_cancelled_is_noop(self, qtbot, mocker):
-        mocker.patch(
-            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
-            return_value=("Whatever", False),
-        )
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w._on_new()
-        assert w.selected_path is None
-
-    # -- delete game ---------------------------------------------------------
-
-    def test_on_delete_yes_removes_game(self, qtbot, mocker):
-        self._tmp.mkdir(parents=True, exist_ok=True)
-        (self._tmp / "G.db").touch()
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w.list_widget.setCurrentRow(0)
-        ask = mocker.patch.object(
-            QMessageBox, "question",
-            return_value=QMessageBox.StandardButton.Yes,
-        )
-        w._on_delete()
-        ask.assert_called_once()
-        assert w.list_widget.count() == 0
-        assert not (self._tmp / "G.db").exists()
-
-    def test_on_delete_no_keeps_game(self, qtbot, mocker):
-        self._tmp.mkdir(parents=True, exist_ok=True)
-        (self._tmp / "G.db").touch()
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w.list_widget.setCurrentRow(0)
-        mocker.patch.object(
-            QMessageBox, "question",
-            return_value=QMessageBox.StandardButton.No,
-        )
-        w._on_delete()
-        assert w.list_widget.count() == 1
-        assert (self._tmp / "G.db").exists()
-
-    def test_on_delete_without_selection_is_noop(self, qtbot, mocker):
-        ask = mocker.patch.object(QMessageBox, "question")
-        w = GameLauncherDialog()
-        qtbot.addWidget(w)
-        w._on_delete()
-        ask.assert_not_called()
-
-    # -- import game ---------------------------------------------------------
 
     def _make_archive(self, game_name: str) -> str:
-        db = self._tmp / "src.db"
-        self._tmp.mkdir(parents=True, exist_ok=True)
+        self._scratch.mkdir(parents=True, exist_ok=True)
+        db = self._scratch / "src.db"
         db.write_bytes(b"db-bytes")
-        arc = self._tmp / f"{game_name}.nri"
+        arc = self._scratch / f"{game_name}.nri"
         with zipfile.ZipFile(arc, "w") as zf:
             zf.write(db, "game.db")
             zf.writestr(
@@ -364,9 +266,269 @@ class TestGameLauncherDialog:
         return str(arc)
 
     def _listed_names(self, w) -> list:
-        return [w.list_widget.item(i).text() for i in range(w.list_widget.count())]
+        return [game["name"] for game in w.vm.games]
 
-    def test_on_import_success(self, qtbot, mocker):
+    # -- frame / contract ------------------------------------------------------
+
+    def test_creates(self, qtbot, runtime):
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        assert "Выбор игры" in w.windowTitle()
+        assert w.minimumSize().width() >= 480 and w.minimumSize().height() >= 400
+
+    def test_content_is_a_qml_island(self, qtbot, runtime):
+        from PySide6.QtQuickWidgets import QQuickWidget
+
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        assert isinstance(w.quick, QQuickWidget)
+        assert w.quick.status() == QQuickWidget.Status.Ready
+        # The widgets content is gone (no QListWidget/QPushButton anywhere).
+        assert not hasattr(w, "list_widget")
+        assert not hasattr(w, "open_button")
+        assert not hasattr(w, "theme_toggle_button")
+
+    def test_shows_empty_list(self, qtbot, runtime):
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        assert w.vm.games == []
+
+    def test_shows_existing_games(self, qtbot, runtime):
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "Campaign.db").touch()
+        (self._tmp / "Test.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        assert len(w.vm.games) == 2
+
+    def test_selected_path_none_by_default(self, qtbot, runtime):
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        assert w.selected_path is None
+
+    # -- open / escalation -----------------------------------------------------
+
+    def test_no_choice_rejects_without_signal(self, qtbot, runtime):
+        """Esc/close (reject): selected_path stays None, no game_selected."""
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        emitted = []
+        w.game_selected.connect(emitted.append)
+        w.reject()  # what Esc / the close button routes to
+        assert emitted == []
+        assert w.selected_path is None
+
+    def test_open_requested_emits_signal_and_accepts(self, qtbot, runtime):
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "Campaign.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.set_selected(0)
+        path = w.vm.selected_path
+        with qtbot.waitSignal(w.game_selected, timeout=1000):
+            w.vm.openRequested.emit(path)  # what «Открыть» / Enter drives
+        assert w.selected_path == path
+        assert "Campaign" in w.selected_path
+        assert w.result() == GameLauncherDialog.DialogCode.Accepted
+
+    def test_open_button_marker_is_the_open_action(self, qtbot, runtime):
+        # Basic Qt 6 Buttons have no «default» property; the island marks the
+        # default action via root.defaultButton.
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        assert w._root.property("defaultButton").objectName() == "openButton"
+
+    def test_real_island_click_open_survives_and_releases_island(self, qtbot, runtime):
+        """Acceptance Q1 regression: a *physical* click on «Открыть» must not
+        abort the app. done() used to destroy the QML scene synchronously
+        inside the island's own onClicked handler («Object destroyed while one
+        of its QML signal handlers is in progress», SIGABRT). Only a real Qt
+        Test click catches this — VM-emit paths bypass the QML handler stack.
+        """
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "Campaign.db").touch()
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtTest import QTest
+
+        from tests.presentation.qml_helpers import find_item
+
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.show()
+        assert w.isVisible()
+        w.vm.set_selected(0)
+
+        button = find_item(w.quick, "openButton")
+        center = button.mapToScene(QPointF(button.width() / 2, button.height() / 2))
+        QTest.mouseClick(w.quick, Qt.LeftButton, Qt.NoModifier,
+                         QPoint(int(center.x()), int(center.y())))
+
+        assert "Campaign" in w.selected_path
+        assert w.result() == GameLauncherDialog.DialogCode.Accepted
+        # The island is released on the NEXT loop turn (js stack unwound):
+        # qtbot.waitUntil pumps — before the fix this line was unreachable
+        # because the process died inside the click above.
+        qtbot.waitUntil(lambda: w.quick.source().isEmpty())
+
+
+    def _press_enter(self, w):
+        from PySide6.QtCore import QEvent, Qt as _Qt
+        from PySide6.QtGui import QKeyEvent
+
+        w.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_Return, _Qt.NoModifier))
+
+    def test_enter_opens_the_selected_game(self, qtbot, runtime):
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "Campaign.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.set_selected(0)
+        with qtbot.waitSignal(w.game_selected, timeout=1000):
+            self._press_enter(w)
+        assert w.selected_path is not None
+
+    def test_enter_without_selection_is_noop(self, qtbot, runtime):
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "Campaign.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        emitted = []
+        w.game_selected.connect(emitted.append)
+        self._press_enter(w)  # nothing selected → no-op
+        assert emitted == []
+        assert w.selected_path is None
+
+    def test_other_key_falls_through_to_qdialog(self, qtbot, runtime):
+        from PySide6.QtCore import QEvent, Qt as _Qt
+        from PySide6.QtGui import QKeyEvent
+
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        emitted = []
+        w.game_selected.connect(emitted.append)
+        # A key other than Enter is delegated to QDialog (no crash, no emit).
+        w.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_A, _Qt.NoModifier))
+        assert emitted == []
+
+
+    # -- create new game -------------------------------------------------------
+
+    def test_on_new_creates_and_selects(self, qtbot, mocker, runtime):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Fresh", True),
+        )
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        with qtbot.waitSignal(w.game_selected, timeout=1000):
+            w.vm.createRequested.emit("")  # what «Новая игра» drives
+        assert w.selected_path is not None
+        assert w.selected_path.endswith("game.db")
+        assert "Fresh" in w.selected_path
+        assert self._listed_names(w) == ["Fresh"]
+
+    def test_on_new_trims_the_title(self, qtbot, mocker, runtime):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("  Погоня  ", True),
+        )
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        with qtbot.waitSignal(w.game_selected, timeout=1000):
+            w.vm.createRequested.emit("")
+        assert self._listed_names(w) == ["Погоня"]
+
+    def test_on_new_duplicate_shows_warning(self, qtbot, mocker, runtime):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "Old.db").touch()
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Old", True),
+        )
+        warn = mocker.patch.object(QMessageBox, "warning")
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.createRequested.emit("")
+        warn.assert_called_once()
+        assert w.selected_path is None
+        assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
+
+    def test_on_new_empty_name_is_noop(self, qtbot, mocker, runtime):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("   ", True),
+        )
+        warn = mocker.patch.object(QMessageBox, "warning")
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.createRequested.emit("")
+        warn.assert_not_called()
+        assert w.selected_path is None
+        assert w.vm.games == []
+
+    def test_on_new_dialog_cancelled_is_noop(self, qtbot, mocker, runtime):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Whatever", False),
+        )
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.createRequested.emit("")
+        assert w.selected_path is None
+
+    # -- delete game -----------------------------------------------------------
+
+    def test_on_delete_yes_removes_game(self, qtbot, mocker, runtime):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "G.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.set_selected(0)
+        ask = mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        )
+        w.vm.deleteRequested.emit(0)
+        ask.assert_called_once()
+        assert w.vm.games == []
+        assert not (self._tmp / "G.db").exists()
+        assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
+
+    def test_delete_confirmation_defaults_to_no(self, qtbot, mocker, runtime):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "G.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.set_selected(0)
+
+        captured = {}
+
+        def spy(parent, title, text, buttons, defaultButton, *a, **k):
+            captured["defaultButton"] = defaultButton
+            return QMessageBox.StandardButton.No
+
+        mocker.patch.object(QMessageBox, "question", side_effect=spy)
+        w.vm.deleteRequested.emit(0)
+        assert captured["defaultButton"] == QMessageBox.StandardButton.No
+        assert (self._tmp / "G.db").exists()  # default «Нет» → the game lives
+
+    def test_on_delete_no_keeps_game(self, qtbot, mocker, runtime):
+        self._tmp.mkdir(parents=True, exist_ok=True)
+        (self._tmp / "G.db").touch()
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.set_selected(0)
+        mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.No,
+        )
+        w.vm.deleteRequested.emit(0)
+        assert len(w.vm.games) == 1
+        assert (self._tmp / "G.db").exists()
+
+    # -- import game -----------------------------------------------------------
+
+    def test_on_import_success(self, qtbot, mocker, runtime):
         arc = self._make_archive("Imported")
         mocker.patch(
             "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
@@ -377,14 +539,37 @@ class TestGameLauncherDialog:
             return_value=QMessageBox.StandardButton.Yes,
         )
         info = mocker.patch.object(QMessageBox, "information")
-        w = GameLauncherDialog()
+        w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._on_import()
+        w.vm.importRequested.emit("")
         ask.assert_called_once()
         info.assert_called_once()
-        assert any(name.startswith("Imported") for name in self._listed_names(w))
+        assert self._listed_names(w) == ["Imported"]
+        assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
 
-    def test_on_import_declined_by_user(self, qtbot, mocker):
+    def test_import_confirmation_defaults_to_yes(self, qtbot, mocker, runtime):
+        arc = self._make_archive("Imported")
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(arc, ""),
+        )
+        captured = {}
+
+        def spy(parent, title, text, buttons, defaultButton, *a, **k):
+            captured["defaultButton"] = defaultButton
+            captured["text"] = text
+            return QMessageBox.StandardButton.No
+
+        mocker.patch.object(QMessageBox, "question", side_effect=spy)
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.vm.importRequested.emit("")
+        # The confirmation carries the archive's metadata and defaults to «Да».
+        assert captured["defaultButton"] == QMessageBox.StandardButton.Yes
+        assert "Imported" in captured["text"] and "0.6" in captured["text"]
+        assert w.vm.games == []  # declined → nothing written
+
+    def test_on_import_declined_by_user(self, qtbot, mocker, runtime):
         arc = self._make_archive("Imported")
         mocker.patch(
             "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
@@ -395,26 +580,28 @@ class TestGameLauncherDialog:
             return_value=QMessageBox.StandardButton.No,
         )
         info = mocker.patch.object(QMessageBox, "information")
-        w = GameLauncherDialog()
+        w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._on_import()
+        w.vm.importRequested.emit("")
         info.assert_not_called()
-        assert not any(name.startswith("Imported") for name in self._listed_names(w))
+        assert w.vm.games == []
 
-    def test_on_import_dialog_canceled(self, qtbot, mocker):
+    def test_on_import_dialog_canceled(self, qtbot, mocker, runtime):
         mocker.patch(
             "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
             return_value=("", ""),
         )
         read_meta = mocker.patch(
-            "app.presentation.views.game_launcher_dialog.read_archive_meta"
+            "app.presentation.views.game_launcher_dialog.LauncherViewModel.archive_meta"
         )
-        w = GameLauncherDialog()
+        ask = mocker.patch.object(QMessageBox, "question")
+        w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._on_import()
+        w.vm.importRequested.emit("")
         read_meta.assert_not_called()
+        ask.assert_not_called()
 
-    def test_on_import_duplicate_game_name_warns(self, qtbot, mocker):
+    def test_on_import_duplicate_game_name_warns(self, qtbot, mocker, runtime):
         arc = self._make_archive("Existing")
         self._tmp.mkdir(parents=True, exist_ok=True)
         (self._tmp / "Existing.db").touch()
@@ -427,12 +614,13 @@ class TestGameLauncherDialog:
             return_value=QMessageBox.StandardButton.Yes,
         )
         warn = mocker.patch.object(QMessageBox, "warning")
-        w = GameLauncherDialog()
+        w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._on_import()
+        w.vm.importRequested.emit("")
         warn.assert_called_once()
+        assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
 
-    def test_on_import_invalid_archive_warns(self, qtbot, mocker):
+    def test_on_import_invalid_archive_warns(self, qtbot, mocker, runtime):
         self._tmp.mkdir(parents=True, exist_ok=True)
         arc = self._tmp / "bad.nri"
         with zipfile.ZipFile(arc, "w") as zf:
@@ -442,12 +630,12 @@ class TestGameLauncherDialog:
             return_value=(str(arc), ""),
         )
         warn = mocker.patch.object(QMessageBox, "warning")
-        w = GameLauncherDialog()
+        w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._on_import()
+        w.vm.importRequested.emit("")
         warn.assert_called_once()
 
-    def test_on_import_unreadable_file_shows_critical(self, qtbot, mocker):
+    def test_on_import_unreadable_file_shows_critical(self, qtbot, mocker, runtime):
         self._tmp.mkdir(parents=True, exist_ok=True)
         arc = self._tmp / "garbage.nri"
         arc.write_bytes(b"not a zip at all")
@@ -456,10 +644,66 @@ class TestGameLauncherDialog:
             return_value=(str(arc), ""),
         )
         crit = mocker.patch.object(QMessageBox, "critical")
-        w = GameLauncherDialog()
+        w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._on_import()
+        w.vm.importRequested.emit("")
         crit.assert_called_once()
+
+    # -- theme toggle (label = the theme it would switch to) -------------------
+
+    def test_theme_toggle_started_label_and_sync_after_other_change(self, qtbot, runtime):
+        from tests.presentation.qml_helpers import island_toggle_text
+
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        # App default is dark → the toggle offers light, seeded from the runtime.
+        assert w._root.property("currentTheme") == "dark"
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_LIGHT
+
+        # Someone else (e.g. the main window) changes the theme → the wrapper
+        # re-syncs the island label through the runtime listener.
+        assert runtime.toggle() is True  # dark → light
+        assert w._root.property("currentTheme") == "light"
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_DARK
+
+    def test_island_toggle_click_switches_theme(self, qtbot, runtime):
+        from tests.presentation.qml_helpers import island_toggle_text
+
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w._root.themeToggleRequested.emit()  # the island's toggle drives this
+        assert runtime.theme == "light"
+        assert runtime.prefs.config_file.exists()
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_DARK
+
+    def test_theme_toggle_is_noop_with_broken_tokens(self, qtbot, broken_runtime):
+        from tests.presentation.qml_helpers import island_toggle_text
+
+        w = GameLauncherDialog(theme=broken_runtime)
+        qtbot.addWidget(w)
+        w._root.themeToggleRequested.emit()
+        assert broken_runtime.theme == "dark"
+        assert not broken_runtime.prefs.config_file.exists()
+        # Off-skin: palette empty, but the label contract is intact.
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_LIGHT
+
+    # -- one engine for all islands --------------------------------------------
+
+    def test_several_islands_share_the_single_engine(self, qapp, qtbot, runtime):
+        """spec qml-shell «Движок один на приложение» (design D2): opening a
+        second QML island (a re-opened/switch-game launcher) must NOT create a
+        second QQmlEngine — both islands are served by the one shared engine."""
+        from PySide6.QtQml import QQmlEngine
+
+        first = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(first)
+        second = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(second)
+
+        assert first._engine is second._engine
+        assert first.quick.engine() is second.quick.engine()
+        engines = qapp.findChildren(QQmlEngine)
+        assert len(engines) == 1 and engines[0] is first._engine
 
 
 class TestMainWindowExportAction:
