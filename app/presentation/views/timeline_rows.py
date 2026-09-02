@@ -36,7 +36,11 @@ contract (``y // row_height``) is invariant to row kind. ``bracket_lanes`` is
 the rail-bracket lane packer (W3b D6, moved into the core by W4 D7): events in
 ``(start, id)`` order take the first free lane, the assignment wraps around
 :data:`BRACKET_MAX_LANES`; in unit mode a span is mapped to
-``[first_unit, last_unit]`` before packing. Everything is plain deterministic
+``[first_unit, last_unit]`` before packing. The W5 drag-editing geometry lives
+here too: ``target_day`` (target day under the cursor, extrapolated past the
+block's edges by :data:`EXTRAPOLATION_STEP_PX`), ``translate_span`` (shift a
+closed span, duration intact) and the ``serif_targets``/``serif_hit`` pair
+behind the bottom-serif stretch handle (D8). Everything is plain deterministic
 data, testable without a QApplication.
 """
 from __future__ import annotations
@@ -52,6 +56,30 @@ NO_GROUP_KEY = "Без привязки"
 
 #: Rail bracket lanes before the assignment wraps around (W3b D6 / W4 3.4).
 BRACKET_MAX_LANES = 4
+
+#: First bracket lane x and the x step of the neighbouring lanes (W5 1.4:
+#: moved out of the widget so the Qt-free serif hit-test (D8) computes the
+#: same centers the delegate paints; the view imports these back for painting).
+BRACKET_X0 = 6
+BRACKET_LANE_STEP = 5
+
+#: Pixel pitch a drag target extrapolates by past the row block (W5 D7):
+#: the equal-height row pitch — intentionally equal to the view's
+#: ``ROW_HEIGHT`` (the core cannot import the view; the view hands its
+#: ``ROW_HEIGHT`` to :func:`target_day` as ``row_height``).
+EXTRAPOLATION_STEP_PX = 24
+
+#: Half-width of the bottom-serif drag handle's hit zone (W5 D7): a press at
+#: ``|x - center| ≤ SERIF_HIT_PX`` from the serif's lane center arms the
+#: end-stretch gesture, everything beside it stays the rail's (spec
+#: «Промах мимо засечки остаётся рейкой»).
+SERIF_HIT_PX = 4
+
+#: Inclusive calendar bounds of ``CustomDateEdit`` (W5 D2/D7). A drag target
+#: never leaves this interval — the gesture cannot mint a date the card
+#: cannot display.
+CALENDAR_MIN = date(100, 1, 1)
+CALENDAR_MAX = date(9999, 12, 31)
 
 
 class ScaleUnit(Enum):
@@ -376,6 +404,68 @@ def normalize_range(day_a: date, day_b: date) -> tuple[date, date]:
     return (day_a, day_b) if day_a <= day_b else (day_b, day_a)
 
 
+def target_day(
+    rows: Sequence[Row], row_height: int, y: int, scroll: int = 0
+) -> date | None:
+    """The day a drag points at — viewport ``y`` over the scrolled model (W5 D2).
+
+    Inside the row block this is the :func:`index_at_y` hit-test on the equal
+    -height contract (whole-row ``scroll``, floor division rides negative y
+    into negative steps): the day of the row under the cursor. Past the edges
+    there is no row to hit-test, so the target is *extrapolated* from the
+    model's own edge day — every :data:`EXTRAPOLATION_STEP_PX`-sized pitch
+    beyond the head steps one earlier day back, beyond the tail one later day
+    on (``ceil(Δy / pitch)`` days, spelled as the same floor-division step).
+    Crossing month/December→January/February-29 needs no rules of its own:
+    plain calendar arithmetic walks the steps (spec «без специальных правил»).
+    ``None`` only for a non-positive pitch or an empty model — the edge days
+    themselves always extend, which is what lets a release outside the list
+    commit on its extrapolated target (spec «Release вне списка — обычный
+    commit»). Drag editing is a DAY-rung gesture; the row model handed in is
+    the daily one. Every result is clamped to :data:`CALENDAR_MIN` /
+    :data:`CALENDAR_MAX` (inside the block and past the edges alike).
+    """
+    if not rows or row_height <= 0:
+        return None
+    pitch = row_height  # the view passes its ROW_HEIGHT == EXTRAPOLATION_STEP_PX
+    row = (y + scroll * pitch) // pitch
+    if 0 <= row < len(rows):
+        return clamp_calendar(rows[row].date)
+    if row < 0:  # ceil(-content/pitch) == -row steps above the head day
+        return _shift_day(rows[0].date, row)
+    return _shift_day(rows[-1].date, row - (len(rows) - 1))
+
+
+def clamp_calendar(day: date) -> date:
+    """Clip ``day`` to :data:`CALENDAR_MIN` … :data:`CALENDAR_MAX` (W5 1.5)."""
+    if day < CALENDAR_MIN:
+        return CALENDAR_MIN
+    if day > CALENDAR_MAX:
+        return CALENDAR_MAX
+    return day
+
+
+def _shift_day(day: date, steps: int) -> date:
+    """``day + steps``, clamped; ``OverflowError`` at the datetime edges."""
+    try:
+        shifted = day + timedelta(days=steps)
+    except OverflowError:
+        return CALENDAR_MIN if steps < 0 else CALENDAR_MAX
+    return clamp_calendar(shifted)
+
+
+def translate_span(start: date, end: date, delta_days: int) -> tuple[date, date]:
+    """Shift a closed span by ``delta_days``, duration intact (W5 1.3).
+
+    Both bounds move by the same amount, so the length never changes and the
+    pair never inverts (for a closed input, ``end ≥ start`` is
+    shift-invariant). This layer is *only* the shift — clamping to the model
+    or the filter is the view/wiring's business, not the arithmetic's.
+    """
+    shift = timedelta(days=delta_days)
+    return start + shift, end + shift
+
+
 def bracket_lanes(
     events: Sequence[_EventLike],
     range_end: date | None,
@@ -417,3 +507,75 @@ def bracket_lanes(
         lane_free_until[lane] = last_unit
         lanes[event.id] = lane
     return lanes
+
+
+@dataclass(frozen=True)
+class SerifTarget:
+    """One draggable bottom serif (W5 D8): which event, which row, which lane.
+
+    ``center_x`` is the x the delegate paints that serif at — the single
+    source of truth both painter and hit-test share (no "serif is there but
+    the hit zone is elsewhere" drift).
+    """
+
+    event_id: int
+    row_index: int
+    lane: int
+
+    @property
+    def center_x(self) -> int:
+        return BRACKET_X0 + self.lane * BRACKET_LANE_STEP
+
+
+def serif_targets(
+    rows: Sequence[Row],
+    events: Sequence[_EventLike],
+    lanes: Mapping[int, int],
+) -> dict[int, tuple[SerifTarget, ...]]:
+    """row index → the bottom serifs painted there, for the stretch hit-test.
+
+    A target exists exactly where ``_rebuild`` paints a ``serif_bottom``
+    segment of a **closed multi-day** span (D8): on the last row of the span's
+    end day, on the event's bracket lane, with the same clamp to the model's
+    last day the painter applies (an end beyond the window serifs on the edge
+    row). One-day spans own no handle (and usually no lane at all), and open
+    ends stay pure decoration — both excluded even if a lane is handed in
+    (spec «Засечка открытой скобки не ручка», «Однодневное нельзя растянуть»).
+    Two spans ending on one day stack up as a tuple, input order kept.
+    """
+    targets: dict[int, list[SerifTarget]] = {}
+    if not rows or not lanes:
+        return {}
+    last_index_by_date = {row.date: idx for idx, row in enumerate(rows)}
+    window_end = rows[-1].date  # the edge open/crossing spans clamp onto
+    for event in events:
+        lane = lanes.get(event.id)
+        if lane is None:
+            continue  # spans without a bracket have no serif to press either
+        if event.end_date is None or event.end_date <= event.start_date:
+            continue  # decoration only: open end or one-day pin
+        row_index = last_index_by_date.get(min(event.end_date, window_end))
+        if row_index is None:
+            continue  # the clamped end day is not part of this model
+        targets.setdefault(row_index, []).append(
+            SerifTarget(event_id=event.id, row_index=row_index, lane=lane)
+        )
+    return {idx: tuple(items) for idx, items in targets.items()}
+
+
+def serif_hit(
+    targets: Sequence[SerifTarget], x: int
+) -> SerifTarget | None:
+    """The serif whose vertical hit strip contains ``x``, else ``None``.
+
+    A press within :data:`SERIF_HIT_PX` of a serif's center arms the
+    end-stretch; every other x in the rail keeps jumping/filter-dragging as
+    before (spec «Промах мимо засечки остаётся рейкой»). Overlapping lane
+    strips (lanes sit :data:`BRACKET_LANE_STEP` apart, the strip is wider)
+    resolve to the first target in input order — deterministic, like the
+    lane packer itself.
+    """
+    for target in targets:
+        if abs(x - target.center_x) <= SERIF_HIT_PX:
+            return target
+    return None

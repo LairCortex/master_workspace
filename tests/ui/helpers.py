@@ -290,6 +290,7 @@ async def create_event_via_ui(
     backstory: str = "",
     start_date: QDate | None = None,
     end_date: QDate | None = None,
+    open_ended: bool = False,
 ) -> EventDialog:
     """Create an event through the timeline '+' button → EventDialog → save.
 
@@ -310,7 +311,9 @@ async def create_event_via_ui(
         dialog.backstory_input.setContent(backstory)
     if start_date is not None:
         dialog.start_date_input.setDate(start_date)
-    if end_date is not None:
+    if open_ended:
+        dialog.no_end_date_cb.setChecked(True)
+    elif end_date is not None:
         dialog.end_date_input.setDate(end_date)
     assert dialog.save_button.isEnabled()
     dialog.save_button.click()

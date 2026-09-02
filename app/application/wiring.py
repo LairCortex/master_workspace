@@ -7,6 +7,7 @@ data, call the services, and refresh the panels.
 from __future__ import annotations
 
 import asyncio
+from datetime import date, datetime
 from typing import Any, Coroutine
 
 from PySide6.QtWidgets import QMessageBox
@@ -18,6 +19,20 @@ from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
+
+
+def _as_date(value: Any) -> date | None:
+    """Normalize a signal payload to ``datetime.date`` (Qt may wrap dates)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    to_python = getattr(value, "toPython", None)
+    if callable(to_python):
+        return _as_date(to_python())
+    return value
 
 
 class ApplicationWiring:
@@ -368,6 +383,41 @@ class ApplicationWiring:
 
         window.timeline_widget.event_double_clicked.connect(
             lambda eid: self._spawn(on_edit_event(eid))
+        )
+
+        async def on_event_dates_moved(event_id, start, end):
+            """W5: one write of dates from a scale drag, under the session lock."""
+            start_d, end_d = _as_date(start), _as_date(end)
+            window.timeline_widget.cover_filter_for_span(start_d, end_d)
+            try:
+                if end_d is None:
+                    await event_service.update_event(event_id, start_date=start_d)
+                else:
+                    await event_service.update_event(
+                        event_id, start_date=start_d, end_date=end_d,
+                    )
+                await event_service._session.commit()
+                await timeline_vm.load_events()
+                window.timeline_widget.update_events(timeline_vm.events)
+                timeline_vm.select_event_by_id(event_id)
+                window.timeline_widget.set_selected(event_id)
+                event = timeline_vm.selected_event
+                if event:
+                    await detail_vm.load_details(event.id)
+                    window.detail_panel.show_event(detail_vm.event)
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    await event_service._session.rollback()
+                except Exception:
+                    pass
+                await timeline_vm.load_events()
+                window.timeline_widget.update_events(timeline_vm.events)
+                QMessageBox.critical(
+                    window, "Ошибка", f"Не удалось сохранить даты события: {exc}",
+                )
+
+        window.timeline_widget.event_dates_moved.connect(
+            lambda eid, start, end: self._spawn(on_event_dates_moved(eid, start, end))
         )
 
         # Search

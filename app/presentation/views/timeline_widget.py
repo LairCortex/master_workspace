@@ -73,8 +73,10 @@ from app.presentation.utils.date_utils import format_game_date, month_name
 from app.presentation.viewmodels.timeline_viewmodel import EntityKind
 from app.presentation.views.custom_date_edit import _CustomCalendar
 from app.presentation.views.timeline_rows import (
-    Row, RowKind, ScaleUnit, bracket_lanes, build_rows, index_at_y,
-    next_event_index, normalize_range, prev_event_index,
+    BRACKET_LANE_STEP, BRACKET_X0, Row, RowKind, ScaleUnit, SerifTarget,
+    bracket_lanes, build_rows, clamp_calendar, index_at_y, next_event_index,
+    normalize_range, prev_event_index, serif_hit, serif_targets, target_day,
+    translate_span,
 )
 
 #: Empty-selection hint shown while the list model is empty (spec: пустое
@@ -90,8 +92,9 @@ RAIL_FIXED_ZONE = 40       # bracket lanes + tick zone the rotated label needs o
 RAIL_TICK_LEN = 10         # day tick length, measured from the rail's right edge
 RAIL_TICK_RIGHT_INSET = 3
 RAIL_LABEL_INSET = 24      # x of the rotated month label's baseline (rail-right)
-BRACKET_X0 = 6             # first bracket lane x
-BRACKET_LANE_STEP = 5      # overlapping brackets take neighbouring lanes (D6)
+# BRACKET_X0 / BRACKET_LANE_STEP live in timeline_rows since W5 1.4 — the
+# Qt-free serif hit-test (D8) computes the very lane centers the delegate
+# paints; they are imported above and re-exported for painting and tests.
 BRACKET_SERIF_W = 6        # horizontal serif at the span's start/end day
 MONTH_SHORT_FORM = 3       # first letters of a month name in the short form
 TEXT_LEFT_PAD = 8
@@ -191,6 +194,56 @@ class _RailPress:
 
     anchor_index: int
     press_y: int
+
+
+#: W5 D1: text-zone arms — full-span MOVE of a closed event, or START of an
+#: open event (grab the start row only). Stretch lives on :class:`_SerifPress`.
+_EDIT_MOVE = "move"
+_EDIT_START = "start"
+
+
+@dataclass(frozen=True)
+class _EventPress:
+    """An armed left-button press on an event's text line (W5 D1/D2).
+
+    Armed on the DAY rung only: ``anchor_index`` is the pressed row,
+    ``grab_day`` that row's ``Row.date`` (grab-offset base — never the event
+    start unless the press landed on the start row), ``press_y`` the viewport
+    y the drag threshold measures vertical moves from, and ``start``/``end``
+    the press-time span. ``mode`` is :data:`_EDIT_MOVE` (closed span, shift
+    through ``translate_span``) or :data:`_EDIT_START` (open event, new start
+    = the day under the cursor, ``end`` stays ``None``).
+    """
+
+    event_id: int
+    press_y: int
+    anchor_index: int
+    start: date
+    end: date | None
+    grab_day: date
+    mode: str = _EDIT_MOVE
+
+
+@dataclass(frozen=True)
+class _SerifPress:
+    """An armed left-button press on a closed multi-day bracket's bottom serif
+    (W5 3.1/3.2, D1/D8).
+
+    Armed on the DAY rung inside the serif's hit zone (``serif_hit`` over that
+    row's core :class:`SerifTarget` list) *instead of* the rail arm — a press
+    there never jumps nor range-drags, however small the release is. The other
+    fields mirror :class:`_EventPress`: ``press_y`` is the drag-threshold base
+    y, ``start``/``end`` the press-time closed span whose ``end`` the pull
+    retargets. A past-threshold move latches into the stretch mode sharing
+    ``TimelineListView._edit_preview`` with the move gesture — target end =
+    ``target_day`` clamped to ``end ≥ start`` — and the release commits exactly
+    one ``event_dates_moved`` carrying the OLD start.
+    """
+
+    event_id: int
+    press_y: int
+    start: date
+    end: date
 
 
 @dataclass(frozen=True)
@@ -300,6 +353,13 @@ def _row_line(row: Row) -> str:
     return f"{_range_text(row)} · {row.name}"
 
 
+def _preview_line(name: str, start: date, end: date | None) -> str:
+    """Ghost caption for the live edit preview (same format as :func:`_row_line`)."""
+    start_s = format_game_date(start)
+    span = f"{start_s} —" if end is None else f"{start_s} — {format_game_date(end)}"
+    return f"{span} · {name}"
+
+
 def _row_tooltip(row: Row) -> str:
     """Tooltip body: full name plus the game-formatted date range (spec)."""
     return f"{row.name}\n{_range_text(row)}"
@@ -404,10 +464,16 @@ class _RowDelegate(QStyledItemDelegate):
             return
         view = self._view
         palette = view.paint_palette()
+        preview = view.edit_preview()
+        origin = preview is not None and row.event_id == preview[0]
+        ghost = preview is not None and index.row() == view.edit_ghost_index()
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        hovered = not selected and index.row() == view.hover_index()
+        hovered = (
+            not selected and not origin and not ghost
+            and index.row() == view.hover_index()
+        )
         painter.save()
-        if selected:
+        if selected and not origin:
             painter.fillRect(option.rect, palette.selected_fill)
         elif hovered:
             painter.fillRect(option.rect, palette.hover_fill)
@@ -419,16 +485,25 @@ class _RowDelegate(QStyledItemDelegate):
             # On the large rungs the pair holds unit anchors, so the band
             # washes exactly the covered unit positions (W4 5.6).
             painter.fillRect(option.rect, palette.drag_fill)
-        self._paint_rail(painter, option, index, row, palette)
+        if ghost:
+            painter.fillRect(option.rect, palette.drag_fill)
+        self._paint_rail(painter, option, index, row, palette, preview)
         if row.kind is RowKind.EVENT:
-            self._paint_line(painter, option, row, palette, selected)
+            self._paint_line(
+                painter, option, row, palette, selected,
+                origin=origin, ghost=ghost, preview=preview,
+            )
+        elif ghost:
+            self._paint_ghost_line(painter, option, palette, preview)
         elif row.kind is RowKind.UNIT:
             self._paint_unit(painter, option, row, palette)
         elif row.kind is RowKind.SECTION:
             self._paint_section(painter, option, row, palette)
         painter.restore()
 
-    def _paint_rail(self, painter, option, index, row: Row, palette: _Palette) -> None:
+    def _paint_rail(
+        self, painter, option, index, row: Row, palette: _Palette, preview,
+    ) -> None:
         """Day tick, once-per-month rotated label, span brackets (all decorative)."""
         rail_w = self._view.rail_width()
         rect = option.rect
@@ -440,7 +515,18 @@ class _RowDelegate(QStyledItemDelegate):
                 QPointF(rail_w - RAIL_TICK_LEN + 0.5, y),
                 QPointF(rail_w - RAIL_TICK_RIGHT_INSET + 0.5, y),
             )
+        stretch_lane = None
+        stretch_span = None
+        if (
+            preview is not None
+            and preview[2] is not None
+            and self._view.stretch_preview_lane() is not None
+        ):
+            stretch_lane = self._view.stretch_preview_lane()
+            stretch_span = (preview[1], preview[2])
         for seg in index.data(ROLE_BRACKETS) or ():
+            if stretch_lane is not None and seg.lane == stretch_lane:
+                continue  # replaced by the live stretch bracket below
             x = BRACKET_X0 + seg.lane * BRACKET_LANE_STEP + 0.5
             painter.setPen(QPen(palette.bracket, PEN_WIDTH))
             painter.drawLine(QPointF(x, rect.top() + 0.5), QPointF(x, rect.bottom() - 0.5))
@@ -452,6 +538,24 @@ class _RowDelegate(QStyledItemDelegate):
                     painter.drawLine(
                         QPointF(x, y), QPointF(x + BRACKET_SERIF_W, y),
                     )
+        if stretch_lane is not None and stretch_span is not None:
+            start, end = stretch_span
+            if start <= row.date <= end:
+                x = BRACKET_X0 + stretch_lane * BRACKET_LANE_STEP + 0.5
+                painter.setPen(QPen(palette.bracket, PEN_WIDTH))
+                painter.drawLine(
+                    QPointF(x, rect.top() + 0.5), QPointF(x, rect.bottom() - 0.5),
+                )
+                serif_top = row.date == start
+                serif_bottom = row.date == end
+                if serif_top or serif_bottom:
+                    for yy in (
+                        (rect.top() + ROW_HEIGHT / 2,) if serif_top else ()
+                    ) + ((rect.bottom() - ROW_HEIGHT / 2,) if serif_bottom else ()):
+                        y = int(yy) + 0.5
+                        painter.drawLine(
+                            QPointF(x, y), QPointF(x + BRACKET_SERIF_W, y),
+                        )
         if index.data(ROLE_SHOW_MONTH):
             full, short = _month_labels(row.date)
             self._paint_rotated_label(painter, option, rail_w, palette, full, short)
@@ -504,7 +608,10 @@ class _RowDelegate(QStyledItemDelegate):
         )
         painter.restore()
 
-    def _paint_line(self, painter, option, row: Row, palette: _Palette, selected: bool) -> None:
+    def _paint_line(
+        self, painter, option, row: Row, palette: _Palette, selected: bool,
+        *, origin: bool = False, ghost: bool = False, preview=None,
+    ) -> None:
         """The ``start — end · name`` line prefixed by the event type dot (W4).
 
         The dot square is token-derived (``color.chart.k`` via the row's
@@ -525,9 +632,28 @@ class _RowDelegate(QStyledItemDelegate):
             ),
             dot,
         )
+        if ghost and preview is not None:
+            text = _preview_line(row.name, preview[1], preview[2])
+            color = palette.month_text
+        elif origin:
+            text = _row_line(row)
+            color = palette.month_text
+        else:
+            text = _row_line(row)
+            color = palette.selected_text if selected else palette.row_text
+        self._draw_text(painter, option, text, color)
+
+    def _paint_ghost_line(self, painter, option, palette: _Palette, preview) -> None:
+        """Ghost caption on a non-EVENT target row (empty day / extrapolated)."""
+        if preview is None:
+            return
+        name = ""
+        origin_idx = self._view.index_for_event(preview[0])
+        if origin_idx is not None:
+            name = self._view.rows[origin_idx].name
         self._draw_text(
-            painter, option, _row_line(row),
-            palette.selected_text if selected else palette.row_text,
+            painter, option, _preview_line(name, preview[1], preview[2]),
+            palette.month_text,
         )
 
     def _paint_unit(self, painter, option, row: Row, palette: _Palette) -> None:
@@ -557,13 +683,25 @@ class TimelineListView(QListWidget):
     touching the selection or the id-signals, a vertical move past it enters
     the range-drag mode (D2/D6) whose normalized day range is emitted *once*
     on release as ``day_range_applied(start, end)`` (D7), and a double-click
-    stays mute (D8). Selection and scrolling are the view's own; the panel
-    drives them through the public API below.
+    stays mute (D8). W5 adds the move gesture (D1): a past-threshold
+    press-drag on the text line of a *closed* event on the DAY rung previews
+    the shifted span in ``edit_preview()`` on every move (data and the row
+    model stay untouched) and commits exactly one
+    ``event_dates_moved(event_id, start, end)`` on release — Esc or an
+    external rebuild cancels it. The W5 stretch joins it: a past-threshold
+    press-drag on the bottom serif of a *closed multi-day* bracket (the core
+    serif hit-zone, checked before the rail branch) retargets the end with the
+    clamp ``end ≥ start`` and commits the same signal once with the old start.
+    Selection and scrolling are the view's own;
+    the panel drives them through the public API below.
     """
 
     event_selected = Signal(int)  # event_id
     event_double_clicked = Signal(int)  # event_id
     day_range_applied = Signal(object, object)  # rail drag range (start, end)
+    event_dates_moved = Signal(object, object, object)  # W5: commit of the
+        # move gesture — (event_id, new_start, new_end), exactly once per
+        # release; propagating it past the list is the panel's job (group 6)
     scale_changed = Signal(object)  # ScaleUnit after a gesture stepped the
                                     # ladder (Ctrl/Cmd wheel, unit click — 5.4/5.5)
 
@@ -581,6 +719,16 @@ class TimelineListView(QListWidget):
         self._rail_w = RAIL_MIN_WIDTH
         self._rail_press: _RailPress | None = None  # armed rail gesture (W3c D2)
         self._drag_range: tuple[date, date] | None = None  # live range drag (D6)
+        # W5 move gesture: the armed text-line press and, once latched, the
+        # live preview (event_id, target_start, target_end) the delegate reads
+        # (D6) — preview state only, never data or the row model.
+        self._event_press: _EventPress | None = None
+        self._edit_preview: tuple[int, date, date | None] | None = None
+        # W5 3.1/3.2 serif stretch: the armed serif press (D1) and the D8 map
+        # the press consults — row index → draggable bottom serifs, only ever
+        # populated on the DAY rung (stretch is a days-only gesture).
+        self._serif_press: _SerifPress | None = None
+        self._serif_target_by_row: dict[int, tuple[SerifTarget, ...]] = {}
         self._follow_y: int | None = None  # rail cursor y the sticky follows (D5)
         # W4 D2 view knobs (mirror of the ViewModel's — the VM setter stays the
         # single mutation point; these drive build_rows and the gestures):
@@ -847,6 +995,157 @@ class TimelineListView(QListWidget):
         the delegate's wash-band state (``None`` when no drag is in flight)."""
         return self._drag_range
 
+    def edit_preview(self) -> tuple[int, date, date | None] | None:
+        """The live edit preview (W5 D6): ``(event_id, target_start, target_end)``
+        recomputed on every past-threshold move — ``target_end`` is ``None``
+        for an open-event start drag. The events and the row model never
+        carry it."""
+        return self._edit_preview
+
+    def edit_ghost_index(self) -> int | None:
+        """Row the ghost wash paints on: the day under the cursor if it is in
+        the model, else the last visible row (extrapolated target, D2)."""
+        if self._edit_preview is None:
+            return None
+        target = self._follow_day
+        if target is not None:
+            for idx, row in enumerate(self._rows):
+                if row.date == target:
+                    return idx
+        return self._last_visible_index()
+
+    def stretch_preview_lane(self) -> int | None:
+        """Bracket lane of an active end-stretch, else ``None`` (live bracket)."""
+        if self._serif_press is None or self._edit_preview is None:
+            return None
+        return self._lanes.get(self._serif_press.event_id)
+
+    def _last_visible_index(self) -> int | None:
+        if not self.count():
+            return None
+        bottom = max(self.viewport().rect().bottom() - 1, 0)
+        idx = self.indexAt(QPoint(self.rail_width() + TEXT_LEFT_PAD, bottom)).row()
+        if idx < 0:
+            return self.count() - 1
+        return idx
+
+    def _covering_closed_event(self, day: date):
+        """First closed event whose span contains ``day`` (for mid-body grab)."""
+        covering = [
+            event for event in self._events
+            if event.end_date is not None and event.start_date <= day <= event.end_date
+        ]
+        covering.sort(key=lambda event: (event.start_date, event.id))
+        return covering[0] if covering else None
+
+    def _arm_event_press(self, pressed: int, y: int) -> None:
+        """Arm MOVE/START from a text-zone press on the DAY rung (W5 D1/2b/2.5)."""
+        self._event_press = None
+        if not (0 <= pressed < len(self._rows)):
+            return
+        pressed_row = self._rows[pressed]
+        if pressed_row.kind is RowKind.EVENT:
+            if pressed_row.start is not None and pressed_row.end is not None:
+                self._event_press = _EventPress(
+                    event_id=pressed_row.event_id,
+                    press_y=y,
+                    anchor_index=pressed,
+                    start=pressed_row.start,
+                    end=pressed_row.end,
+                    grab_day=pressed_row.date,
+                    mode=_EDIT_MOVE,
+                )
+                return
+            if (
+                pressed_row.start is not None
+                and pressed_row.end is None
+                and pressed_row.date == pressed_row.start
+            ):
+                self._event_press = _EventPress(
+                    event_id=pressed_row.event_id,
+                    press_y=y,
+                    anchor_index=pressed,
+                    start=pressed_row.start,
+                    end=None,
+                    grab_day=pressed_row.date,
+                    mode=_EDIT_START,
+                )
+            return
+        if pressed_row.kind is RowKind.EMPTY_DAY:
+            covering = self._covering_closed_event(pressed_row.date)
+            if covering is None:
+                return
+            self._event_press = _EventPress(
+                event_id=covering.id,
+                press_y=y,
+                anchor_index=pressed,
+                start=covering.start_date,
+                end=covering.end_date,
+                grab_day=pressed_row.date,
+                mode=_EDIT_MOVE,
+            )
+
+    def _retarget_edit(self, y: int) -> None:
+        """Recompute ``_edit_preview`` from viewport ``y`` (move / start / stretch)."""
+        target = target_day(
+            self._rows, ROW_HEIGHT, y, self.verticalScrollBar().value(),
+        )
+        if target is None:
+            return
+        serif_press = self._serif_press
+        if serif_press is not None:
+            end = target if target >= serif_press.start else serif_press.start
+            preview = (serif_press.event_id, serif_press.start, end)
+        else:
+            event_press = self._event_press
+            if event_press is None:
+                return
+            if event_press.mode == _EDIT_START or event_press.end is None:
+                preview = (event_press.event_id, target, None)
+            else:
+                new_start, new_end = translate_span(
+                    event_press.start, event_press.end,
+                    (target - event_press.grab_day).days,
+                )
+                preview = (
+                    event_press.event_id,
+                    clamp_calendar(new_start),
+                    clamp_calendar(new_end),
+                )
+        if preview != self._edit_preview:
+            self._edit_preview = preview
+            self.viewport().update()
+        if self._follow_day != target:
+            self._follow_day = target
+            self._refresh_sticky_text()
+
+    def _serif_target_at(self, x: int, y: int) -> SerifTarget | None:
+        """The draggable serif under a rail press point, ``None`` for a miss.
+
+        W5 3.1/D8: the vertical window of the hit zone is the serif's own row
+        (the core map is keyed by row index, computed on the equal-height
+        contract like :func:`index_at_y` but without the day-head walk-back —
+        the serif is painted on its end day's *last* row only); the horizontal
+        radius is the core's :func:`serif_hit`. A target whose owning event
+        owns no EVENT row (or a non-closed span, which the core already
+        excludes) is treated as a miss — defensive, the map is rebuilt with
+        every model and can never legitimately desync.
+        """
+        if not self._serif_target_by_row:
+            return None
+        row = (y + ROW_HEIGHT * self.verticalScrollBar().value()) // ROW_HEIGHT
+        targets = self._serif_target_by_row.get(row)
+        if not targets:
+            return None
+        target = serif_hit(targets, x)
+        if target is None:
+            return None
+        event_idx = self._index_by_event.get(target.event_id)
+        pressed = self._rows[event_idx] if event_idx is not None else None
+        if not isinstance(pressed, Row) or pressed.start is None or pressed.end is None:
+            return None
+        return target
+
     def axis_labels(self) -> list[str]:
         """Month rail labels of the current sample, game-formatted, one per month.
 
@@ -894,12 +1193,22 @@ class TimelineListView(QListWidget):
         # the first day of the last unit, which maps onto that unit).
         range_end_eff = rows[-1].date if rows else None
         self._lanes = bracket_lanes(events, range_end_eff, self._unit)
+        # W5 D8: the serif hit-zone is built from the very geometry the
+        # delegate paints (core ``serif_targets``) — closed multi-day brackets
+        # only, DAY rung only; larger rungs own no draggable handle.
+        self._serif_target_by_row = (
+            serif_targets(self._rows, events, self._lanes)
+            if self._unit is ScaleUnit.DAY else {}
+        )
 
         indices_by_day: dict[date, list[int]] = defaultdict(list)
         indices_by_unit: dict[date, int] = {}
         self._index_by_event = {}
         self._rail_press = None  # stale day anchors must not outlive the model
         self._drag_range = None  # ...nor may a wash band paint onto a new scale
+        self._event_press = None  # W5 D5: an external rebuild kills the move…
+        self._edit_preview = None  # …and its ghost with it (cancel, no write)
+        self._serif_press = None  # …and a serif press/stretch just as much
         self._follow_day = None
         self._press_index = -1
         for idx, row in enumerate(self._rows):
@@ -1247,6 +1556,26 @@ class TimelineListView(QListWidget):
             event.button() == Qt.MouseButton.LeftButton
             and event.position().x() < self.rail_width()
         ):
+            # W5 3.1 (D1): the bottom-serif hit-zone test runs *before* the
+            # rail branch — a press on a closed multi-day bracket's serif
+            # belongs to the end-stretch and never arms the jump/range-drag.
+            # The rail arm is untouched for every other rail point (spec
+            # «Промах мимо засечки остаётся рейкой», «Засечка открытой скобки
+            # не ручка» — the core map excludes one-day and open spans).
+            serif_target = self._serif_target_at(
+                int(event.position().x()), int(event.position().y()),
+            )
+            if serif_target is not None:
+                self._press_index = -1
+                pressed_row = self._rows[self._index_by_event[serif_target.event_id]]
+                self._serif_press = _SerifPress(
+                    event_id=serif_target.event_id,
+                    press_y=int(event.position().y()),
+                    start=pressed_row.start,
+                    end=pressed_row.end,
+                )
+                event.accept()
+                return
             # W3c D1: the rail owns its zone — the press arms the click/drag
             # gesture on the day under the cursor and never reaches the base
             # class, so a rail press selects nothing and emits no ``clicked``.
@@ -1272,6 +1601,14 @@ class TimelineListView(QListWidget):
         ):
             event.accept()
             return
+        if self._unit is ScaleUnit.DAY and 0 <= pressed < len(self._rows):
+            self._arm_event_press(pressed, int(event.position().y()))
+            if (
+                self._event_press is not None
+                and self._rows[pressed].kind is RowKind.EMPTY_DAY
+            ):
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # Qt API name
@@ -1314,6 +1651,53 @@ class TimelineListView(QListWidget):
             self.viewport().update()
             event.accept()
             return
+        serif_press = self._serif_press
+        if serif_press is not None and event.button() == Qt.MouseButton.LeftButton:
+            # W5 3.2, inheriting the W3c-D6/EVENT-press pattern: the gesture
+            # state is dropped *before* resolving — the latched stretch commits
+            # exactly one ``event_dates_moved`` carrying the OLD start and the
+            # clamped preview end. A sub-threshold release was still owned by
+            # the serif arm (the press inside the hit zone belongs to the
+            # stretch, spec «Интерактив рейки»), so it stays consumed inert —
+            # no jump, no range, no commit, no selection.
+            self._serif_press = None
+            preview, self._edit_preview = self._edit_preview, None
+            self.viewport().update()
+            if preview is not None:
+                if self._follow_day is not None:
+                    self._follow_day = None
+                    self._refresh_sticky_text()
+                self.event_dates_moved.emit(
+                    serif_press.event_id, preview[1], preview[2]
+                )
+                if self.count():  # the commit path may have rebuilt the model
+                    self._update_follow_day(event.position().toPoint())
+                self.viewport().update()
+            event.accept()
+            return
+        event_press = self._event_press
+        if event_press is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._event_press = None
+            preview, self._edit_preview = self._edit_preview, None
+            if preview is not None:
+                # W5 D6, inheriting the W3c-D6 pattern: the gesture state is
+                # dropped *before* committing — the ``event_dates_moved`` slot
+                # may synchronously reload and rebuild the model, and no
+                # preview state may survive into (or paint over) the new
+                # scale. A release below the threshold never gets here: the
+                # base class still resolves it as the plain selection click.
+                if self._follow_day is not None:
+                    self._follow_day = None
+                    self._refresh_sticky_text()
+                self.viewport().update()
+                self.event_dates_moved.emit(
+                    event_press.event_id, preview[1], preview[2]
+                )
+                if self.count():  # the commit path may have rebuilt the model
+                    self._update_follow_day(event.position().toPoint())
+                self.viewport().update()
+                event.accept()
+                return
         if event.button() == Qt.MouseButton.LeftButton:
             pressed = self._press_index
             self._press_index = -1
@@ -1337,6 +1721,9 @@ class TimelineListView(QListWidget):
             and event.position().x() < self.rail_width()
         ):
             event.accept()  # D8: a rail double-click stays mute — no select, no edit
+            return
+        if self._edit_preview is not None:
+            event.accept()
             return
         super().mouseDoubleClickEvent(event)
 
@@ -1376,17 +1763,62 @@ class TimelineListView(QListWidget):
                 self._update_follow_day(pos)
             event.accept()
             return
+        serif_press = self._serif_press
+        if serif_press is not None and bool(event.buttons() & Qt.MouseButton.LeftButton):
+            if (
+                self._edit_preview is not None
+                or abs(pos.y() - serif_press.press_y) >= DRAG_START_THRESHOLD_PX
+            ):
+                self._retarget_edit(pos.y())
+            else:
+                self._update_follow_day(pos)
+            event.accept()
+            return
+        event_press = self._event_press
+        if (
+            event_press is not None
+            and bool(event.buttons() & Qt.MouseButton.LeftButton)
+            and (
+                self._edit_preview is not None
+                or abs(pos.y() - event_press.press_y) >= DRAG_START_THRESHOLD_PX
+            )
+        ):
+            self._retarget_edit(pos.y())
+            event.accept()
+            return
         self._update_follow_day(pos)
         super().mouseMoveEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # Qt API name
+        if event.key() == Qt.Key.Key_Escape and self._edit_preview is not None:
+            # W5 D5: Esc aborts a latched move or stretch — no commit, no
+            # signal, and the armed press goes with it (before the threshold
+            # Esc and so is a no-op).
+            self._event_press = None
+            self._serif_press = None
+            self._edit_preview = None
+            if self._follow_day is not None:
+                self._follow_day = None
+                self._refresh_sticky_text()
+            self.viewport().update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def leaveEvent(self, event) -> None:  # Qt API name
         if self._hover_row != -1:
             self._hover_row = -1
             self.viewport().update()
-        if self._follow_day is not None and self._drag_range is None:
+        if (
+            self._follow_day is not None
+            and self._drag_range is None
+            and self._edit_preview is None
+        ):
             # No gesture is active: leaving the list hands the sticky overlay
-            # back to the top row's date (D5). An active range drag keeps the
-            # follow flag set across the leave (spec «Follow во время drag'а»).
+            # back to the top row's date (D5). An active range drag — or an
+            # active W5 move, whose target lives under the cursor outside the
+            # viewport by design — keeps the follow flag set across the leave
+            # (spec «Follow во время drag'а»).
             self._follow_day = None
             self._refresh_sticky_text()
         super().leaveEvent(event)
@@ -1402,9 +1834,13 @@ class TimelineListView(QListWidget):
         step (spec «иные модификаторы шаг прокрутки менять НЕ SHALL»).
         """
         angle = event.angleDelta().y()
+        editing = self._edit_preview is not None
         if event.modifiers() & (
             Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
         ):
+            if editing:
+                event.accept()
+                return
             if angle != 0:
                 self._step_scale(finer=angle > 0)
             event.accept()  # the wheel belongs to the ladder while Ctrl rides
@@ -1414,6 +1850,8 @@ class TimelineListView(QListWidget):
             return
         bar = self.verticalScrollBar()
         bar.setValue(bar.value() + (1 if angle < 0 else -1))
+        if editing:
+            self._retarget_edit(int(event.position().y()))
         event.accept()
 
     def resizeEvent(self, event) -> None:  # Qt API name
@@ -1558,6 +1996,7 @@ class TimelineWidget(QWidget):
     add_entity_requested = Signal(str)  # entity_type: character/location/organization/item
     event_types_requested = Signal()  # W4 6.2: «Типы событий…» from the «+» menu
     filter_changed = Signal(object, object)  # (start_date | None, end_date | None)
+    event_dates_moved = Signal(object, object, object)  # W5: (event_id, start, end|None)
 
     def __init__(
         self,
@@ -1693,6 +2132,7 @@ class TimelineWidget(QWidget):
         # apply path as the popover, so the chip mirrors it and the panel's
         # single filter_changed contract stays untouched.
         self.rows_view.day_range_applied.connect(self._on_filter_range)
+        self.rows_view.event_dates_moved.connect(self.event_dates_moved.emit)
         # W4 5.4–5.5: a wheel/click ladder step inside the list is mirrored
         # into the ViewModel (its setter stays the single mutation point).
         self.rows_view.scale_changed.connect(self._on_view_scale_changed)
@@ -1737,11 +2177,17 @@ class TimelineWidget(QWidget):
 
     def _on_scale_chosen(self, unit: ScaleUnit) -> None:
         """Header ladder click: write through the VM, then mirror (5.7)."""
+        if self.rows_view.edit_preview() is not None:
+            self._sync_from_vm()
+            return
         self._vm.unit = unit
         self._sync_from_vm()
 
     def _on_group_chosen(self, kind) -> None:
         """Header grouping click: same write-through path as the ladder (5.7)."""
+        if self.rows_view.edit_preview() is not None:
+            self._sync_from_vm()
+            return
         self._vm.group_by = kind
         self._sync_from_vm()
 
@@ -1840,3 +2286,18 @@ class TimelineWidget(QWidget):
         self._filter_range = (start, end)
         self.filter_chip.setText(filter_chip_text(start, end))
         self.filter_changed.emit(start, end)
+
+    def cover_filter_for_span(self, start: date, end: date | None) -> None:
+        """Widen a live chip filter so ``[start, end|start]`` stays inside it.
+
+        No-op without a filter. Expansion uses the existing chip path
+        (:meth:`_on_filter_range`) so the caption and ``filter_changed`` stay
+        in lockstep (W5 D3).
+        """
+        fr_start, fr_end = self._filter_range
+        if fr_start is None or fr_end is None:
+            return
+        span_end = start if end is None else end
+        if start >= fr_start and span_end <= fr_end:
+            return
+        self._on_filter_range(min(start, fr_start), max(span_end, fr_end))

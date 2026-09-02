@@ -1,4 +1,4 @@
-"""Unit tests for the Qt-free vertical-rows core (W3b 1.1–1.3, W3c 2.1, W4 3.1–3.5).
+"""Unit tests for the Qt-free vertical-rows core (W3b 1.1–1.3, W3c 2.1, W4 3.1–3.5, W5 1.1–1.4).
 
 The module must import and run without a QApplication — enforced by this file
 being plain units (no qtbot, no Qt imports anywhere).
@@ -9,17 +9,28 @@ from datetime import date
 from types import SimpleNamespace
 
 from app.presentation.views.timeline_rows import (
+    BRACKET_LANE_STEP,
     BRACKET_MAX_LANES,
+    BRACKET_X0,
+    CALENDAR_MAX,
+    CALENDAR_MIN,
+    EXTRAPOLATION_STEP_PX,
     NO_GROUP_KEY,
+    SERIF_HIT_PX,
     Row,
     RowKind,
     ScaleUnit,
     bracket_lanes,
     build_rows,
+    clamp_calendar,
     index_at_y,
     next_event_index,
     normalize_range,
     prev_event_index,
+    serif_hit,
+    serif_targets,
+    target_day,
+    translate_span,
 )
 
 
@@ -605,3 +616,236 @@ def test_normalize_range_passes_unit_anchors_through():
     """Unit rungs feed month anchors into the same pair ordering (W4 D3)."""
     march, may = date(1200, 3, 1), date(1200, 5, 1)
     assert normalize_range(may, march) == (march, may)
+
+
+# ── W5 1.1 target_day — the drag's target day under the cursor (design D2) ───
+
+def test_extrapolation_step_is_the_named_row_pitch():
+    """D7: the extrapolation step is the equal-height row pitch, named."""
+    assert EXTRAPOLATION_STEP_PX == _RAIL_ROW_H  # == timeline_widget.ROW_HEIGHT
+
+
+def test_target_day_inside_block_is_the_day_under_the_cursor():
+    """Inside the row block the hit-test rides on ``index_at_y`` (equal rows)."""
+    rows = _rail_rows()  # Jan 1: rows 0–1, Jan 2: row 2, Jan 3: rows 3–5
+    h = _RAIL_ROW_H
+    assert target_day(rows, h, 0, 0) == date(1200, 1, 1)
+    assert target_day(rows, h, h, 0) == date(1200, 1, 1)        # 2nd row of Jan 1
+    assert target_day(rows, h, 2 * h, 0) == date(1200, 1, 2)    # the empty day
+    assert target_day(rows, h, 3 * h, 0) == date(1200, 1, 3)
+    assert target_day(rows, h, 5 * h, 0) == date(1200, 1, 3)
+    assert target_day(rows, h, 6 * h - 1, 0) == date(1200, 1, 3)  # last pixel
+
+
+def test_target_day_counts_in_the_scrolled_content():
+    """``scroll`` rides on as whole rows, exactly like the view's hit-test."""
+    rows = _rail_rows()
+    h = _RAIL_ROW_H
+    assert target_day(rows, h, 0, 2) == date(1200, 1, 2)   # scrolled 2 rows down
+    assert target_day(rows, h, h, 2) == date(1200, 1, 3)   # scrolled past Jan 2
+    assert target_day(rows, h, 2 * h, 3) == date(1200, 1, 3)
+    assert target_day(rows, h, 3 * h - 1, 3) == date(1200, 1, 3)  # last visible px
+
+
+def test_target_day_extrapolates_below_the_tail_one_day_per_step():
+    """Spec «Цель за хвостом списка экстраполируется»: step == row pitch."""
+    rows = _rail_rows()  # 6 rows, last model day Jan 3
+    h = EXTRAPOLATION_STEP_PX
+    assert target_day(rows, h, 6 * h, 0) == date(1200, 1, 4)         # one row past
+    assert target_day(rows, h, 6 * h + h - 1, 0) == date(1200, 1, 4)
+    assert target_day(rows, h, 6 * h + 2 * h, 0) == date(1200, 1, 6)  # 3 steps past
+    # Extrapolation counts from the model's edge, not the viewport's bottom:
+    # scrolled to the bottom (scroll 3), one row below the last content row…
+    assert target_day(rows, h, 3 * h, 3) == date(1200, 1, 4)
+    # …at the model edge the scrolled viewport still reports the last day.
+    assert target_day(rows, h, 2 * h, 3) == date(1200, 1, 3)
+
+
+def test_target_day_extrapolates_above_the_head_negative_steps():
+    """Steps above the head count backwards from the first day, ceil per pitch."""
+    rows = _rail_rows()  # first model day Jan 1, 1200
+    h = _RAIL_ROW_H
+    assert target_day(rows, h, -1, 0) == date(1199, 12, 31)   # crosses year edge
+    assert target_day(rows, h, -h, 0) == date(1199, 12, 31)   # exactly one step
+    assert target_day(rows, h, -h - 1, 0) == date(1199, 12, 30)
+    assert target_day(rows, h, -10 ** 6, 0) < date(1199, 12, 30)  # keeps going
+
+
+def test_target_day_extrapolation_across_month_year_and_leap_boundaries():
+    """«Пересечения границы месяца/декабрь→январь/29 февраля» — plain calendar math."""
+    h = _RAIL_ROW_H
+    month_end = build_rows([], range_start=date(1200, 1, 30), range_end=date(1200, 1, 31))
+    assert target_day(month_end, h, 2 * h, 0) == date(1200, 2, 1)
+    assert target_day(month_end, h, -h, 0) == date(1200, 1, 29)
+
+    year_end = build_rows([], range_start=date(2023, 12, 29), range_end=date(2023, 12, 30))
+    assert target_day(year_end, h, 2 * h, 0) == date(2023, 12, 31)
+    assert target_day(year_end, h, 3 * h, 0) == date(2024, 1, 1)
+
+    leap = build_rows([], range_start=date(2024, 2, 27), range_end=date(2024, 2, 28))
+    assert target_day(leap, h, 2 * h, 0) == date(2024, 2, 29)
+    assert target_day(leap, h, 3 * h, 0) == date(2024, 3, 1)
+
+
+def test_target_day_without_rows_or_height_is_none():
+    """Same degenerate guards as ``index_at_y``: nothing to map onto."""
+    assert target_day([], _RAIL_ROW_H, 0, 0) is None
+    assert target_day([], _RAIL_ROW_H, -5, 0) is None
+    assert target_day(_rail_rows(), 0, 0, 0) is None
+    assert target_day(_rail_rows(), -_RAIL_ROW_H, 10, 1) is None
+
+
+def test_target_day_clamps_to_the_card_calendar_inside_and_past_edges():
+    """W5 1.5 / spec «Цель ограничена календарём приложения»: neither a row
+    inside the block nor an extrapolation may return a date the card cannot
+    show. Bounds match ``CustomDateEdit`` (year 100 … 9999-12-31)."""
+    h = _RAIL_ROW_H
+    assert CALENDAR_MIN == date(100, 1, 1)
+    assert CALENDAR_MAX == date(9999, 12, 31)
+    assert clamp_calendar(date(99, 12, 31)) == CALENDAR_MIN
+    assert clamp_calendar(date(9999, 12, 31)) == CALENDAR_MAX
+
+    inside_early = [
+        Row(kind=RowKind.EMPTY_DAY, date=date(99, 12, 31), start=date(99, 12, 31)),
+    ]
+    assert target_day(inside_early, h, 0, 0) == CALENDAR_MIN
+
+    head = build_rows([], range_start=date(100, 1, 1), range_end=date(100, 1, 3))
+    assert target_day(head, h, -h, 0) == CALENDAR_MIN
+    assert target_day(head, h, -10 ** 7, 0) == CALENDAR_MIN
+
+    tail = [
+        Row(kind=RowKind.EMPTY_DAY, date=date(9999, 12, 30), start=date(9999, 12, 30)),
+        Row(kind=RowKind.EMPTY_DAY, date=date(9999, 12, 31), start=date(9999, 12, 31)),
+    ]
+    assert target_day(tail, h, 2 * h, 0) == CALENDAR_MAX
+    assert target_day(tail, h, 10 ** 7, 0) == CALENDAR_MAX
+
+
+# ── W5 1.3 translate_span — duration-preserving shift of a closed span ───────
+
+def test_translate_span_shifts_both_dates_keeping_duration():
+    """Spec «Перенос многодневки сохраняет длительность»: 3–10 + 5 → 8–15."""
+    start, end = date(1200, 3, 3), date(1200, 3, 10)
+    assert translate_span(start, end, 5) == (date(1200, 3, 8), date(1200, 3, 15))
+    assert translate_span(start, end, -5) == (date(1200, 2, 27), date(1200, 3, 5))
+    for delta in range(-400, 401, 37):
+        new_start, new_end = translate_span(start, end, delta)
+        assert new_end - new_start == end - start  # shift only, duration intact
+
+
+def test_translate_span_on_a_single_day_pin_moves_it_around():
+    """A closed one-day span (start == end) is still translatable."""
+    day = date(1200, 3, 3)
+    assert translate_span(day, day, 7) == (date(1200, 3, 10), date(1200, 3, 10))
+    assert translate_span(day, day, 0) == (day, day)
+
+
+def test_translate_span_walks_calendar_boundaries_by_plain_arithmetic():
+    """No special month/year/leap rules (spec «без специальных правил»)."""
+    assert translate_span(date(1200, 1, 30), date(1200, 2, 2), 2) == (
+        date(1200, 2, 1), date(1200, 2, 4),
+    )
+    assert translate_span(date(2023, 12, 30), date(2024, 1, 2), 3) == (
+        date(2024, 1, 2), date(2024, 1, 5),
+    )
+    assert translate_span(date(2024, 2, 27), date(2024, 3, 1), 1) == (
+        date(2024, 2, 28), date(2024, 3, 2),
+    )
+
+
+def test_translate_span_never_inverts_or_clamps():
+    """Order is shift-invariant; this layer has no clamp — just the shift."""
+    start, end = date(1200, 3, 3), date(1200, 3, 10)
+    for delta in (-100000, -10, -1, 0, 1, 10, 100000):
+        new_start, new_end = translate_span(start, end, delta)
+        assert new_start < new_end  # never inverted, also far in the past
+    # No clamp against any model edge: the view decides reachability, the core
+    # shifts by exactly the delta, however far.
+    far_back = translate_span(start, end, -100000)
+    assert (start - far_back[0]).days == (end - far_back[1]).days == 100000
+
+
+# ── W5 1.4 serif hit-zone of closed multi-day brackets (design D8) ───────────
+
+def _serif_fixture():
+    """Two overlapping closed multi-day spans on a 8-day DAY window (Jan 1–8).
+
+    Lane packing gives e1 lane 0, e2 lane 1; their painted serifs sit on the
+    Jan 4 (idx 3) and Jan 5 (idx 4) rows.
+    """
+    events = [
+        _Ev(1, date(1200, 1, 1), date(1200, 1, 4)),
+        _Ev(2, date(1200, 1, 2), date(1200, 1, 5)),
+    ]
+    rows = build_rows(events, range_start=date(1200, 1, 1), range_end=date(1200, 1, 8))
+    return rows, events, bracket_lanes(events, rows[-1].date)
+
+
+def test_serif_targets_land_on_closed_multiday_end_rows():
+    """One target per painted ``serif_bottom``: event id, row, lane (D8)."""
+    rows, events, lanes = _serif_fixture()
+    assert lanes == {1: 0, 2: 1}
+    targets = serif_targets(rows, events, lanes)
+    assert sorted(targets) == [3, 4]  # end-day row indexes
+    (on_jan4,) = targets[3]
+    assert (on_jan4.event_id, on_jan4.row_index, on_jan4.lane) == (1, 3, 0)
+    assert on_jan4.center_x == BRACKET_X0 + 0 * BRACKET_LANE_STEP
+    (on_jan5,) = targets[4]
+    assert (on_jan5.event_id, on_jan5.row_index, on_jan5.lane) == (2, 4, 1)
+    assert on_jan5.center_x == BRACKET_X0 + 1 * BRACKET_LANE_STEP
+
+
+def test_serif_targets_exclude_one_day_and_open_spans():
+    """Spec: однодневные и открытые — не кандидаты, даже с поданной дорожкой."""
+    rows, _events, _lanes = _serif_fixture()  # Jan 3 paints at index 2
+    one_day = _Ev(3, date(1200, 1, 3), date(1200, 1, 3))
+    assert serif_targets(rows, [one_day], {3: 0}) == {}  # forced lane changes nothing
+    open_span = _Ev(9, date(1200, 1, 2), None)
+    assert serif_targets(rows, [open_span], {9: 0}) == {}  # «Засечка открытой скобки не ручка»
+
+
+def test_serif_targets_clamp_to_the_last_day_like_the_painted_serif():
+    """Beyond the window the bottom serif paints on the edge row — so does the hit."""
+    events = [_Ev(1, date(1200, 1, 1), date(1200, 1, 20))]
+    rows = build_rows(events, range_start=date(1200, 1, 1), range_end=date(1200, 1, 8))
+    lanes = bracket_lanes(events, rows[-1].date)
+    targets = serif_targets(rows, events, lanes)
+    assert list(targets) == [len(rows) - 1]
+    assert targets[len(rows) - 1][0].event_id == 1
+
+
+def test_serif_targets_on_empty_inputs_is_empty():
+    assert serif_targets([], [], {}) == {}
+    assert serif_targets(_rail_rows(), [], {}) == {}
+    assert serif_targets(_rail_rows(), [_Ev(1, date(1200, 1, 1), date(1200, 1, 2))], {}) == {}
+
+
+def test_serif_hit_accepts_within_radius_and_misses_outside():
+    """«Hit при |x − center| ≤ SERIF_HIT_PX»; промах остаётся рейкой."""
+    assert SERIF_HIT_PX == 4
+    rows, events, lanes = _serif_fixture()
+    (target,) = serif_targets(rows, events, lanes)[3]
+    center = BRACKET_X0 + target.lane * BRACKET_LANE_STEP
+    assert serif_hit((target,), center) is target
+    assert serif_hit((target,), center - SERIF_HIT_PX) is target
+    assert serif_hit((target,), center + SERIF_HIT_PX) is target
+    assert serif_hit((target,), center + SERIF_HIT_PX + 1) is None
+    assert serif_hit((target,), center - SERIF_HIT_PX - 1) is None
+    assert serif_hit((), center) is None
+
+
+def test_serif_hit_picks_the_lane_that_owns_the_x():
+    """Two spans ending on one row: each serif answers for its own lane."""
+    events = [
+        _Ev(1, date(1200, 1, 1), date(1200, 1, 4)),
+        _Ev(2, date(1200, 1, 2), date(1200, 1, 4)),  # overlaps e1, ends the same day
+    ]
+    rows = build_rows(events, range_start=date(1200, 1, 1), range_end=date(1200, 1, 8))
+    lanes = bracket_lanes(events, rows[-1].date)
+    assert lanes == {1: 0, 2: 1}
+    end_row = [i for i, r in enumerate(rows) if r.date == date(1200, 1, 4)][-1]
+    row_targets = serif_targets(rows, events, lanes)[end_row]
+    assert [t.event_id for t in row_targets] == [1, 2]
+    assert serif_hit(row_targets, BRACKET_X0).event_id == 1
+    assert serif_hit(row_targets, BRACKET_X0 + BRACKET_LANE_STEP).event_id == 2

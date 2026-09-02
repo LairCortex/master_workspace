@@ -53,7 +53,9 @@ from app.presentation.views.timeline_widget import (
     filter_chip_text,
     rows_palette,
 )
-from app.presentation.views.timeline_rows import RowKind, ScaleUnit
+from app.presentation.views.timeline_rows import (
+    SERIF_HIT_PX, RowKind, ScaleUnit, SerifTarget,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1503,3 +1505,595 @@ class TestDefensiveGuards:
         view._jump_to_day_row(view.count())  # one past the model
         assert view.verticalScrollBar().value() == 0
         assert view.currentRow() == view.currentRow()  # nothing moved anywhere
+
+
+# ── W5 group 2 — the move gesture in TimelineListView ────────────────────────
+
+def _moved(view) -> list[tuple]:
+    """Record every ``event_dates_moved`` emit of ``view``."""
+    emitted: list[tuple] = []
+    view.event_dates_moved.connect(lambda eid, start, end: emitted.append((eid, start, end)))
+    return emitted
+
+
+def _selected(view) -> list:
+    """Record every ``event_selected`` emit of ``view``."""
+    ids: list = []
+    view.event_selected.connect(ids.append)
+    return ids
+
+
+def _press_drag(view, start_point: QPoint, end_point: QPoint) -> None:
+    """Press → latched drag-move → release: the whole move gesture."""
+    vp = view.viewport()
+    _press_only(vp, start_point)
+    _drag_move(vp, end_point)
+    _release_only(vp, end_point)
+
+
+class TestEventMoveGesture:
+    """W5 tasks 2.1–2.4 (D1/D2/D5/D6): a past-threshold press-drag on the text
+    line of a *closed* EVENT row on the DAY rung becomes the move gesture —
+    armed on press, previewed (never committed) on every move, committed once
+    on release, cancelled by Esc or by an external row-model rebuild. An open
+    event owns no gesture at all."""
+
+    @staticmethod
+    def _sample():
+        """Jan 1…12 block: e2 closed 4…6 (row 3), e3 open on Jan 9 (row 8),
+        one-day e1/e4 — row index == day − 1 throughout (≤1 event per day)."""
+        return [
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 4), date(1200, 1, 6)),
+            _evt(3, date(1200, 1, 9), None),
+            _evt(4, date(1200, 1, 12)),
+        ]
+
+    def _view(self, qtbot, rows_visible=6, scroll=0):
+        events = self._sample()
+        view = _view(qtbot, events, rows_visible=rows_visible)
+        view.verticalScrollBar().setValue(scroll)
+        return view
+
+    @staticmethod
+    def _text_point(view, idx: int) -> QPoint:
+        """A point in the text zone against row ``idx`` (never the rail)."""
+        center = _row_center(view, idx)
+        return QPoint(view.rail_width() + 40, center.y())
+
+    # ── 2.1 — arming, threshold, the click stays a click, open rows inert ───
+
+    def test_sub_threshold_press_release_still_selects_once(self, qtbot):
+        """Task 2.1 «клик без порога выбирает как раньше»: press, jitter moves
+        under DRAG_START_THRESHOLD_PX, release — the plain ``event_selected``
+        click fires exactly once, no move signal, no preview state."""
+        view = self._view(qtbot)
+        moved, selected = _moved(view), _selected(view)
+        point = self._text_point(view, 3)  # closed e2 line (Jan 4…6)
+        _press_only(view.viewport(), point)
+        assert view.edit_preview() is None  # arming alone never previews
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        assert view.edit_preview() is None
+        _drag_move(view.viewport(), point - QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        _release_only(view.viewport(), point)
+        assert moved == []
+        assert selected == [2]
+        assert view.selected_id == 2
+        assert view.edit_preview() is None
+
+    def test_open_event_press_drag_emits_nothing(self, qtbot):
+        """Spec «Тело бессрочного события не поднимается»: a press-drag on a
+        continuation empty day of an open event arms no gesture."""
+        view = self._view(qtbot, scroll=6)  # rows 6…11 visible, e3 at row 8
+        moved, selected = _moved(view), _selected(view)
+        point = self._text_point(view, 9)  # empty Jan 10 — body of open e3
+        below = QPoint(point.x(), _row_center(view, 11).y())  # Jan 12
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), below)
+        assert view.edit_preview() is None
+        _release_only(view.viewport(), below)
+        assert moved == []
+        assert selected == []
+        assert view.selected_id is None
+
+    # ── 2.2 — the preview follows every move, data and model untouched ─────
+
+    def test_moves_retarget_preview_through_scroll_without_touching_data(self, qtbot):
+        """Task 2.2: each move recomputes ``_edit_preview`` through
+        ``target_day`` (scroll included) and ``translate_span`` — two moves
+        land the preview on the target days, duration intact; the events and
+        the row model objects are never touched, nothing is emitted."""
+        view = self._view(qtbot, scroll=2)
+        moved = _moved(view)
+        rows_before, events_before = view.rows, view.events
+        point = self._text_point(view, 3)  # press the Jan 4 line
+        _press_only(view.viewport(), point)
+        # Move 1: down to row 6 (Jan 7) → the whole span shifts +3 days.
+        first = QPoint(point.x(), _row_center(view, 6).y())
+        _drag_move(view.viewport(), first)
+        assert view.edit_preview() == (2, date(1200, 1, 7), date(1200, 1, 9))
+        # Move 2: back up to row 5 (Jan 6) → +2 days, preview follows.
+        second = QPoint(point.x(), _row_center(view, 5).y())
+        _drag_move(view.viewport(), second)
+        assert view.edit_preview() == (2, date(1200, 1, 6), date(1200, 1, 8))
+        assert view.rows is rows_before
+        assert view.events is events_before
+        assert view.rows[3].start == date(1200, 1, 4)  # row model holds old dates
+        assert moved == []
+        _release_only(view.viewport(), second)  # hand the mouse back
+
+    def test_sticky_follows_the_preview_target(self, qtbot):
+        """D2/D6 support: while the move is latched the sticky shows the true
+        target day, and the day-crossing arithmetic rides months (−3 days from
+        Jan 4 crosses into the previous year's… same here: stays in game map)."""
+        view = self._view(qtbot, scroll=0)
+        point = self._text_point(view, 3)  # Jan 4
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), QPoint(point.x(), _row_center(view, 1).y()))  # Jan 2
+        assert view.sticky_label.text() == format_game_date(date(1200, 1, 2))
+        _release_only(view.viewport(), QPoint(point.x(), _row_center(view, 1).y()))
+
+    # ── 2.3 — release commits exactly once, release beyond the tail commits ─
+
+    def test_release_commits_exactly_once_with_duration_intact(self, qtbot):
+        """Task 2.3: the release drops the gesture state *before* resolving
+        (W3c-D6) and emits exactly one ``event_dates_moved`` with the closed
+        shifted pair — ``end = start + duration``."""
+        view = self._view(qtbot)
+        moved = _moved(view)
+        point = self._text_point(view, 3)  # e2: Jan 4…6, duration 2 days
+        target = QPoint(point.x(), _row_center(view, 4).y())  # Jan 5
+        _press_drag(view, point, target)
+        assert moved == [(2, date(1200, 1, 5), date(1200, 1, 7))]
+        assert view.edit_preview() is None  # the state is gone with the commit
+
+    def test_release_below_the_viewport_commits_the_extrapolated_day(self, qtbot):
+        """Spec «Цель за хвостом списка экстраполируется» + «Release вне списка
+        — обычный commit»: released two pitches below the last model row the
+        target is the last model day + 2 — a commit, not a cancel."""
+        events = [_evt(i, date(1200, 1, d), date(1200, 1, d))
+                  for i, d in enumerate(range(1, 13), start=1)]
+        view = _view(qtbot, events, rows_visible=3)
+        view.verticalScrollBar().setValue(9)  # days 10, 11, 12 visible
+        moved = _moved(view)
+        point = self._text_point(view, 9)  # day 10's closed one-day row
+        # Content row index = (y + scroll·pitch) // pitch: y=104 with scroll 9
+        # is row 13 — two pitches past the model tail (rows 0…11, day 12).
+        _press_drag(view, point, QPoint(point.x(), 104))
+        assert moved == [(10, date(1200, 1, 14), date(1200, 1, 14))]
+        assert view.edit_preview() is None
+
+    # ── 2.4 — Esc cancels; an external rebuild kills the gesture ──────────
+
+    def test_escape_cancels_the_active_move_without_emitting(self, qtbot):
+        """Spec «Отмена по Esc»: Esc while the move is latched drops the press
+        and the preview; the later release commits nothing and clicks nothing."""
+        from PySide6.QtGui import QKeyEvent
+
+        view = self._view(qtbot)
+        moved, selected = _moved(view), _selected(view)
+        point = self._text_point(view, 3)
+        target = QPoint(point.x(), _row_center(view, 4).y())
+        vp = view.viewport()
+        _press_only(vp, point)
+        _drag_move(vp, target)
+        assert view.edit_preview() is not None
+        for etype in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(view, QKeyEvent(
+                etype, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier,
+            ))
+        assert view.edit_preview() is None
+        _release_only(vp, target)
+        assert moved == []
+        assert selected == []
+
+    def test_escape_before_threshold_is_a_plain_no_op(self, qtbot):
+        """D5 «до порога Esc и так ничего не значит»: with no latched move an
+        Esc falls through to the list's own key handling and the press still
+        resolves as the ordinary selection click."""
+        from PySide6.QtGui import QKeyEvent
+
+        view = self._view(qtbot)
+        moved, selected = _moved(view), _selected(view)
+        point = self._text_point(view, 3)
+        _press_only(view.viewport(), point)
+        for etype in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(view, QKeyEvent(
+                etype, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier,
+            ))
+        assert view.edit_preview() is None
+        _release_only(view.viewport(), point)
+        assert moved == []
+        assert selected == [2]
+
+    def test_external_rebuild_during_the_drag_kills_the_gesture(self, qtbot):
+        """Spec «Внешняя пересборка убивает жест»: a row-model rebuild during
+        the move (``_rebuild`` resets the gesture like the rail states) leaves
+        a dead gesture — the release writes nothing."""
+        view = self._view(qtbot)
+        moved, selected = _moved(view), _selected(view)
+        point = self._text_point(view, 3)
+        target = QPoint(point.x(), _row_center(view, 4).y())
+        vp = view.viewport()
+        _press_only(vp, point)
+        _drag_move(vp, target)
+        assert view.edit_preview() is not None
+        # An outside reload rebuilds the model (e4 moves) — the gesture dies.
+        moved_sample = self._sample()
+        moved_sample[3] = _evt(4, date(1200, 1, 11))
+        view.update_events(moved_sample)
+        assert view.edit_preview() is None
+        _release_only(vp, target)
+        assert moved == []
+        assert selected == []
+
+
+# ── W5 group 3 — the end-stretch gesture on the bottom serif ─────────────────
+
+class TestEventEndStretchGesture:
+    """W5 tasks 3.1–3.2 (D1/D8): a press inside the bottom serif's hit zone of
+    a *closed multi-day* bracket arms the end-stretch **before** the rail
+    branch — past-threshold moves preview ``end`` at the day under the cursor
+    clamped to ``end ≥ start``, and the release commits exactly one
+    ``event_dates_moved`` keeping the old start. Open ends, one-day spans and
+    x-misses beside the serif all stay the rail's (jump / range-drag)."""
+
+    @staticmethod
+    def _sample():
+        """The W5 group-2 quartet: closed multi-day e2 (Jan 4…6, lane → serif
+        on row 5), open e3 draws its (decorative) serif at the window tail,
+        one-day e1/e4 own no lane and no handle at all."""
+        return [
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 4), date(1200, 1, 6)),
+            _evt(3, date(1200, 1, 9), None),
+            _evt(4, date(1200, 1, 12)),
+        ]
+
+    def _view(self, qtbot, rows_visible=6, scroll=0):
+        view = _view(qtbot, self._sample(), rows_visible=rows_visible)
+        view.verticalScrollBar().setValue(scroll)
+        return view
+
+    @staticmethod
+    def _serif_point(view, event_id: int, offset_x: int = 0) -> QPoint:
+        """Point at the painted bottom serif of ``event_id`` (its end day's row,
+        its bracket lane's center x plus ``offset_x``) — all public geometry."""
+        end = view.rows[view.index_for_event(event_id)].end
+        row = max(i for i, r in enumerate(view.rows) if r.date == end)
+        x = BRACKET_X0 + view.bracket_lane(event_id) * BRACKET_LANE_STEP + offset_x
+        return QPoint(x, _row_center(view, row).y())
+
+    @staticmethod
+    def _day_y(view, idx: int) -> int:
+        """Viewport y of row ``idx``'s center at the current scroll — valid
+        also for rows outside the viewport (the target extrapolates there)."""
+        return idx * ROW_HEIGHT + ROW_HEIGHT // 2 \
+            - ROW_HEIGHT * view.verticalScrollBar().value()
+
+    # ── 3.1 — arming above the rail branch, target end with the clamp ───────
+
+    def test_serif_pull_two_days_previews_the_new_end(self, qtbot):
+        """Task 3.1 «тяга на +2 суток даёт preview с новым end»: the pull
+        retargets only the end — old start held, data and row model untouched,
+        nothing emitted while the button is down."""
+        view = self._view(qtbot)
+        moved = _moved(view)
+        rows_before, events_before = view.rows, view.events
+        point = self._serif_point(view, 2)  # Jan 6's serif, lane of e2
+        _press_only(view.viewport(), point)
+        assert view.edit_preview() is None  # arming alone never previews
+        below = QPoint(point.x(), self._day_y(view, 7))  # Jan 8
+        _drag_move(view.viewport(), below)
+        assert view.edit_preview() == (2, date(1200, 1, 4), date(1200, 1, 8))
+        assert moved == []
+        assert view.rows is rows_before and view.events is events_before
+        assert view.rows[3].end == date(1200, 1, 6)  # model keeps the old end
+        _release_only(view.viewport(), below)
+
+    def test_pull_above_the_start_clamps_end_to_start(self, qtbot):
+        """Spec «Конец не переезжает начало»: a pull past the start day previews
+        ``end == start`` — the gesture never turns into moving the start."""
+        view = self._view(qtbot)
+        moved = _moved(view)
+        point = self._serif_point(view, 2)
+        _press_only(view.viewport(), point)
+        above = QPoint(point.x(), self._day_y(view, 1))  # Jan 2 < Jan 4
+        _drag_move(view.viewport(), above)
+        assert view.edit_preview() == (2, date(1200, 1, 4), date(1200, 1, 4))
+        _release_only(view.viewport(), above)
+        assert moved == [(2, date(1200, 1, 4), date(1200, 1, 4))]  # committed clamped
+
+    def test_serif_press_without_move_jumps_nothing(self, qtbot):
+        """Spec «Интерактив рейки» (hit-зона вычтена): a press inside the serif's
+        zone belongs to the stretch — a sub-threshold press+release neither
+        jumps the day nor drags the filter nor commits anything."""
+        view = self._view(qtbot)
+        moved, selected = _moved(view), _selected(view)
+        point = self._serif_point(view, 2)
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX - 1))
+        assert view.edit_preview() is None
+        _release_only(view.viewport(), point)
+        assert moved == [] and selected == []
+        assert view.currentRow() == -1  # a rail click-jump would anchor row 5
+        assert view.verticalScrollBar().value() == 0
+
+    def test_open_event_serif_press_goes_to_the_rail_jump(self, qtbot):
+        """Spec «Засечка открытой скобки не ручка»: pressing exactly where the
+        open e3 draws its tail serif arms no stretch — the rail owns the press
+        and the release jumps that day as always."""
+        view = self._view(qtbot, scroll=6)  # row 11 (Jan 12) visible at the tail
+        moved, selected = _moved(view), _selected(view)
+        point = QPoint(
+            BRACKET_X0 + view.bracket_lane(3) * BRACKET_LANE_STEP,
+            _row_center(view, 11).y(),
+        )
+        _press_only(view.viewport(), point)
+        _release_only(view.viewport(), point)
+        assert view.edit_preview() is None
+        assert moved == [] and selected == []
+        assert view.currentRow() == 11  # the rail jump ran instead
+
+    def test_miss_beside_the_serif_stays_the_rail_drag(self, qtbot):
+        """Spec «Промах мимо засечки остаётся рейкой»: one pixel outside the
+        hit radius (``SERIF_HIT_PX`` inclusive inside) the ordinary rail
+        range-drag runs — one ``day_range_applied``, no stretch preview."""
+        view = self._view(qtbot)
+        moved = _moved(view)
+        applied: list = []
+        view.day_range_applied.connect(lambda start, end: applied.append((start, end)))
+        point = self._serif_point(view, 2, offset_x=SERIF_HIT_PX + 1)
+        _press_only(view.viewport(), point)
+        up = QPoint(point.x(), _row_center(view, 3).y())  # Jan 4
+        _drag_move(view.viewport(), up)
+        assert view.edit_preview() is None
+        _release_only(view.viewport(), up)
+        assert moved == []
+        assert applied == [(date(1200, 1, 4), date(1200, 1, 6))]
+
+    # ── 3.2 — release commits exactly once; one-day spans stay mute ────────
+
+    def test_release_commits_exactly_once_with_the_old_start(self, qtbot):
+        """Task 3.2: the release emits one ``event_dates_moved`` carrying the
+        OLD start and the new end, and drops the preview state with the commit."""
+        view = self._view(qtbot)
+        moved = _moved(view)
+        point = self._serif_point(view, 2)
+        target = QPoint(point.x(), self._day_y(view, 7))  # Jan 8
+        _press_drag(view, point, target)
+        assert moved == [(2, date(1200, 1, 4), date(1200, 1, 8))]
+        assert view.edit_preview() is None
+
+    def test_one_day_event_arms_no_stretch(self, qtbot):
+        """Spec «Однодневное нельзя растянуть»/e2e-немота: a one-day closed event
+        owns no handle — its rail press+drag applies the rail range instead and
+        the date-commit channel stays silent."""
+        view = self._view(qtbot)
+        moved = _moved(view)
+        applied: list = []
+        view.day_range_applied.connect(lambda start, end: applied.append((start, end)))
+        point = _rail_point(view, 0)  # one-day e1 (Jan 1) — no lane, no serif
+        below = QPoint(point.x(), _row_center(view, 2).y())  # Jan 3
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), below)
+        assert view.edit_preview() is None
+        _release_only(view.viewport(), below)
+        assert moved == []
+        assert applied == [(date(1200, 1, 1), date(1200, 1, 3))]  # rail handled it
+
+    def test_forged_serif_target_without_an_event_row_stays_rail(self, qtbot):
+        """Defensive guard: a serif map entry whose event owns no row (a forged
+        future desync) must fall through to the rail instead of arming."""
+        view = self._view(qtbot)
+        point = self._serif_point(view, 2)
+        view._serif_target_by_row = {5: (SerifTarget(event_id=99, row_index=5, lane=0),)}
+        _press_only(view.viewport(), point)
+        _release_only(view.viewport(), point)
+        assert view.edit_preview() is None
+        assert view.currentRow() == 5  # the rail jump handled the press instead
+
+
+class TestEventMoveGrabOffset:
+    """W5 2.5: delta is target − grab-row day, not target − event.start."""
+
+    def test_mid_body_grab_shifts_relative_to_the_grab_row(self, qtbot):
+        """Spec «Перенос многодневки сохраняет длительность (grab-offset)»:
+        3–10 March grabbed on the 5th, released against the 12th → 10–17."""
+        events = [_evt(1, date(1200, 3, 3), date(1200, 3, 10))]
+        view = _view(qtbot, (), rows_visible=18)
+        view.update_events(events, date(1200, 3, 3), date(1200, 3, 20))
+        moved = _moved(view)
+        grab = QPoint(view.rail_width() + 40, _row_center(view, 2).y())  # Mar 5
+        release = QPoint(grab.x(), _row_center(view, 9).y())  # Mar 12
+        _press_drag(view, grab, release)
+        assert moved == [(1, date(1200, 3, 10), date(1200, 3, 17))]
+
+    def test_threshold_preview_matches_the_original_span(self, qtbot):
+        """Spec «Захват за середину не телепортирует событие»."""
+        events = [_evt(1, date(1200, 3, 3), date(1200, 3, 10))]
+        view = _view(qtbot, (), rows_visible=12)
+        view.update_events(events, date(1200, 3, 3), date(1200, 3, 14))
+        grab = QPoint(view.rail_width() + 40, _row_center(view, 2).y())  # Mar 5
+        _press_only(view.viewport(), grab)
+        _drag_move(view.viewport(), grab + QPoint(0, DRAG_START_THRESHOLD_PX))
+        assert view.edit_preview() == (1, date(1200, 3, 3), date(1200, 3, 10))
+        _release_only(view.viewport(), grab + QPoint(0, DRAG_START_THRESHOLD_PX))
+
+
+class TestOpenEventStartDrag:
+    """W5 2b: start-row drag of an open event; body stays mute."""
+
+    def _view(self, qtbot):
+        events = [
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 4), None),
+            _evt(3, date(1200, 1, 12)),
+        ]
+        return _view(qtbot, events, rows_visible=8)
+
+    @staticmethod
+    def _text_point(view, idx: int) -> QPoint:
+        return QPoint(view.rail_width() + 40, _row_center(view, idx).y())
+
+    def test_start_row_previews_new_start_with_open_end(self, qtbot):
+        view = self._view(qtbot)
+        moved = _moved(view)
+        rows_before = view.rows
+        point = self._text_point(view, 3)  # e2 start Jan 4
+        below = QPoint(point.x(), _row_center(view, 6).y())  # Jan 7
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), below)
+        assert view.edit_preview() == (2, date(1200, 1, 7), None)
+        assert view.rows is rows_before
+        _release_only(view.viewport(), below)
+        assert moved == [(2, date(1200, 1, 7), None)]
+        assert view.edit_preview() is None
+
+    def test_escape_cancels_start_drag(self, qtbot):
+        from PySide6.QtGui import QKeyEvent
+
+        view = self._view(qtbot)
+        moved = _moved(view)
+        point = self._text_point(view, 3)
+        below = QPoint(point.x(), _row_center(view, 6).y())
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), below)
+        QApplication.sendEvent(view, QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier,
+        ))
+        assert view.edit_preview() is None
+        _release_only(view.viewport(), below)
+        assert moved == []
+
+
+class TestEditPreviewPaint:
+    """W5 4.1–4.2: ghost wash is the accent derivative; retheme keeps the gesture."""
+
+    def test_ghost_pixel_is_accent_wash_in_both_themes(self, qtbot, tmp_path):
+        runtime = _make_runtime(tmp_path)
+        events = [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 4), date(1200, 1, 6))]
+        view = _view(qtbot, events, theme=runtime, rows_visible=8)
+        grab = QPoint(view.rail_width() + 40, _row_center(view, 3).y())
+        target = QPoint(grab.x(), _row_center(view, 6).y())  # empty Jan 7
+        _press_only(view.viewport(), grab)
+        _drag_move(view.viewport(), target)
+        x = view.rail_width() + 3
+        y = _row_center(view, 6).y()
+        pal = view.paint_palette()
+        img = view.viewport().grab().toImage()
+        got = img.pixelColor(x, y)
+        assert got.alpha() > 0
+        assert abs(got.red() - pal.drag_fill.red()) < 80  # blended over the row
+        runtime.set_theme("light")
+        view._retheme()
+        pal_light = view.paint_palette()
+        img2 = view.viewport().grab().toImage()
+        got2 = img2.pixelColor(x, y)
+        assert view.edit_preview() is not None
+        assert pal_light.drag_fill != pal.drag_fill or got2 != got
+        _release_only(view.viewport(), target)
+
+    def test_serif_center_x_matches_painted_lane(self, qtbot):
+        view = _view(qtbot, [
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 4), date(1200, 1, 6)),
+        ])
+        lane = view.bracket_lane(2)
+        assert lane is not None
+        x = BRACKET_X0 + lane * BRACKET_LANE_STEP
+        row = max(i for i, r in enumerate(view.rows) if r.date == date(1200, 1, 6))
+        point = QPoint(x, _row_center(view, row).y())
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), QPoint(x, _row_center(view, row + 1).y()))
+        assert view.edit_preview() is not None
+        _release_only(view.viewport(), QPoint(x, _row_center(view, row + 1).y()))
+
+
+class TestEditDragSideEffects:
+    """W5 5.1–5.2: wheel retargets; Ctrl-wheel and header switchers are mute."""
+
+    def test_wheel_during_drag_retargets_release(self, qtbot):
+        events = [_evt(i, date(1200, 1, d)) for i, d in enumerate(range(1, 16), start=1)]
+        view = _view(qtbot, events, rows_visible=4)
+        moved = _moved(view)
+        point = QPoint(view.rail_width() + 40, _row_center(view, 0).y())
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), point + QPoint(0, DRAG_START_THRESHOLD_PX))
+        center = QPointF(point)
+        QApplication.sendEvent(view.viewport(), QWheelEvent(
+            center, view.viewport().mapToGlobal(point),
+            QPoint(0, 0), QPoint(0, -120),
+            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        ))
+        QApplication.sendEvent(view.viewport(), QWheelEvent(
+            center, view.viewport().mapToGlobal(point),
+            QPoint(0, 0), QPoint(0, -120),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            Qt.ScrollPhase.NoScrollPhase, False,
+        ))
+        assert view.scale_unit is ScaleUnit.DAY
+        _release_only(view.viewport(), point)
+        assert len(moved) == 1
+        assert moved[0][0] == 1
+        assert moved[0][1] != date(1200, 1, 1)
+
+    def test_header_scale_click_ignored_during_drag(self, qtbot):
+        from unittest.mock import MagicMock
+
+        vm = MagicMock()
+        vm.unit = ScaleUnit.DAY
+        vm.group_by = None
+        panel = TimelineWidget(vm)
+        qtbot.addWidget(panel)
+        panel.resize(320, 280)
+        panel.show()
+        panel.update_events([
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 4), date(1200, 1, 6)),
+            _evt(3, date(1200, 1, 12)),
+        ])
+        view = panel.rows_view
+        point = QPoint(view.rail_width() + 40, _row_center(view, 3).y())
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), QPoint(point.x(), _row_center(view, 4).y()))
+        assert view.edit_preview() is not None
+        panel.scale_buttons[ScaleUnit.MONTH].click()
+        assert vm.unit == ScaleUnit.DAY
+        _release_only(view.viewport(), QPoint(point.x(), _row_center(view, 4).y()))
+
+    def test_double_click_during_drag_is_mute(self, qtbot):
+        view = _view(qtbot, [_evt(1, date(1200, 1, 1)), _evt(2, date(1200, 1, 4), date(1200, 1, 6))])
+        dbl = []
+        view.event_double_clicked.connect(dbl.append)
+        point = QPoint(view.rail_width() + 40, _row_center(view, 3).y())
+        _press_only(view.viewport(), point)
+        _drag_move(view.viewport(), QPoint(point.x(), _row_center(view, 4).y()))
+        _double_click(view.viewport(), QPoint(point.x(), _row_center(view, 4).y()))
+        assert dbl == []
+        _release_only(view.viewport(), QPoint(point.x(), _row_center(view, 4).y()))
+
+
+class TestPanelDatesMoved:
+    """W5 6.1: the panel is the single dates-moved signal."""
+
+    def test_panel_forwards_id_and_both_dates(self, qtbot):
+        from unittest.mock import MagicMock
+
+        panel = TimelineWidget(MagicMock())
+        qtbot.addWidget(panel)
+        panel.update_events([
+            _evt(1, date(1200, 1, 1)),
+            _evt(2, date(1200, 1, 4), date(1200, 1, 6)),
+            _evt(3, date(1200, 1, 9), None),
+        ])
+        seen: list = []
+        panel.event_dates_moved.connect(lambda *a: seen.append(a))
+        view = panel.rows_view
+        point = QPoint(view.rail_width() + 40, _row_center(view, 3).y())
+        _press_drag(view, point, QPoint(point.x(), _row_center(view, 4).y()))
+        assert seen == [(2, date(1200, 1, 5), date(1200, 1, 7))]
+        view.event_dates_moved.emit(3, date(1200, 1, 11), None)
+        assert seen[-1] == (3, date(1200, 1, 11), None)
