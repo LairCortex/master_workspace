@@ -21,6 +21,15 @@ compiler the only color engine), ``SystemPalette`` (the QML analogue of
 ``palette()``) and any color-valued string literal that is not one of the
 named Qt globals the off-skin fallbacks use: themed properties read the
 palette bridge only (``LauncherRoot.qml`` header pins its fallback set).
+
+Q2a1 task 4.5 (spec qml-components «Источник оформления — только палитра
+токенов»): the same text pass extends over ``app/presentation/qml/**/*.js`` —
+the library's shared scripts (``nri/components/tokens.js`` and whatever else
+lands there) live in one comment/string grammar with QML, so they scan under
+the identical rules: no hex, no OS palette, no JS-side color construction.
+Both scans are guarded against silently finding nothing (a typo'd glob must
+fail, not pass vacuously), and each dialect has a planted-violation
+self-check proving the scanner actually bites.
 """
 from __future__ import annotations
 
@@ -227,6 +236,59 @@ def test_qml_islands_carry_no_hex_or_off_palette_colors():
     for path in sorted(QML_DIR.rglob("*.qml")):
         violations.extend(_qml_violations(path))
     assert not violations, "qml islands must read colors from the palette:\n" + "\n".join(violations)
+
+
+# ---------------------------------------------------------------------------
+# Task 4.5 (q2a1): the js half of the library — ``nri/components/tokens.js``
+# and any further ``.js`` shipped under the qml tree. The QML pass above
+# blanks comments and keeps string literals; JS shares that grammar, so the
+# identical per-file checker applies. The off-skin fallback set is the same
+# (tokens.js takes fallbacks as parameters and embeds no colors of its own).
+# ---------------------------------------------------------------------------
+
+
+def _js_files() -> list[Path]:
+    return sorted(QML_DIR.rglob("*.js"))
+
+
+def test_qml_js_scan_actual_files():
+    # The same anti-vacuity guard as the qml pass: the glob must really
+    # reach the library's shipped script (a renamed/misspelled scan catches
+    # nothing at all — worse than the offenses it is meant to catch).
+    scanned = _js_files()
+    assert scanned, "no js sources under app/presentation/qml"
+    assert "tokens.js" in {p.name for p in scanned}
+
+
+def test_qml_js_scanner_detects_planted_violations(tmp_path):
+    # Planted-violation test for the js branch: every offense kind bites,
+    # comment narration stays invisible — asserted through the very checker
+    # the production scan runs over the tree above.
+    bad = tmp_path / "bad_tokens.js"
+    bad.write_text(
+        "// hex \"#000000\" narration in a comment is invisible\n"
+        ".pragma library\n"
+        "var accent = \"#ff0000\";\n"
+        "var shorthand = \"#abc\";\n"
+        "var asInt = 0x00ff00;\n"
+        "function wash() { return Qt.rgba(1, 0, 0, 1); }\n"
+        "var namedColor = \"tomato\";\n"
+        "var osWash = SystemPalette;\n",
+        encoding="utf-8",
+    )
+    violations = _qml_violations(bad)
+    joined = "\n".join(violations)
+    assert len(violations) == 6, joined
+    assert "#ff0000" in joined and "#abc" in joined and "0x00ff00" in joined
+    assert "Qt.rgba" in joined and "tomato" in joined and "SystemPalette" in joined
+    assert "#000000" not in joined  # comment narration stayed invisible
+
+
+def test_qml_js_libraries_carry_no_hex_or_off_palette_colors():
+    violations: list[str] = []
+    for path in _js_files():
+        violations.extend(_qml_violations(path))
+    assert not violations, "library js must read colors from the palette:\n" + "\n".join(violations)
 
 
 # Binding-contract counterpart of the color scan: spec qml-shell «Контракт

@@ -1,0 +1,21 @@
+# Library module of reusable chrome components (change
+# add-qml-component-library-q2a1, design D1). The engine's one import path
+# (app/presentation/qml) makes this directory resolve as `nri.components`
+# without any extra engine configuration (spec qml-shell «Модуль библиотеки
+# резолвится из import-пути»).
+#
+# The type entries below are the contract with the following tasks: each
+# component file ships under this same directory with the listed name. QML
+# resolves type declarations lazily — importing the module before a
+# component file exists loads without errors; only *using* a listed-but-
+# missing type would fail. This is what keeps the group-1 smoke green while
+# the group-2 files land.
+module nri.components
+ThemeButton ThemeButton.qml
+ThemeField ThemeField.qml
+ThemeCheckBox ThemeCheckBox.qml
+ThemeComboBox ThemeComboBox.qml
+TitleText TitleText.qml
+HintText HintText.qml
+CardPanel CardPanel.qml
+RowItem RowItem.qml

@@ -167,6 +167,29 @@ class TestEventServiceEventTypes:
         svc = await _make_service(async_session)
         assert await svc.delete_event_type(999999) is False
 
+    async def test_delete_failure_rolls_the_transaction_back(
+        self, async_session, monkeypatch,
+    ):
+        """A failed delete answers ``False`` instead of raising: the unbind and
+        the DELETE roll back together (the event keeps its type) and the shared
+        session stays usable for the next call."""
+        svc = await _make_service(async_session)
+        occupied = await svc.save_event_type(name="Сгорит", color_index=3)
+        event = await _make_event(async_session, "Держится", occupied.id)
+        await async_session.commit()
+        event_id = event.id  # the rollback below expires the instance
+
+        async def boom(_type_id):
+            raise RuntimeError("db write failed")
+
+        monkeypatch.setattr(svc._event_type_repo, "delete", boom)
+        assert await svc.delete_event_type(occupied.id) is False
+
+        assert [t.name for t in await svc.get_event_types()] == ["Сгорит"]
+        refetched = await svc.get_event(event_id)
+        assert refetched.event_type is not None
+        assert refetched.event_type.id == occupied.id
+
 
 class TestEventTypesNotSharedBetweenGames:
     async def test_edit_one_game_leaves_another_untouched(self):

@@ -131,7 +131,12 @@ def load_island(qtbot, *, vm, palette, size=(480, 400)) -> QQuickWidget:
     The widget runs on its own engine (the island unit is engine-agnostic —
     the shared shell engine is covered in test_qml_engine.py); only the
     context contract is identical: the root object reads ``vm`` and
-    ``palette`` and nothing else from Python.
+    ``palette`` and nothing else from Python. Since
+    add-qml-component-library-q2a1 that contract also includes the
+    module-import seam: the island now resolves ``import nri.components``, so
+    this loader adds the same import path the production engine installs in
+    ``setup_qml_shell`` (``addImportPath(QML_IMPORT_PATH)``) — engine
+    plumbing only, no assertion or island-context property changes.
     """
     if QQuickStyle.name() != "Basic":  # design D4 — set once, never re-set
         QQuickStyle.setStyle("Basic")
@@ -139,6 +144,10 @@ def load_island(qtbot, *, vm, palette, size=(480, 400)) -> QQuickWidget:
     widget = QQuickWidget()
     qtbot.addWidget(widget)
     widget.resize(*size)
+    # The library-module seam (design D1): import the production import path
+    # so the launcher's bare test engine resolves ``import nri.components``
+    # exactly like the shared shell engine does.
+    widget.engine().addImportPath(qml_shell.QML_IMPORT_PATH)
     # Context properties keep raw pointers without owning them (an object
     # whose Python reference dies becomes ``null`` in QML — a hazard for the
     # production wrapper too, which is why GameLauncherDialog keeps holding

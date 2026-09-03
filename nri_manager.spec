@@ -41,6 +41,41 @@ a = Analysis(
         # bundle — the package modules already live in the PYZ).
         ("app/presentation/qml/LauncherRoot.qml",
          "app/presentation/qml"),
+        # nri.components library module (change
+        # add-qml-component-library-q2a1, design D5): islands do
+        # `import nri.components`, which Qt resolves as
+        # <QML_IMPORT_PATH>/nri/components/qmldir — so the module directory
+        # must ship verbatim under the same destination root as
+        # LauncherRoot.qml, one explicit entry per file (checked by
+        # tests/test_spec_qml_bundle.py). smoke.qml is the group-1 module
+        # probe, not a qmldir-declared type: it is deliberately shipped too,
+        # so the bundle layout is byte-for-byte the development import-path
+        # layout; at runtime it is inert (no qmldir entry, no app code
+        # references it) and its own imports (nri.components, tokens.js)
+        # resolve from this same bundled directory. tests/presentation/ QML
+        # (e.g. qml_components_gallery.qml) is test data, never bundled.
+        ("app/presentation/qml/nri/components/qmldir",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/tokens.js",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/CardPanel.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/HintText.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/RowItem.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/ThemeButton.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/ThemeCheckBox.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/ThemeComboBox.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/ThemeField.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/TitleText.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/smoke.qml",
+         "app/presentation/qml/nri/components"),
         # Qt Quick *QML plugins* (QtQuick, QtQuick.Controls.Basic,
         # QtQuick.Layouts, templates, …) are NOT listed here: PyInstaller's
         # bundled hook-PySide6.QtQml runs collect_qtqml_files(), which scans

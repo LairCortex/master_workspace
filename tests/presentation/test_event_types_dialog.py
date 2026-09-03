@@ -28,6 +28,7 @@ from app.presentation.theme.compiler import CHART_TOKEN_KEYS
 from app.presentation.views.event_types_dialog import (
     DEFAULT_NEW_TYPE_NAME,
     EventTypesDialog,
+    _token_color,
 )
 
 from tests.ui.test_theme_grab import make_runtime, token_color
@@ -299,3 +300,91 @@ class TestLiveRetheme:
         assert not offskin.is_valid
         dialog = await _open_dialog(service, qtbot, theme=offskin)
         assert [b.text() for b in dialog.swatch_buttons] == [str(k) for k in range(1, 9)]
+
+
+# ── guards around the write actions (line-coverage gate) ────────────────────
+
+DEFAULT_NAMES = ["Сюжет", "Побочное", "Слух", "Встреча"]
+
+
+class TestWriteGuards:
+    async def test_no_selection_silences_every_write(self, async_session, qtbot):
+        """Nothing selected: no rename, recolor, delete or move starts a task."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        dialog.type_list.setCurrentRow(-1)
+        emitted: list[int] = []
+        dialog.types_changed.connect(lambda: emitted.append(1))
+
+        dialog._on_rename()
+        dialog._on_swatch_clicked(2)
+        dialog._on_remove()
+        dialog._on_move(1)
+        dialog._on_move(-1)
+        await dialog.wait_idle()
+
+        assert dialog._task is None
+        assert emitted == []
+        assert dialog.type_names() == DEFAULT_NAMES
+
+    async def test_writes_are_quiet_while_another_write_is_in_flight(
+        self, async_session, qtbot
+    ):
+        """`_loading` is the re-entrancy guard of the reflected selection: the
+        field's own editingFinished and a stray swatch click must not queue."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        _select_item(dialog, "Слух")
+        dialog._loading = True
+        try:
+            dialog.name_input.setText("Занятая")
+            dialog._on_rename()
+            dialog._on_swatch_clicked(5)
+            dialog._on_move(1)
+        finally:
+            dialog._loading = False
+        await dialog.wait_idle()
+
+        assert dialog._task is None
+        assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
+
+    async def test_move_past_the_ladder_edges_is_a_no_op(self, async_session, qtbot):
+        """The first row has nothing above it, the last nothing below (task 6.1)."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+
+        _select_item(dialog, "Сюжет")
+        dialog._on_move(-1)
+        await dialog.wait_idle()
+        assert dialog._task is None
+
+        _select_item(dialog, "Встреча")
+        dialog._on_move(1)
+        await dialog.wait_idle()
+        assert dialog._task is None
+        assert dialog.type_names() == DEFAULT_NAMES
+
+    async def test_public_reload_picks_up_a_change_made_outside(
+        self, async_session, qtbot
+    ):
+        """``reload()`` is the public refresh seam: a type created behind the
+        dialog's back shows up on the next reload."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        await service.save_event_type(name="Внешний", color_index=5)
+        assert "Внешний" not in dialog.type_names()
+
+        await dialog.reload()
+
+        assert dialog.type_names() == DEFAULT_NAMES + ["Внешний"]
+
+
+def test_dot_token_is_none_outside_the_chart_palette():
+    """No token exists past the eight chart entries (D5) — off-skin by index."""
+    assert _token_color(None, 0) is None
+    assert _token_color(None, -1) is None
+    assert _token_color(None, len(CHART_TOKEN_KEYS) + 1) is None

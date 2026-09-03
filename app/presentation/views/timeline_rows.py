@@ -94,7 +94,9 @@ def clamp_calendar(day: date) -> date:
     if day < CALENDAR_MIN:
         return CALENDAR_MIN
     if day > CALENDAR_MAX:
-        return CALENDAR_MAX
+        # ``CALENDAR_MAX`` is ``date.max``, so no date object can exceed it
+        # today; the clip stays as the guard for a narrowed calendar edge.
+        return CALENDAR_MAX  # pragma: no cover
     return day
 
 

@@ -85,6 +85,21 @@ class TestSelectorContents:
         dialog.populate(_event(event_type=_event_type(3, "Слух", 3)))
         assert dialog.type_combo.currentData() == 3
 
+    def test_explicit_current_type_id_selects_without_populate(self, qtbot):
+        """The selector can be told the current id directly (the dialog is
+        filled before any record lands); an id missing from the set is not a
+        selection — the selector drops to «Без типа»."""
+        dialog = _make_dialog(qtbot)
+        dialog.set_event_types(
+            [_event_type(1, "Сюжет", 1), _event_type(3, "Слух", 3)],
+            current_type_id=3,
+        )
+        assert dialog.type_combo.currentData() == 3
+        assert dialog.get_data()["event_type_id"] == 3
+
+        dialog.set_event_types([_event_type(1, "Сюжет", 1)], current_type_id=99)
+        assert dialog.type_combo.currentData() is None
+
     def test_populate_untyped_event_selects_without_type(self, qtbot):
         dialog = _make_dialog(qtbot)
         dialog.set_event_types([_event_type(3, "Слух", 3)])

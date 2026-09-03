@@ -487,6 +487,22 @@ class TestTimelineViewModel:
         service.get_all_events.assert_not_called()  # not even a reload
         assert vm.selected_event is None
 
+    async def test_create_event_at_write_failure_rolls_back_and_reraises(self):
+        """A failed write leaves the shared session usable: rollback, then the
+        wiring reports it (the VM owns no dialog of its own)."""
+        day = date(1200, 8, 14)
+        service = self._create_service(_span(3, "Засека", day, day))
+        service.create_event = AsyncMock(side_effect=RuntimeError("db write failed"))
+        vm = TimelineViewModel(service)
+
+        with pytest.raises(RuntimeError, match="db write failed"):
+            await vm.create_event_at(day, "Засека")
+
+        service._session.rollback.assert_awaited_once()
+        service._session.commit.assert_not_called()
+        service.get_all_events.assert_not_called()  # no reload across a failure
+        assert vm.selected_event is None
+
     @pytest.mark.asyncio
     async def test_create_event_at_trims_the_name_before_writing(self):
         """The name is stripped so a padded draft does not persist stray

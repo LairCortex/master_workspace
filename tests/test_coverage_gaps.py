@@ -353,3 +353,19 @@ def test_rating_post_init_validation():
             start_date=date(1300, 2, 1),
             end_date=date(1300, 1, 1),  # before start
         )
+
+
+# ── wiring: the date payloads Qt hands over ─────────────────────────────────
+
+def test_as_date_normalizes_every_payload_shape():
+    from datetime import datetime
+
+    from app.application.wiring import _as_date
+
+    assert _as_date(None) is None  # no date at all (an open span)
+    assert _as_date(date(1200, 5, 1)) == date(1200, 5, 1)  # already a date
+    assert _as_date(datetime(1200, 5, 1, 9, 30)) == date(1200, 5, 1)
+    wrapped = SimpleNamespace(toPython=lambda: datetime(1200, 5, 1, 12, 0))
+    assert _as_date(wrapped) == date(1200, 5, 1)  # a Qt wrapper is unwrapped
+    opaque = object()
+    assert _as_date(opaque) is opaque  # nothing to normalize — passed through

@@ -539,3 +539,153 @@ async def test_create_related_without_service_is_noop(app, wait_for, menu_qmenu)
     assert query_db(db_path, "SELECT COUNT(*) FROM characters")[0][0] == 1
     section = card._related_sections["items"].list_widget
     assert section.count() == 0
+
+
+# ── the tape's write branches: a commit that fails, a payload that is not one ──
+
+async def test_date_move_failure_reports_once_even_when_the_rollback_fails(
+    app, wait_for, monkeypatch, message_boxes
+):
+    """on_event_dates_moved: the write fails, the rollback itself fails (the
+    inner guard swallows it), the tape reloads the stored dates and exactly one
+    modal error is shown."""
+    application, window = app
+    await helpers.create_event_via_ui(
+        window, wait_for, "Держись",
+        start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 2),
+    )
+    widget = window.timeline_widget
+    view = widget.rows_view
+    await wait_for(lambda: len(view.events) == 1)
+    event_id = view.events[0].id
+
+    async def boom_update(*args, **kwargs):
+        raise RuntimeError("db write failed")
+
+    session = application._wiring._event_service._session
+    real_rollback = session.rollback
+    attempts: list[str] = []
+
+    async def flaky_rollback():
+        attempts.append("rollback")
+        if len(attempts) == 1:
+            raise RuntimeError("rollback itself failed")
+        await real_rollback()
+
+    monkeypatch.setattr(EventService, "update_event", boom_update)
+    monkeypatch.setattr(type(session), "rollback", lambda _s: flaky_rollback())
+
+    widget.event_dates_moved.emit(
+        event_id, datetime.date(1200, 4, 1), datetime.date(1200, 4, 2),
+    )
+    await wait_for(lambda: any(kind == "critical" for kind, _, _ in message_boxes))
+    await helpers.wait_until_settled()
+
+    assert attempts == ["rollback"]  # the swallowed failure happened once
+    assert [text for kind, _, text in message_boxes if kind == "critical"] == [
+        "Не удалось сохранить даты события: db write failed"
+    ]
+    # The reload after the failed write shows what is actually stored
+    await wait_for(lambda: view.events[0].start_date == datetime.date(1200, 3, 1))
+
+
+async def test_inline_create_without_a_day_or_a_name_creates_nothing(
+    app, wait_for, message_boxes
+):
+    """The widget normally filters these out; the wiring must agree with it and
+    treat a missing day or a blank draft as no create at all."""
+    application, window = app
+    db_path = application._db_path
+
+    window.timeline_widget.event_create_requested.emit(None, "Имя без дня")
+    window.timeline_widget.event_create_requested.emit(
+        datetime.date(1200, 3, 5), "   ",
+    )
+    await helpers.wait_until_settled()
+
+    assert query_db(db_path, "SELECT COUNT(*) FROM events")[0][0] == 0
+    assert message_boxes == []
+
+
+async def test_inline_create_failure_repaints_the_tape_and_reports_once(
+    app, wait_for, monkeypatch, message_boxes
+):
+    """create_event_at re-raises over its own rollback: the old tape stays
+    truthful and exactly one modal error names the failure."""
+    application, window = app
+    await helpers.create_event_via_ui(
+        window, wait_for, "Якорь",
+        start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 1),
+    )
+    view = window.timeline_widget.rows_view
+    await wait_for(lambda: len(view.events) == 1)
+
+    async def boom_create(*args, **kwargs):
+        raise RuntimeError("db write failed")
+
+    monkeypatch.setattr(EventService, "create_event", boom_create)
+
+    window.timeline_widget.event_create_requested.emit(
+        datetime.date(1200, 3, 5), "Не создастся",
+    )
+    await wait_for(lambda: any(kind == "critical" for kind, _, _ in message_boxes))
+    await helpers.wait_until_settled()
+
+    assert [text for kind, _, text in message_boxes if kind == "critical"] == [
+        "Не удалось создать событие: db write failed"
+    ]
+    await wait_for(lambda: len(view.events) == 1)
+    assert [e.name for e in view.events] == ["Якорь"]
+
+
+async def test_inline_create_without_a_record_stops_before_the_panel(
+    app, wait_for, monkeypatch, message_boxes
+):
+    """No record came back (the ViewModel's own empty-name guard): no card is
+    selected, the detail panel stays empty and no error is shown."""
+    application, window = app
+    view = window.timeline_widget.rows_view
+    seen: list[tuple] = []
+
+    async def no_record(day, name):
+        seen.append((day, name))
+        return None
+
+    monkeypatch.setattr(application._wiring._timeline_vm, "create_event_at", no_record)
+
+    window.timeline_widget.event_create_requested.emit(
+        datetime.date(1200, 3, 5), "Черновик",
+    )
+    await helpers.wait_until_settled()
+
+    assert seen == [(datetime.date(1200, 3, 5), "Черновик")]
+    assert message_boxes == []
+    assert view._selected_id is None
+
+
+async def test_sheet_list_refresh_skips_a_missing_or_dead_dialog(app, wait_for):
+    """The refresh task runs while the app may already be closing: no dialog is
+    a no-op, and a dialog that fails mid-refresh ends the task quietly."""
+    application, window = app
+
+    await application._sheet_list_refresh()  # nothing open
+
+    class _DeadDialog:
+        def __init__(self):
+            self.refreshed = 0
+
+        async def refresh(self):
+            self.refreshed += 1
+            raise RuntimeError("app already shut down under this task")
+
+        def set_open_sheet_id(self, sheet_id):  # pragma: no cover - must not run
+            raise AssertionError("a failed refresh must not repaint")
+
+    dead = _DeadDialog()
+    application._sheet_list_dialog = dead
+    try:
+        await application._sheet_list_refresh()
+    finally:
+        application._sheet_list_dialog = None
+
+    assert dead.refreshed == 1
