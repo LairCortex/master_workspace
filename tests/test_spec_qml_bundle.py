@@ -37,16 +37,21 @@ COMPONENTS_SRC_DIR = QML_SRC_DIR / "nri" / "components"
 COMPONENTS_DEST = "app/presentation/qml/nri/components"
 
 # Island roots loaded via QQuickWidget.setSource from the Python facades
-# (change port-event-timeline-qml-island-q2-5a, design D10): listed explicitly
+# (change port-event-timeline-qml-island-q2-5a, design D10; extended by
+# port-sheet-list-preset-dialogs-qml-q3a task 4.3): listed explicitly
 # next to the directory glob — QQuickWidget resolves TimelineRoot.qml by
 # absolute path and TimelineRowDelegate.qml as a same-directory import, so a
-# missing datas entry breaks the scale only in the frozen build. The tooltip
+# missing datas entry breaks the scale only in the frozen build; the same
+# reasoning pins the two char-sheet dialog roots (list/preset facades call
+# setSource on SheetListRoot.qml / SheetPresetRoot.qml). The tooltip
 # shim ships Python-side (app/presentation/qml/tooltip_shim.py, PYZ), hence no
 # qml entry for it here.
 EXPECTED_QML_ROOT_FILES = (
     "LauncherRoot.qml",
     "TimelineRoot.qml",
     "TimelineRowDelegate.qml",
+    "SheetListRoot.qml",
+    "SheetPresetRoot.qml",
 )
 
 # The qmldir type contract (design D4) plus the shared helpers — listed

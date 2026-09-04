@@ -5,6 +5,20 @@ non-modal (a child of the list dialog): two presets in a fixed order,
 selecting a preset shows its full license text and substitutes the title into
 the name field (unless the user already typed their own name), OK calls
 ``create_from_preset`` and closes only on success, cancel creates nothing.
+
+Q3a (change port-sheet-list-preset-dialogs-qml-q3a, task 4.2): the widgets
+content is gone — the checks keep their meanings 1:1 but address the
+QQuickWidget island through ``walk_items``/``objectName`` (``qml_helpers``).
+The retired seams map as follows:
+
+* ``preset_list.setCurrentRow(i)``  → ``vm.selectPreset(i)`` — the very sync
+  slot the QML delegate tap drives, so the D5 rule runs through the production
+  path; one test switches via an island row click to prove the QML→VM seam;
+* ``name_edit`` / ``license_view``  → the island's ``nameField`` /
+  ``licenseView`` items (``text`` property), reading what the user sees;
+  "typed" text is set on the field itself (its ``onTextChanged`` pushes it
+  into the VM — the production typing route);
+* ``ok_button`` / ``cancel_button`` → synthetic clicks on the island buttons.
 """
 from __future__ import annotations
 
@@ -12,6 +26,8 @@ import asyncio
 import time
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.application.services.character_sheet_service import CharacterSheetService
@@ -24,6 +40,12 @@ from app.presentation.views.character_sheet.preset_dialog import (
 from app.presentation.views.character_sheet.presets.catalog import (
     FATE_LICENSE_TEXT,
     MORK_BORG_LICENSE_TEXT,
+)
+from tests.presentation.qml_helpers import (
+    click_item,
+    find_item,
+    island_row_texts,
+    island_rows,
 )
 
 
@@ -77,48 +99,91 @@ async def pump(qtbot, until, timeout: float = 3.0) -> None:
         qtbot.wait(1)
 
 
+# ── island addressing (the retired QListWidget/QPlainTextEdit/QLineEdit seams) ─
+
+
+def _preset_texts(dlg) -> list[str]:
+    return island_row_texts(dlg.quick, "presetRow", "presetRowText")
+
+
+def _license_text(dlg) -> str:
+    return find_item(dlg.quick, "licenseView").property("text")
+
+
+def _name_field(dlg):
+    return find_item(dlg.quick, "nameField")
+
+
+def _name_text(dlg) -> str:
+    return _name_field(dlg).property("text")
+
+
+def _type_name(dlg, text: str) -> None:
+    """Type into the island field (the user's route): the field's
+    ``onTextChanged`` pushes the text into the VM via ``setNameText`` — the
+    same round trip a real key press drives."""
+    _name_field(dlg).setProperty("text", text)
+    QTest.qWait(0)  # let the field's onTextChanged → setNameText settle first
+
+
+def _select_row_through_island(dlg, index: int) -> None:
+    """Click the delegate row — the QML→VM selection seam."""
+    rows = island_rows(dlg.quick, "presetRow")
+    assert index < len(rows)
+    click_item(dlg.quick, rows[index])
+
+
 # ── 4.1: two items, license swap, name substitution, cancel ─────────────────
 
 
 async def test_exactly_two_presets_in_order(dlg):
-    assert dlg.preset_list.count() == 2
-    assert [dlg.preset_list.item(i).text() for i in range(2)] == [
-        "Fate Core",
-        "Mörk Borg",
-    ]
+    assert _preset_texts(dlg) == ["Fate Core", "Mörk Borg"]
 
 
 async def test_initial_selection_shows_fate_license_and_name(dlg):
-    assert dlg.preset_list.currentRow() == 0
-    assert dlg.license_view.toPlainText() == FATE_LICENSE_TEXT
-    assert dlg.name_edit.text() == "Fate Core"
+    # the retired preset_list.currentRow() == 0 — the VM pre-selects row 0
+    assert dlg.vm.selected_index == 0
+    assert _license_text(dlg) == FATE_LICENSE_TEXT
+    assert _name_text(dlg) == "Fate Core"
 
 
 async def test_switching_selection_changes_license_and_name(dlg, qtbot):
-    dlg.preset_list.setCurrentRow(1)
+    # the migrated setCurrentRow: the VM sync slot the delegate tap drives
+    dlg.vm.selectPreset(1)
     qtbot.wait(1)
-    assert dlg.license_view.toPlainText() == MORK_BORG_LICENSE_TEXT
-    assert dlg.name_edit.text() == "Mörk Borg"
+    assert _license_text(dlg) == MORK_BORG_LICENSE_TEXT
+    assert _name_text(dlg) == "Mörk Borg"
 
     # switching back: Fate text back, no Mörk Borg text left
-    dlg.preset_list.setCurrentRow(0)
+    dlg.vm.selectPreset(0)
     qtbot.wait(1)
-    assert dlg.license_view.toPlainText() == FATE_LICENSE_TEXT
-    assert "Third Party License" not in dlg.license_view.toPlainText()
-    assert dlg.name_edit.text() == "Fate Core"
+    assert _license_text(dlg) == FATE_LICENSE_TEXT
+    assert "Third Party License" not in _license_text(dlg)
+    assert _name_text(dlg) == "Fate Core"
+
+
+async def test_switching_by_row_tap_through_the_island(dlg, qtbot):
+    """The selection change «через остров»: a delegate click goes through the
+    QML ``onSelectedRequested`` → ``selectPreset`` seam and re-drives the
+    license + name the very same way (the retired QListWidget row click)."""
+    _select_row_through_island(dlg, 1)
+    qtbot.wait(1)
+    assert dlg.vm.selected_index == 1
+    assert _license_text(dlg) == MORK_BORG_LICENSE_TEXT
+    assert _name_text(dlg) == "Mörk Borg"
 
 
 async def test_user_typed_name_is_not_overwritten_on_switch(dlg, qtbot):
-    dlg.name_edit.setText("Свой герой")
-    dlg.preset_list.setCurrentRow(1)
+    _type_name(dlg, "Свой герой")
+    dlg.vm.selectPreset(1)
     qtbot.wait(1)
-    assert dlg.name_edit.text() == "Свой герой"
+    assert _name_text(dlg) == "Свой герой"
 
     # an empty field is filled with the new title
-    dlg.name_edit.clear()
-    dlg.preset_list.setCurrentRow(0)
+    _type_name(dlg, "")
+    dlg.vm.selectPreset(0)
     qtbot.wait(1)
-    assert dlg.name_edit.text() == "Fate Core"
+    assert _name_text(dlg) == "Fate Core"
 
 
 async def test_padded_preset_title_is_still_substituted_on_switch(dlg, qtbot):
@@ -126,31 +191,36 @@ async def test_padded_preset_title_is_still_substituted_on_switch(dlg, qtbot):
     preset's own title (not a user-typed name), so switching presets must
     replace it with the new clean title instead of leaving the padding."""
     # starts on Fate Core (row 0); pad its title, then switch to Mörk Borg.
-    dlg.name_edit.setText("Fate Core ")
-    dlg.preset_list.setCurrentRow(1)
+    _type_name(dlg, "Fate Core ")
+    dlg.vm.selectPreset(1)
     qtbot.wait(1)
-    assert dlg.name_edit.text() == "Mörk Borg"
+    assert _name_text(dlg) == "Mörk Borg"
 
     # leading whitespace is recognized the same way.
-    dlg.name_edit.setText("  Mörk Borg")
-    dlg.preset_list.setCurrentRow(0)
+    _type_name(dlg, "  Mörk Borg")
+    dlg.vm.selectPreset(0)
     qtbot.wait(1)
-    assert dlg.name_edit.text() == "Fate Core"
+    assert _name_text(dlg) == "Fate Core"
 
 
 async def test_cancel_does_not_create(dlg, service, qtbot):
-    dlg.cancel_button.click()
+    # Task 4.2 meaning: cancel closes WITHOUT emitting ``created`` at all
+    # (the retired cancel_button.click() path — a plain done(), no signal).
+    created: list[int] = []
+    dlg.created.connect(created.append)
+    click_item(dlg.quick, find_item(dlg.quick, "cancelButton"))
     await asyncio.sleep(0.05)
     qtbot.wait(10)
     assert dlg.isVisible() is False
+    assert created == []
     assert len(await service.list_sheets()) == 0
 
 
 async def test_ok_creates_template_and_emits_created(dlg, service, qtbot):
     created: list[int] = []
     dlg.created.connect(created.append)
-    dlg.name_edit.setText("Fate Core")
-    dlg.ok_button.click()
+    _type_name(dlg, "Fate Core")
+    click_item(dlg.quick, find_item(dlg.quick, "okButton"))
     await pump(qtbot, lambda: created)
 
     assert len(created) == 1
@@ -160,29 +230,53 @@ async def test_ok_creates_template_and_emits_created(dlg, service, qtbot):
     assert dlg.isVisible() is False
 
 
+async def test_enter_clicks_the_create_marker(dlg, service, qtbot):
+    """Design D5 wrapper contract: Enter clicks the island's ``defaultButton``
+    marker (the migrated default action was «Создать») — row 0 is selected and
+    its title is already substituted, so Enter creates right away."""
+    created: list[int] = []
+    dlg.created.connect(created.append)
+
+    # A non-Enter key is not the marker's: it falls through to QDialog
+    # handling and creates nothing.
+    QTest.keyClick(dlg, Qt.Key_Tab)
+    await asyncio.sleep(0.01)
+    qtbot.wait(5)
+    assert created == []
+    assert dlg.isVisible()
+
+    QTest.keyClick(dlg, Qt.Key_Enter)
+    await pump(qtbot, lambda: created)
+
+    assert len(created) == 1
+    row = await service._repo.get_by_name("Fate Core")
+    assert created[0] == row.id
+    assert dlg.isVisible() is False
+
+
 async def test_ok_name_conflict_keeps_dialog_open(dlg, service, boxes, qtbot):
     await service.create("Fate Core")
-    dlg.ok_button.click()
+    click_item(dlg.quick, find_item(dlg.quick, "okButton"))
     await pump(qtbot, lambda: any("уже существует" in text for _, _, text in boxes))
 
     assert dlg.isVisible()            # the dialog stays open for a retry
-    assert dlg.name_edit.text() == "Fate Core"
+    assert _name_text(dlg) == "Fate Core"
     rows = await service.list_sheets()
     assert [r.name for r in rows] == ["Fate Core"]
 
     # retry with a free name succeeds
-    dlg.name_edit.setText("Мой Fate")
+    _type_name(dlg, "Мой Fate")
     created: list[int] = []
     dlg.created.connect(created.append)
-    dlg.ok_button.click()
+    click_item(dlg.quick, find_item(dlg.quick, "okButton"))
     await pump(qtbot, lambda: created)
     assert len(created) == 1
     assert [r.name for r in await service.list_sheets()] == ["Fate Core", "Мой Fate"]
 
 
 async def test_ok_blank_name_shows_warning_and_creates_nothing(dlg, service, boxes, qtbot):
-    dlg.name_edit.setText("   ")
-    dlg.ok_button.click()
+    _type_name(dlg, "   ")
+    click_item(dlg.quick, find_item(dlg.quick, "okButton"))
     await pump(qtbot, lambda: any("пустым" in text for _, _, text in boxes))
 
     assert dlg.isVisible()

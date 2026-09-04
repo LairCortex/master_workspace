@@ -1,30 +1,46 @@
 """«Создать из пресета…» dialog (add-character-sheet-c, design D5).
 
-Non-modal child of the sheet list dialog: the bundled presets (Fate Core,
-Mörk Borg), the full license text of the selected one, and the template name.
-Switching the selection re-substitutes the preset title into the name field
-only while the user has not typed their own name (the field is empty or still
-holds another preset's title). OK calls ``create_from_preset`` on the shared
-session lock; on success it emits ``created(sheet_id)`` and closes, on a name
-conflict it warns and stays open, cancel creates nothing.
+Q3a (change port-sheet-list-preset-dialogs-qml-q3a, task 3.2, designs D1/D3/D5):
+the frame and Esc stay native (``QDialog``); the whole content (preset list,
+license view, name field, OK/Cancel) is a ``QQuickWidget`` island loading
+``app/presentation/qml/SheetPresetRoot.qml`` — the widgets content is gone, no
+flag, no second copy. The external contract is unchanged: the non-modal child
+of the sheet list dialog and the ``created(sheet_id)`` signal.
+
+Division of labour (design D3):
+
+* the island binds to :class:`SheetPresetViewModel` (``sheetPresetVm``) — the
+  catalog rows, the selection, the full license text and ``nameText`` — and
+  reads colors from the token bridge (dialog-owned :class:`QmlPalette` pushed
+  as ``islandPalette``, the launcher/timeline contract); both names are
+  island-scoped because the shared engine's root context is global to all
+  islands (see the comment in the constructor); a selection change is
+  the one sync slot ``selectPreset(index)``, which applies the D5
+  substitution rule Python-side (the field is re-filled with the preset title
+  only while the user has not typed their own name — the field is empty or
+  ``.strip()`` still holds another preset's title);
+* «Создать» emits the root ``createRequested``: this facade validates the
+  empty name (native ``QMessageBox.warning``), calls ``create_from_preset``
+  under ``run_locked`` on the shared session and, on success, emits
+  ``created(sheet_id)`` and closes; on a name conflict it warns and stays
+  open; cancel («Отмена» / Esc) creates nothing;
+* the island marks «Создать» as the default action (root ``defaultButton``);
+  the wrapper answers Enter through the same create path.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
-    QPlainTextEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -33,12 +49,17 @@ from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
 )
-from app.presentation.theme.catalog import attach_theme, set_role
-from app.presentation.views.character_sheet.presets.catalog import (
-    PresetCatalog,
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.sheet_preset_view_model import (
+    SheetPresetViewModel,
 )
 
 log = logging.getLogger(__name__)
+
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "SheetPresetRoot.qml")
 
 
 async def _run_now(coro: Coroutine) -> Any:
@@ -61,68 +82,75 @@ class CharacterSheetPresetDialog(QDialog):
         super().__init__(parent)
         self._service = service
         self._run_locked = run_locked or _run_now
-        self._presets = PresetCatalog().list()
-        self._theme = theme
+        # The island is skinned by the token bridge only, but the bridge still
+        # needs a runtime — the widgets-era ``None`` falls back to the process
+        # default, exactly like the other islands (D7 keeps it off-skin there).
+        self._theme = theme if theme is not None else get_default_theme()
 
         self.setWindowTitle("Создать из пресета")
         self.resize(540, 500)
 
-        self.preset_label = QLabel("Пресет:", self)
-        self.preset_list = QListWidget(self)
-        for preset in self._presets:
-            QListWidgetItem(preset.title, self.preset_list)
-        set_role(self.preset_list, "list")
+        # VM (the catalog + the D5 rule live there) and palette are dialog
+        # children — a context property is a raw pointer, so QML must never
+        # outlive them (the launcher's seam).
+        self.vm = SheetPresetViewModel(parent=self)
 
-        self.license_label = QLabel("Лицензия:", self)
-        # The full license text is shown read-only, at the dialog's font size
-        # (not smaller than the neighbouring captions — spec). Its surface/
-        # border come from the chrome sheet once the root is attached (W2b).
-        self.license_view = QPlainTextEdit(self)
-        self.license_view.setReadOnly(True)
-        self.license_view.setFixedHeight(140)
+        layout = QVBoxLayout(self)
+        # The island must reach the dialog edges: a default layout margin
+        # would show the OS palette as a frame around the QML surface.
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        self.name_label = QLabel("Имя:", self)
-        self.name_edit = QLineEdit(self)
-        set_role(self.name_edit, "field")
+        # The island shares the one process-wide engine (spec qml-shell
+        # «Движок один на приложение»); ``setup_qml_shell`` is idempotent, and
+        # the reference keeps the engine alive under a live island.
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        # Island-scoped VM name + per-island palette push (see list_dialog's
+        # identical apply-time note): rootContext() on the shared engine is
+        # the ENGINE root, the plain ``vm`` name belongs to the
+        # launcher/timeline contract, and ``islandPalette`` rides a dialog-
+        # owned QmlPalette parented AFTER ``quick`` — the launcher/timeline
+        # pattern (dialog children die in creation order, and ``done()``
+        # unwinds the scene before either context object anyway).
+        self.quick.rootContext().setContextProperty("sheetPresetVm", self.vm)
+        self._palette = QmlPalette(self._theme, parent=self)
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
 
-        self.ok_button = QPushButton("Создать", self)
-        self.cancel_button = QPushButton("Отмена", self)
+        self._root = self.quick.rootObject()
+        self._wire_island()
 
-        self.preset_list.currentRowChanged.connect(self._on_preset_changed)
-        self.ok_button.clicked.connect(lambda: self._spawn(self._on_ok()))
-        self.cancel_button.clicked.connect(self.reject)
+    # ---- island -> facade wiring ------------------------------------------------
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        buttons.addWidget(self.ok_button)
-        buttons.addWidget(self.cancel_button)
+    def _wire_island(self) -> None:
+        self._root.createRequested.connect(lambda: self._spawn(self._on_ok()))
+        # Queued, NOT direct: the QML «Отмена» click reaches here as a Python
+        # slot still running inside the island's onClicked JS frame, and
+        # reject() -> done() tears the scene down (setSource(QUrl())) — Qt
+        # aborts on destroying items whose signal handler is on the stack.
+        # The queued hop runs the same reject once the JS stack has unwound;
+        # «cancel creates nothing» is unchanged (it was always just done()).
+        self._root.cancelRequested.connect(
+            self.reject, Qt.QueuedConnection
+        )
 
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it
-        # (the W1 launcher / W2a month-dialog pattern).
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("presetChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(11, 11, 11, 11)
-        layout.addWidget(self.preset_label)
-        layout.addWidget(self.preset_list, 1)
-        layout.addWidget(self.license_label)
-        layout.addWidget(self.license_view)
-        layout.addWidget(self.name_label)
-        layout.addWidget(self.name_edit)
-        layout.addLayout(buttons)
-
-        self.preset_list.setCurrentRow(0)
-        self._apply_theme()
-
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt API
+        # Enter clicks the island's ``defaultButton`` marker (design D5) — the
+        # migrated dialog's default action was «Создать» and the marker
+        # objectName pins that button.
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            marker = (
+                self._root.property("defaultButton") if self._root is not None else None
+            )
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return  # the marker owns Enter only when the island is up
+        super().keyPressEvent(event)
 
     @staticmethod
     def _spawn(coro) -> None:
@@ -131,38 +159,24 @@ class CharacterSheetPresetDialog(QDialog):
 
     # -- selection -----------------------------------------------------------
 
-    def _current_preset_index(self) -> int:
-        return self.preset_list.currentRow()
-
     def _on_preset_changed(self, row: int) -> None:
-        if row < 0:
-            return
-        preset = self._presets[row]
-        self.license_view.setPlainText(preset.license_text)
-        # D5: substitute the title only while the field is empty or still
-        # holds another preset's title (the user has not typed their own name).
-        # Surrounding whitespace does not make it a user name: a padded title
-        # like «Mörk Borg » is still the other preset's title and gets
-        # replaced by the clean one (review #9).
-        current = self.name_edit.text().strip()
-        other_titles = {p.title for p in self._presets if p.id != preset.id}
-        if current == "" or current in other_titles:
-            self.name_edit.setText(preset.title)
+        """Compatibility seam: the selection (and the D5 name substitution)
+        now lives in the VM — the QML delegate drives the very same slot."""
+        self.vm.selectPreset(row)
 
     # -- create ---------------------------------------------------------------
 
     async def _on_ok(self) -> None:
-        row = self._current_preset_index()
-        if row < 0:
+        preset_id = self.vm.selected_preset_id
+        if preset_id is None:
             return
-        preset = self._presets[row]
-        name = self.name_edit.text().strip()
+        name = self.vm.name_text.strip()
         if not name:
             QMessageBox.warning(self, "Чар-листы", "Имя не может быть пустым")
             return
         try:
             created = await self._run_locked(
-                self._service.create_from_preset(preset.id, name)
+                self._service.create_from_preset(preset_id, name)
             )
         except CharacterSheetError as exc:
             self._show_error(exc)
@@ -180,3 +194,30 @@ class CharacterSheetPresetDialog(QDialog):
         else:
             log.error("create-from-preset failed: %s", exc, exc_info=True)
             QMessageBox.critical(self, "Ошибка", str(exc))
+
+    # ---- island teardown — synchronous release (Q3a correction) ------------
+    #
+    # NOT the Q1 deferred one-shot. The deferred seam exists so a dialog close
+    # cannot tear the scene down while a QML ``onClicked`` is still on the
+    # stack; it is only safe while the dialog object itself stays alive for
+    # that one loop turn. A finished preset dialog is a QDialog already under
+    # ``WA_DeleteOnClose``, and qasync's idle hook runs
+    # ``sendPostedEvents(None, DeferredDelete)`` on its loop callbacks — the
+    # dialog's C++ can therefore die before the timer fires, and the one-shot
+    # (a child of the dialog) dies unretrieved with it: the island's scene
+    # outlives no context at all then, and the QQuickWidget destructor hits a
+    # stale context (use-after-free that lands in whichever test GC runs next —
+    # the segfault this seam must not resurrect). Releasing inside ``done()``
+    # has no such race: the scene is unwound while ``vm``/``_palette`` are
+    # still alive, the dialog lives for the rest of its closeEvent either way,
+    # and a QDialog::done() call is never a QML signal stack frame (QML clicks
+    # land on the facade's Python handlers first).
+
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
+        """Release the island against its VM/palette before the dialog dies.
+        """
+        self._release_island()
+        super().done(result)

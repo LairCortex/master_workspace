@@ -34,6 +34,27 @@ def find_item(widget, object_name: str) -> QQuickItem:
     return items[0]
 
 
+def island_rows(widget, row_object_name: str) -> list[QQuickItem]:
+    """Materialized delegate rows top-to-bottom (the launcher convention:
+    ``grab`` first — delegate materialization rides the render pass; sort by
+    scene y, not by child order)."""
+    widget.grab()
+    found = find_items(widget, row_object_name)
+    found.sort(key=lambda r: r.mapToScene(QPointF(0, 0)).y())
+    return found
+
+
+def island_row_texts(widget, row_object_name: str, text_object_name: str) -> list[str]:
+    """Delegate row labels top-to-bottom (``text`` read without a text pass:
+    the QML ``Text`` items expose the bindable property directly)."""
+    items = []
+    for row in island_rows(widget, row_object_name):
+        texts = [i for i in walk_items(row) if i.objectName() == text_object_name]
+        assert len(texts) == 1
+        items.append(texts[0].property("text"))
+    return items
+
+
 def island_toggle_text(widget) -> str:
     """The current label of the island's theme toggle (its ``text`` property).
 

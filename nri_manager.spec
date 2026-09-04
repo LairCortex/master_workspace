@@ -49,6 +49,14 @@ a = Analysis(
          "app/presentation/qml"),
         ("app/presentation/qml/TimelineRowDelegate.qml",
          "app/presentation/qml"),
+        # Char-sheet dialogs islands (change
+        # port-sheet-list-preset-dialogs-qml-q3a): SheetListRoot.qml /
+        # SheetPresetRoot.qml are loaded via QQuickWidget.setSource from the
+        # list/preset dialog facades; components come from nri.components.
+        ("app/presentation/qml/SheetListRoot.qml",
+         "app/presentation/qml"),
+        ("app/presentation/qml/SheetPresetRoot.qml",
+         "app/presentation/qml"),
         # nri.components library module (change
         # add-qml-component-library-q2a1, design D5): islands do
         # `import nri.components`, which Qt resolves as

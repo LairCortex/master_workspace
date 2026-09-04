@@ -59,6 +59,7 @@ from app.presentation.viewmodels.character_sheet_viewmodel import (
     UNDO_STACK_LIMIT,
     CharacterSheetViewModel,
 )
+from app.presentation.viewmodels.sheet_list_view_model import TAB_INSTANCES
 from app.presentation.views.character_sheet.canvas import (
     CharacterSheetCanvas,
     register_sheet_font,
@@ -433,8 +434,15 @@ async def test_list_dialog_edges(async_session, qapp, monkeypatch):
     await d.delete_instance()
     await d.rename_instance()
     d._open_preset_dialog()
-    d._open_preset_dialog()
-    d._preset_dialog_finished(d._preset_dialog)
+    d._open_preset_dialog()  # already visible: raise_/activateWindow reuse
+    # Q3a: the `_preset_dialog_finished` coverage lands through the REAL seam —
+    # closing the child fires done→finished→the handler (release + deleteLater).
+    # The old manual call left the dialog still visible with a pending
+    # deleteLater: a QQuickWidget island surviving the test into another
+    # test's GC/event pass is the cross-file segfault (the island would die
+    # against a reset engine / half-deleted tree — QObject::~QObject UAF).
+    d._preset_dialog.close()
+    qapp.processEvents()  # run the deferred deletes while the shell is alive
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     inst_repo = CharacterSheetInstanceRepository(async_session)
     inst_svc = CharacterSheetInstanceService(inst_repo, sheet_svc)
@@ -788,8 +796,10 @@ async def test_list_dialog_remaining_branches(async_session, qapp, monkeypatch):
 
     instance = await inst_svc.create("Лист", template.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
-    d.instance_list.setCurrentRow(0)
+    # Q3a addressing: the retired QTabWidget/QListWidget seams are the very
+    # sync VM slots the island drives (setCurrentTab/selectInstance).
+    d.vm.setCurrentTab(TAB_INSTANCES)
+    d.vm.selectInstance(0)
     monkeypatch.setattr(
         QInputDialog, "getText", staticmethod(lambda *a, **k: ("", False))
     )
@@ -860,10 +870,13 @@ async def test_preset_dialog_remaining_branches(
         "critical",
         staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok),
     )
-    d._on_preset_changed(-1)
-    d.preset_list.setCurrentRow(-1)
-    await d._on_ok()
-    d.preset_list.setCurrentRow(0)
+    d._on_preset_changed(-1)  # facade seam → vm.selectPreset(-1): out-of-range no-op
+    # Q3a: the retired setCurrentRow(-1) state — no selection at all. The VM
+    # pre-selects row 0 and the slot never clears, so the widgets-era state is
+    # forced white-box (this file's convention) to exercise the None-guard.
+    d.vm._selected_index = -1
+    await d._on_ok()  # no selection: refuses silently, stays open
+    d.vm.selectPreset(0)  # the retired setCurrentRow(0): re-drives license + name
 
     async def broken(_preset_id, _name):
         raise RuntimeError("preset failed")

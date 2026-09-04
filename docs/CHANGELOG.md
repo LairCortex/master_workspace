@@ -2,6 +2,28 @@
 
 ## Unreleased — незавершённый
 
+### Переезд списка чар-листов и диалога пресета в QML-острова (Q3a; change `port-sheet-list-preset-dialogs-qml-q3a`; статус «влито» — по факту merge; версии не трогаем — срез только UI-слой (QML, Python-фасады, VM, тесты, бандл), миграций нет — данные и схемы не затронуты, откат = revert commit; **эпик Q этим срезом не закрыт**: эпик Q остаётся открытым, впереди Q3b — канвас чар-листа и окна Design/Заполнения (change `port-character-sheet-canvas-qml-q3b` предложен, не начат))
+
+#### Новый функционал
+- **`CharacterSheetListDialog` — QML-остров в прежней `QDialog`-обёртке**: `SheetListRoot.qml` (TabBar «Шаблоны/Листы» + StackLayout, два `ListView` с делегатом `RowItem`, ряд `ThemeButton` с `defaultButton`-маркером на «Открыть», флаги VM на enabled/visible — «Создать из пресета…» только на вкладке шаблонов); widgets-вёрстка удалена целиком без флага (прецедент Q1/Q2.5a); публичный API сохранён 1:1 (сигналы `open_requested`/`open_instance_requested`/`renamed`/`instance_renamed`, методы `set_open_sheet_id`/`set_open_instance_id`/`set_seated_ids`, async `refresh()` с контрактом «лок предоставляет вызывающий», свойство `preset_dialog`) — `main.py` и wiring не менялись
+- **`CharacterSheetPresetDialog` — QML-остров в прежней немодальной обёртке**: `SheetPresetRoot.qml` (`presetList` на `RowItem`, read-only прокручиваемая лицензия `selectByMouse`, `ThemeField nameField`, OK/Cancel с маркером на «Создать»); повторный вызов = `raise_/activateWindow`; конфликт имени — warning и остаться открытым; отмена ничего не создаёт и не эмитит `created`
+- **Тонкие VM рядом с фасадами**: `SheetListViewModel` (две списочные модели `id`/`label`, вкладка, selection по вкладкам, флаги `canOpen/canRename/canDelete/presetButtonVisible`; метка «лист — шаблон» считается Python-стороной — второй реализации в QML нет) и `SheetPresetViewModel` (плоская модель каталога, sync-слот `selectPreset` с правилом D5: подстановка заголовка только пока имя пусто или `.strip()`-совпадает с чужим заголовком); все корутины (`run_locked`, `QInputDialog`/`QMessageBox`) остаются Python-стороной фасада — QML только sync-входы и `*Requested`-сигналы
+- **Apply-time поправка контекста общего движка**: `QQuickWidget.rootContext()` на разделяемом движке есть корневой контекст движка (проверено эмпирически) — VM островов публикуются под островными именами `sheetListVm`/`sheetPresetVm` (plain `vm` осталось у лаунчера/шкалы), а `islandPalette` пушится фасадом из собственного `QmlPalette`, переживающего сцену (тот же контракт, что `timeline_island.py`); `setup_qml_shell` по-прежнему регистрирует только `palette` — иначе был бы недостижим пин сценарий «прогон вовсе без islandPalette в контексте»
+
+#### Тесты
+- Мигрированы 1:1 по смыслам на `walk_items`/`objectName`-адресацию: `test_character_sheet_list_dialog.py` (сигналы, `refresh` без внутреннего `run_locked`, правила отключения кнопок, «создать лист» = getItem+getText → `open_instance_requested`, отмены попапов, `_show_error`) и `test_character_sheet_preset_dialog.py` (D5 через `selectPreset` и через тап островного делегата, конфликт имени — диалог жив и повторный OK работает, пустое имя — warning, отмена — без emit, успех — `created(int)`); новые тесты Enter-маркера D5 на обоих фасадах
+- Новые `test_sheet_islands_qml.py` (загрузка островов, objectName-контракт, флаги → enabled/visible, делегатные тапы в VM, Enter-маркеры, пиксельная приёмка surface/accent токенов островов в формате `test_qml_*` без golden) и юниты VM `test_sheet_list_view_model.py`/`test_sheet_preset_view_model.py` (метрики/флаги по всем комбинациям блокировок, D5-матрица с обрамляющими пробелами)
+- Addressing-падения полного прогона ( SEGFAULT-предохранитель удалённых QWidget-атрибутов) migrated без ослабления: `tests/ui/helpers.py` + `test_char_sheets_wiring.py` + `test_e2e_char_sheets.py` + `test_character_sheet_coverage.py` — клики синтетикой по острову, строки из материализованных делегатов, попадания `_preset_dialog_finished` через реальный close-шв
+- `test_no_chrome_hex` зелёный на новых qml (hex/OS-palette/async-запреты); `tests/test_spec_qml_bundle.py`: оба файла добавлены в `EXPECTED_QML_ROOT_FILES`
+
+#### Сборка
+- `nri_manager.spec`: `datas` +2 записи (`SheetListRoot.qml`, `SheetPresetRoot.qml`) в `app/presentation/qml`; бандл-тест qml-файлов зелёный
+
+#### Проверено
+- `QT_QPA_PLATFORM=offscreen python -m pytest` — **2257 passed** (macOS arm64), SEGFAULT полного прогона не воспроизводится
+- Гейт `--cov=app` (fail_under=100) — **TOTAL 100.00%**, 12350 утверждений, 0 непокрытых; добраны новые ветки D5 Enter-маркеров (оба фасада) и QML-геттеров `selectedPresetId`/`license_text` (юнит VM)
+- Рамка/Esc и Enter нового поведения не меняли: Enter обёртки clicking маркер `defaultButton` (открыть/создать) пинится тестами
+
 ### Переезд шкалы событий в QML-остров (Q2.5a; change `port-event-timeline-qml-island-q2-5a`, дизайн зафиксирован grill-сессией 2026-09-03; статус «влито» — по факту merge; версии не трогаем — срез только UI-слой (QML, Python-фасад, тесты, бандл), миграций нет — данные и схемы не затронуты, откат = revert commit; **эпик Q этим срезом не закрыт**: впереди Q2a2/Q2b, диалоги с `MentionTextEdit` — заблокированный Qx)
 
 #### Новый функционал

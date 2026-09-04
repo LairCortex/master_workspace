@@ -12,12 +12,14 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QDate
 from PySide6.QtGui import QContextMenuEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QListWidget, QWidget
 
 from PySide6.QtCore import Qt
 
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
+from tests.presentation import qml_helpers as qml_h
 from tests.ui import timeline_probe
 
 #: entity type → DB table (for query_db assertions)
@@ -136,6 +138,58 @@ def select_launcher_game(launcher, needle: str) -> str:
 def open_launcher_game(launcher) -> None:
     """Trigger the launcher's «Открыть»/Enter action on the current selection."""
     launcher._open_selected()
+
+
+# ── Char-sheet dialogs (Q3a): islands addressed through walk_items/objectName ─
+#
+# The list/preset dialogs' QListWidget/QPushButton/QLineEdit content is retired
+# (change port-sheet-list-preset-dialogs-qml-q3a): buttons are clicked with
+# synthetic input on the facade's ``quick`` QQuickWidget (a disabled QML button
+# swallows the click, exactly like a disabled QPushButton did), rows are read
+# from the materialized delegates, preset titles/license/name from the
+# ``presetRow``/``licenseView``/``nameField`` items, and tab/selection changes
+# go through the very sync VM slots the QML delegates drive (production path).
+
+def sheet_click(dlg, object_name: str) -> None:
+    """Click an island button of the list/preset dialog («createButton», …)."""
+    qml_h.click_item(dlg.quick, qml_h.find_item(dlg.quick, object_name))
+
+
+def sheet_island_property(dlg, object_name: str, property_name: str):
+    """Read a bound property of one island item (enabled/visible/text)."""
+    return qml_h.find_item(dlg.quick, object_name).property(property_name)
+
+
+def sheet_template_texts(list_dlg) -> list[str]:
+    """Templates-tab row labels, display order (the retired list_widget scan)."""
+    return qml_h.island_row_texts(list_dlg.quick, "templateRow", "templateRowText")
+
+
+def sheet_instance_texts(list_dlg) -> list[str]:
+    """Sheets-tab row labels, display order (the retired instance_list scan)."""
+    return qml_h.island_row_texts(list_dlg.quick, "instanceRow", "instanceRowText")
+
+
+def preset_titles(preset_dlg) -> list[str]:
+    """Preset-catalog rows, display order (the retired preset_list scan)."""
+    return qml_h.island_row_texts(preset_dlg.quick, "presetRow", "presetRowText")
+
+
+def preset_name_text(preset_dlg) -> str:
+    """The island name field's text (the retired name_edit.text())."""
+    return qml_h.find_item(preset_dlg.quick, "nameField").property("text")
+
+
+def preset_license_text(preset_dlg) -> str:
+    """The island license view's text (the retired license_view.toPlainText())."""
+    return qml_h.find_item(preset_dlg.quick, "licenseView").property("text")
+
+
+def preset_type_name(preset_dlg, text: str) -> None:
+    """Type into the island name field: its ``onTextChanged`` pushes the text
+    into the VM (``setNameText``) — the production typing route."""
+    qml_h.find_item(preset_dlg.quick, "nameField").setProperty("text", text)
+    QTest.qWait(0)
 
 
 def detail_panel_names(detail_list: QListWidget) -> list[str]:

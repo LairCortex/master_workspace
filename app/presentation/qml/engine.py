@@ -64,6 +64,15 @@ def setup_qml_shell(qapp: QApplication, theme: ThemeRuntime) -> QQmlEngine:
     engine.addImportPath(QML_IMPORT_PATH)
     palette = QmlPalette(theme, parent=engine)  # dies with the engine
     engine.rootContext().setContextProperty("palette", palette)
+    # Q3a NOTE (apply-stage): no ``islandPalette`` is registered here. Widgets
+    # built on one engine share the engine's root context (verified: a
+    # ``setContextProperty`` from one island's ``rootContext()`` resolves in
+    # every other island on the engine), so the library-bridge name belongs to
+    # the island that builds the surface — the launcher/timeline contract puts
+    # a dialog/panel-owned ``QmlPalette`` into that context before
+    # ``setSource`` (roadmap: «в контекст острова — … и islandPalette»). An
+    # engine-lifetime registration here would make the pinned off-skin
+    # scenario «прогон вовсе без islandPalette в контексте» unrepresentable.
     _engine = engine
     return engine
 

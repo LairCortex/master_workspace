@@ -1,29 +1,59 @@
 """Character-sheet list dialog: create / open / rename / delete (non-modal).
 
-All flows go through :class:`CharacterSheetService` on the shared session;
-button handlers are coroutines spawned onto the running loop (qasync). Name
-conflicts surface as ``QMessageBox`` warnings and leave the list unchanged.
-The sheet currently open in the editor cannot be deleted here
-(``set_open_sheet_id``). Rename commits immediately and is never a layout edit.
+Q3a (change port-sheet-list-preset-dialogs-qml-q3a, task 3.1, designs D1/D2/D5):
+the frame and Esc stay native (``QDialog``); the whole content (the two tabs,
+both lists, the button row) is a ``QQuickWidget`` island loading
+``app/presentation/qml/SheetListRoot.qml``, skinned by the token palette — the
+widgets content is gone, no flag, no second copy (precedent Q1/Q2.5a). The
+external contract is unchanged: the ``open_requested``/
+``open_instance_requested``/``renamed``/``instance_renamed`` signals, the
+``set_open_sheet_id``/``set_open_instance_id``/``set_seated_ids`` methods, the
+async ``refresh()`` and the ``preset_dialog`` property.
+
+Division of labour (design D2):
+
+* the island binds to :class:`SheetListViewModel` (``sheetListVm``) — the two
+  row models, the current tab, per-tab selection and the ``canOpen/canRename/
+  canDelete/presetButtonVisible`` flags — and reads colors from the token
+  bridge (dialog-owned :class:`QmlPalette` pushed as ``islandPalette``, the
+  launcher/timeline contract); both names are island-scoped because the shared
+  engine's root context is global to all islands (see the context block in the
+  constructor); it only calls the VM's sync slots
+  and reports clicks through the argument-free root ``*Requested`` signals
+  (the facade reads tab + selection back from the VM, like the retired
+  ``_on_instances_tab``/``_selected_id`` helpers did from the widgets);
+* every session-touching flow (create/open/rename/delete and the list
+  refresh) is still a coroutine on the qasync loop wrapped in ``run_locked``
+  — the application's session lock, since the shared AsyncSession must not be
+  used by concurrent tasks; the native popups
+  (``QInputDialog``/``QMessageBox``) stay Python-side (D5);
+* the island marks «Открыть» through its root ``defaultButton``; the wrapper
+  answers Enter by clicking that marker (D5).
+
+Refresh lock contract (unchanged, review #12): ``refresh()`` itself does NOT
+lock; its caller provides the lock — either explicitly
+(``await self._run_locked(self.refresh())``, this dialog's own flows) or
+because the calling task already runs under the application's session lock
+(the app opens the list through ``_wiring._spawn``, which holds the lock for
+the whole task). Never wrap ``refresh()`` in ``run_locked`` from a task that
+already holds it: the ``asyncio.Lock`` is not reentrant, the inner task would
+wait on the outer one forever (a hang, not an error).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
-    QHBoxLayout,
     QInputDialog,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
-    QPushButton,
-    QSizePolicy,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -36,12 +66,21 @@ from app.application.services.character_sheet_service import (
     CharacterSheetError,
     CharacterSheetService,
 )
-from app.presentation.theme.catalog import attach_theme, set_role
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.sheet_list_view_model import (
+    TAB_INSTANCES,
+    SheetListViewModel,
+)
 from app.presentation.views.character_sheet.preset_dialog import (
     CharacterSheetPresetDialog,
 )
 
 log = logging.getLogger(__name__)
+
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "SheetListRoot.qml")
 
 
 async def _run_now(coro: Coroutine) -> Any:
@@ -50,21 +89,13 @@ async def _run_now(coro: Coroutine) -> Any:
 
 
 class CharacterSheetListDialog(QDialog):
-    """List of the current game's sheet templates.
+    """List of the current game's sheet templates (QML island inside QDialog).
 
-    Every session-touching step (create/rename/delete and the list refresh) is
-    wrapped in ``run_locked`` — the application's session lock, since the
-    shared AsyncSession must not be used by concurrent tasks. The dialog's own
-    UI (modal pickers, selection) is not session work and stays outside it.
-
-    ``refresh()`` itself does NOT lock; its caller provides the lock — either
-    explicitly (``await self._run_locked(self.refresh())``, the dialog's own
-    flows) or because the calling task already runs under the application's
-    session lock (the app opens the list through ``_wiring._spawn``, which
-    holds the lock for the whole task). Never wrap ``refresh()`` in
-    ``run_locked`` from a task that already holds the lock: the
-    ``asyncio.Lock`` is not reentrant, the inner task would wait on the outer
-    one forever (a hang, not an error).
+    The availability rules (open the sheet open in the editor, delete the
+    templates that still have sheets, «Создать из пресета…» only on the
+    templates tab) live in :class:`SheetListViewModel` (design D2); QML binds
+    them to the buttons' enabled/visible states, so the dialog itself keeps no
+    widget flags.
     """
 
     open_requested = Signal(int)
@@ -83,81 +114,89 @@ class CharacterSheetListDialog(QDialog):
         super().__init__(parent)
         self._service = service
         self._instance_service = instance_service
+        # Mirrors of the blockers, kept readable for the wiring/tests the
+        # widgets dialog exposed; the VM holds the flags they feed.
         self._open_sheet_id: int | None = None
         self._open_instance_id: int | None = None
         self._seated_ids: set[int] = set()
         self._instance_counts: dict[int, int] = {}
         self._run_locked = run_locked or _run_now
-        self._theme = theme
+        # The island is skinned by the token bridge only, but the bridge still
+        # needs a runtime — the widgets-era ``None`` falls back to the process
+        # default, exactly like the other islands; invalid tokens (D7) keep it
+        # off-skin there too.
+        self._theme = theme if theme is not None else get_default_theme()
 
         self.setWindowTitle("Чар-листы")
         self.resize(420, 520)
 
-        self.list_widget = QListWidget(self)
-        self.instance_list = QListWidget(self)
-        set_role(self.list_widget, "list")
-        set_role(self.instance_list, "list")
-
-        self.tabs = QTabWidget(self)
-        self.tabs.addTab(self.list_widget, "Шаблоны")
-        self.tabs.addTab(self.instance_list, "Листы")
-
         self._preset_dialog: CharacterSheetPresetDialog | None = None
 
-        self.create_button = QPushButton("Создать", self)
-        self.preset_button = QPushButton("Создать из пресета…", self)
-        self.open_button = QPushButton("Открыть", self)
-        self.rename_button = QPushButton("Переименовать", self)
-        self.delete_button = QPushButton("Удалить", self)
-        self.close_button = QPushButton("Закрыть", self)
+        # VM + palette live for the dialog's whole life and are its children —
+        # a context property is a raw pointer, so QML must never outlive them
+        # (the launcher's seam).
+        self.vm = SheetListViewModel(parent=self)
 
-        self.create_button.clicked.connect(lambda: self._spawn(self._create_current()))
-        self.preset_button.clicked.connect(self._open_preset_dialog)
-        self.open_button.clicked.connect(lambda: self._spawn(self._open_current()))
-        self.rename_button.clicked.connect(lambda: self._spawn(self._rename_current()))
-        self.delete_button.clicked.connect(lambda: self._spawn(self._delete_current()))
-        self.close_button.clicked.connect(self.close)
-        self.list_widget.itemSelectionChanged.connect(self._sync_actions_enabled)
-        self.instance_list.itemSelectionChanged.connect(self._sync_actions_enabled)
-        self.tabs.currentChanged.connect(lambda _i: self._sync_actions_enabled())
+        layout = QVBoxLayout(self)
+        # The island must reach the dialog edges: a default layout margin
+        # would show the OS palette as a frame around the QML surface.
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.create_button)
-        buttons.addWidget(self.preset_button)
-        buttons.addWidget(self.open_button)
-        buttons.addWidget(self.rename_button)
-        buttons.addWidget(self.delete_button)
-        buttons.addStretch(1)
+        # The island shares the one process-wide engine (spec qml-shell
+        # «Движок один на приложение»); ``setup_qml_shell`` is idempotent, and
+        # the reference keeps the engine alive under a live island.
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        # Q3a apply-time correction, pinned empirically: a QQuickWidget built
+        # on the shared engine reports the ENGINE's root context from
+        # rootContext(), so ``setContextProperty`` here is visible to every
+        # island on the process engine. Consequences, both kept on the merged
+        # launcher/timeline precedent: the VM goes under an island-scoped name
+        # (the plain ``vm`` name belongs to that contract and this dialog
+        # coexists with the timeline island), and ``islandPalette`` is pushed
+        # per island facade — from a dialog-owned QmlPalette parented AFTER
+        # ``quick`` (dialog children die in creation order, so the palette
+        # outlives the scene, and ``done()`` releases the island before any of
+        # them anyway; the same seam as timeline_island.py).
+        self.quick.rootContext().setContextProperty("sheetListVm", self.vm)
+        self._palette = QmlPalette(self._theme, parent=self)
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
 
-        bottom = QHBoxLayout()
-        bottom.addLayout(buttons)
-        bottom.addWidget(self.close_button)
+        self._root = self.quick.rootObject()
+        self._wire_island()
 
-        info = QLabel("Чар-листы текущей игры", self)
-        info.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        set_role(info, "hint")
+    # ---- island -> facade wiring ------------------------------------------------
 
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it
-        # (the W1 launcher / W2a month-dialog pattern).
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("sheetListChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(11, 11, 11, 11)
-        layout.addWidget(info)
-        layout.addWidget(self.tabs, 1)
-        layout.addLayout(bottom)
+    def _wire_island(self) -> None:
+        # Argument-free root signals (contract pinned by group 2): the tab and
+        # the per-tab selection are read back from the VM below.
+        root = self._root
+        root.createRequested.connect(lambda: self._spawn(self._create_current()))
+        root.presetRequested.connect(self._open_preset_dialog)
+        root.openRequested.connect(lambda: self._spawn(self._open_current()))
+        root.renameRequested.connect(lambda: self._spawn(self._rename_current()))
+        root.deleteRequested.connect(lambda: self._spawn(self._delete_current()))
+        root.closeRequested.connect(self.close)
 
-        self._apply_theme()
-
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt API
+        # Enter clicks the island's ``defaultButton`` marker (design D5) — the
+        # migrated dialog answered Enter through «Открыть» and the marker
+        # objectName pins that button. With nothing selected the open flow is
+        # the same no-op the disabled widgets button used to be.
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            marker = (
+                self._root.property("defaultButton") if self._root is not None else None
+            )
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return  # the marker owns Enter only when the island is up
+        super().keyPressEvent(event)
 
     # -- wiring helpers -------------------------------------------------------
 
@@ -169,15 +208,15 @@ class CharacterSheetListDialog(QDialog):
     def set_open_sheet_id(self, sheet_id: int | None) -> None:
         """Mark the sheet that is open in the editor (delete becomes unavailable)."""
         self._open_sheet_id = sheet_id
-        self._sync_actions_enabled()
+        self.vm.set_open_sheet_id(sheet_id)
 
     def set_open_instance_id(self, instance_id: int | None) -> None:
         self._open_instance_id = instance_id
-        self._sync_actions_enabled()
+        self.vm.set_open_instance_id(instance_id)
 
     def set_seated_ids(self, instance_ids: set[int] | None) -> None:
         self._seated_ids = set(instance_ids or ())
-        self._sync_actions_enabled()
+        self.vm.set_seated_ids(instance_ids)
 
     @property
     def preset_dialog(self) -> CharacterSheetPresetDialog | None:
@@ -185,60 +224,25 @@ class CharacterSheetListDialog(QDialog):
         return self._preset_dialog
 
     def _on_instances_tab(self) -> bool:
-        return self.tabs.currentIndex() == 1
+        return self.vm.current_tab == TAB_INSTANCES
 
     def _selected_id(self) -> int | None:
-        row = self.list_widget.currentItem()
-        return row.data(Qt.ItemDataRole.UserRole) if row is not None else None
+        return self.vm.selected_template_id
 
     def _selected_instance_id(self) -> int | None:
-        row = self.instance_list.currentItem()
-        return row.data(Qt.ItemDataRole.UserRole) if row is not None else None
+        return self.vm.selected_instance_id
 
     def _selected_name(self) -> str | None:
-        row = self.list_widget.currentItem()
-        return row.text() if row is not None else None
+        return self.vm.selected_template_name
 
     def _selected_instance_name(self) -> str | None:
-        row = self.instance_list.currentItem()
-        if row is None:
-            return None
-        stored = row.data(Qt.ItemDataRole.UserRole + 1)
-        return stored if stored else row.text()
-
-    def _sync_delete_enabled(self) -> None:
-        self._sync_actions_enabled()
-
-    def _sync_actions_enabled(self) -> None:
-        # «Создать из пресета…» is an action of the «Шаблоны» tab only (spec).
-        self.preset_button.setVisible(not self._on_instances_tab())
-        if self._on_instances_tab():
-            instance_id = self._selected_instance_id()
-            has = instance_id is not None
-            self.open_button.setEnabled(has)
-            self.rename_button.setEnabled(has)
-            self.delete_button.setEnabled(
-                has
-                and instance_id != self._open_instance_id
-                and instance_id not in self._seated_ids
-            )
-            return
-        sheet_id = self._selected_id()
-        has = sheet_id is not None
-        self.open_button.setEnabled(has)
-        self.rename_button.setEnabled(has)
-        blocked = (
-            not has
-            or sheet_id == self._open_sheet_id
-            or self._instance_counts.get(sheet_id, 0) > 0
-        )
-        self.delete_button.setEnabled(not blocked)
+        return self.vm.selected_instance_name
 
     def _refresh_selection(self, sheet_id: int) -> None:
-        for i in range(self.list_widget.count()):
-            if self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) == sheet_id:
-                self.list_widget.setCurrentRow(i)
-                return
+        self.vm.select_template_by_id(sheet_id)
+
+    def _refresh_instance_selection(self, instance_id: int) -> None:
+        self.vm.select_instance_by_id(instance_id)
 
     def _show_error(self, exc: Exception) -> None:
         if isinstance(exc, (CharacterSheetError, CharacterSheetInstanceError)):
@@ -250,34 +254,22 @@ class CharacterSheetListDialog(QDialog):
     # -- async flows ------------------------------------------------------------
 
     async def refresh(self) -> None:
-        """Reload the list from the DB (name-sorted, id stored per row)."""
-        self.list_widget.blockSignals(True)
-        template_names: dict[int, str] = {}
-        try:
-            self.list_widget.clear()
-            for row in await self._service.list_sheets():
-                item = QListWidgetItem(row.name, self.list_widget)
-                item.setData(Qt.ItemDataRole.UserRole, row.id)
-                template_names[row.id] = row.name
-        finally:
-            self.list_widget.blockSignals(False)
+        """Reload both row models from the DB into the VM (name-sorted, ids kept).
+
+        The «лист — шаблон» labels and the sheets-per-template delete blocker
+        are recomputed Python-side (D2); the counts mirror below stays for the
+        guards the widgets dialog ran in its own flows (``delete_sheet``).
+        """
+        templates = list(await self._service.list_sheets())
+        instances: list[Any] = []
+        if self._instance_service is not None:
+            instances = list(await self._instance_service.list_instances())
         self._instance_counts = {}
-        self.instance_list.blockSignals(True)
-        try:
-            self.instance_list.clear()
-            if self._instance_service is not None:
-                for row in await self._instance_service.list_instances():
-                    tmpl = template_names.get(row.template_id, "")
-                    label = f"{row.name} — {tmpl}" if tmpl else row.name
-                    item = QListWidgetItem(label, self.instance_list)
-                    item.setData(Qt.ItemDataRole.UserRole, row.id)
-                    item.setData(Qt.ItemDataRole.UserRole + 1, row.name)
-                    self._instance_counts[row.template_id] = (
-                        self._instance_counts.get(row.template_id, 0) + 1
-                    )
-        finally:
-            self.instance_list.blockSignals(False)
-        self._sync_actions_enabled()
+        for row in instances:
+            self._instance_counts[row.template_id] = (
+                self._instance_counts.get(row.template_id, 0) + 1
+            )
+        self.vm.set_rows(templates=templates, instances=instances)
 
     async def create_sheet(self) -> None:
         name, ok = QInputDialog.getText(
@@ -317,6 +309,17 @@ class CharacterSheetListDialog(QDialog):
     def _preset_dialog_finished(self, dialog: CharacterSheetPresetDialog) -> None:
         if self._preset_dialog is dialog:
             self._preset_dialog = None
+        # Release the island through the facade's own seam BEFORE deleteLater.
+        # The deferred-delete cleanup then destroys a dialog whose QQuickWidget
+        # has no live scene: without this, the deferred delete races the
+        # dialog's parent-owned children — the QQuickWidget dies AFTER its
+        # sibling ``vm`` (both children of the dialog), the still-loaded scene
+        # re-evaluates bindings against the dead context objects mid-sweep and
+        # Qt aborts («shared QObject was deleted directly»). The widgets-era
+        # handler could delete directly because QListWidget held no declarative
+        # bindings. ``_release_island`` is idempotent (setSource(QUrl()) twice
+        # is a no-op), so dialogs that also went through done() are fine.
+        dialog._release_island()
         dialog.deleteLater()
 
     def _on_preset_created(self, sheet_id: int) -> None:
@@ -380,12 +383,6 @@ class CharacterSheetListDialog(QDialog):
             return
         await self._run_locked(self.refresh())
 
-    def _refresh_instance_selection(self, instance_id: int) -> None:
-        for i in range(self.instance_list.count()):
-            if self.instance_list.item(i).data(Qt.ItemDataRole.UserRole) == instance_id:
-                self.instance_list.setCurrentRow(i)
-                return
-
     async def _create_current(self) -> None:
         if self._on_instances_tab():
             await self.create_instance()
@@ -440,7 +437,9 @@ class CharacterSheetListDialog(QDialog):
             self._show_error(exc)
             return
         await self._run_locked(self.refresh())
-        self.tabs.setCurrentIndex(1)
+        # The migrated ``tabs.setCurrentIndex(1)``: the VM is the tab's single
+        # owner, QML mirrors ``vm.currentTab`` into the TabBar.
+        self.vm.setCurrentTab(TAB_INSTANCES)
         self._refresh_instance_selection(row.id)
         self.open_instance_requested.emit(row.id)
 
@@ -497,3 +496,27 @@ class CharacterSheetListDialog(QDialog):
             self._show_error(exc)
             return
         await self._run_locked(self.refresh())
+
+    # ---- island teardown (the Q1-accepted launcher pattern) ---------------
+
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
+        """Release the island against its VM/palette before the dialog dies.
+
+        ``QDialog.closeEvent`` calls ``reject()`` and both accept/reject funnel
+        through ``done()``. Clearing the QML source tears the island down while
+        ``vm``/``_palette`` (children of the dialog) are still alive, so its
+        bindings never observe a half-destroyed context.
+
+        The release is deferred one loop turn: every QML-originated close —
+        «Закрыть» click included — lands here while the island's own
+        ``onClicked`` handler is still on the stack, and destroying the scene
+        synchronously there is fatal («Object destroyed while one of its QML
+        signal handlers is in progress»). The one-shot is bound to ``self``:
+        it runs when the JS stack has unwound and never after the dialog is
+        gone.
+        """
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

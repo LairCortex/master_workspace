@@ -3,6 +3,15 @@
 Real in-memory DB + real service; modal helpers (QInputDialog / QMessageBox)
 are stubbed. The dialog is non-modal; its async flows are triggered through
 the buttons and pumped.
+
+Q3a (change port-sheet-list-preset-dialogs-qml-q3a, task 4.1): the widgets
+content is gone — the checks keep their meanings 1:1 but address the
+QQuickWidget island through ``walk_items``/``objectName`` (``qml_helpers``):
+buttons are clicked through synthetic input on the island, list rows read
+from the materialized ``templateRow``/``instanceRow`` delegates, tab switches
+and selections go through the VM slots the QML itself drives, and button
+availability is asserted through the enabled/visible properties bound to the
+VM flags (the retired ``_sync_*`` imperative syncs have no caller anymore).
 """
 from __future__ import annotations
 
@@ -11,7 +20,9 @@ import json
 import time
 
 import pytest
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 
 from app.application.services.character_sheet_instance_service import (
     CharacterSheetInstanceService,
@@ -26,8 +37,15 @@ from app.infrastructure.repositories.character_sheet_instance_repository import 
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
+from app.presentation.viewmodels.sheet_list_view_model import TAB_INSTANCES
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
+from tests.presentation.qml_helpers import (
+    click_item,
+    find_item,
+    island_row_texts,
+    walk_items,
+)
 
 
 @pytest.fixture(scope="session")
@@ -95,8 +113,40 @@ def dlg(qtbot, service):
     qtbot.wait(1)
 
 
+# ── island addressing (the retired QListWidget/QPushButton seams) ────────────
+
+
+def _click(dlg, object_name: str) -> None:
+    """Synthetic click on an island button (the retired QPushButton.click()).
+
+    A disabled QML button swallows the click, exactly like the retired
+    ``QPushButton.click()`` was a no-op on a disabled widgets button.
+    """
+    click_item(dlg.quick, find_item(dlg.quick, object_name))
+
+
+def _button(dlg, object_name: str):
+    return find_item(dlg.quick, object_name)
+
+
 def _first_text(dlg) -> str | None:
-    return dlg.list_widget.item(0).text() if dlg.list_widget.count() > 0 else None
+    texts = island_row_texts(dlg.quick, "templateRow", "templateRowText")
+    return texts[0] if texts else None
+
+
+def _template_texts(dlg) -> list[str]:
+    return island_row_texts(dlg.quick, "templateRow", "templateRowText")
+
+
+def _instance_texts(dlg) -> list[str]:
+    return island_row_texts(dlg.quick, "instanceRow", "instanceRowText")
+
+
+def _select_template(dlg, index: int) -> None:
+    """Set the templates-tab selection (the retired setCurrentRow scan): the
+    VM slot is the very call the QML delegate tap drives, so the flag/selection
+    recompute is the production one."""
+    dlg.vm.selectTemplate(index)
 
 
 async def pump(qtbot, until, timeout: float = 3.0) -> None:
@@ -119,13 +169,13 @@ async def test_create_adds_row_and_db_record(dlg, service, dialog_input, qtbot):
     opened = []
     dlg.open_requested.connect(opened.append)
     await dlg.refresh()
-    assert dlg.list_widget.count() == 0
+    assert _template_texts(dlg) == []
 
     dialog_input["answer"] = ("Персонаж", True)
-    dlg.create_button.click()
-    await pump(qtbot, lambda: dlg.list_widget.count() == 1)
+    _click(dlg, "createButton")
+    await pump(qtbot, lambda: len(_template_texts(dlg)) == 1)
 
-    assert dlg.list_widget.item(0).text() == "Персонаж"
+    assert _template_texts(dlg) == ["Персонаж"]
     row = await service._repo.get_by_name("Персонаж")
     assert row is not None
     assert row.pages == EMPTY_PAGES_JSON      # empty single page written at create
@@ -136,9 +186,9 @@ async def test_create_adds_row_and_db_record(dlg, service, dialog_input, qtbot):
 async def test_create_empty_name_refused(dlg, service, dialog_input, boxes, qtbot):
     await dlg.refresh()
     dialog_input["answer"] = ("   ", True)
-    dlg.create_button.click()
+    _click(dlg, "createButton")
     await pump(qtbot, lambda: any(k == "warning" for k, *_ in boxes))
-    assert dlg.list_widget.count() == 0
+    assert _template_texts(dlg) == []
     assert len(await service.list_sheets()) == 0
 
 
@@ -147,11 +197,11 @@ async def test_create_name_conflict_rejected(dlg, service, dialog_input, boxes, 
     await dlg.refresh()
 
     dialog_input["answer"] = ("Занято", True)
-    dlg.create_button.click()
+    _click(dlg, "createButton")
     await pump(qtbot, lambda: any("Занято" in text for _, _, text in boxes))
 
-    assert dlg.list_widget.count() == 1                    # no duplicate row
-    names = [dlg.list_widget.item(i).text() for i in range(dlg.list_widget.count())]
+    assert _template_texts(dlg) == ["Занято"]  # no duplicate row
+    names = _template_texts(dlg)
     assert names == ["Занято"]
     rows = await service.list_sheets()
     assert [r.name for r in rows] == ["Занято"]            # nothing new in the DB
@@ -159,7 +209,7 @@ async def test_create_name_conflict_rejected(dlg, service, dialog_input, boxes, 
 
 async def test_create_input_cancelled(dlg, service, dialog_input, qtbot):
     dialog_input["answer"] = ("Не создавалось", False)
-    dlg.create_button.click()
+    _click(dlg, "createButton")
     await asyncio.sleep(0.05)
     qtbot.wait(10)
     assert len(await service.list_sheets()) == 0
@@ -170,11 +220,11 @@ async def test_create_input_cancelled(dlg, service, dialog_input, qtbot):
 async def test_rename_updates_db_immediately(dlg, service, dialog_input, qtbot):
     row = await create_via_service(service, "Старое имя")
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
 
     pages_before = (await service._repo.get_by_id(row.id)).pages
     dialog_input["answer"] = ("Новое имя", True)
-    dlg.rename_button.click()
+    _click(dlg, "renameButton")
     await pump(qtbot, lambda: _first_text(dlg) == "Новое имя")
 
     row2 = await service._repo.get_by_id(row.id)
@@ -186,19 +236,16 @@ async def test_rename_conflict_keeps_old_name(dlg, service, dialog_input, boxes,
     await create_via_service(service, "А")
     await create_via_service(service, "В")
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)   # "А"
+    _select_template(dlg, 0)   # "А"
 
     dialog_input["answer"] = ("В", True)
-    dlg.rename_button.click()
+    _click(dlg, "renameButton")
     await pump(qtbot, lambda: any("В" in text for _, _, text in boxes))
 
     rows = await service.list_sheets()
     assert sorted(r.name for r in rows) == ["А", "В"]     # nothing renamed
-    dlg.list_widget.blockSignals(True)
-    dlg.list_widget.clear()
-    dlg.list_widget.blockSignals(False)
-    await dlg.refresh()
-    names = [dlg.list_widget.item(i).text() for i in range(dlg.list_widget.count())]
+    await dlg.refresh()  # the retired blockSignals-clear-then-reload re-read
+    names = _template_texts(dlg)
     assert "В" in names and "А" in names
 
 
@@ -207,10 +254,10 @@ async def test_rename_conflict_keeps_old_name(dlg, service, dialog_input, boxes,
 async def test_delete_with_confirmation(dlg, service, dialog_input, confirm, qtbot):
     row = await create_via_service(service, "Удалить меня")
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
 
-    dlg.delete_button.click()
-    await pump(qtbot, lambda: dlg.list_widget.count() == 0)
+    _click(dlg, "deleteButton")
+    await pump(qtbot, lambda: _template_texts(dlg) == [])
 
     assert (await service._repo.get_by_id(row.id)) is None
     assert confirm["calls"], "a confirmation dialog was shown"
@@ -219,14 +266,14 @@ async def test_delete_with_confirmation(dlg, service, dialog_input, confirm, qtb
 async def test_delete_refused_keeps_sheet(dlg, service, dialog_input, confirm, qtbot):
     row = await create_via_service(service, "Осталось")
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
 
     confirm["answer"] = QMessageBox.StandardButton.No
-    dlg.delete_button.click()
+    _click(dlg, "deleteButton")
     await asyncio.sleep(0.05)
     qtbot.wait(10)
 
-    assert dlg.list_widget.count() == 1
+    assert len(_template_texts(dlg)) == 1
     assert (await service._repo.get_by_id(row.id)) is not None
 
 
@@ -236,29 +283,17 @@ async def test_delete_of_open_sheet_is_unavailable(dlg, service, dialog_input, q
     await dlg.refresh()
     dlg.set_open_sheet_id(opened.id)
 
-    dlg.list_widget.blockSignals(True)
-    for i in range(dlg.list_widget.count()):
-        if dlg.list_widget.item(i).text() == "Открыт":
-            dlg.list_widget.setCurrentRow(i)
-    dlg.list_widget.blockSignals(False)
-    dlg._sync_delete_enabled()
-    assert not dlg.delete_button.isEnabled()
+    _select_template(dlg, _template_texts(dlg).index("Открыт"))
+    # The VM recomputes the flags synchronously; QML re-evaluates the enabled
+    # binding on the same notify — the retired _sync_delete_enabled imperative.
+    assert _button(dlg, "deleteButton").property("enabled") is False
 
-    dlg.list_widget.blockSignals(True)
-    for i in range(dlg.list_widget.count()):
-        if dlg.list_widget.item(i).text() == "Другой":
-            dlg.list_widget.setCurrentRow(i)
-    dlg.list_widget.blockSignals(False)
-    dlg._sync_delete_enabled()
-    assert dlg.delete_button.isEnabled()
+    _select_template(dlg, _template_texts(dlg).index("Другой"))
+    assert _button(dlg, "deleteButton").property("enabled") is True
 
     # and the async flow itself refuses the open id even if forced
     dlg.set_open_sheet_id(opened.id)
-    dlg.list_widget.blockSignals(True)
-    for i in range(dlg.list_widget.count()):
-        if dlg.list_widget.item(i).text() == "Открыт":
-            dlg.list_widget.setCurrentRow(i)
-    dlg.list_widget.blockSignals(False)
+    _select_template(dlg, _template_texts(dlg).index("Открыт"))
     await dlg.delete_sheet()
     assert (await service._repo.get_by_id(opened.id)) is not None
 
@@ -270,11 +305,33 @@ async def test_open_emits_requested(dlg, service, qtbot):
     opened = []
     dlg.open_requested.connect(opened.append)
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
 
-    dlg.open_button.click()
+    _click(dlg, "openButton")
     await pump(qtbot, lambda: opened)
     assert opened == [row.id]
+
+
+async def test_enter_clicks_the_open_marker(dlg, service, qtbot):
+    """Design D5 wrapper contract: Enter clicks the island's ``defaultButton``
+    marker (the migrated dialog answered Enter through «Открыть»)."""
+    row = await create_via_service(service, "Enter")
+    opened = []
+    dlg.open_requested.connect(opened.append)
+    await dlg.refresh()
+    _select_template(dlg, 0)
+
+    QTest.keyClick(dlg, Qt.Key_Return)
+    await pump(qtbot, lambda: opened)
+    assert opened == [row.id]
+
+    # A non-Enter key is not the marker's: it falls through to QDialog
+    # handling and emits nothing here.
+    opened.clear()
+    QTest.keyClick(dlg, Qt.Key_Tab)
+    await asyncio.sleep(0.05)
+    qtbot.wait(10)
+    assert opened == []
 
 
 # ── edge guards ────────────────────────────────────────────────────────────
@@ -283,7 +340,7 @@ async def test_open_without_selection_does_nothing(dlg, qtbot):
     opened = []
     dlg.open_requested.connect(opened.append)
     await dlg.refresh()
-    dlg.open_button.click()
+    _click(dlg, "openButton")  # disabled without a selection: swallows the click
     await asyncio.sleep(0.05)
     qtbot.wait(10)
     assert opened == []
@@ -293,7 +350,7 @@ async def test_rename_without_selection_does_nothing(dlg, service, dialog_input,
     await create_via_service(service, "Целое")
     await dlg.refresh()
     dialog_input["answer"] = ("Взлом", True)
-    dlg.rename_button.click()
+    _click(dlg, "renameButton")
     await asyncio.sleep(0.05)
     qtbot.wait(10)
     rows = await service.list_sheets()
@@ -304,18 +361,16 @@ async def test_rename_without_selection_does_nothing(dlg, service, dialog_input,
 async def test_rename_cancelled_and_empty_name(dlg, service, dialog_input, boxes, qtbot):
     await create_via_service(service, "Как есть")
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
 
     dialog_input["answer"] = ("Другое", False)   # cancelled in the input dialog
-    dlg.rename_button.click()
+    _click(dlg, "renameButton")
     await asyncio.sleep(0.05)
     qtbot.wait(10)
 
-    dlg.list_widget.blockSignals(True)
-    dlg.list_widget.setCurrentRow(0)
-    dlg.list_widget.blockSignals(False)
+    _select_template(dlg, 0)
     dialog_input["answer"] = ("  ", True)        # empty name
-    dlg.rename_button.click()
+    _click(dlg, "renameButton")
     await asyncio.sleep(0.05)
     qtbot.wait(10)
 
@@ -331,7 +386,7 @@ async def test_unexpected_error_shown_critical(dlg, service, dialog_input, boxes
 
     dlg._service.rename = broken
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
     dialog_input["answer"] = ("Новое", True)
     await dlg.rename_sheet()
     assert ("critical", "Ошибка", "boom") in boxes
@@ -347,13 +402,13 @@ async def test_delete_service_error_keeps_row(dlg, service, boxes, confirm, qtbo
 
     dlg._service.delete = broken
     await dlg.refresh()
-    dlg.list_widget.setCurrentRow(0)
+    _select_template(dlg, 0)
     confirm["answer"] = QMessageBox.StandardButton.Yes
-    dlg.delete_button.click()
+    _click(dlg, "deleteButton")
     await pump(qtbot, lambda: any(k == "warning" for k, *_ in boxes))
 
     assert (await service._repo.get_by_id(row.id)) is not None
-    assert dlg.list_widget.count() == 1
+    assert len(_template_texts(dlg)) == 1
 
 
 # ── tabs / instances (add-character-sheet-b) ────────────────────────────────
@@ -394,8 +449,8 @@ def dialog_item(monkeypatch) -> dict:
 
 async def test_tabs_templates_and_instances(inst_dlg):
     d, *_ = inst_dlg
-    assert d.tabs.tabText(0) == "Шаблоны"
-    assert d.tabs.tabText(1) == "Листы"
+    assert find_item(d.quick, "tabTemplates").property("text") == "Шаблоны"
+    assert find_item(d.quick, "tabInstances").property("text") == "Листы"
 
 
 async def test_create_instance_adds_row_and_insert(inst_dlg, dialog_item, dialog_input, qtbot):
@@ -404,12 +459,12 @@ async def test_create_instance_adds_row_and_insert(inst_dlg, dialog_item, dialog
     d.open_instance_requested.connect(opened.append)
     await sheet_svc.create("Шаблон")
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
+    d.vm.setCurrentTab(TAB_INSTANCES)
     dialog_item["answer"] = ("Шаблон", True)
     dialog_input["answer"] = ("Лист 1", True)
-    d.create_button.click()
-    await pump(qtbot, lambda: d.instance_list.count() == 1)
-    assert d.instance_list.item(0).text() == "Лист 1 — Шаблон"
+    _click(d, "createButton")
+    await pump(qtbot, lambda: len(_instance_texts(d)) == 1)
+    assert _instance_texts(d) == ["Лист 1 — Шаблон"]
     row = await inst_svc._repo.get_by_name("Лист 1")
     assert row is not None
     assert opened == [row.id]
@@ -420,12 +475,12 @@ async def test_create_instance_name_conflict(inst_dlg, dialog_item, dialog_input
     t = await sheet_svc.create("Шаблон")
     await inst_svc.create("Занято", t.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
+    d.vm.setCurrentTab(TAB_INSTANCES)
     dialog_item["answer"] = ("Шаблон", True)
     dialog_input["answer"] = ("Занято", True)
-    d.create_button.click()
+    _click(d, "createButton")
     await pump(qtbot, lambda: any("Занято" in text for _, _, text in boxes))
-    assert d.instance_list.count() == 1
+    assert len(_instance_texts(d)) == 1
 
 
 async def test_rename_instance_immediately(inst_dlg, dialog_input, qtbot):
@@ -433,15 +488,11 @@ async def test_rename_instance_immediately(inst_dlg, dialog_input, qtbot):
     t = await sheet_svc.create("Шаблон")
     await inst_svc.create("До", t.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
-    d.instance_list.setCurrentRow(0)
+    d.vm.setCurrentTab(TAB_INSTANCES)
+    d.vm.selectInstance(0)
     dialog_input["answer"] = ("После", True)
-    d.rename_button.click()
-    await pump(
-        qtbot,
-        lambda: d.instance_list.count() > 0
-        and d.instance_list.item(0).text() == "После — Шаблон",
-    )
+    _click(d, "renameButton")
+    await pump(qtbot, lambda: _instance_texts(d) == ["После — Шаблон"])
     assert (await inst_svc._repo.get_by_name("После")) is not None
 
 
@@ -450,10 +501,10 @@ async def test_delete_instance_with_confirm(inst_dlg, confirm, qtbot):
     t = await sheet_svc.create("Шаблон")
     row = await inst_svc.create("Удалить", t.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
-    d.instance_list.setCurrentRow(0)
-    d.delete_button.click()
-    await pump(qtbot, lambda: d.instance_list.count() == 0)
+    d.vm.setCurrentTab(TAB_INSTANCES)
+    d.vm.selectInstance(0)
+    _click(d, "deleteButton")
+    await pump(qtbot, lambda: _instance_texts(d) == [])
     assert await inst_svc._repo.get_by_id(row.id) is None
     assert confirm["calls"]
 
@@ -463,11 +514,10 @@ async def test_delete_open_instance_unavailable(inst_dlg, qtbot):
     t = await sheet_svc.create("Шаблон")
     opened = await inst_svc.create("Открыт", t.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
+    d.vm.setCurrentTab(TAB_INSTANCES)
     d.set_open_instance_id(opened.id)
-    d.instance_list.setCurrentRow(0)
-    d._sync_delete_enabled()
-    assert not d.delete_button.isEnabled()
+    d.vm.selectInstance(0)
+    assert _button(d, "deleteButton").property("enabled") is False
 
 
 async def test_delete_seated_instance_unavailable(inst_dlg, qtbot):
@@ -475,16 +525,14 @@ async def test_delete_seated_instance_unavailable(inst_dlg, qtbot):
     t = await sheet_svc.create("Шаблон")
     row = await inst_svc.create("За столом", t.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(1)
+    d.vm.setCurrentTab(TAB_INSTANCES)
     d.set_seated_ids({row.id})
-    d.instance_list.setCurrentRow(0)
-    d._sync_delete_enabled()
-    assert not d.delete_button.isEnabled()
+    d.vm.selectInstance(0)
+    assert _button(d, "deleteButton").property("enabled") is False
     await d.delete_instance()
     assert await inst_svc._repo.get_by_id(row.id) is not None
     d.set_seated_ids(None)
-    d._sync_delete_enabled()
-    assert d.delete_button.isEnabled()
+    assert _button(d, "deleteButton").property("enabled") is True
 
 
 async def test_delete_template_with_instances_unavailable(inst_dlg, qtbot):
@@ -492,10 +540,9 @@ async def test_delete_template_with_instances_unavailable(inst_dlg, qtbot):
     t = await sheet_svc.create("Шаблон")
     await inst_svc.create("Лист", t.id)
     await d.refresh()
-    d.tabs.setCurrentIndex(0)
-    d.list_widget.setCurrentRow(0)
-    d._sync_delete_enabled()
-    assert not d.delete_button.isEnabled()
+    d.vm.setCurrentTab(0)
+    _select_template(d, 0)
+    assert _button(d, "deleteButton").property("enabled") is False
     await d.delete_sheet()
     assert await sheet_svc._repo.get_by_id(t.id) is not None
 
@@ -504,20 +551,16 @@ async def test_open_rename_disabled_without_selection(inst_dlg, qtbot):
     d, sheet_svc, _ = inst_dlg
     await sheet_svc.create("Шаблон")
     await d.refresh()
-    d.tabs.setCurrentIndex(0)
-    d.list_widget.clearSelection()
-    d._sync_actions_enabled()
-    assert not d.open_button.isEnabled()
-    assert not d.rename_button.isEnabled()
-    d.list_widget.setCurrentRow(0)
-    d._sync_actions_enabled()
-    assert d.open_button.isEnabled()
-    assert d.rename_button.isEnabled()
-    d.tabs.setCurrentIndex(1)
-    d.instance_list.clearSelection()
-    d._sync_actions_enabled()
-    assert not d.open_button.isEnabled()
-    assert not d.rename_button.isEnabled()
+    d.vm.setCurrentTab(0)
+    d.vm.selectTemplate(-1)  # the retired clearSelection(): nothing selected
+    assert _button(d, "openButton").property("enabled") is False
+    assert _button(d, "renameButton").property("enabled") is False
+    _select_template(d, 0)
+    assert _button(d, "openButton").property("enabled") is True
+    assert _button(d, "renameButton").property("enabled") is True
+    d.vm.setCurrentTab(1)
+    assert _button(d, "openButton").property("enabled") is False
+    assert _button(d, "renameButton").property("enabled") is False
 
 
 # ── create from preset (add-character-sheet-c) ───────────────────────────────
@@ -525,16 +568,16 @@ async def test_open_rename_disabled_without_selection(inst_dlg, qtbot):
 
 async def test_preset_button_visible_only_on_templates_tab(inst_dlg, qtbot):
     d, *_ = inst_dlg
-    d.tabs.setCurrentIndex(0)
+    d.vm.setCurrentTab(0)
     qtbot.wait(1)
-    assert d.preset_button.isVisibleTo(d)
-    d.tabs.setCurrentIndex(1)
+    assert _button(d, "presetButton").property("visible") is True
+    d.vm.setCurrentTab(1)
     qtbot.wait(1)
-    assert not d.preset_button.isVisibleTo(d)
+    assert _button(d, "presetButton").property("visible") is False
 
 
 async def _open_preset_dialog(d, qtbot):
-    d.preset_button.click()
+    _click(d, "presetButton")
     await pump(qtbot, lambda: d.preset_dialog is not None and d.preset_dialog.isVisible())
     return d.preset_dialog
 
@@ -544,16 +587,18 @@ async def test_create_from_preset_adds_row_and_opens_design(inst_dlg, qtbot, box
     opened: list[int] = []
     d.open_requested.connect(opened.append)
     await d.refresh()
-    assert d.list_widget.count() == 0
+    assert _template_texts(d) == []
 
     preset = await _open_preset_dialog(d, qtbot)
-    assert preset.preset_list.count() == 2
-    assert preset.name_edit.text() == "Fate Core"   # title substituted by default
+    preset_rows = island_row_texts(preset.quick, "presetRow", "presetRowText")
+    assert len(preset_rows) == 2
+    name_field = find_item(preset.quick, "nameField")
+    assert name_field.property("text") == "Fate Core"   # title substituted by default
 
-    preset.ok_button.click()
-    await pump(qtbot, lambda: d.list_widget.count() == 1 and opened)
+    click_item(preset.quick, find_item(preset.quick, "okButton"))
+    await pump(qtbot, lambda: len(_template_texts(d)) == 1 and opened)
 
-    assert d.list_widget.item(0).text() == "Fate Core"
+    assert _template_texts(d) == ["Fate Core"]
     row = await sheet_svc._repo.get_by_name("Fate Core")
     assert row is not None
     assert opened == [row.id]   # the app opens the new template's Design
@@ -569,18 +614,23 @@ async def test_create_from_preset_name_conflict_rejected(inst_dlg, boxes, qtbot)
     await d.refresh()
 
     preset = await _open_preset_dialog(d, qtbot)
-    preset.preset_list.setCurrentRow(1)  # Mörk Borg
+    preset.vm.selectPreset(1)  # Mörk Borg (the retired setCurrentRow)
     qtbot.wait(1)
-    assert preset.name_edit.text() == "Mörk Borg"
+    assert find_item(preset.quick, "nameField").property("text") == "Mörk Borg"
 
-    preset.ok_button.click()
+    click_item(preset.quick, find_item(preset.quick, "okButton"))
     await pump(qtbot, lambda: any("уже существует" in text for _, _, text in boxes))
 
     assert opened == []
     assert [r.name for r in await sheet_svc.list_sheets()] == ["Mörk Borg"]
     assert preset.isVisible()  # stays open — the user can rename and retry
-    preset.cancel_button.click()
-    await pump(qtbot, lambda: not preset.isVisible())
+    click_item(preset.quick, find_item(preset.quick, "cancelButton"))
+    # The QML click pumps Qt once (QTest.qWait), which flushes the widgets-era
+    # ``_preset_dialog_finished`` deleteLater of the finished dialog: its C++
+    # can be gone when we look again. The facade's cleared ``preset_dialog``
+    # (set in the very finished handler, synchronously in done()) is the very
+    # "closed and dropped" fact the retired ``not isVisible()`` checked.
+    await pump(qtbot, lambda: d.preset_dialog is None)
 
 
 async def test_preset_cancel_keeps_list_unchanged(inst_dlg, qtbot):
@@ -590,15 +640,21 @@ async def test_preset_cancel_keeps_list_unchanged(inst_dlg, qtbot):
     await d.refresh()
 
     preset = await _open_preset_dialog(d, qtbot)
-    preset.cancel_button.click()
-    await pump(qtbot, lambda: not preset.isVisible())
+    click_item(preset.quick, find_item(preset.quick, "cancelButton"))
+    # Same seam as the conflict test: closing the island dialog lands the
+    # finished handler synchronously; the C++ may flush in the click's pump.
+    await pump(qtbot, lambda: d.preset_dialog is None)
 
-    assert d.list_widget.count() == 0
+    assert _template_texts(d) == []
     assert opened == []
     assert len(await sheet_svc.list_sheets()) == 0
 
 
 async def test_list_dialog_has_no_pdf_export(dlg):
-    texts = [b.text() for b in dlg.findChildren(QPushButton)]
+    texts = [
+        i.property("text")
+        for i in walk_items(dlg.quick.rootObject())
+        if i.objectName().endswith("Button")
+    ]
+    assert texts  # the guard must not pass vacuously on an unrendered scene
     assert "Экспорт в PDF…" not in texts
-

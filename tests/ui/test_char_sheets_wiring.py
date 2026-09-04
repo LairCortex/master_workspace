@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.domain.entities.character_sheet import EMPTY_PAGES_JSON
 from app.domain.enums.field_type import FieldType
+from app.presentation.viewmodels.sheet_list_view_model import TAB_INSTANCES
 from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
@@ -25,6 +26,17 @@ from tests.ui.conftest import query_db
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+#
+# Q3a addressing (change port-sheet-list-preset-dialogs-qml-q3a): the list &
+# preset dialogs' content moved to QML islands — the retired QPushButton/
+# QListWidget/QTabWidget seams map 1:1 onto the shared helpers in
+# ``tests.ui.helpers`` (synthetic clicks on the island, delegate-row reads,
+# VM slots for the retired tab/selection APIs).
+
+_click_island = helpers.sheet_click
+_island_property = helpers.sheet_island_property
+_template_texts = helpers.sheet_template_texts
+
 
 def _editors(qtop) -> list[CharacterSheetEditorDialog]:
     """Visible editor dialogs (a closed QDialog stays in topLevelWidgets, hidden)."""
@@ -44,7 +56,7 @@ async def open_list(app, wait_for) -> CharacterSheetListDialog:
 
 def create_via_list(list_dlg: CharacterSheetListDialog, dialog_input, name: str) -> None:
     dialog_input["answer"] = (name, True)
-    list_dlg.create_button.click()
+    _click_island(list_dlg, "createButton")
 
 
 def _editor_name(application) -> str:
@@ -258,7 +270,7 @@ async def test_rename_in_list_updates_open_editor_title(app, dialog_input, wait_
     make_dirty(editor_a)
 
     dialog_input["answer"] = ("Александр", True)
-    list_dlg.rename_button.click()
+    _click_island(list_dlg, "renameButton")
     await wait_for(lambda: editor_a.windowTitle() == "Александр")
 
     assert editor_a.view_model.dirty  # a rename is not a layout edit
@@ -281,9 +293,9 @@ async def test_corrupt_template_not_opened(app, message_boxes, wait_for):
     conn.close()
 
     list_dlg = await open_list(app, wait_for)
-    await wait_for(lambda: list_dlg.list_widget.count() == 1)
-    list_dlg.list_widget.setCurrentRow(0)
-    list_dlg.open_button.click()
+    await wait_for(lambda: len(_template_texts(list_dlg)) == 1)
+    list_dlg.vm.selectTemplate(0)
+    _click_island(list_dlg, "openButton")
 
     await wait_for(lambda: any(k == "critical" for k, _t, _x in message_boxes))
     assert application._sheet_editor is None, "a corrupt sheet must not be opened"
@@ -308,7 +320,7 @@ async def test_editor_closed_during_load_does_not_mark_sheet_open(
 
     list_dlg = await open_list(app, wait_for)
     create_via_list(list_dlg, dialog_input, "A")
-    await wait_for(lambda: list_dlg.list_widget.count() == 1)
+    await wait_for(lambda: len(_template_texts(list_dlg)) == 1)
     # let the whole (slow) open flow settle
     for _ in range(60):
         await asyncio.sleep(0.02)
@@ -320,8 +332,8 @@ async def test_editor_closed_during_load_does_not_mark_sheet_open(
         for w in QApplication.instance().topLevelWidgets()
     )
     # the list must NOT keep treating the closed sheet as open (delete allowed)
-    list_dlg.list_widget.setCurrentRow(0)
-    assert list_dlg.delete_button.isEnabled()
+    list_dlg.vm.selectTemplate(0)
+    assert _island_property(list_dlg, "deleteButton", "enabled") is True
     assert list_dlg._open_sheet_id is None
 
 
@@ -380,7 +392,7 @@ async def test_games_have_their_own_sheet_lists(
         await asyncio.sleep(0.02)
         qtbot.wait(1)
     assert list_b is not list_dlg
-    assert list_b.list_widget.count() == 0, "game B has none of game A templates"
+    assert _template_texts(list_b) == [], "game B has none of game A templates"
     assert query_db(old_db, "SELECT name FROM character_sheets") == [("ТолькоА",)]
 
 # ── list refresh on open touches the session under the app lock ────────────
@@ -469,10 +481,10 @@ def create_instance_via_list(
     template_name: str,
     instance_name: str,
 ) -> None:
-    list_dlg.tabs.setCurrentIndex(1)
+    list_dlg.vm.setCurrentTab(TAB_INSTANCES)
     dialog_item["answer"] = (template_name, True)
     dialog_input["answer"] = (instance_name, True)
-    list_dlg.create_button.click()
+    _click_island(list_dlg, "createButton")
 
 
 async def test_design_and_fill_same_template_open_together(
@@ -507,9 +519,9 @@ async def test_reopening_same_instance_raises_existing_fill(
     create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
     fill = await wait_fill(app, wait_for, "Лист")
 
-    list_dlg.tabs.setCurrentIndex(1)
-    list_dlg.instance_list.setCurrentRow(0)
-    list_dlg.open_button.click()
+    list_dlg.vm.setCurrentTab(TAB_INSTANCES)
+    list_dlg.vm.selectInstance(0)
+    _click_island(list_dlg, "openButton")
     await wait_for(lambda: True, timeout_s=0.2)
 
     application, _window = app
@@ -670,7 +682,7 @@ async def test_switch_game_with_dirty_fill_reject_keeps_game(
 
 
 async def _open_preset_dialog(list_dlg: CharacterSheetListDialog, wait_for):
-    list_dlg.preset_button.click()
+    _click_island(list_dlg, "presetButton")
     await wait_for(
         lambda: list_dlg.preset_dialog is not None
         and list_dlg.preset_dialog.isVisible()
@@ -690,7 +702,7 @@ async def test_preset_over_dirty_design_reject_keeps_editor(
     make_dirty(editor_a)
 
     preset = await _open_preset_dialog(list_dlg, wait_for)
-    preset.ok_button.click()  # «Fate Core» (the default row)
+    _click_island(preset, "okButton")  # «Fate Core» (the default row)
 
     # message_boxes stub answers the dirty prompt with the default button (No).
     await wait_for(lambda: any(k == "question" for k, _t, _x in message_boxes))
@@ -702,10 +714,7 @@ async def test_preset_over_dirty_design_reject_keeps_editor(
     assert len(_editors(qtop)) == 1
     # the snapshot itself is a regular template now; the list shows both
     # (name-sorted: Latin «F…» before Cyrillic «А…»)
-    names = [
-        list_dlg.list_widget.item(i).text()
-        for i in range(list_dlg.list_widget.count())
-    ]
+    names = _template_texts(list_dlg)
     assert names == ["Fate Core", "А"]
 
 
@@ -721,7 +730,7 @@ async def test_preset_over_dirty_design_confirm_closes_without_saving(
     editor_a.view_model.set_content(fid, "черновик")
 
     preset = await _open_preset_dialog(list_dlg, wait_for)
-    preset.ok_button.click()  # «Fate Core» (the default row)
+    _click_island(preset, "okButton")  # «Fate Core» (the default row)
     editor_fc = await wait_editor(app, wait_for, "Fate Core")
 
     assert editor_fc is not editor_a

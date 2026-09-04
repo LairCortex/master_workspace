@@ -23,6 +23,7 @@ from PySide6.QtTest import QTest
 
 from app.domain.entities.character_sheet import GUTTER_PT, PAGE_HEIGHT_PT
 from app.domain.enums.field_type import FieldType
+from app.presentation.viewmodels.sheet_list_view_model import TAB_INSTANCES
 from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
@@ -31,10 +32,20 @@ from app.presentation.views.character_sheet.presets.catalog import (
     MORK_BORG_LICENSE_TEXT,
 )
 
+from tests.ui import helpers
 from tests.ui.conftest import query_db
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+#
+# Q3a addressing (change port-sheet-list-preset-dialogs-qml-q3a): the list &
+# preset dialogs' content is a QML island now — the retired QPushButton/
+# QListWidget/QTabWidget seams map 1:1 onto the shared helpers in
+# ``tests.ui.helpers`` (synthetic island clicks, delegate-row reads, the VM
+# slots the QML drives for tab/selection).
+
+_click_list = helpers.sheet_click
+_template_texts = helpers.sheet_template_texts
 
 def _click_canvas(editor: CharacterSheetEditorDialog, scene_x: float, scene_y: float) -> None:
     """Click the canvas at the given page (scene) point."""
@@ -77,7 +88,7 @@ async def test_layout_survives_save_and_reopen(app, dialog_input, wait_for, qtbo
     await wait_for(lambda: application._sheet_list_dialog is not None)
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
     dialog_input["answer"] = ("Иван", True)
-    list_dlg.create_button.click()
+    _click_list(list_dlg, "createButton")
     editor = await wait_editor(app, wait_for, "Иван")
     qtbot.wait(50)  # canvas fitted after show/resize
 
@@ -112,12 +123,9 @@ async def test_layout_survives_save_and_reopen(app, dialog_input, wait_for, qtbo
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
 
-    row = next(
-        i for i in range(list_dlg.list_widget.count())
-        if list_dlg.list_widget.item(i).text() == "Иван"
-    )
-    list_dlg.list_widget.setCurrentRow(row)
-    list_dlg.open_button.click()
+    row = _template_texts(list_dlg).index("Иван")
+    list_dlg.vm.selectTemplate(row)
+    _click_list(list_dlg, "openButton")
     editor2 = await wait_editor(app, wait_for, "Иван")
 
     reopened = _layout(editor2)
@@ -160,7 +168,7 @@ async def test_field_on_second_page_survives_save_and_reopen(app, dialog_input, 
     await wait_for(lambda: application._sheet_list_dialog is not None)
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
     dialog_input["answer"] = ("Лента", True)
-    list_dlg.create_button.click()
+    _click_list(list_dlg, "createButton")
     editor = await wait_editor(app, wait_for, "Лента")
     qtbot.wait(50)  # canvas fitted after show/resize
 
@@ -188,10 +196,9 @@ async def test_field_on_second_page_survives_save_and_reopen(app, dialog_input, 
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
 
-    row = next(i for i in range(list_dlg.list_widget.count())
-               if list_dlg.list_widget.item(i).text() == "Лента")
-    list_dlg.list_widget.setCurrentRow(row)
-    list_dlg.open_button.click()
+    row = _template_texts(list_dlg).index("Лента")
+    list_dlg.vm.selectTemplate(row)
+    _click_list(list_dlg, "openButton")
     editor2 = await wait_editor(app, wait_for, "Лента")
 
     assert editor2.view_model.page_count == 2
@@ -239,11 +246,11 @@ async def test_v1_sheet_open_and_save_writes_version_2(app, dialog_input, wait_f
     application._window.char_sheets_action.trigger()
     await wait_for(lambda: application._sheet_list_dialog is not None)
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
-    await wait_for(lambda: list_dlg.list_widget.count() == 1)
-    assert list_dlg.list_widget.item(0).text() == "Старый"
-    list_dlg.list_widget.setCurrentRow(0)
+    await wait_for(lambda: len(_template_texts(list_dlg)) == 1)
+    assert _template_texts(list_dlg)[0] == "Старый"
+    list_dlg.vm.selectTemplate(0)
 
-    list_dlg.open_button.click()
+    _click_list(list_dlg, "openButton")
     editor = await wait_editor(app, wait_for, "Старый")
 
     # v1 loads without loss: the field is there, one page «Страница 1».
@@ -285,7 +292,7 @@ async def test_marquee_duplicate_undo_save(app, dialog_input, wait_for, qtbot):
     await wait_for(lambda: application._sheet_list_dialog is not None)
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
     dialog_input["answer"] = ("Макет", True)
-    list_dlg.create_button.click()
+    _click_list(list_dlg, "createButton")
     editor = await wait_editor(app, wait_for, "Макет")
     qtbot.wait(50)
 
@@ -326,7 +333,7 @@ async def test_instance_fill_survives_save_and_reopen(
     await wait_for(lambda: application._sheet_list_dialog is not None)
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
     dialog_input["answer"] = ("Макет", True)
-    list_dlg.create_button.click()
+    _click_list(list_dlg, "createButton")
     editor = await wait_editor(app, wait_for, "Макет")
     qtbot.wait(50)
 
@@ -343,10 +350,10 @@ async def test_instance_fill_survives_save_and_reopen(
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
 
-    list_dlg.tabs.setCurrentIndex(1)
+    list_dlg.vm.setCurrentTab(TAB_INSTANCES)
     dialog_item["answer"] = ("Макет", True)
     dialog_input["answer"] = ("Лист", True)
-    list_dlg.create_button.click()
+    _click_list(list_dlg, "createButton")
     await wait_for(
         lambda: application._sheet_fill is not None
         and application._sheet_fill.view_model.template is not None
@@ -362,9 +369,9 @@ async def test_instance_fill_survives_save_and_reopen(
     fill.close()
     await wait_for(lambda: application._sheet_fill is None)
 
-    list_dlg.tabs.setCurrentIndex(1)
-    list_dlg.instance_list.setCurrentRow(0)
-    list_dlg.open_button.click()
+    list_dlg.vm.setCurrentTab(TAB_INSTANCES)
+    list_dlg.vm.selectInstance(0)
+    _click_list(list_dlg, "openButton")
     await wait_for(
         lambda: application._sheet_fill is not None
         and application._sheet_fill.view_model.template is not None
@@ -389,8 +396,8 @@ async def test_create_from_preset_opens_clean_design(app, wait_for, qtbot):
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
 
     # «Создать из пресета…» — only on the «Шаблоны» tab (the default one).
-    assert list_dlg.preset_button.isVisibleTo(list_dlg)
-    list_dlg.preset_button.click()
+    assert helpers.sheet_island_property(list_dlg, "presetButton", "visible") is True
+    _click_list(list_dlg, "presetButton")
     await wait_for(
         lambda: list_dlg.preset_dialog is not None
         and list_dlg.preset_dialog.isVisible()
@@ -398,13 +405,13 @@ async def test_create_from_preset_opens_clean_design(app, wait_for, qtbot):
     preset = list_dlg.preset_dialog
 
     # Two bundled presets; pick Mörk Borg: full 3PP license + name from title.
-    assert preset.preset_list.count() == 2
-    preset.preset_list.setCurrentRow(1)
-    await wait_for(lambda: preset.name_edit.text() == "Mörk Borg")
-    assert "Third Party License" in preset.license_view.toPlainText()
-    assert "©2019" in preset.license_view.toPlainText()
+    assert len(helpers.preset_titles(preset)) == 2
+    preset.vm.selectPreset(1)
+    await wait_for(lambda: helpers.preset_name_text(preset) == "Mörk Borg")
+    assert "Third Party License" in helpers.preset_license_text(preset)
+    assert "©2019" in helpers.preset_license_text(preset)
 
-    preset.ok_button.click()
+    helpers.sheet_click(preset, "okButton")
 
     # Design of the new template opens clean (dirty cleared on load).
     editor = await wait_editor(app, wait_for, "Mörk Borg")
@@ -429,10 +436,7 @@ async def test_create_from_preset_opens_clean_design(app, wait_for, qtbot):
     # Close (clean) — the list keeps the name.
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
-    names = [
-        list_dlg.list_widget.item(i).text()
-        for i in range(list_dlg.list_widget.count())
-    ]
+    names = _template_texts(list_dlg)
     assert "Mörk Borg" in names
 
 
@@ -449,24 +453,24 @@ async def test_copied_preset_instance_fills_and_saves(
     await wait_for(lambda: application._sheet_list_dialog is not None)
     list_dlg: CharacterSheetListDialog = application._sheet_list_dialog
 
-    list_dlg.preset_button.click()
+    _click_list(list_dlg, "presetButton")
     await wait_for(
         lambda: list_dlg.preset_dialog is not None
         and list_dlg.preset_dialog.isVisible()
     )
     preset = list_dlg.preset_dialog
-    preset.preset_list.setCurrentRow(1)  # Mörk Borg
-    await wait_for(lambda: preset.name_edit.text() == "Mörk Borg")
-    preset.ok_button.click()
+    preset.vm.selectPreset(1)  # Mörk Borg
+    await wait_for(lambda: helpers.preset_name_text(preset) == "Mörk Borg")
+    helpers.sheet_click(preset, "okButton")
 
     editor = await wait_editor(app, wait_for, "Mörk Borg")
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
 
-    list_dlg.tabs.setCurrentIndex(1)
+    list_dlg.vm.setCurrentTab(TAB_INSTANCES)
     dialog_item["answer"] = ("Mörk Borg", True)
     dialog_input["answer"] = ("Лист", True)
-    list_dlg.create_button.click()
+    _click_list(list_dlg, "createButton")
     await wait_for(
         lambda: application._sheet_fill is not None
         and application._sheet_fill.view_model.template is not None
@@ -487,9 +491,9 @@ async def test_copied_preset_instance_fills_and_saves(
     fill.close()
     await wait_for(lambda: application._sheet_fill is None)
 
-    list_dlg.tabs.setCurrentIndex(1)
-    list_dlg.instance_list.setCurrentRow(0)
-    list_dlg.open_button.click()
+    list_dlg.vm.setCurrentTab(TAB_INSTANCES)
+    list_dlg.vm.selectInstance(0)
+    _click_list(list_dlg, "openButton")
     await wait_for(
         lambda: application._sheet_fill is not None
         and application._sheet_fill.view_model.template is not None
