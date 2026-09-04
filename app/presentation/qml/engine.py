@@ -19,6 +19,9 @@ Setup order facts pinned by tests/presentation/test_qml_engine.py:
 * ``QmlPalette`` is placed in the root context once (design D3); live
   retheme arrives via the palette's own signal, never by re-creating the
   engine or its context.
+* ``register_tooltip_shim`` runs before the engine exists: the library's
+  attached tooltip scope ``Nri`` (qml-components delta, design D9) must be
+  registered before any island importing ``nri.components`` compiles it.
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ from PySide6.QtQml import QQmlEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
+from app.presentation.qml.tooltip_shim import register_tooltip_shim
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
 
@@ -51,6 +55,11 @@ def setup_qml_shell(qapp: QApplication, theme: ThemeRuntime) -> QQmlEngine:
     # Design D4: Basic chosen programmatically before the first Controls
     # import; the process-wide name is set exactly once, here.
     QQuickStyle.setStyle("Basic")
+    # Design D9 (change port-event-timeline-qml-island-q2-5a): the library's
+    # tooltip-declaration scope `Nri` is registered into the nri.components
+    # import space before any island can load; the registration is
+    # process-wide and idempotent, islands never register it themselves.
+    register_tooltip_shim()
     engine = QQmlEngine(qapp)  # parented to the app: lives as long as it
     engine.addImportPath(QML_IMPORT_PATH)
     palette = QmlPalette(theme, parent=engine)  # dies with the engine

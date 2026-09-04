@@ -40,6 +40,19 @@ already-loaded gallery through the palette bridge alone (island «Смена т�
 перекрашивает»), and the two off-skin runs (empty/broken tokens; no bridge in
 the context at all) keep ``errors()`` empty with skin off and interactions
 alive (spec «Поведение компонентов вне валидной темы (off-skin)»).
+
+Map (change port-event-timeline-qml-island-q2-5a, tasks 2.1–2.2) adds the
+tooltip shim: task 2.1 — the library's attached tooltip-declaration scope
+``Nri`` (design D9: the QML language cannot declare attached types, so the
+carrier is Python-registered into this module's import space) is resolved
+through ``import nri.components`` on the shared shell engine, pins the
+per-item / lazy / dynamic declaration semantics and the uncreatable type
+contract, in both themed and off-skin configurations (spec qml-components
+«Подсказка объявляется свойством библиотеки»). Task 2.2 — the shared island
+façade bridge: a smoke island reports ``(text, scene position)`` QML→Python
+and the bridge drives the app's single native ``QToolTip`` visibly under the
+offscreen platform, both themed and skinless (spec qml-shell «Нативный шим
+всплывающих подсказок для островов»).
 """
 from __future__ import annotations
 
@@ -51,11 +64,18 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtQml import qmlAttachedPropertiesObject
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QToolTip
 
 from app.infrastructure.ui_prefs.config import UiPrefsManager
 from app.presentation import qml as qml_shell
 from app.presentation.qml.engine import setup_qml_shell
+from app.presentation.qml.tooltip_shim import (
+    Nri,
+    NriAttached,
+    install_island_tooltips,
+)
 from app.presentation.theme.compiler import tokens_file_path
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
@@ -864,3 +884,318 @@ def test_gallery_offskin_with_no_bridge_at_all_in_the_context(qtbot, qapp, runti
     img = _grab_rgb(widget)
     assert _item_pixel(widget, img, root, 2, 320) == FALLBACK_PAGE_RGB
     _offskin_gallery_interactions(widget, qtbot)
+
+
+# ── map Q2.5a (tasks 2.1–2.2): the tooltip shim — declared via Nri.tooltip ──
+#
+# The QML language cannot declare attached types (the engine resolves the
+# `Nri` scope against the *host object's* attached-object factory — registered
+# metadata only), so the library ships the carrier Python-side and registers
+# it into its own module URI (app/presentation/qml/tooltip_shim.py from
+# setup_qml_shell). The probes below pin the exact design-D9 form
+# `ThemeButton { Nri.tooltip: "…" }` through a plain `import
+# nri.components` — one import surface, the «контракт типа» (scope-only:
+# `Nri {}` refuses), per-item lazy declaration, dynamic text current at read
+# time, and the shared bridge driving the app's single native QToolTip —
+# themed and off-skin (spec qml-components «Подсказка объявляется свойством
+# библиотеки», spec qml-shell «Нативный шим всплывающих подсказок для
+# островов»).
+
+TOOLTIP_PROBE_SCENE = """
+import QtQuick
+import nri.components
+
+Item {
+    id: tipProbe
+    objectName: "tooltipProbe"
+    implicitWidth: 320
+    implicitHeight: 200
+
+    // The source the spec scenario «Текст подсказки может быть
+    // динамическим» moves — the button's declaration binds through it.
+    property string summary: "d1"
+
+    // QML read-backs via the parenthesised target — the very syntax an
+    // island uses when it reports the declared text to its bridge on hover
+    // (design D9); attached reads must be live just like the attached writes.
+    property string buttonDeclared: (btn).Nri.tooltip
+    property string cardDeclared: (card).Nri.tooltip
+
+    ThemeButton {
+        id: btn
+        objectName: "tipButton"
+        text: "Btn"
+        x: 10; y: 10
+        Nri.tooltip: "summary:" + summary   // dynamic declaration (a binding)
+    }
+    // Delegate-card style host: a plain item carrying its own row declaration.
+    Rectangle {
+        id: card
+        objectName: "tipCard"
+        x: 10; y: 70; width: 140; height: 40
+        Nri.tooltip: "card row"             // static declaration
+    }
+    // The sibling that declares nothing — attached objects are per-object and
+    // created lazily on the first assignment, so this item must own none.
+    Rectangle { objectName: "tipUntipped"; x: 10; y: 130; width: 140; height: 40 }
+}
+"""
+
+# Smoke island for the shared bridge (task 2.2). The HoverHandler is exactly
+# the glue IslandTooltipBridge's docstring documents: on hover it reports the
+# declared text + the hover's SCENE position, on leave it releases.
+TOOLTIP_BRIDGE_SCENE = """
+import QtQuick
+import nri.components
+
+Item {
+    id: tipIsland
+    objectName: "tooltipBridgeIsland"
+    implicitWidth: 320
+    implicitHeight: 200
+
+    property string summary: "first"
+
+    Rectangle {
+        id: tipTarget
+        objectName: "tipBridgeTarget"
+        x: 40; y: 60; width: 140; height: 40
+        Nri.tooltip: "__MARK__:" + tipIsland.summary   // dynamic declaration
+        HoverHandler {
+            onHoveredChanged: {
+                if (hovered)
+                    tooltipBridge.tooltipRequested(
+                        (tipTarget).Nri.tooltip, point.scenePosition)
+                else
+                    tooltipBridge.tooltipRequested("", Qt.point(0, 0))
+            }
+        }
+    }
+}
+"""
+
+
+def load_tooltip_probe(qtbot, qapp, runtime, palette, scene_file, scene_text,
+                       with_bridge: bool = False):
+    """The tooltip-shim probe on the one shared shell engine.
+
+    Same seam as ``load_probe_scene`` (production import path, per-test
+    isolated engine): the scene resolves ``import nri.components`` — and the
+    ``Nri`` scope the shell registered into that module — exactly like an
+    island does.
+    """
+    if QQuickStyle.name() != "Basic":  # design D4 — set once, never re-set
+        QQuickStyle.setStyle("Basic")
+    scene_file.write_text(scene_text, encoding="utf-8")
+    engine = setup_qml_shell(qapp, runtime)
+    widget = QQuickWidget(engine, None)
+    qtbot.addWidget(widget)
+    widget.resize(320, 200)
+    if palette is not None:
+        palette.setParent(widget)
+        widget.rootContext().setContextProperty("islandPalette", palette)
+    bridge = install_island_tooltips(widget) if with_bridge else None
+    widget.setSource(QUrl.fromLocalFile(str(scene_file)))
+    assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    return widget, bridge
+
+
+# ── 2.1: the declaration resolves, is per-item/dynamic, and its type contract ─
+
+
+def test_nri_attached_scope_resolves_from_the_library_module(
+    qtbot, qapp, runtime, palette, tmp_path
+):
+    widget, _ = load_tooltip_probe(
+        qtbot, qapp, runtime, palette, tmp_path / "tip_probe.qml", TOOLTIP_PROBE_SCENE
+    )
+    assert widget.errors() == []
+    btn = _find_item(widget, "tipButton")
+    card = _find_item(widget, "tipCard")
+    untipped = _find_item(widget, "tipUntipped")
+    # (a) the Python half of the contract: each host item got ITS OWN attached
+    # declaration object, parented to it by the engine at first assignment.
+    att_btn = qmlAttachedPropertiesObject(Nri, btn, False)
+    assert isinstance(att_btn, NriAttached)
+    assert att_btn.tooltip == "summary:d1"
+    assert qmlAttachedPropertiesObject(Nri, card, False).tooltip == "card row"
+    # The item that never used the scope owns no attached object (the
+    # declarations are lazy and per-object, not a per-document side effect).
+    assert qmlAttachedPropertiesObject(Nri, untipped, False) is None
+    # (b) the QML half: the attached value reads back through the very
+    # `(target).Nri.tooltip` form the islands need for their hover reports.
+    root = widget.rootObject()
+    assert root.property("buttonDeclared") == "summary:d1"
+    assert root.property("cardDeclared") == "card row"
+
+
+def test_nri_tooltip_declaration_is_dynamic_and_per_item(
+    qtbot, qapp, runtime, palette, tmp_path
+):
+    widget, _ = load_tooltip_probe(
+        qtbot, qapp, runtime, palette, tmp_path / "tip_probe.qml", TOOLTIP_PROBE_SCENE
+    )
+    assert widget.errors() == []
+    root = widget.rootObject()
+    btn = _find_item(widget, "tipButton")
+    card = _find_item(widget, "tipCard")
+    # Spec scenario «Текст подсказки может быть динамическим»: after the bound
+    # data changes, the next read (the next hover will do exactly this) sees
+    # the fresh text — attached notify propagates to QML read-backs too.
+    root.setProperty("summary", "d2")
+    assert qmlAttachedPropertiesObject(Nri, btn, False).tooltip == "summary:d2"
+    assert root.property("buttonDeclared") == "summary:d2"
+    # Per-item isolation: the static sibling declaration ignored the other's
+    # rebind (no cross-talk between attached objects).
+    assert qmlAttachedPropertiesObject(Nri, card, False).tooltip == "card row"
+    assert root.property("cardDeclared") == "card row"
+    assert widget.errors() == []
+
+
+def test_nri_scope_is_declared_but_not_instantiable(qtbot, qapp, runtime, tmp_path):
+    # The task-2.1 «контракт типа»: Nri exists ONLY as the declaration scope;
+    # a stray `Nri {}` instantiation must report the registration's reason
+    # instead of silently creating a useless object.
+    scene = tmp_path / "tip_instantiate.qml"
+    scene.write_text(
+        "import QtQuick\nimport nri.components\nItem { Nri {} }\n", encoding="utf-8"
+    )
+    engine = setup_qml_shell(qapp, runtime)
+    widget = QQuickWidget(engine, None)
+    qtbot.addWidget(widget)
+    widget.setSource(QUrl.fromLocalFile(str(scene)))
+    assert widget.status() == QQuickWidget.Status.Error
+    joined = "\n".join(str(e) for e in widget.errors())
+    assert "not an instantiable type" in joined
+
+
+def _offskin_tooltip_assertions(widget, qtbot, qapp, runtime, qt_marker):
+    """The declaration behaves identically while NO skin exists: attached
+    payload, QML read-back, no engine errors (the scope mechanism is
+    independent of the bridge and of the tokens)."""
+    assert widget.errors() == []
+    btn = _find_item(widget, "tipButton")
+    assert qmlAttachedPropertiesObject(Nri, btn, False).tooltip == "summary:d1"
+    root = widget.rootObject()
+    assert root.property("buttonDeclared") == "summary:d1"
+    assert root.property("cardDeclared") == "card row"
+
+
+def test_nri_declarations_survive_off_skin_with_broken_tokens(qtbot, qapp, tmp_path):
+    bad = tmp_path / "tokens.json"
+    bad.write_text("{not json", encoding="utf-8")
+    runtime = ThemeRuntime(prefs=UiPrefsManager(tmp_path / "ui.json"), tokens_path=bad)
+    off_skin_palette = QmlPalette(runtime)
+    assert off_skin_palette.tokens == {}
+    widget, _ = load_tooltip_probe(
+        qtbot, qapp, runtime, off_skin_palette,
+        tmp_path / "tip_probe.qml", TOOLTIP_PROBE_SCENE,
+    )
+    _offskin_tooltip_assertions(widget, qtbot, qapp, runtime, "broken")
+
+
+def test_nri_declarations_survive_off_skin_without_bridge_in_context(
+    qtbot, qapp, runtime, tmp_path
+):
+    # The stricter off-skin run: no islandPalette anywhere in the context
+    # (conftest's per-test engine guarantees it) — the library's tooltip
+    # declaration is not a skinned feature and loads with pure fallbacks.
+    widget, _ = load_tooltip_probe(
+        qtbot, qapp, runtime, None, tmp_path / "tip_probe.qml", TOOLTIP_PROBE_SCENE
+    )
+    _offskin_tooltip_assertions(widget, qtbot, qapp, runtime, "nobridge")
+
+
+# ── 2.2: the shared island bridge — QML reports (text, scene position) to
+# Python, and the native QToolTip shows — offscreen-provably, one tooltip ─────
+
+
+def _current_qtip_text() -> str | None:
+    """The live text of the app's single tooltip label (None when hidden)."""
+    for t in QApplication.topLevelWidgets():
+        if t.metaObject().className() == "QTipLabel" and t.isVisible():
+            return t.text()
+    return None
+
+
+def _hover_bridge_island(qtbot, qapp, runtime, palette, scene_file, mark: str):
+    widget, bridge = load_tooltip_probe(
+        qtbot, qapp, runtime, palette, scene_file,
+        TOOLTIP_BRIDGE_SCENE.replace("__MARK__", mark), with_bridge=True,
+    )
+    widget.show()
+    qtbot.waitExposed(widget)
+    return widget, bridge
+
+
+def test_tooltip_bridge_hover_shows_the_native_shared_tooltip(
+    qtbot, qapp, runtime, palette, tmp_path
+):
+    widget, bridge = _hover_bridge_island(
+        qtbot, qapp, runtime, palette, tmp_path / "tip_bridge.qml", "smokeA"
+    )
+    try:
+        assert bridge.last_request is None
+        target = _find_item(widget, "tipBridgeTarget")
+        center_f = target.mapToScene(QPointF(target.width() / 2, target.height() / 2))
+        center = QPoint(int(center_f.x()), int(center_f.y()))
+        QTest.mouseMove(widget, center)
+        # Contract: QML pushed (declared text, hover scene position) to Python…
+        qtbot.waitUntil(lambda: bridge.last_request is not None, timeout=5000)
+        text, scene_pos = bridge.last_request
+        assert text == "smokeA:first"
+        assert scene_pos.x() == pytest.approx(center.x(), abs=2)
+        assert scene_pos.y() == pytest.approx(center.y(), abs=2)
+        # …and Python showed the single system tooltip near the reported point
+        # (the exact nudge is Qt's; being the global QToolTip is the point —
+        # spec «оформленная общим скином попапов, не вторым слоем поверх сцены»).
+        qtbot.waitUntil(lambda: _current_qtip_text() == "smokeA:first", timeout=5000)
+        tip = next(
+            t for t in QApplication.topLevelWidgets()
+            if t.metaObject().className() == "QTipLabel" and t.isVisible()
+        )
+        expected = widget.mapToGlobal(center)
+        assert abs(tip.x() - expected.x()) <= 96
+        assert -16 <= tip.y() - expected.y() <= 160
+        # Dynamic text with zero island reloads: rebind, leave (release is
+        # reported), then the NEXT hover already shows the current text.
+        widget.rootObject().setProperty("summary", "second")
+        QTest.mouseMove(widget, QPoint(4, 4))
+        qtbot.waitUntil(
+            lambda: bridge.last_request is not None and bridge.last_request[0] == "",
+            timeout=5000,
+        )
+        QTest.mouseMove(widget, center)
+        qtbot.waitUntil(
+            lambda: bridge.last_request is not None
+            and bridge.last_request[0] == "smokeA:second",
+            timeout=5000,
+        )
+        qtbot.waitUntil(lambda: _current_qtip_text() == "smokeA:second", timeout=5000)
+        assert widget.errors() == []
+    finally:
+        QToolTip.hideText()
+
+
+def test_tooltip_bridge_shows_tooltips_off_skin(qtbot, qapp, runtime, tmp_path):
+    # Spec scenario: tooltips work without a valid theme too — the bridge
+    # scene runs with no islandPalette in the context; the QML→Python report
+    # and the native QToolTip outcome are skin-independent.
+    widget, bridge = _hover_bridge_island(
+        qtbot, qapp, runtime, None, tmp_path / "tip_bridge_offskin.qml", "smokeB"
+    )
+    try:
+        target = _find_item(widget, "tipBridgeTarget")
+        center_f = target.mapToScene(QPointF(target.width() / 2, target.height() / 2))
+        center = QPoint(int(center_f.x()), int(center_f.y()))
+        QTest.mouseMove(widget, center)
+        qtbot.waitUntil(
+            lambda: bridge.last_request is not None
+            and bridge.last_request[0] == "smokeB:first",
+            timeout=5000,
+        )
+        qtbot.waitUntil(lambda: _current_qtip_text() == "smokeB:first", timeout=5000)
+        assert widget.rootObject().property("objectName") == "tooltipBridgeIsland"
+        assert widget.errors() == []
+    finally:
+        QToolTip.hideText()

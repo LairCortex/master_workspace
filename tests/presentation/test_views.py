@@ -10,7 +10,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
 
 from app.presentation.views.main_window import MainWindow
-from app.presentation.views.timeline_widget import TimelineWidget, window_chip_text
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.event_dialog import EventDialog
@@ -726,89 +725,6 @@ class TestMainWindowExportAction:
         assert len(received) == 1
 
 
-# ── TimelineWidget ────────────────────────────────────────────────────────
-
-class TestTimelineWidget:
-    def test_timeline_creates(self, qtbot):
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        assert w is not None
-
-    def test_timeline_has_add_button(self, qtbot):
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        assert w.add_button is not None
-        assert hasattr(w, "add_event_requested")
-        assert hasattr(w, "add_entity_requested")
-
-    def test_timeline_has_chip_instead_of_old_fields(self, qtbot):
-        """W3b 3.1: one chip replaces CustomDateEdit×2 + apply/clear."""
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        assert w.window_chip.text() == window_chip_text(None, None)
-        assert w.jump_prev_button is not None and w.jump_next_button is not None
-        for gone in ("date_start", "date_end", "apply_button", "clear_button"):
-            assert not hasattr(w, gone)
-        # The popover carries the two game calendars (task 3.2).
-        assert w.window_popup is not None
-        assert w.window_popup.start_calendar is not None
-        assert w.window_popup.end_calendar is not None
-
-    def test_timeline_window_signal(self, qtbot):
-        """W3b 3.2: two taps apply live — first start, second end + close."""
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-
-        from PySide6.QtCore import QDate
-        received = []
-        w.window_changed.connect(lambda s, e: received.append((s, e)))
-        w.window_popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
-        assert received == []  # start alone does not apply yet
-        w.window_popup.start_calendar.clicked.emit(QDate(1300, 12, 31))
-
-        assert received == [(date(1200, 1, 1), date(1300, 12, 31))]
-        assert not w.window_popup.isVisible()
-        assert w.window_chip.text() == window_chip_text(
-            date(1200, 1, 1), date(1300, 12, 31)
-        )
-
-    def test_timeline_clear_window_signal(self, qtbot):
-        """W3b 3.2 / task 7.1: «Сбросить» inside the popover → (None, None) + «Все дни»."""
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-
-        from PySide6.QtCore import QDate
-        w.window_popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
-        w.window_popup.start_calendar.clicked.emit(QDate(1300, 12, 31))
-
-        received = []
-        w.window_changed.connect(lambda s, e: received.append((s, e)))
-        w.window_popup.show()  # reopen it — «Сбросить» lives inside the popover
-        w.window_popup.reset_button.click()
-
-        assert received == [(None, None)]
-        assert not w.window_popup.isVisible()
-        assert w.window_chip.text() == window_chip_text(None, None)
-
-    def test_list_widget_is_gone(self, qtbot):
-        # W3 breaking contract: the row-based QListWidget is fully removed.
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        assert not hasattr(w, "list_widget")
-        assert hasattr(w.rows_view, "event_double_clicked")
-
 # ── DetailPanel ──────────────────────────────────────────────────────────
 
 class TestDetailPanel:
@@ -991,16 +907,6 @@ class TestSearchBar:
         w._on_result_clicked(header_item)
         assert emitted == []
 
-
-# ── Timeline double-click ─────────────────────────────────────────────────
-
-class TestTimelineDoubleClick:
-    def test_double_click_signal_exists(self, qtbot):
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        assert hasattr(w, "event_double_clicked")
 
     def test_detail_panel_no_edit_button(self, qtbot):
         vm = MagicMock()

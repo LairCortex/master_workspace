@@ -6,33 +6,15 @@ from __future__ import annotations
 
 import datetime
 
-from PySide6.QtCore import QDate, QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QDate, QPoint
 
 from app.presentation.views.timeline_rows import PeriodCardRow, ScaleUnit
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
 
 def _ymd(value) -> str:
     return str(value)[:10]
-
-
-def _press_drag_release(view, start_p, end_p) -> None:
-    """A left press at ``start_p``, one dragged move and a release at
-    ``end_p`` — viewport coordinates, offscreen delivery."""
-    vp = view.viewport()
-    for kind, point, buttons in (
-        (QEvent.Type.MouseButtonPress, start_p, Qt.MouseButton.LeftButton),
-        (QEvent.Type.MouseMove, end_p, Qt.MouseButton.LeftButton),
-        (QEvent.Type.MouseButtonRelease, end_p, Qt.MouseButton.NoButton),
-    ):
-        QApplication.sendEvent(vp, QMouseEvent(
-            kind, QPointF(point), vp.mapToGlobal(point),
-            Qt.MouseButton.LeftButton, buttons,
-            Qt.KeyboardModifier.NoModifier,
-        ))
 
 
 async def test_dates_moved_expands_window_before_the_write(
@@ -49,7 +31,7 @@ async def test_dates_moved_expands_window_before_the_write(
         end_date=QDate(1200, 3, 15),
     )
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     eid = view.events[0].id
 
@@ -79,15 +61,14 @@ async def test_dates_moved_expands_window_before_the_write(
     ]
     ev = next(e for e in view.events if e.id == eid)
     assert ev.end_date == datetime.date(1200, 3, 25)
-    chip = widget.window_chip.text()
-    assert "25" in chip
+    assert "25" in timeline_probe.chip_caption(window)
     rows = query_db(
         application._db_path,
         "SELECT start_date, end_date FROM events WHERE id = ?",
         (eid,),
     )
     assert _ymd(rows[0][1]) == "1200-03-25"
-    assert view.selected_id == eid
+    assert timeline_probe.selected_id(window) == eid
 
 
 async def test_open_event_dates_moved_writes_only_start(app, wait_for):
@@ -97,7 +78,7 @@ async def test_open_event_dates_moved_writes_only_start(app, wait_for):
         start_date=QDate(1200, 4, 1),
         open_ended=True,
     )
-    view = window.timeline_widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     eid = view.events[0].id
     window.timeline_widget.event_dates_moved.emit(
@@ -128,7 +109,7 @@ async def test_dates_moved_save_failure_rolls_back_shows_dialog_keeps_window(
         end_date=QDate(1200, 5, 5),
     )
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     eid = view.events[0].id
     widget._on_window_range(
@@ -147,7 +128,7 @@ async def test_dates_moved_save_failure_rolls_back_shows_dialog_keeps_window(
     assert sum(1 for b in message_boxes if b[0] == "critical") == 1
     ev = next(e for e in view.events if e.id == eid)
     assert ev.end_date == datetime.date(1200, 5, 5)
-    assert "20" in widget.window_chip.text()
+    assert "20" in timeline_probe.chip_caption(window)
     assert widget._vm.window == (
         datetime.date(1200, 5, 1), datetime.date(1200, 5, 20),
     )
@@ -163,26 +144,30 @@ async def test_drop_gesture_is_inert_on_period_levels(app, wait_for):
         end_date=QDate(1200, 3, 12),
     )
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     moved: list = []
     widget.event_dates_moved.connect(lambda *a: moved.append(a))
     drilled: list = []
-    view.period_drilled.connect(lambda *a: drilled.append(a))
 
     for rung in (ScaleUnit.MONTH, ScaleUnit.YEAR):
         widget._vm.level = rung  # the app's single mutation point …
         widget._sync_from_vm()  # … mirrored onto the tape (panel contract)
-        assert view.level is rung
+        assert widget._vm.level is rung
+        timeline_probe.pump(4)
         card_idx = next(
             i for i, r in enumerate(view.rows) if isinstance(r, PeriodCardRow)
         )
-        press_p = view.visualItemRect(view.item(card_idx)).center()
+        timeline_probe.reveal(window, card_idx)
+        level_before = widget._vm.level
+        press_p = timeline_probe.row_center(window, card_idx)
         release_p = QPoint(press_p.x(), press_p.y() + 120)  # past the last row
-        _press_drag_release(view, press_p, release_p)
+        timeline_probe.drag(window, press_p, release_p)
         await helpers.wait_until_settled()
         assert moved == [], rung
         assert drilled == [], rung
-        assert view.level is rung, rung  # nothing drilled either
-        assert view.selected_id is None, rung
-        assert view.drag_preview is None, rung
+        assert level_before is rung, rung  # nothing drilled either
+        assert timeline_probe.selected_id(window) is None, rung
+        # the island's drag bookkeeping (the retired drag_preview, D4):
+        assert timeline_probe.root(window).property("dragTargetIndex") == -1
+        assert timeline_probe.root(window).property("dragEventId") == -1

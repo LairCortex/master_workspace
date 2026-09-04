@@ -19,7 +19,7 @@ from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.timeline_rows import ScaleUnit
 
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
 ENDPOINT = "http://mock-llm/v1"
@@ -54,7 +54,7 @@ async def test_window_and_unknown_type_guards(app, wait_for):
         window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1),
         end_date=QDate(1300, 7, 1),
     )
-    canvas = window.timeline_widget.rows_view
+    canvas = timeline_probe.tape(window)
     await wait_for(lambda: len(canvas.events) == 1)
 
     # A narrow date range hides the event; clearing brings it back
@@ -100,7 +100,7 @@ async def test_window_out_of_the_selected_event_clears_every_layer(app, wait_for
         window, wait_for, "Война", start_date=QDate(1300, 7, 1),
         end_date=QDate(1300, 7, 1),
     )
-    canvas = window.timeline_widget.rows_view
+    canvas = timeline_probe.tape(window)
     await wait_for(lambda: len(canvas.events) == 1)
 
     event_id = helpers.click_timeline_event(window, "Война")
@@ -198,7 +198,7 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     await helpers.wait_until_settled()
     event_id = query_db(db_path, "SELECT id FROM events WHERE name = 'СобытиеПоиска'")[0][0]
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'ГеройПоиска'")[0][0]
-    canvas = window.timeline_widget.rows_view
+    canvas = timeline_probe.tape(window)
 
     # "event" result: the event's bar is selected on the scale (id-contract)
     window.search_bar.result_selected.emit("event", event_id)
@@ -226,7 +226,7 @@ async def test_search_result_descends_ladder_past_an_excluding_window(
     to «Все дни», repaint the tape and land the highlight on its card."""
     application, window = app
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await helpers.create_event_via_ui(
         window, wait_for, "Ранний",
         start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 1),
@@ -248,7 +248,7 @@ async def test_search_result_descends_ladder_past_an_excluding_window(
     ).ScaleUnit.MONTH
     widget.update_events(vm.events)
     await helpers.wait_until_settled()
-    assert view.level.name == "MONTH"
+    assert widget._vm.level.name == "MONTH"
     assert all(e.name != "Ранний" for e in view.events)  # excluded by the window
 
     # …and the search result for that very event must still reach it.
@@ -257,7 +257,7 @@ async def test_search_result_descends_ladder_past_an_excluding_window(
 
     assert vm.level.name == "DAY"                      # ladder descended
     assert vm.window is None                           # «Все дни» reset
-    assert view.level.name == "DAY"                    # the tape followed
+    assert widget._vm.level.name == "DAY"                    # the tape followed
     assert view.window == (None, None)
     assert view.selected_id == early_id                # card highlighted
     assert view.index_for_event(early_id) is not None  # …and pictured, visible
@@ -444,7 +444,7 @@ async def test_popup_create_failure_rolls_back_and_notifies(
 
     monkeypatch.setattr(application._entity_services["character"], "create_entity", boom)
 
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
     dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     loaded = helpers.watch_available_entity_load(dialog)
@@ -476,7 +476,7 @@ async def test_popup_cleanup_after_external_rollback(app, wait_for, modal_qdialo
     application, window = app
     db_path = application._db_path
 
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
     dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     loaded = helpers.watch_available_entity_load(dialog)
@@ -555,7 +555,7 @@ async def test_date_move_failure_reports_once_even_when_the_rollback_fails(
         start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 2),
     )
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     event_id = view.events[0].id
 
@@ -617,7 +617,7 @@ async def test_inline_create_failure_repaints_the_tape_and_reports_once(
         window, wait_for, "Якорь",
         start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 1),
     )
-    view = window.timeline_widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
 
     async def boom_create(*args, **kwargs):
@@ -644,7 +644,7 @@ async def test_inline_create_without_a_record_stops_before_the_panel(
     """No record came back (the ViewModel's own empty-name guard): no card is
     selected, the detail panel stays empty and no error is shown."""
     application, window = app
-    view = window.timeline_widget.rows_view
+    view = timeline_probe.tape(window)
     seen: list[tuple] = []
 
     async def no_record(day, name):
@@ -660,7 +660,7 @@ async def test_inline_create_without_a_record_stops_before_the_panel(
 
     assert seen == [(datetime.date(1200, 3, 5), "Черновик")]
     assert message_boxes == []
-    assert view._selected_id is None
+    assert view.selected_id is None
 
 
 async def test_sheet_list_refresh_skips_a_missing_or_dead_dialog(app, wait_for):

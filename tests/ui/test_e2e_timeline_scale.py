@@ -1,145 +1,134 @@
-"""E2E for the day-ladder zoom (task 8.2 rewrite of the retired scale e2e).
+"""E2E for the day-ladder zoom on the QML island (Q2.5a task 6.3 port).
 
-The pre-redesign scale e2e drove the Ctrl-wheel zoom, the rail jump, the
-rail range-drag and the header switchers — all deleted with the rail (design
-D9). Its replacement coverage offscreen lives in ``test_timeline_widget.py``
-and ``test_timeline_scale_widget.py``; this file keeps the whole-app contour:
-the Alt/Opt + wheel gesture on the REAL boot-wired list steps the ladder both
-ways (spec «Alt-колесо вместо Ctrl», «Лестница ступеней просмотра»), Ctrl is
-dead, and a click on a period card drills one rung down with the window set
-to the period while the selection stays put (spec «Проваливание выставляет
-окно»). Events are created through the real «+» dialog; the wheel is a
-synthetic ``QWheelEvent`` on the real list viewport.
+The pre-Q1 scale e2e drove the Ctrl-wheel zoom, the rail jump, the rail
+range-drag and the header switchers — all deleted with the rail. The whole-app
+contour lives on the island now: the Alt/Opt + wheel gesture on the REAL
+boot-wired panel steps the ladder both ways (spec «Alt-колесо вместо Ctrl»,
+«Лестница ступеней просмотра»), Ctrl is dead, one plain notch scrolls exactly
+one row (spec «Шаг прокрутки»), and a click on a period card drills one rung
+down with the window set to the period while the selection stays put (spec
+«Проваливание выставляет окно»). Events are created through the real «+»
+dialog; the wheel is a synthetic ``QWheelEvent`` on the island at the anchor
+row's scene position.
 """
 from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QDate, QPoint, QPointF, Qt
-from PySide6.QtGui import QWheelEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QDate, Qt
 
 from app.presentation.utils.date_utils import format_game_date
+from app.presentation.views.timeline_date_popup import WINDOW_CHIP_ALL
 from app.presentation.views.timeline_rows import (
     DayHeaderRow, PeriodCardRow, PeriodHeaderRow, ScaleUnit,
 )
-from app.presentation.views.timeline_widget import WINDOW_CHIP_ALL
-from tests.ui import helpers
-
-
-def _wheel(view, dy: int, modifiers=Qt.KeyboardModifier.NoModifier) -> None:
-    _wheel_at(view, dy, QPointF(view.viewport().rect().center()), modifiers)
-
-
-def _wheel_at(view, dy: int, pos: QPointF,
-              modifiers=Qt.KeyboardModifier.NoModifier) -> None:
-    """A wheel notch over an exact viewport position (anchor determinism)."""
-    vp = view.viewport()
-    QApplication.sendEvent(vp, QWheelEvent(
-        pos, vp.mapToGlobal(pos.toPoint()), QPoint(0, 0), QPoint(0, dy),
-        Qt.MouseButton.NoButton, modifiers,
-        Qt.ScrollPhase.NoScrollPhase, False,
-    ))
-    QApplication.processEvents()
-
-
-def _row_center(view, idx: int) -> QPointF:
-    return QPointF(view.visualItemRect(view.item(idx)).center())
-
-
-def _period_card(view, day: date) -> int:
-    return next(
-        i for i, r in enumerate(view.rows)
-        if isinstance(r, PeriodCardRow) and r.date == day
-    )
-
+from tests.ui import helpers, timeline_probe
 
 _ALT = Qt.KeyboardModifier.AltModifier
+_CTRL = Qt.KeyboardModifier.ControlModifier
 _EVENTS = [
     dict(start_date=QDate(1200, 3, 2), end_date=QDate(1200, 3, 5)),
     dict(start_date=QDate(1245, 6, 1), end_date=QDate(1245, 6, 2)),
 ]
 
 
+def _period_card(window, needle: date) -> int:
+    return next(
+        i for i, r in enumerate(timeline_probe.rows(window))
+        if isinstance(r, PeriodCardRow) and r.date == needle
+    )
+
+
 async def _boot_two_years_apart(app, wait_for):
     _application, window = app
     for spec in _EVENTS:
         await helpers.create_event_via_ui(window, wait_for, "Scale", **spec)
-    view = window.timeline_widget.rows_view
-    await wait_for(lambda: len(view.events) == 2)
-    return window, view
+    tape = timeline_probe.tape(window)
+    await wait_for(lambda: len(tape.events) == 2)
+    return window, tape
 
 
 async def test_alt_wheel_steps_the_booted_ladder_both_ways(app, wait_for):
-    """Task 8.2 / spec «Alt-колесо вместо Ctrl»: on the boot-wired panel the
+    """Task 8.2 / spec «Alt-колесо вместо Ctrl»: on the boot-wired island the
     Alt/Opt wheel moves сутки → месяц → год (clamped at год), the tape really
-    re-models to counter cards, Ctrl leaves every layer untouched, and the way
-    back descends rung by rung to days — every descent installing the anchor
-    period as the window (chip caption included, task 9 defects b/a)."""
-    window, view = await _boot_two_years_apart(app, wait_for)
+    re-models to counter cards, Ctrl leaves every layer untouched, a plain
+    notch steps exactly one row, and the way back descends rung by rung to
+    days — every descent installing the anchor period as the window (chip
+    caption included, task 9 defects b/a)."""
+    window, tape = await _boot_two_years_apart(app, wait_for)
     panel = window.timeline_widget
     assert panel._vm.level is ScaleUnit.DAY
 
-    _wheel(view, -120, _ALT)
+    list_center = timeline_probe.scene_point(window, timeline_probe.event_list(window))
+    timeline_probe.wheel(window, list_center, -120, _ALT)
     await helpers.wait_until_settled()
     assert panel._vm.level is ScaleUnit.MONTH
-    _wheel(view, -120, _ALT)
+    timeline_probe.wheel(window, list_center, -120, _ALT)
     await helpers.wait_until_settled()
     assert panel._vm.level is ScaleUnit.YEAR
     assert all(
-        isinstance(r, PeriodHeaderRow | PeriodCardRow) for r in view.rows
+        isinstance(r, PeriodHeaderRow | PeriodCardRow) for r in tape.rows
     )
 
-    _wheel(view, -120, _ALT)  # clamped at «год» — silent
+    timeline_probe.wheel(window, list_center, -120, _ALT)  # clamped at «год»
     await helpers.wait_until_settled()
     assert panel._vm.level is ScaleUnit.YEAR
 
-    bar_before = view.verticalScrollBar().value()
-    _wheel(view, -120, Qt.KeyboardModifier.ControlModifier)  # dead gesture
+    scroll_before = timeline_probe.content_y(window)
+    timeline_probe.wheel(window, list_center, -120, _CTRL)  # dead gesture
     await helpers.wait_until_settled()
     assert panel._vm.level is ScaleUnit.YEAR
-    assert view.verticalScrollBar().value() == bar_before
+    assert timeline_probe.content_y(window) == scroll_before
+
+    # Spec «Шаг прокрутки»: one plain notch == exactly one row on the island.
+    timeline_probe.set_content_y(window, 0)
+    timeline_probe.wheel(window, list_center, -120)
+    assert abs(timeline_probe.content_y(window)
+               - timeline_probe.root(window).property("rowHeight")) < 0.01
 
     # The way back is steered by the cursor so the anchors are exact. Task 9
     # defect (b), spec «Приближение от карточки события»: the inward wheel is
     # a descent — the anchor period becomes the window («ступень — сутки,
     # окно — август»); defect (a)'s chip caption follows on both descents.
-    view.verticalScrollBar().setValue(0)
-    _wheel_at(view, 120, _row_center(view, _period_card(view, date(1200, 1, 1))), _ALT)
+    timeline_probe.set_content_y(window, 0)
+    timeline_probe.pump(4)
+    anchor = _period_card(window, date(1200, 1, 1))
+    timeline_probe.reveal(window, anchor)
+    timeline_probe.wheel(window, timeline_probe.row_center(window, anchor), 120, _ALT)
     await helpers.wait_until_settled()
     assert panel._vm.level is ScaleUnit.MONTH
     assert panel._vm.window == (date(1200, 1, 1), date(1200, 12, 31))
-    assert panel.window_chip.text() != WINDOW_CHIP_ALL
-    _wheel_at(view, 120, _row_center(view, _period_card(view, date(1200, 3, 1))), _ALT)
+    assert timeline_probe.chip_caption(window) != WINDOW_CHIP_ALL
+    anchor = _period_card(window, date(1200, 3, 1))
+    timeline_probe.reveal(window, anchor)
+    timeline_probe.wheel(window, timeline_probe.row_center(window, anchor), 120, _ALT)
     await helpers.wait_until_settled()
     assert panel._vm.level is ScaleUnit.DAY
     assert panel._vm.window == (date(1200, 3, 1), date(1200, 3, 31))
     bounds = (format_game_date(date(1200, 3, 1)), format_game_date(date(1200, 3, 31)))
-    assert panel.window_chip.text() == f"{bounds[0]} — {bounds[1]} ▾"
-    assert all(
-        date(1200, 3, 1) <= r.date <= date(1200, 3, 31) for r in view.rows
-    )
-    await wait_for(lambda: any(isinstance(r, DayHeaderRow) for r in view.rows))
+    assert timeline_probe.chip_caption(window) == f"{bounds[0]} — {bounds[1]} ▾"
+    for r in tape.rows:
+        d = getattr(r, "date", None)
+        if d is not None:
+            assert date(1200, 3, 1) <= d <= date(1200, 3, 31)
+    await wait_for(lambda: any(isinstance(r, DayHeaderRow) for r in tape.rows))
 
 
 async def test_period_card_click_drills_with_the_period_window(app, wait_for):
     """Task 8.2 / spec «Проваливание выставляет окно»: from «месяц» a click on
-    the March card drops to сутки with window = 1–31 марта — the button caption
+    the March card drops to сутки with window = 1–31 марта — the chip caption
     and the day tape follow, and no event gets selected."""
-    window, view = await _boot_two_years_apart(app, wait_for)
+    window, tape = await _boot_two_years_apart(app, wait_for)
     panel = window.timeline_widget
     panel._vm.level = ScaleUnit.MONTH
     panel._sync_from_vm()
     panel.update_events(panel._vm.events)
     await helpers.wait_until_settled()
+    timeline_probe.pump(4)
 
-    march = next(
-        i for i, r in enumerate(view.rows)
-        if isinstance(r, PeriodCardRow) and r.date == date(1200, 3, 1)
-    )
-    rect = view.visualItemRect(view.item(march))
-    assert rect.isValid()
-    panel.rows_view._on_clicked(view.model().index(march, 0))
+    march = _period_card(window, date(1200, 3, 1))
+    timeline_probe.reveal(window, march)
+    timeline_probe.click(window, timeline_probe.row_center(window, march))
     await helpers.wait_until_settled()
 
     await wait_for(lambda: panel._vm.level is ScaleUnit.DAY)
@@ -147,9 +136,27 @@ async def test_period_card_click_drills_with_the_period_window(app, wait_for):
     # Task 9 defect (a): the chip mirrors the drilled window — «Все дни» here
     # means the caption missed a window the VM already owns.
     bounds = (format_game_date(date(1200, 3, 1)), format_game_date(date(1200, 3, 31)))
-    assert panel.window_chip.text() == f"{bounds[0]} — {bounds[1]} ▾"
+    assert timeline_probe.chip_caption(window) == f"{bounds[0]} — {bounds[1]} ▾"
     # The tape re-models to exactly the windowed March days, top row first.
-    assert isinstance(view.rows[0], DayHeaderRow)
-    assert view.rows[0].date == date(1200, 3, 1)  # top of the tape = 1 марта
-    assert all(r.date <= date(1200, 3, 31) for r in view.rows)
-    assert view.selected_id is None  # a drill selects nothing
+    assert isinstance(tape.rows[0], DayHeaderRow)
+    assert tape.rows[0].date == date(1200, 3, 1)  # top of the tape = 1 марта
+    assert all(r.date <= date(1200, 3, 31) for r in tape.rows)
+    assert timeline_probe.selected_id(window) is None  # a drill selects nothing
+
+
+async def test_migrated_header_tooltips_are_the_old_texts(app, wait_for):
+    """Spec qml-shell «Нативный шим всплывающих подсказок для островов»: the
+    перенесённых header tooltips are declared verbatim on the island through
+    the library's ``Nri.tooltip`` scope (the chip's «Выбор даты» is pinned in
+    test_e2e_hide_empty_toggle; the rows' dynamic summary — in
+    tests/presentation/test_timeline_row_model.py)."""
+    _application, window = app
+    await wait_for(lambda: timeline_probe.tooltip_of(window, "jumpNext") is not None)
+    assert timeline_probe.tooltip_of(window, "addButton") == (
+        "Добавить событие (правый клик — другие сущности)")
+    assert timeline_probe.tooltip_of(window, "hideEmptyToggle") == (
+        "Скрыть пустые дни, схлопнутые провалы и пустые периоды")
+    assert timeline_probe.tooltip_of(window, "jumpNext") == (
+        "К следующему событию (Alt+Down)")
+    assert timeline_probe.tooltip_of(window, "jumpPrev") == (
+        "К предыдущему событию (Alt+Up)")

@@ -3,7 +3,8 @@
 Targets the gaps left by the happy-path tests: validation branches, image
 picking (file dialogs stubbed), related-entity linking/removal (modal
 picker auto-accepted), music-URL edit toggle, special date/summary branches,
-world-snapshot edge cases, and the timeline "+” context menu.
+world-snapshot edge cases. (The timeline «+» context menu moved with the
+island facade — covered in ``test_timeline_island.py``, task 3.3.)
 """
 from __future__ import annotations
 
@@ -13,15 +14,13 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QDialog, QMenu, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 import app.presentation.views.detail_panel as _detail_panel_mod
-import app.presentation.views.timeline_widget as _timeline_mod
 import app.presentation.views.world_snapshot_widget as _world_snapshot_mod
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
-from app.presentation.views.timeline_widget import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget, _colored_circle
 
 
@@ -238,81 +237,6 @@ class TestWorldSnapshotGaps:
         w.populate([ev], None)
         node = w.tree.topLevelItem(1).child(0)
         assert "Тайный убийца гильдии" in node.toolTip(0)
-
-
-# ── TimelineWidget: "+" context menu ───────────────────────────────────────
-
-def _stub_timeline_menu(monkeypatch, chooser):
-    """Replace the timeline module's QMenu with a subclass whose exec is stubbed.
-
-    PySide6 does not dispatch C++ methods through plain class-attribute
-    overrides (a class-level patch on QMenu is bypassed by instance calls),
-    so the QMenu symbol of the module that constructs the menu is swapped.
-    The chooser receives the menu and returns the action to ``exec`` with.
-    """
-
-    class _StubQMenu(QMenu):
-        def exec(self, *args, **kwargs):  # Qt API name
-            return chooser(self)
-
-    monkeypatch.setattr(_timeline_mod, "QMenu", _StubQMenu)
-
-
-class TestTimelineContextMenuGap:
-    def test_context_menu_new_event(self, qtbot, monkeypatch):
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        _stub_timeline_menu(monkeypatch, lambda menu: menu.actions()[0])
-        received = []
-        w.add_event_requested.connect(lambda: received.append(1))
-        w._on_add_context_menu(w.add_button.rect().center())
-        assert received == [1]
-
-    def test_context_menu_new_item_entity(self, qtbot, monkeypatch):
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        # W4 added «Типы событий…» past the create items — resolve by text.
-        _stub_timeline_menu(
-            monkeypatch,
-            lambda menu: next(a for a in menu.actions() if a.text() == "Новый предмет"),
-        )
-        received = []
-        w.add_entity_requested.connect(received.append)
-        w._on_add_context_menu(w.add_button.rect().center())
-        assert received == ["item"]  # "Новый предмет" stays in the menu (W4 6.2)
-
-    def test_context_menu_event_types_entry(self, qtbot, monkeypatch):
-        # W4 6.2: «Типы событий…» opens the set editor via its own signal.
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        _stub_timeline_menu(
-            monkeypatch,
-            lambda menu: w.event_types_action,
-        )
-        received: list = []
-        w.event_types_requested.connect(lambda: received.append(1))
-        w.add_event_requested.connect(lambda: received.append("event"))
-        w._on_add_context_menu(w.add_button.rect().center())
-        assert received == [1]
-
-    def test_context_menu_no_action_emits_nothing(self, qtbot, monkeypatch):
-        vm = MagicMock()
-        vm.events = []
-        w = TimelineWidget(vm)
-        qtbot.addWidget(w)
-        _stub_timeline_menu(monkeypatch, lambda menu: None)
-        event_rx: list = []
-        entity_rx: list = []
-        w.add_event_requested.connect(lambda: event_rx.append(1))
-        w.add_entity_requested.connect(entity_rx.append)
-        w._on_add_context_menu(w.add_button.rect().center())
-        assert event_rx == [] and entity_rx == []
 
 
 # ── EntityCardDialog: music toggle, image pick, related section, reject ────

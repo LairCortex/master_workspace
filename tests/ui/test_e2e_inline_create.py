@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import datetime
 
-from PySide6.QtCore import QDate, QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import QDate, Qt
+from PySide6.QtTest import QTest
 
 from app.presentation.views.timeline_rows import EmptyDayRow
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
 
@@ -22,27 +22,20 @@ def _ymd(value) -> str:
     return str(value)[:10]
 
 
-def _press_and_release(view, point) -> None:
-    """A full left click on the list viewport at ``point`` (drives ``clicked``)."""
-    vp = view.viewport()
-    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
-    for kind, buttons in (
-        (QEvent.Type.MouseButtonPress, left),
-        (QEvent.Type.MouseButtonRelease, none),
-    ):
-        helpers._mouse(vp, point, kind, left, buttons)
-
-
 def _click_empty_day(window, day) -> None:
-    """Scroll the given day's placeholder into view and click it."""
-    view = window.timeline_widget.rows_view
+    """Reveal the given day's placeholder on the island and click it."""
+    rows = timeline_probe.rows(window)
     idx = next(
-        i for i, r in enumerate(view.rows)
+        i for i, r in enumerate(rows)
         if isinstance(r, EmptyDayRow) and r.date == day
     )
-    view.scrollToItem(view.item(idx))
-    point = view.visualItemRect(view.item(idx)).center()
-    _press_and_release(view, point)
+    timeline_probe.reveal(window, idx)
+    timeline_probe.click(window, timeline_probe.row_center(window, idx))
+
+
+def _editor(window):
+    """The one reused inline TextField of the island."""
+    return timeline_probe.item(window, "timelineInlineEditor")
 
 
 async def test_inline_create_from_empty_day(app, wait_for):
@@ -55,7 +48,7 @@ async def test_inline_create_from_empty_day(app, wait_for):
         end_date=QDate(1200, 3, 1),
     )
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     # Pin a 6-day window so the eventless Mar 2..Mar 6 stand as placeholders.
     widget._on_window_range(
@@ -68,20 +61,24 @@ async def test_inline_create_from_empty_day(app, wait_for):
     )
 
     _click_empty_day(window, datetime.date(1200, 3, 3))
-    assert view.inline_editor.isVisible()
-    assert view.editing_day == datetime.date(1200, 3, 3)
+    timeline_probe.pump(4)
+    assert _editor(window).property("visible") is True
+    assert timeline_probe.root(window).property("editingDayIndex") >= 0
 
-    view.inline_editor.setText("Засека")
-    view.inline_editor.returnPressed.emit()
+    # Mirrors the retired widget's e2e (direct ``setText`` on the field):
+    # QTest.keyClicks is ASCII-only — it aborts on anything non-Latin1.
+    _editor(window).setProperty("text", "Засека")
+    timeline_probe.pump(2)
+    QTest.keyClick(timeline_probe.quick(window), Qt.Key.Key_Return)
     await helpers.wait_until_settled()
 
     assert helpers.has_event_named(window, "Засека")
     eid = helpers.find_event_id(window, "Засека")
     # The new event is selected and its card is pictured (spec «карточка
     # видна и выбрана»).
-    assert view.selected_id == eid
+    assert timeline_probe.selected_id(window) == eid
     assert view.index_for_event(eid) is not None
-    assert not view.inline_editor.isVisible()  # the field dismissed itself
+    assert _editor(window).property("visible") is False  # field dismissed
 
     row = query_db(
         application._db_path,
@@ -103,7 +100,7 @@ async def test_inline_create_empty_draft_creates_nothing(app, wait_for):
         end_date=QDate(1200, 3, 1),
     )
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await wait_for(lambda: len(view.events) == 1)
     widget._on_window_range(
         datetime.date(1200, 3, 1), datetime.date(1200, 3, 6),
@@ -112,12 +109,13 @@ async def test_inline_create_empty_draft_creates_nothing(app, wait_for):
     before = {e.id for e in view.events}
 
     _click_empty_day(window, datetime.date(1200, 3, 3))
-    assert view.inline_editor.isVisible()
-    view.inline_editor.returnPressed.emit()  # empty draft
+    timeline_probe.pump(4)
+    assert _editor(window).property("visible") is True
+    QTest.keyClick(timeline_probe.quick(window), Qt.Key.Key_Return)  # empty draft
     await helpers.wait_until_settled()
 
     assert {e.id for e in view.events} == before  # nothing added
-    assert not view.inline_editor.isVisible()
+    assert _editor(window).property("visible") is False
     rows = query_db(
         application._db_path, "SELECT COUNT(*) FROM events", ()
     )[0][0]

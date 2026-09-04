@@ -16,7 +16,7 @@ from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
-from app.presentation.views.timeline_widget import TimelineWidget
+from app.presentation.views.timeline_island import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 
 log = logging.getLogger(__name__)

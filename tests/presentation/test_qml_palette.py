@@ -24,12 +24,29 @@ from app.presentation.theme.runtime import ThemeRuntime
 
 # Derived key names are the palette's contract with the qml code (group 5
 # reads them from here); spelled out literally so the test fails on a rename.
-DERIVED_KEYS = frozenset({"color.accent.hover", "color.accent.pressed", "style.mention"})
+DERIVED_KEYS = frozenset({
+    "color.accent.hover",
+    "color.accent.pressed",
+    # Timeline tape washes (change port-event-timeline-qml-island-q2-5a,
+    # spec event-timeline «Оформление шкалы из токенов»: hover/ghost are
+    # color.accent derivatives computed by the compiler). QML's color parser
+    # is QColor::setNamedColor and does not read the CSS rgba() form, so the
+    # wash arrives as a COLOR + OPACITY token pair, both compiler-derived.
+    "color.accent.rowHover",
+    "color.accent.ghost",
+    "opacity.accent.rowHover",
+    "opacity.accent.ghost",
+    "style.mention",
+})
 
 # The alphas compile_qss embeds into its QPushButton:hover/:pressed rules —
 # the palette must derive with the very same numbers to match QSS output.
 HOVER_ALPHA = 0.85
 PRESSED_ALPHA = 0.7
+# The timeline tape's migrated wash alphas (the retired widget's knobs;
+# the ghost's 0.35 is pinned by the spec itself).
+ROW_HOVER_ALPHA = 0.25
+GHOST_ALPHA = 0.35
 
 
 @pytest.fixture
@@ -76,6 +93,15 @@ def test_derived_keys_match_the_qss_compiler_output(runtime):
 
     assert palette["color.accent.hover"] == accent_rgba(tokens, runtime.theme, HOVER_ALPHA)
     assert palette["color.accent.pressed"] == accent_rgba(tokens, runtime.theme, PRESSED_ALPHA)
+    # The timeline washes (port-q2-5a): the accent verbatim as the wash
+    # color plus its compiler-decided alpha as a scalar (the wash alphas
+    # the retired widget applied inline — the compiler stays the only
+    # color engine; these keys are the delegate's QML contract, hex+scalar
+    # because QML cannot parse the rgba() form).
+    assert palette["color.accent.rowHover"] == tokens["color.accent"][runtime.theme]
+    assert palette["color.accent.ghost"] == tokens["color.accent"][runtime.theme]
+    assert palette["opacity.accent.rowHover"] == f"{ROW_HOVER_ALPHA:g}"
+    assert palette["opacity.accent.ghost"] == f"{GHOST_ALPHA:g}"
     assert palette["style.mention"] == mention_style(tokens, runtime.theme)
     # The derived strings are the exact literals compile_qss embeds in its
     # :hover/:pressed rules — no second color derivation appeared (D3).

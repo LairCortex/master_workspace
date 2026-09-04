@@ -1,10 +1,15 @@
 """Tests for ViewModels — TDD: tests first."""
+import gc
+import weakref
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
+from app.presentation.viewmodels.timeline_viewmodel import (
+    TimelineViewModel,
+    _RowEntry,
+)
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
@@ -16,6 +21,9 @@ from app.presentation.views.timeline_rows import (
     PeriodCardRow,
     PeriodHeaderRow,
     ScaleUnit,
+    build_rows,
+    header_caption,
+    sticky_state,
 )
 
 
@@ -514,6 +522,279 @@ class TestTimelineViewModel:
         await vm.create_event_at(day, "  Tavern  ")
 
         assert service.create_event.await_args.kwargs["name"] == "Tavern"
+
+
+# ── TimelineViewModel — QML island model & invokables (Q2.5a tasks 1.2/1.3) ──
+
+class TestTimelineViewModelIslandModel:
+    """``row_model`` and the sync invokables the QML island calls (design D7).
+
+    Seed style mirrors :class:`TestTimelineViewModel` (AsyncMock service,
+    ``_span`` event doubles); windows are pinned so row indices are exact."""
+
+    JAN = (date(1200, 1, 4), date(1200, 1, 9))
+
+    @staticmethod
+    def _vm_with(*events):
+        service = AsyncMock()
+        service.get_all_events.return_value = list(events)
+        return service, TimelineViewModel(service)
+
+    async def _loaded(self, *events, window=None):
+        service, vm = self._vm_with(*events)
+        if window is not None:
+            vm.window = window
+        await vm.load_events()
+        return vm
+
+    # ── row_model property (task 1.1/1.2 sync) ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_row_model_is_stable_and_synced_with_rows(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        e2 = _span(2, "Fair", date(1200, 1, 7), date(1200, 1, 7))
+        vm = await self._loaded(e1, e2, window=self.JAN)
+        model = vm.row_model
+        assert model is vm.row_model  # the one model instance for the session
+        assert model.rowCount() == len(vm.rows) > 0
+        vm.level = ScaleUnit.MONTH
+        assert model.rowCount() == len(vm.rows)
+        assert vm.rowModel is model  # the QML alias exposes the same object
+
+    @pytest.mark.asyncio
+    async def test_identical_reload_never_re_resets_the_model(self):
+        """The memoized identical-slice path (design D7 «update_events no-op»)
+        keeps feeding NO model reset — QML never re-delivers the whole array
+        without a reason (spec «Длинная лента не пересобирается целым
+        массивом»)."""
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        service, vm = self._vm_with(e1)
+        resets: list[int] = []
+        vm.row_model.modelReset.connect(lambda: resets.append(1))
+        await vm.load_events()
+        assert len(resets) == 1  # the first real re-model is a reset
+        vm.select_event_by_id(1)  # selection repaints via root properties…
+        await vm.load_events()    # …an identical reload stays silent
+        assert len(resets) == 1
+        assert vm.row_model.rowCount() == len(vm.rows)
+
+    @pytest.mark.asyncio
+    async def test_model_reset_replaces_entries_knob_change(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1, window=self.JAN)
+        before = [entry.kind for entry in vm.row_model.entries]
+        vm.hide_empty = True
+        after = [entry.kind for entry in vm.row_model.entries]
+        assert before != after  # the reset re-fed the whole ladder
+        expected = build_rows(vm.events, vm.window, vm.level, True)
+        kinds = {"DayHeaderRow": "dayHeader", "EventRow": "event",
+                 "EmptyDayRow": "emptyDay", "GapCollapsedRow": "gap",
+                 "PeriodHeaderRow": "periodHeader", "PeriodCardRow": "periodCard"}
+        assert after == [kinds[type(r).__name__] for r in expected]
+
+    # ── scrollToEvent ────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_scroll_to_event_returns_first_card_index(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 7))
+        vm = await self._loaded(e1, window=self.JAN)
+        idx = vm.scrollToEvent(1)
+        assert isinstance(vm.rows[idx], EventRow) and vm.rows[idx].event_id == 1
+        assert idx == min(i for i, r in enumerate(vm.rows)
+                          if isinstance(r, EventRow) and r.event_id == 1)
+        model = vm.row_model
+        assert model.data(model.index(idx), model.EVENT_ID_ROLE) == 1
+
+    @pytest.mark.asyncio
+    async def test_scroll_to_event_unknown_id_returns_minus_one(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1, window=self.JAN)
+        assert vm.scrollToEvent(999) == -1
+
+    # ── stickyInfo ───────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_sticky_info_wraps_core_state_with_ready_rows(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        e2 = _span(2, "Fair", date(1200, 1, 7), date(1200, 1, 7))
+        vm = await self._loaded(e1, e2, window=self.JAN)
+        info = vm.stickyInfo(0)
+        assert info["currentIndex"] == 0
+        assert info["currentText"] == header_caption(vm.rows[0])
+        assert info["nextText"] == header_caption(
+            vm.rows[info["nextIndex"]]
+        )
+
+    @pytest.mark.asyncio
+    async def test_sticky_info_empty_tape_answers_none_indices(self):
+        _, vm = self._vm_with()
+        info = vm.stickyInfo(0)
+        assert info == {
+            "currentIndex": -1, "currentText": "",
+            "nextIndex": -1, "nextText": "",
+        }
+        # The no-rows/no-op guards of the other invokables on an empty tape.
+        assert vm.jump(1) == -1
+        assert vm.scrollToEvent(1) == -1
+        assert vm.drill(0) is False
+
+    def test_index_for_event_none_id_is_a_plain_miss(self):
+        _, vm = self._vm_with()
+        assert vm.index_for_event(None) is None
+
+    # ── zoomStep ─────────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_zoom_in_from_period_installs_the_period_window(self):
+        """«Приближение от карточки события»: ступень — сутки, окно — сезон
+        карточки — the same descent rule as :meth:`drill` (D4)."""
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1)  # «Все дни» content window
+        vm.level = ScaleUnit.MONTH
+        card = next(i for i, r in enumerate(vm.rows) if isinstance(r, PeriodCardRow))
+        vm.zoomStep(card, +1)
+        assert vm.level is ScaleUnit.DAY
+        assert vm.window == (date(1200, 1, 1), date(1200, 1, 31))
+
+    @pytest.mark.asyncio
+    async def test_zoom_out_never_touches_the_window_and_clamps(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1, window=self.JAN)
+        vm.zoomStep(0, -1)
+        assert vm.level is ScaleUnit.MONTH
+        vm.zoomStep(0, -1)
+        assert vm.level is ScaleUnit.YEAR
+        assert vm.window == self.JAN  # «Якорь при отдалении» — окно не трогает
+        vm.zoomStep(0, -1)  # clamped at «год» — silently inert
+        assert vm.level is ScaleUnit.YEAR
+        vm.zoomStep(0, +1)
+        assert vm.level is ScaleUnit.MONTH  # …and back up one rung
+        assert vm.window == (date(1200, 1, 1), date(1200, 12, 31))
+        # Zooming IN from a period row installs the anchor's own period.
+        vm.zoomStep(len(vm.rows), +1)  # off-tape anchor: descent, window kept
+        assert vm.level is ScaleUnit.DAY
+        assert vm.window == (date(1200, 1, 1), date(1200, 12, 31))
+
+    # ── drill ────────────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_drill_sets_rung_and_window_never_selects(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1, window=self.JAN)
+        vm.level = ScaleUnit.MONTH
+        selection_signals: list[int] = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+        card = next(i for i, r in enumerate(vm.rows) if isinstance(r, PeriodCardRow))
+        assert vm.drill(card) is True
+        assert vm.level is ScaleUnit.DAY
+        assert vm.window == (date(1200, 1, 1), date(1200, 1, 31))
+        assert selection_signals == []  # a drill re-models, it does not select
+
+    @pytest.mark.asyncio
+    async def test_drill_rejects_non_period_rows(self):
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1, window=self.JAN)
+        vm.level = ScaleUnit.MONTH
+        header = next(i for i, r in enumerate(vm.rows)
+                      if isinstance(r, PeriodHeaderRow))
+        assert vm.drill(header) is False
+        assert vm.drill(-1) is False
+        assert vm.drill(len(vm.rows)) is False
+        assert vm.level is ScaleUnit.MONTH
+        assert vm.window == self.JAN
+
+    # ── jump (Alt+Up/Down, «jump никогда не выбирает») ──────────────────────
+
+    @pytest.mark.asyncio
+    async def test_jump_walks_between_events_never_selecting(self):
+        e1 = _span(1, "A", date(1200, 1, 5), date(1200, 1, 5))
+        e2 = _span(2, "B", date(1200, 1, 6), date(1200, 1, 6))
+        e3 = _span(3, "C", date(1200, 1, 8), date(1200, 1, 8))
+        vm = await self._loaded(e1, e2, e3, window=self.JAN)
+        selection_signals: list[int] = []
+        vm.selected_event_changed.connect(lambda: selection_signals.append(1))
+        vm.select_event_by_id(1)
+        forward = vm.jump(1)
+        assert isinstance(vm.rows[forward], EventRow) and vm.rows[forward].event_id == 2
+        assert vm.selected_event.id == 1  # navigating kept the selection 1:1
+        assert selection_signals == [1]   # only the explicit select fired
+        assert vm.jump(-1) == -1  # nothing before the head-ward other event
+
+    @pytest.mark.asyncio
+    async def test_jump_anchor_follows_scroll_to_event(self):
+        """No selection: the scan starts from the last revealed card — the
+        widget's currentRow anchor, mirrored by ``scrollToEvent``."""
+        e1 = _span(1, "A", date(1200, 1, 5), date(1200, 1, 5))
+        e2 = _span(2, "B", date(1200, 1, 6), date(1200, 1, 6))
+        e3 = _span(3, "C", date(1200, 1, 8), date(1200, 1, 8))
+        vm = await self._loaded(e1, e2, e3, window=self.JAN)
+        assert vm.scrollToEvent(3) >= 0
+        back = vm.jump(-1)
+        assert isinstance(vm.rows[back], EventRow) and vm.rows[back].event_id == 2
+        assert vm.selected_event is None  # the anchor moved, the selection didn't
+
+    @pytest.mark.asyncio
+    async def test_jump_skips_the_duplicates_of_one_event(self):
+        """A multi-day event's day cards are one participant (W3b corridor):
+        the jumps walk between events, not between a single event's cards."""
+        e1 = _span(1, "Long", date(1200, 1, 5), date(1200, 1, 7))  # 3 cards
+        e2 = _span(2, "Before", date(1200, 1, 4), date(1200, 1, 4))
+        vm = await self._loaded(e1, e2, window=self.JAN)
+        vm.select_event_by_id(1)
+        assert vm.jump(0) == -1  # a zero step is not a direction
+        assert vm.jump(1) == -1  # all forward cards belong to event 1
+        back = vm.jump(-1)
+        assert isinstance(vm.rows[back], EventRow) and vm.rows[back].event_id == 2
+
+    # ── uniqueness invariant (task 1.3) ──────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_row_model_holds_no_second_copy_of_the_events(self):
+        """Мемо-хозяйство панелей не наследуется: the VM keeps the ONE source
+        set (``events``/``all_events``); the render path (rows + model) is
+        pure derived state — entries carry scalars only and an event object
+        never survives anywhere inside the VM once the sample is replaced."""
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 7))
+        e2 = _span(2, "Fair", date(1200, 1, 8), None)
+        service, vm = self._vm_with(e1, e2)
+        refs = [weakref.ref(e) for e in (e1, e2)]
+        await vm.load_events()
+        vm.select_event_by_id(1)
+        vm.scrollToEvent(1)
+        vm.jump(1)
+
+        source_ids = {e.id for e in vm.events}
+        allowed = (str, int, bool, type(None), date, dict)
+        for entry in vm.row_model.entries:
+            for slot in _RowEntry.__slots__:
+                value = getattr(entry, slot)
+                assert isinstance(value, allowed), (slot, type(value))
+                if isinstance(value, dict):
+                    for nested in value.values():
+                        assert isinstance(nested, (str, int, bool, type(None)))
+            assert entry.event_id is None or entry.event_id in source_ids
+        # Derived, not stored: the model equals a fresh projection of the SAME
+        # single source — never a second maintained copy.
+        assert vm.row_model.rowCount() == len(
+            build_rows(vm.events, vm.window, vm.level, vm.hide_empty)
+        )
+
+        service.get_all_events.return_value = [
+            _span(9, "Next", date(1201, 1, 1), date(1201, 1, 1))
+        ]
+        await vm.load_events()
+        del e1, e2
+        gc.collect()
+        assert all(ref() is None for ref in refs)  # nothing in the VM kept them
+
+    @pytest.mark.asyncio
+    async def test_index_at_date_past_the_tail_lands_on_the_last_row(self):
+        """The anchor back-map re-enters a date behind the tape onto its last
+        position (the widget's ``_index_at_date`` 1:1 — never ``-1``; callers
+        guard the empty tape themselves)."""
+        e1 = _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5))
+        vm = await self._loaded(e1, window=self.JAN)
+        assert vm._index_at_date(date(1299, 1, 1)) == len(vm.rows) - 1
 
 
 

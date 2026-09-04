@@ -25,6 +25,7 @@ from app.presentation.views.ai_assist_button import (
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
+from tests.ui import timeline_probe
 from tests.ui.conftest import CANNED_LLM_CONTENT
 
 WORLD_PROMPT = "Тёмное фэнтези: империя на руинах древней войны."
@@ -42,7 +43,7 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert llm_vm.status == llm_vm.STATUS_NOT_CONFIGURED
 
     # ── Open the event dialog first: AI button is inactive until the LLM is configured
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: bool(window.findChildren(EventDialog)))
     dialog = window.findChildren(EventDialog)[0]
     name_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "name")
@@ -201,7 +202,7 @@ async def test_single_generation_error_shows_warning_with_field_name(
     application, window = app_401
     llm_vm = application._llm_vm
 
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: bool(window.findChildren(EventDialog)))
     dialog = window.findChildren(EventDialog)[0]
     name_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "name")

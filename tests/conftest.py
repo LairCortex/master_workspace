@@ -54,6 +54,32 @@ def isolated_qml_shell():
     reset_qml_shell()
 
 
+@pytest.fixture(autouse=True)
+def no_stale_windows():
+    """Hide any top-level widget a test leaves visible at teardown.
+
+    Offscreen routing detail this guards: a window still on screen from a
+    previous test (e.g. a game-switch flow where the app swaps MainWindows
+    and teardown closes only the fixture's one) keeps owning the process's
+    window-level pointer routing — spontaneous mouse moves then never deliver
+    hover to the bare QQuickWidget islands the timeline tests build. Qt does
+    not dispose windows Python forgot about; hide every leak here, so the
+    next test starts from a clean top-level list.
+    """
+    yield
+    from PySide6.QtWidgets import QApplication
+
+    app_instance = QApplication.instance()
+    if app_instance is None:
+        return
+    for widget in list(app_instance.topLevelWidgets()):
+        try:
+            if widget.isVisible():
+                widget.hide()
+        except RuntimeError:
+            pass  # C++ side already gone
+
+
 @pytest_asyncio.fixture
 async def async_engine():
     # App's create_engine registers a unicode-aware SQLite lower() —

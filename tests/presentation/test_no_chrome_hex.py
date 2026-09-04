@@ -90,9 +90,11 @@ def test_chrome_screens_scan_actual_files():
     scanned = [p for p in VIEWS_DIR.rglob("*.py") if not _is_whitelisted(p)]
     names = {p.name for p in scanned}
     assert "main_window.py" in names and "llm_setup_dialog.py" in names
-    # W4 acceptance (task 7.2): the updated scale panel — the file with the
-    # most new painting code — must stay on this scan list.
-    assert "timeline_widget.py" in names
+    # W4 acceptance (task 7.2), re-pinned by Q2.5a (task 5.2): the scale
+    # panel's Python side — the file with the most new painting code, now
+    # the island facade (its QML half is scanned by the qml pass below) —
+    # must stay on this scan list.
+    assert "timeline_island.py" in names
     assert len(scanned) > 15
 
 

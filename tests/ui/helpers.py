@@ -14,11 +14,11 @@ from PySide6.QtCore import QDate
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QListWidget, QWidget
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtCore import Qt
 
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
+from tests.ui import timeline_probe
 
 #: entity type → DB table (for query_db assertions)
 ENTITY_TABLES: dict[str, str] = {
@@ -57,85 +57,47 @@ def pick_menu_action(menu_qmenu, text: str) -> None:
     menu_qmenu.choose(chooser)
 
 
-# ── Timeline row interaction (day-ladder: events are cards in day sections) ──
-
-#: Left inset into the card's text zone where a synthetic click lands — the
-#: type dot sits further left, and a point on the name is the click a user
-#: makes (the old rail zone is deleted with the rail, task 3.1).
-_ROW_HIT_INSET = 14
-
-
-def timeline_view(window) -> QWidget:
-    """The vertical day-scale ``QListWidget`` of the main window's timeline."""
-    return window.timeline_widget.rows_view
-
+# ── Timeline row interaction (Q2.5a: the day ladder is a QML island) ────────
+#
+# The widgets ``rows_view`` is gone (change port-event-timeline-qml-island-
+# q2-5a, design D10): rows/events/selection are read off the ViewModel via
+# ``timeline_probe`` and clicks are real synthetic input on the island's
+# ``QQuickWidget`` at the delegate's scene position.
 
 def has_event_named(window, name: str) -> bool:
     """True when an event whose name contains ``name`` is on the scale."""
-    return any(name in e.name for e in timeline_view(window).events)
+    return any(name in e.name for e in timeline_probe.events(window))
 
 
 def find_event_id(window, name: str) -> int:
-    return next(e.id for e in timeline_view(window).events if name in e.name)
-
-
-def row_center(view, event_id: int) -> QPoint:
-    """Viewport point of the event-card row for ``event_id``, in the text zone.
-
-    Scroll-aware: the caller scrolls the row into view first, then this reads
-    its laid-out (viewport) rect and lands inside the name — right of the type
-    dot, on the card proper (the old rail zone is gone, task 3.1).
-    """
-    idx = view.index_for_event(event_id)
-    if idx is None:
-        raise AssertionError(f"event {event_id} has no row in the current sample")
-    rect = view.visualItemRect(view.item(idx))
-    if not rect.isValid() or rect.isNull():
-        raise AssertionError(f"row {idx} for event {event_id} is not laid out")
-    x = max(_ROW_HIT_INSET, 0)
-    x = min(x, max(view.viewport().width() - 1, 0))
-    return QPoint(x, rect.center().y())
-
-
-def _mouse(vp, point, etype, button, buttons):
-    QApplication.sendEvent(vp, QMouseEvent(
-        etype, QPointF(point), vp.mapToGlobal(point),
-        button, buttons, Qt.KeyboardModifier.NoModifier))
-
-
-def _press_and_release(view, point: QPoint) -> None:
-    """A full left click on the list viewport (drives the ``clicked`` signal)."""
-    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
-    vp = view.viewport()
-    _mouse(vp, point, QEvent.Type.MouseButtonPress, left, left)
-    _mouse(vp, point, QEvent.Type.MouseButtonRelease, left, none)
-
-
-def _double_click_at(view, point: QPoint) -> None:
-    """A full left double-click (press/release/DblClick/release) on the viewport."""
-    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
-    vp = view.viewport()
-    _mouse(vp, point, QEvent.Type.MouseButtonPress, left, left)
-    _mouse(vp, point, QEvent.Type.MouseButtonRelease, left, none)
-    _mouse(vp, point, QEvent.Type.MouseButtonDblClick, left, left)
-    _mouse(vp, point, QEvent.Type.MouseButtonRelease, left, none)
+    return next(e.id for e in timeline_probe.events(window) if name in e.name)
 
 
 def click_timeline_event(window, name: str) -> int:
-    """Single-click the EVENT row of ``name``; returns the event id."""
-    view = timeline_view(window)
+    """Click the EVENT card of ``name`` on the tape; returns the event id.
+
+    Scroll-aware: the row is revealed through the island's own scroll request
+    first (spec «Внешний выбор … спускает лестницу» paths included), then the
+    click lands in the card's text zone like a user's.
+    """
     event_id = find_event_id(window, name)
-    view.scroll_to_event(event_id)
-    _press_and_release(view, row_center(view, event_id))
+    idx = timeline_probe.index_for_event(window, event_id)
+    if idx is None:
+        raise AssertionError(f"event {event_id} has no row in the current sample")
+    timeline_probe.reveal(window, idx)
+    timeline_probe.click(window, timeline_probe.row_center(window, idx))
     return event_id
 
 
 def double_click_timeline_event(window, name: str) -> int:
-    """Double-click the EVENT row of ``name`` (edit dialog trigger)."""
-    view = timeline_view(window)
+    """Double-click the EVENT card of ``name`` (edit dialog trigger)."""
     event_id = find_event_id(window, name)
-    view.scroll_to_event(event_id)
-    _double_click_at(view, row_center(view, event_id))
+    idx = timeline_probe.index_for_event(window, event_id)
+    if idx is None:
+        raise AssertionError(f"event {event_id} has no row in the current sample")
+    timeline_probe.reveal(window, idx)
+    timeline_probe.click(window, timeline_probe.row_center(window, idx),
+                         double=True)
     return event_id
 
 
@@ -322,7 +284,7 @@ async def create_event_via_ui(
     Waits until the fire-and-forget available-entities load has finished and
     the event is visible on the timeline.
     """
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     # A dialog accepted earlier stays in the child list: resolve the visible one.
     await wait_for(
         lambda: any(d.isVisible() for d in window.findChildren(EventDialog))
@@ -366,7 +328,8 @@ async def create_entity_via_context_menu(
         "item": "Новый предмет",
     }
     pick_menu_action(menu_qmenu, menu_labels[entity_type])
-    right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(window, "addButton",
+                                button=Qt.MouseButton.RightButton)
     # A card accepted earlier stays in the child list: resolve the visible one.
     await wait_for(
         lambda: any(d.isVisible() for d in window.findChildren(EntityCardDialog))

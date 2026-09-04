@@ -1629,6 +1629,17 @@ def test_popup_dropdown_closes_previous_and_orphan(canvas, vm):
 
 def test_mouse_double_click_guards(canvas, vm, qtbot):
     QTest.mouseDClick(canvas.viewport(), Qt.MouseButton.RightButton, pos=QPoint(40, 40))
+    # QTest computes each event's ``buttons`` mask incrementally from the live
+    # global state, so the trailing DblClick leaves the process-global
+    # ``QApplication::mouseButtons()`` stuck on RightButton — and no later
+    # LeftButton press/release pair can clear that bit (their masks carry it
+    # unchanged). A balanced right-press/release after a flushed queue resets
+    # the global mask, so the leak cannot poison hover assertions in tests
+    # that run later in the same process.
+    qtbot.wait(10)
+    QTest.mousePress(canvas.viewport(), Qt.MouseButton.RightButton, pos=QPoint(40, 40))
+    QTest.mouseRelease(canvas.viewport(), Qt.MouseButton.RightButton, pos=QPoint(40, 40))
+    qtbot.wait(10)
     _dclick(canvas, 500, 500, qtbot)
     fid = vm.place(FieldType.TEXT, 100, 100)
     vm.template.remove_field(fid)

@@ -41,6 +41,14 @@ a = Analysis(
         # bundle — the package modules already live in the PYZ).
         ("app/presentation/qml/LauncherRoot.qml",
          "app/presentation/qml"),
+        # Event-timeline island roots (change
+        # port-event-timeline-qml-island-q2-5a): TimelineRoot.qml is loaded
+        # via QQuickWidget.setSource from views/timeline_island.py and its
+        # delegate resolves through the same directory (no qmldir).
+        ("app/presentation/qml/TimelineRoot.qml",
+         "app/presentation/qml"),
+        ("app/presentation/qml/TimelineRowDelegate.qml",
+         "app/presentation/qml"),
         # nri.components library module (change
         # add-qml-component-library-q2a1, design D5): islands do
         # `import nri.components`, which Qt resolves as

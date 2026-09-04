@@ -8,7 +8,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QImage
 
 from app.presentation.views.entity_card_dialog import EntityCardDialog
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
 
@@ -42,7 +42,8 @@ async def test_pick_image_persists_and_shows_in_card(
     from tests.ui.helpers import pick_menu_action, right_click
 
     pick_menu_action(menu_qmenu, "Новая организация")
-    right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
     await wait_for(lambda: _visible_cards(window))
     card = _visible_cards(window)[0]
     card.name_input.setText(name)
@@ -77,7 +78,8 @@ async def test_unreadable_file_warns_and_keeps_state(
     file_dialogs["open"] = str(bad)
 
     pick_menu_action(menu_qmenu, "Новый персонаж")
-    right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
     await wait_for(lambda: _visible_cards(window))
     card = _visible_cards(window)[0]
 
@@ -102,7 +104,8 @@ async def test_replace_image_gcs_old_files_keeps_new(
     from tests.ui.helpers import pick_menu_action, right_click
 
     pick_menu_action(menu_qmenu, "Новая организация")
-    right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
     await wait_for(lambda: _visible_cards(window))
     card = _visible_cards(window)[0]
     card.name_input.setText(name)
@@ -159,7 +162,8 @@ async def test_store_failure_warns_and_leaves_image_id_unset(
     monkeypatch.setattr(ImageStore, "store", _boom)
 
     pick_menu_action(menu_qmenu, "Новая организация")
-    right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
     await wait_for(lambda: _visible_cards(window))
     card = _visible_cards(window)[0]
     card.pick_image_btn.click()
@@ -180,7 +184,8 @@ async def test_no_image_store_configured_is_a_safe_noop(
     application._image_store = None
     try:
         pick_menu_action(menu_qmenu, "Новая организация")
-        right_click(window.timeline_widget.add_button)
+        timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
         await wait_for(lambda: _visible_cards(window))
         card = _visible_cards(window)[0]
         card.pick_image_btn.click()
@@ -205,7 +210,8 @@ async def test_clear_image_removes_file(app, wait_for, menu_qmenu, modal_qdialog
     from tests.ui.helpers import pick_menu_action, right_click
 
     pick_menu_action(menu_qmenu, "Новая организация")
-    right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
     await wait_for(lambda: _visible_cards(window))
     card = _visible_cards(window)[0]
     card.name_input.setText(name)

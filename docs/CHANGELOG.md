@@ -2,6 +2,29 @@
 
 ## Unreleased — незавершённый
 
+### Переезд шкалы событий в QML-остров (Q2.5a; change `port-event-timeline-qml-island-q2-5a`, дизайн зафиксирован grill-сессией 2026-09-03; статус «влито» — по факту merge; версии не трогаем — срез только UI-слой (QML, Python-фасад, тесты, бандл), миграций нет — данные и схемы не затронуты, откат = revert commit; **эпик Q этим срезом не закрыт**: впереди Q2a2/Q2b, диалоги с `MentionTextEdit` — заблокированный Qx)
+
+#### Новый функционал
+- **Панель шкалы — QML-остров в том же слоте `QSplitter`**: `TimelineRoot.qml` (шапка, липкая дата с выталкиванием, поповер-тултипы) + `TimelineRowDelegate.qml` (строка ленты: card/пустые сутки/свёрнутый промежуток/период-карточка; wash'и selected/hover/ghost/dim — только производные accent из палитры); Python-фасад `views/timeline_island.py` сохраняет имя класса `TimelineWidget` и публичные методы/сигналы панели — проводка изменена почти литерально; `TimelineWidget` на widgets удалён целиком без флага (прецедент Q1)
+- **Единая модель строк**: лента питается списочной модельью поверх qt-нулевого ядра `timeline_rows.py` (юниты `test_timeline_row_model.py`) — второй реализации правил в JS нет, копий событий на острове нет
+- **Tooltip-шим библиотечный (D9):** объявление `Nri.tooltip` — прикреплённое свойство модуля `nri.components` (Python-носитель `qml/tooltip_shim.py`, регистрируется движком в URI модуля до создания islands), показывает Python-стороной острова системным темизованным `QToolTip` в глобальных координатах — QML-оверлеев-подсказок нет; мост `IslandTooltipBridge` общий для островов, Q2b переиспользует; проба прочитывается тестом через сам механизм `qmlAttachedPropertiesObject`
+- **Поповер «Выбора даты» — единственный widgets-поповер-мост** (`views/timeline_date_popup.py`, механика переехала из удалённого `timeline_widget.py` verbatim): низкий QML-остров резал бы QML-поповер прямоугольником; внутри-островные поповеры — по-прежнему QML
+- **Палитра — единственный генератор цветов и для wash'ей ленты**: `color.accent.rowHover` / `color.accent.ghost` (color-компонент — accent verbatim) + `opacity.accent.rowHover` / `opacity.accent.ghost` (α=0.25/0.35 мигрированных wash'ей) — парой color+opacity, потому что парсер цвета QML (`QColor::setNamedColor`) не читает CSS-форму `rgba(…)` которую встраивает QSS-компилятор; QML только перемножает, ничего не выводит
+
+#### Тесты
+- Приёмка по чек-листу требований `event-timeline` идёт сквозь реальный VM на острове (`test_timeline_island.py`): walk_items/objectName-адресация, `QMenu` — mock выбора, chip-поповер — мок фасада; id-контракты и окно/уровень пишутся сквозь VM
+- Пиксельная тематическая приёмка `test_e2e_timeline_theme.py`: surface/selected/hover — производные токенов (обе темы, ±2 по каналу на растровое округление), точка типа = `color.chart.N` / `fg.muted`, sticky-полоса — surface/accent/primary, live-retheme без потери выбора и скролла; golden PNG нет
+- E2E-адресация шкалы — новый `tests/ui/timeline_probe.py` (rows/events/selection с VM, геометрия с visual-дерева `eventList`, синтетический ввод реальными событиями на `QQuickWidget`; имена зеркалят retired `rows_view`-адреса); smoke/e2e (`test_e2e_timeline_*`, `test_timeline_smoke_w3b`) переведены на неё; widgets-тесты `test_timeline_widget/scale/gap_coverage/hide_empty_toggle/window_chip` удалены с носителем
+- Изоляция e2e (порядок-зависимые падения вскрылись только на полном прогоне): autouse-фикстура `no_stale_windows` в `tests/conftest.py` — видимое окно, оставленное предыдущим тестом (game-switch меняет MainWindow, teardown закрывает только «своё»), уводит offscreen pointer-routing и hover-синтетику не на тот остров; перед стартом app-фикстуры чистятся и leak'нутые модальные диалоги; второй порядок-зависимый источник: `test_mouse_double_click_guards` оставлял глобальный `QApplication::mouseButtons()` залипшим на RightButton (QTest вычисляет `buttons` каждого следующего события инкрементально от залипшего состояния — маски Left-последовательностей переносят его, и hover-приёмка шкалы видела «зажатую» правую кнопку), тест балансирует маску парой press+release правой кнопки с прокруткой очереди
+
+#### Сборка
+- `nri_manager.spec`: `datas` +2 записи (`TimelineRoot.qml`, `TimelineRowDelegate.qml`) в `app/presentation/qml`; `tests/test_spec_qml_bundle.py` расширен обоими файлами и файлами модуля `nri.components` с shim-секцией qmldir; `tooltip_shim.py` — Python-модуль, едет в PYZ отдельной datas-записи не требует; локальная сборка `python build_app.py` на macOS: остров поднимается из бандла
+
+#### Проверено
+- `QT_QPA_PLATFORM=offscreen python -m pytest` — **2192 passed** (macOS arm64)
+- Гейт `--cov=app` (fail_under=100) — **TOTAL 100.00%**, 0 непокрытых; инвариант `test_no_chrome_hex` зелёный с qml/js включительно
+- Добраны оставшиеся после переноса тестов несокрытые ветки (продуктовый код не менялся): `timeline_rows` — DAY-ветки `_unit_start`/`_next_unit_start`, страж инвертированного контента в `_range_for` и 9999-12 переполнение в лестнице периодов; `TimelineRowModel.get` — miss-ответ пустой картой; `TimelineViewModel._index_at_date` — дата за хвостом ленты; подписка на `events_changed` с отказом connect (stand-in VM)
+
 ### Гашение долга W5 по диалог-пути: сбой сохранения больше не молчит (capability `save-error-reporting`; первый подкусок Q2.5, change `fix-silent-dialog-save-debt`, дизайн зафиксирован grill-сессией 2026-09-03; статус «влито» — по факту merge; версии не трогаем — правки только сервисы/wiring/тесты, к QML не относится; миграций нет — данные и схемы не затронуты, откат = revert commit; **эпик Q этим срезом не закрыт**: переезд шкалы `port-event-timeline-qml-island-q2-5a` влился вторым подкуском, эпик Q остаётся открытым до Q2b/Qx — текст секции Q2.5 в дорожной карте правит тот срез)
 
 #### Исправлено

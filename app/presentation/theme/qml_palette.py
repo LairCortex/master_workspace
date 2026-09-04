@@ -33,12 +33,33 @@ from app.presentation.theme.runtime import ThemeRuntime
 HOVER_ALPHA = 0.85
 PRESSED_ALPHA = 0.7
 
+# Alphas of the timeline tape's washes, migrated with the day-ladder scale
+# (change port-event-timeline-qml-island-q2-5a, spec event-timeline «Оформление
+# шкалы из токенов»): the hovered-card wash stays an ``color.accent``
+# derivative at 0.25 (the retired widget's ROW_HOVER_ALPHA) and the
+# drop-ghost wash at 0.35 — the spec pins the 0.35, new tokens are not being
+# invented, these are compiler derivations like the button washes above.
+# The wash ships as a COLOR + OPACITY token pair (not one rgba() string):
+# QML's ``color`` parser is ``QColor::setNamedColor`` and does not accept
+# the CSS ``rgba(…)`` form the QSS compiler embeds, so a wash must arrive at
+# an island as a parseable hex color plus the scalar alpha, still computed
+# only here — the QML never derives anything.
+ROW_HOVER_ALPHA = 0.25
+GHOST_ALPHA = 0.35
+
 # Key names of the derived entries appended to the token dictionary. They live
 # in the palette vocabulary (dot-namespaced, never colliding with a token
 # key) and are the contract with the qml code, spelled out once here.
 DERIVED_TOKEN_KEYS: tuple[str, ...] = (
     "color.accent.hover",
     "color.accent.pressed",
+    # Consumed by TimelineRowDelegate as the hover/ghost washes (D8 of
+    # port-event-timeline-qml-island-q2-5a): the wash color plus its scalar
+    # alpha, both from the compiler — the QML only multiplies them at paint.
+    "color.accent.rowHover",
+    "color.accent.ghost",
+    "opacity.accent.rowHover",
+    "opacity.accent.ghost",
     "style.mention",
 )
 
@@ -73,6 +94,12 @@ class QmlPalette(QObject):
         palette = {key: values[theme] for key, values in tokens.items()}
         palette["color.accent.hover"] = accent_rgba(tokens, theme, HOVER_ALPHA)
         palette["color.accent.pressed"] = accent_rgba(tokens, theme, PRESSED_ALPHA)
+        # Timeline washes: the accent color verbatim (QML-parsable hex) plus
+        # its compiler-decided alpha as a scalar — see the constants above.
+        palette["color.accent.rowHover"] = palette["color.accent"]
+        palette["color.accent.ghost"] = palette["color.accent"]
+        palette["opacity.accent.rowHover"] = f"{ROW_HOVER_ALPHA:g}"
+        palette["opacity.accent.ghost"] = f"{GHOST_ALPHA:g}"
         palette["style.mention"] = mention_style(tokens, theme)
         return palette
 

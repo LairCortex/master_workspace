@@ -143,6 +143,21 @@ async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     Yields ``application, window``; teardown closes the window and shuts
     down the application.
     """
+    # A dialog left open by a previous test stays an ACTIVE MODAL for the
+    # whole process: window.close() does not close child QDialogs, and once
+    # the new window activates, Qt re-arms the stale modal and silently
+    # swallows every spontaneous event (QTest clicks included) aimed at the
+    # new app. Old widgets helpers hid this by sending NON-spontaneous
+    # events; the Q2.5a island probes use real synthetic input, so clear the
+    # leak before booting — each test starts the way CI means it to.
+    from PySide6.QtWidgets import QApplication as _QApp
+    for leak in list(_QApp.topLevelWidgets()):
+        if isinstance(leak, QDialog) and (leak.isVisible() or leak.isModal()):
+            try:
+                leak.done(QDialog.DialogCode.Rejected)
+            except RuntimeError:
+                pass  # C++ side already gone
+
     db_path = tmp_path / "game" / "game.db"
     db_path.parent.mkdir(parents=True)
     (db_path.parent / "images").mkdir()
@@ -244,17 +259,17 @@ def menu_qmenu(monkeypatch) -> MenuControl:
 
     PySide6 does not dispatch C++ methods through Python class-attribute
     overrides, so the ``QMenu`` symbol of the single module that constructs
-    menus (timeline_widget) is replaced with a Python subclass whose
-    ``exec`` is stubbed.
+    menus (timeline_island, since the Q2.5a island port) is replaced with a
+    Python subclass whose ``exec`` is stubbed.
     """
     control = MenuControl()
-    import app.presentation.views.timeline_widget as timeline_widget_mod
+    import app.presentation.views.timeline_island as timeline_island_mod
 
     class _StubbedContextMenu(QMenu):
         def exec(self, *args, **kwargs):  # Qt API name
             return control.exec_result(self, *args)
 
-    monkeypatch.setattr(timeline_widget_mod, "QMenu", _StubbedContextMenu)
+    monkeypatch.setattr(timeline_island_mod, "QMenu", _StubbedContextMenu)
     return control
 
 

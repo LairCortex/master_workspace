@@ -10,6 +10,16 @@
 # component file exists loads without errors; only *using* a listed-but-
 # missing type would fail. This is what keeps the group-1 smoke green while
 # the group-2 files land.
+#
+# Tooltip-declaration scope (change port-event-timeline-qml-island-q2-5a,
+# tasks 2.1–2.2; design D9): this module additionally provides `Nri` — an
+# ATTACHED type (`Nri.tooltip: "…"`). Attached types are registered metadata
+# the engine looks up on the host object; the QML language cannot declare
+# them, so `Nri` ships Python-side (app/presentation/qml/tooltip_shim.py,
+# registered into this very module URI by setup_qml_shell — the engine merges
+# registered types with the entries below, so `import nri.components` still
+# yields the whole module). It is deliberately NOT an entry here: every entry
+# below names a real shipped file, and no Nri.qml exists to name.
 module nri.components
 ThemeButton ThemeButton.qml
 ThemeField ThemeField.qml

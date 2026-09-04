@@ -36,6 +36,19 @@ QML_DEST = "app/presentation/qml"
 COMPONENTS_SRC_DIR = QML_SRC_DIR / "nri" / "components"
 COMPONENTS_DEST = "app/presentation/qml/nri/components"
 
+# Island roots loaded via QQuickWidget.setSource from the Python facades
+# (change port-event-timeline-qml-island-q2-5a, design D10): listed explicitly
+# next to the directory glob — QQuickWidget resolves TimelineRoot.qml by
+# absolute path and TimelineRowDelegate.qml as a same-directory import, so a
+# missing datas entry breaks the scale only in the frozen build. The tooltip
+# shim ships Python-side (app/presentation/qml/tooltip_shim.py, PYZ), hence no
+# qml entry for it here.
+EXPECTED_QML_ROOT_FILES = (
+    "LauncherRoot.qml",
+    "TimelineRoot.qml",
+    "TimelineRowDelegate.qml",
+)
+
 # The qmldir type contract (design D4) plus the shared helpers — listed
 # explicitly so the test stays a real guard even if the source directory is
 # ever emptied/moved (an empty glob would silently pass a scan-only check).
@@ -85,6 +98,11 @@ def test_spec_datas_ship_every_qml_source_file():
     datas = _spec_section("datas")
     qml_files = sorted(QML_SRC_DIR.glob("*.qml"))
     assert qml_files, "no .qml sources found to bundle — test setup broken"
+    on_disk = {qml_file.name for qml_file in qml_files}
+    missing_contract = set(EXPECTED_QML_ROOT_FILES) - on_disk
+    assert not missing_contract, (
+        f"qml root directory lost contract files: {sorted(missing_contract)}"
+    )
     for qml_file in qml_files:
         relative = f"{QML_DEST}/{qml_file.name}"
         assert f"app/presentation/qml/{qml_file.name}" in datas, (

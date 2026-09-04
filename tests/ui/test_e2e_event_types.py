@@ -14,15 +14,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, Qt
 
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
-from app.presentation.views.timeline_widget import (
-    DOT_SIZE, ROLE_ROW, TEXT_LEFT_PAD,
-)
 
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 from tests.ui.test_theme_grab import token_color
 
@@ -37,25 +34,24 @@ def _visible_dialog(window, cls):
 
 
 def _type_dot_pixel(window, name: str):
-    """The pixel at the center of the type dot of ``name``'s EVENT row."""
-    view = window.timeline_widget.rows_view
+    """The pixel at the center of the type dot of ``name``'s EVENT card on
+    the QML island (probe 6.2/6.3: delegate address + island grab)."""
     event_id = helpers.find_event_id(window, name)
-    view.scroll_to_event(event_id)
-    idx = view.index_for_event(event_id)
-    rect = view.visualItemRect(view.item(idx))
-    image = view.viewport().grab().toImage()
-    scale = image.width() / max(view.viewport().width(), 1)
-    # The rail is gone (task 3.1): the dot sits at the module's text padding.
-    x = int((TEXT_LEFT_PAD + DOT_SIZE // 2) * scale)
-    y = int(rect.center().y() * scale)
-    return image.pixelColor(x, y)
+    idx = timeline_probe.index_for_event(window, event_id)
+    delegate = timeline_probe.reveal(window, idx)
+    dot = next(c for c in delegate.childItems()
+               if c.objectName() == "eventTypeDot")
+    image = timeline_probe.quick(window).grab().toImage()
+    scale = image.width() / max(timeline_probe.quick(window).width(), 1)
+    point = timeline_probe.scene_point(window, dot)
+    return image.pixelColor(int(point.x() * scale), int(point.y() * scale))
 
 
 def _row_token_key(window, name: str):
-    view = window.timeline_widget.rows_view
     event_id = helpers.find_event_id(window, name)
-    idx = view.index_for_event(event_id)
-    return view.item(idx).data(ROLE_ROW).token_key
+    idx = timeline_probe.index_for_event(window, event_id)
+    delegate = timeline_probe.reveal(window, idx)
+    return delegate.property("tokenKey")
 
 
 async def _assign_type_via_edit_dialog(window, wait_for, event_name, type_name):
@@ -82,7 +78,8 @@ async def test_types_menu_entry_edits_apply_to_running_game(
 
     # The «+» context menu carries the entry and opens the dialog.
     helpers.pick_menu_action(menu_qmenu, "Типы событий…")
-    helpers.right_click(window.timeline_widget.add_button)
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
     await wait_for(lambda: _visible_dialog(window, EventTypesDialog) is not None)
     dialog = _visible_dialog(window, EventTypesDialog)
     await wait_for(lambda: dialog.type_names() == SEEDED_ORDER)

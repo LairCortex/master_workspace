@@ -18,7 +18,7 @@ from PySide6.QtCore import QDate
 from app.presentation.views.timeline_rows import (
     EmptyDayRow, EventRow, GapCollapsedRow, PeriodCardRow, ScaleUnit,
 )
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
 
@@ -64,21 +64,21 @@ async def test_toggle_hides_and_restores_emptiness_on_all_levels(app, wait_for):
     and returns on сутки, месяц and год alike; the toggle defaults to off."""
     application, window = app
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await _seed_spread(window, wait_for)
     await wait_for(lambda: len(view.events) == 3)
 
-    toggle = widget.hide_empty_toggle
-    assert toggle.text() == "Скрыть даты без событий"
-    assert not toggle.isChecked()  # spec: «по умолчанию выключена»
-    assert widget.window_chip.toolTip() == "Выбор даты"  # the header neighbor
+    toggle = timeline_probe.item(window, "hideEmptyToggle")
+    assert toggle.property("text") == "Скрыть даты без событий"
+    assert toggle.property("checked") is False  # spec: «по умолчанию выключена»
+    assert timeline_probe.tooltip_of(window, "windowChip") == "Выбор даты"
 
     # ── DAY: empty days AND a collapsed corridor stand while the toggle is off
     day_empty = _empty_positions(view)
     assert any(isinstance(r, EmptyDayRow) for r in day_empty)
     assert any(isinstance(r, GapCollapsedRow) for r in day_empty)
 
-    toggle.setChecked(True)
+    timeline_probe.click_object(window, "hideEmptyToggle")
     await wait_for(lambda: _empty_positions(view) == [])
     assert [(type(r).__name__, r.date) for r in view.rows] == [
         ("DayHeaderRow", date(1200, 3, 1)), ("EventRow", date(1200, 3, 1)),
@@ -86,7 +86,7 @@ async def test_toggle_hides_and_restores_emptiness_on_all_levels(app, wait_for):
         ("DayHeaderRow", date(1200, 5, 5)), ("EventRow", date(1200, 5, 5)),
     ]  # cards and section headers survive: only emptiness was cut
 
-    toggle.setChecked(False)
+    timeline_probe.click_object(window, "hideEmptyToggle")  # off again
     await wait_for(lambda: _empty_positions(view) == day_empty)
 
     # ── MONTH: the eventless corridor months are muted «нет событий»
@@ -97,7 +97,7 @@ async def test_toggle_hides_and_restores_emptiness_on_all_levels(app, wait_for):
     assert date(1200, 4, 1) in empty_months  # April sits between the events
     assert date(1200, 5, 1) not in empty_months
 
-    toggle.setChecked(True)
+    timeline_probe.click_object(window, "hideEmptyToggle")
     await wait_for(lambda: _empty_positions(view) == [])
     assert [r.date for r in view.rows if isinstance(r, PeriodCardRow)] == [
         date(1200, 3, 1), date(1200, 5, 1),
@@ -105,7 +105,7 @@ async def test_toggle_hides_and_restores_emptiness_on_all_levels(app, wait_for):
 
     # ── YEAR: widen through the window so 1199/1201 are eventless years, then
     # the year rung carries its own «нет событий» counters
-    toggle.setChecked(False)
+    timeline_probe.click_object(window, "hideEmptyToggle")  # off again
     await helpers.wait_until_settled()
     widget._on_window_range(date(1199, 1, 1), date(1201, 12, 31))
     await helpers.wait_until_settled()
@@ -115,14 +115,14 @@ async def test_toggle_hides_and_restores_emptiness_on_all_levels(app, wait_for):
     assert [r.date for r in year_empty] == [date(1199, 1, 1), date(1201, 1, 1)]
     assert not any(isinstance(r, EventRow) for r in view.rows)
 
-    toggle.setChecked(True)
+    timeline_probe.click_object(window, "hideEmptyToggle")
     await wait_for(lambda: _empty_positions(view) == [])
     assert [r.date for r in view.rows if isinstance(r, PeriodCardRow)] == [
         date(1200, 1, 1),
     ]  # the year with events stays
 
     # ── off again on the year rung — the cut positions return verbatim
-    toggle.setChecked(False)
+    timeline_probe.click_object(window, "hideEmptyToggle")  # off again
     await wait_for(lambda: _empty_positions(view) == year_empty)
 
     # the sample never moved through all of this
@@ -134,7 +134,7 @@ async def test_toggle_survives_reloads_but_lives_in_no_store(app, wait_for):
     reload) — yet nothing persists the knob: no game_settings row anywhere."""
     application, window = app
     widget = window.timeline_widget
-    view = widget.rows_view
+    view = timeline_probe.tape(window)
     await _seed_spread(window, wait_for)
     await wait_for(lambda: len(view.events) == 3)
     widget._on_window_range(date(1200, 5, 1), date(1200, 5, 20))
@@ -144,7 +144,7 @@ async def test_toggle_survives_reloads_but_lives_in_no_store(app, wait_for):
     await helpers.wait_until_settled()
     assert _empty_positions(view)  # May 2–4 and May 6–20 stand empty
 
-    widget.hide_empty_toggle.setChecked(True)
+    timeline_probe.click_object(window, "hideEmptyToggle")
     await wait_for(lambda: _empty_positions(view) == [])
     assert window.timeline_widget._vm.hide_empty is True
 

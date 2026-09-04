@@ -13,13 +13,13 @@ from datetime import date
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 
-from tests.ui import helpers
+from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
 
 async def _open_create_dialog(window, wait_for) -> EventDialog:
     """Open the event creation dialog and wait for the available-entities load."""
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
     dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     loaded = helpers.watch_available_entity_load(dialog)
@@ -46,7 +46,7 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
     await application._session.commit()
 
     # Create the event and link the character through the dialog.
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: bool(window.findChildren(EventDialog)))
     dialog = window.findChildren(EventDialog)[0]
     loaded = helpers.watch_available_entity_load(dialog)
@@ -203,7 +203,7 @@ async def test_cancel_parent_dialog_after_popup_create(app, wait_for, modal_qdia
     await _seed_entity(app, "location", "Деревня")
 
     # A dialog rejected without any popup exercises the empty cleanup path.
-    window.timeline_widget.add_button.click()
+    timeline_probe.click_object(window, "addButton")
     await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
     empty_dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     empty_dialog.reject()

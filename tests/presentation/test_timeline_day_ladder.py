@@ -603,3 +603,40 @@ def test_window_without_events_shows_placeholders_until_hidden():
 
 def test_empty_tape_without_window_is_no_rows():
     assert build_rows([]) == []
+
+
+# ── unit helpers & edge guards (coverage pins, no public caller reaches them) ─
+
+
+def test_day_unit_helpers_answer_the_plain_calendar_step():
+    """DAY is the degenerate unit: its own first day is the day itself and the
+    next unit is tomorrow. No public rung feeds DAY into the helpers (the day
+    ladder enumerates days directly), so the branches are pinned directly."""
+    from app.presentation.views.timeline_rows import _next_unit_start, _unit_start
+
+    assert _unit_start(date(1200, 3, 14), ScaleUnit.DAY) == date(1200, 3, 14)
+    assert _next_unit_start(date(1200, 3, 14), ScaleUnit.DAY) == date(1200, 3, 15)
+
+
+def test_inverted_event_content_owns_no_span():
+    """The form never inverts a span, but the guard owns malformed data: a
+    closed event ending before its start makes «дно ленты» precede the sample's
+    first day — an owning-no-position range, an empty tape."""
+    inverted = [_Ev(1, date(9000, 1, 10), date(8999, 12, 1))]
+    assert _range(inverted) is None
+    assert build_rows(inverted) == []
+
+
+def test_month_period_at_the_upper_edge_reaches_the_calendar_bottom():
+    """After 9999-12 there is no next month (it would mint year 10000): the
+    overflow reads as «this period reaches the edge» and the loop breaks —
+    the tail period is emitted once, never forever."""
+    rows = build_rows(
+        [_Ev(1, date(9999, 12, 15))],
+        window=(date(9999, 12, 1), CALENDAR_MAX),
+        level=ScaleUnit.MONTH,
+    )
+    assert rows == [
+        PeriodHeaderRow(date=date(9999, 12, 1), level=ScaleUnit.MONTH),
+        PeriodCardRow(date=date(9999, 12, 1), level=ScaleUnit.MONTH, count=1),
+    ]
