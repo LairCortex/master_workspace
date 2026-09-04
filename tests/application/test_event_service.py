@@ -9,6 +9,9 @@ Characterizes the M2M sync behavior that used to live in the
 """
 import types
 from datetime import date
+from unittest.mock import AsyncMock
+
+import pytest
 
 from app.application.services.entity_service import EntityService
 from app.application.services.event_service import EventService
@@ -257,28 +260,29 @@ class TestCreateEventWithRelations:
         assert ev.items == []
         assert ev.locations == []
 
-    async def test_failing_create_is_rolled_back_silently(self, async_session):
+    async def test_failing_create_rolls_back_and_propagates(self, async_session):
         w = await _world(async_session)
         # Commit the fixture baseline so the operation below has its own
         # transaction to roll back (mirrors app state where prior data is committed).
         await async_session.commit()
         before_chars = len(await w.char_svc.get_all())
-        ev = await w.event_service.create_event_with_relations(
-            name="Doomed",
-            start_date=D1,
-            end_date=D2,
-            characteristics="",
-            backstory="",
-            relations={
-                "organizations": [],
-                "characters": [_new_char_item("Ghost")],
-                # Incomplete item dict -> create_entity raises mid-sync
-                "items": [{"name": "Bad"}],
-                "locations": [],
-            },
-        )
-        # 1:1 behavior: error swallowed, session rolled back, None returned
-        assert ev is None
+        # save-error-reporting: a mid-sync failure is rolled back and the
+        # exception propagates (the old silent None was the W5 debt).
+        with pytest.raises(Exception):
+            await w.event_service.create_event_with_relations(
+                name="Doomed",
+                start_date=D1,
+                end_date=D2,
+                characteristics="",
+                backstory="",
+                relations={
+                    "organizations": [],
+                    "characters": [_new_char_item("Ghost")],
+                    # Incomplete item dict -> create_entity raises mid-sync
+                    "items": [{"name": "Bad"}],
+                    "locations": [],
+                },
+            )
         events = list(await w.event_repo.get_all())
         assert all(e.name != "Doomed" for e in events)
         # The partially-created character is gone too (single transaction)
@@ -340,18 +344,141 @@ class TestUpdateEventWithRelations:
         await async_session.refresh(result, attribute_names=["name", "description"])
         assert result.name == "Bare 2"
         assert result.description is None
+        # NB: the old characterization "missing event -> silent None" lived
+        # here; save-error-reporting replaced it with
+        # TestUpdateEventWithRelationsFailurePropagation.
+        # test_missing_event_raises_value_error_not_attribute_error.
 
-    async def test_update_missing_event_returns_none(self, async_session):
+
+# ── Desired behavior: services never swallow a save failure ───────────────
+#
+# ``save-error-reporting`` spec (change ``fix-silent-dialog-save-debt``):
+# rollback stays the service's job, but the failure travels outward so the
+# wiring can report exactly one modal message. These tests are written
+# against that rule (RED phase) — the silent ``return None`` they replace is
+# characterized above.
+
+EMPTY_RELATIONS = {
+    "organizations": [], "characters": [], "items": [], "locations": [],
+}
+
+
+class TestCreateEventWithRelationsFailurePropagation:
+    async def test_commit_failure_raises_after_exactly_one_rollback(
+        self, async_session, monkeypatch,
+    ):
         w = await _world(async_session)
-        result = await w.event_service.update_event_with_relations(
-            999999,
-            name="X",
+        await async_session.commit()  # fixture baseline in its own transaction
+        commits = AsyncMock(side_effect=RuntimeError("disk is gone"))
+        rollbacks = AsyncMock(wraps=async_session.rollback)
+        monkeypatch.setattr(async_session, "commit", commits)
+        monkeypatch.setattr(async_session, "rollback", rollbacks)
+
+        with pytest.raises(RuntimeError, match="disk is gone"):
+            await w.event_service.create_event_with_relations(
+                name="Doomed",
+                start_date=D1,
+                end_date=D2,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+            )
+
+        assert commits.await_count == 1
+        assert rollbacks.await_count == 1
+        # The rolled-back transaction left no trace of the failed event.
+        events = [e.name for e in await w.event_repo.get_all()]
+        assert "Doomed" not in events
+
+
+class TestUpdateEventWithRelationsFailurePropagation:
+    async def test_commit_failure_raises_after_exactly_one_rollback(
+        self, async_session, monkeypatch,
+    ):
+        w = await _world(async_session)
+        await async_session.commit()
+        commits = AsyncMock(side_effect=RuntimeError("disk is gone"))
+        rollbacks = AsyncMock(wraps=async_session.rollback)
+        monkeypatch.setattr(async_session, "commit", commits)
+        monkeypatch.setattr(async_session, "rollback", rollbacks)
+
+        with pytest.raises(RuntimeError, match="disk is gone"):
+            await w.event_service.update_event_with_relations(
+                w.event.id,
+                name="Doomed Renamed",
+                start_date=D1,
+                end_date=D2,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+            )
+
+        assert commits.await_count == 1
+        assert rollbacks.await_count == 1
+        events = [e.name for e in await w.event_repo.get_all()]
+        assert "Brawl" in events and "Doomed Renamed" not in events
+
+    async def test_missing_event_raises_value_error_not_attribute_error(
+        self, async_session, monkeypatch,
+    ):
+        w = await _world(async_session)
+        await async_session.commit()
+        rollbacks = AsyncMock(wraps=async_session.rollback)
+        monkeypatch.setattr(async_session, "rollback", rollbacks)
+
+        # A missing id must fail as an intelligible ValueError *before* the
+        # refresh: the AttributeError of ``refresh(None)`` used to be swallowed
+        # on the way to a silent None.
+        with pytest.raises(ValueError, match="999999") as exc_info:
+            await w.event_service.update_event_with_relations(
+                999999,
+                name="X",
+                start_date=D1,
+                end_date=None,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+            )
+        assert not isinstance(exc_info.value, AttributeError)
+        assert rollbacks.await_count == 1
+
+
+class TestSessionAliveAfterSaveFailure:
+    """Spec «После сбоя сессия остаётся рабочей»: one failed save must not
+    poison the shared session for the next, unrelated save."""
+
+    async def test_second_save_succeeds_after_failed_one(
+        self, async_session, monkeypatch,
+    ):
+        w = await _world(async_session)
+        await async_session.commit()
+
+        # 1. The save that must fail — and say so (exception outward, rollback).
+        commits = AsyncMock(side_effect=RuntimeError("disk is gone"))
+        monkeypatch.setattr(async_session, "commit", commits)
+        with pytest.raises(RuntimeError, match="disk is gone"):
+            await w.event_service.create_event_with_relations(
+                name="Doomed",
+                start_date=D1,
+                end_date=D2,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+            )
+        monkeypatch.delattr(async_session, "commit")
+        assert commits.await_count == 1
+
+        # 2. The next save through the same session works untouched.
+        ev = await w.event_service.create_event_with_relations(
+            name="Aftermath",
             start_date=D1,
             end_date=None,
-            characteristics="c",
-            backstory="b",
-            relations={"organizations": [], "characters": [], "items": [], "locations": []},
+            characteristics="",
+            backstory="",
+            relations={},
         )
-        # Current behavior: refresh(None) raises inside the service,
-        # rollback + silent None (characterized 1:1, not "fixed").
-        assert result is None
+        assert ev is not None
+        assert ev.name == "Aftermath"
+        names = [e.name for e in await w.event_repo.get_all()]
+        assert "Aftermath" in names
+        assert "Doomed" not in names

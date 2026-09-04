@@ -7,6 +7,7 @@ data, call the services, and refresh the panels.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import date, datetime
 from typing import Any, Coroutine
 
@@ -269,15 +270,25 @@ class ApplicationWiring:
                     "items": data.pop("items", []),
                     "locations": data.pop("locations", []),
                 }
-                await event_service.create_event_with_relations(
-                    name=data.pop("name"),
-                    start_date=data.pop("start_date"),
-                    end_date=data.pop("end_date"),
-                    characteristics=data.pop("characteristics", ""),
-                    backstory=data.pop("backstory", ""),
-                    relations=relations,
-                    event_type_id=data.pop("event_type_id", None),
-                )
+                try:
+                    await event_service.create_event_with_relations(
+                        name=data.pop("name"),
+                        start_date=data.pop("start_date"),
+                        end_date=data.pop("end_date"),
+                        characteristics=data.pop("characteristics", ""),
+                        backstory=data.pop("backstory", ""),
+                        relations=relations,
+                        event_type_id=data.pop("event_type_id", None),
+                    )
+                except Exception as exc:  # noqa: BLE001 — причину показывает модалка
+                    # Транзакцию уже откатил сервис; ленту перегружаем до модалки
+                    # (как в on_event_dates_moved), чтобы под блокирующий
+                    # QMessageBox осталось консистентное состояние.
+                    await _reload_timeline()
+                    QMessageBox.critical(
+                        window, "Ошибка", f"Не удалось сохранить событие: {exc}",
+                    )
+                    return
                 await timeline_vm.load_events()
                 window.timeline_widget.update_events(timeline_vm.events)
 
@@ -319,13 +330,28 @@ class ApplicationWiring:
                             **data,
                         )
                         await self._app._session.commit()
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001 — причину показывает модалка
+                        # Путь СОХРАНЕНИЯ данных (сущность ещё не создана):
+                        # откат здесь — владелец этого транзакционного блока, +
+                        # то же уведомление, что и в остальных save-handler'ах
+                        # (save-error-reporting). Частичный refresh не нужен:
+                        # объект не создан, лента сущностей на шкале не показывается.
                         await self._app._session.rollback()
+                        QMessageBox.critical(
+                            window, "Ошибка", f"Не удалось создать сущность: {exc}",
+                        )
 
                 dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
                 dialog.open()
-            except Exception:
+            except Exception as exc:
+                # Путь «ДИАЛОГ НЕ ОТКРЫЛСЯ» (конструктор/поповер), а не сбой
+                # сохранения данных: только откат + лог, БЕЗ модалки — чтобы
+                # провал открытия не плодил двойные сообщения. Ср. on_entity_saved
+                # выше — там путь сохранения, он сообщает пользователю.
                 await self._app._session.rollback()
+                logging.getLogger("app.wiring").warning(
+                    "Не удалось открыть диалог создания сущности: %s", exc,
+                )
 
         window.timeline_widget.add_entity_requested.connect(
             lambda t: self._spawn(on_add_entity(t))
@@ -354,16 +380,27 @@ class ApplicationWiring:
                         "items": data.pop("items", []),
                         "locations": data.pop("locations", []),
                     }
-                    await event_service.update_event_with_relations(
-                        eid,
-                        name=data.pop("name"),
-                        start_date=data.pop("start_date"),
-                        end_date=data.pop("end_date"),
-                        characteristics=data.pop("characteristics", ""),
-                        backstory=data.pop("backstory", ""),
-                        relations=relations,
-                        event_type_id=data.pop("event_type_id", _TYPE_UNSET),
-                    )
+                    try:
+                        await event_service.update_event_with_relations(
+                            eid,
+                            name=data.pop("name"),
+                            start_date=data.pop("start_date"),
+                            end_date=data.pop("end_date"),
+                            characteristics=data.pop("characteristics", ""),
+                            backstory=data.pop("backstory", ""),
+                            relations=relations,
+                            event_type_id=data.pop("event_type_id", _TYPE_UNSET),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — причину показывает модалка
+                        # Откат уже выполнен сервисом. Перезагружаем ленту до
+                        # модалки (паттерн on_event_dates_moved); детальную
+                        # панель НЕ обновляем — «обновлённой» версии нет,
+                        # показываем прежнее.
+                        await _reload_timeline()
+                        QMessageBox.critical(
+                            window, "Ошибка", f"Не удалось сохранить событие: {exc}",
+                        )
+                        return
                     await timeline_vm.load_events()
                     window.timeline_widget.update_events(timeline_vm.events)
 
@@ -561,9 +598,19 @@ class ApplicationWiring:
                     chars_text = data.pop("characteristics", "")
                     backstory_text = data.pop("backstory", "")
                     field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
-                    await entity_service.update_entity_with_relations(
-                        entity_id, field_data, chars_text, backstory_text, related_changes,
-                    )
+                    try:
+                        await entity_service.update_entity_with_relations(
+                            entity_id, field_data, chars_text, backstory_text, related_changes,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — причину показывает модалка
+                        # Откат уже выполнен сервисом; перегружаем ленту до
+                        # модалки (паттерн on_event_dates_moved), деталь не
+                        # обновляем — обновлённой версии нет.
+                        await _reload_timeline()
+                        QMessageBox.critical(
+                            window, "Ошибка", f"Не удалось сохранить сущность: {exc}",
+                        )
+                        return
 
                     # Refresh detail panel if an event is selected
                     if detail_vm.event:

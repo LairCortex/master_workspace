@@ -8,7 +8,9 @@ Characterizes the behavior of the on_entity_saved closure from main.py:
 """
 import types
 from datetime import date
+from unittest.mock import AsyncMock
 
+import pytest
 
 from app.application.services.entity_service import EntityService
 from app.infrastructure.db.models import (
@@ -157,25 +159,84 @@ class TestUpdateEntityWithRelations:
         assert result.rating == 2
         assert [o.name for o in result.organizations] == ["Guild"]
 
-    async def test_error_is_rolled_back_silently(self, async_session, mocker):
+    async def test_error_propagates_after_rollback(self, async_session, mocker):
         w = await _world(async_session)
         await async_session.commit()  # fixture baseline in its own transaction
-        # update_entity raising must end in rollback + silent None (characterized
-        # 1:1 with the old closure's `except Exception: rollback` — no re-raise)
+        # save-error-reporting: a failing update is rolled back and the
+        # exception propagates (the old silent None was the W5 debt;
+        # TestUpdateEntityWithRelationsFailurePropagation covers the commit leg)
         mocker.patch.object(
             w.item_svc, "update_entity", side_effect=RuntimeError("db gone"),
         )
-        result = await w.item_svc.update_entity_with_relations(
-            w.item.id,
-            field_data={"rating": 7},
-            characteristics="c",
-            backstory="b",
-            related_changes={"organizations": {"current_ids": []}},
-        )
-        assert result is None
+        with pytest.raises(RuntimeError, match="db gone"):
+            await w.item_svc.update_entity_with_relations(
+                w.item.id,
+                field_data={"rating": 7},
+                characteristics="c",
+                backstory="b",
+                related_changes={"organizations": {"current_ids": []}},
+            )
         # Prior committed state is intact
         from sqlalchemy import select
 
         row = (await async_session.execute(select(ItemModel).where(ItemModel.id == w.item.id))).scalars().first()
         assert row is not None
         assert row.rating == 3
+
+
+# ── Desired behavior: the service never swallows a save failure ───────────
+#
+# ``save-error-reporting`` spec (change ``fix-silent-dialog-save-debt``),
+# the same triple of expectations as the EventService RED tests: a failing
+# commit re-raises after exactly one rollback, and a missing id fails as an
+# intelligible ValueError instead of the swallowed AttributeError of
+# ``refresh(None)`` / a silent None.
+
+
+class TestUpdateEntityWithRelationsFailurePropagation:
+    async def test_commit_failure_raises_after_exactly_one_rollback(
+        self, async_session, monkeypatch,
+    ):
+        w = await _world(async_session)
+        await async_session.commit()  # fixture baseline in its own transaction
+        # Rollback expiry invalidates the flushed instance (async attribute
+        # access after it would hit a missing greenlet), so grab the id now.
+        item_id = w.item.id
+        commits = AsyncMock(side_effect=RuntimeError("disk is gone"))
+        rollbacks = AsyncMock(wraps=async_session.rollback)
+        monkeypatch.setattr(async_session, "commit", commits)
+        monkeypatch.setattr(async_session, "rollback", rollbacks)
+
+        with pytest.raises(RuntimeError, match="disk is gone"):
+            await w.item_svc.update_entity_with_relations(
+                item_id,
+                field_data={"rating": 7},
+                characteristics="c",
+                backstory="b",
+                related_changes={"organizations": {"current_ids": []}},
+            )
+
+        assert commits.await_count == 1
+        assert rollbacks.await_count == 1
+        # The rolled-back transaction left the committed rating intact.
+        refreshed = await w.item_svc.get_entity(item_id)
+        assert refreshed.rating == 3
+
+    async def test_missing_entity_raises_value_error_not_attribute_error(
+        self, async_session, monkeypatch,
+    ):
+        w = await _world(async_session)
+        await async_session.commit()
+
+        # A missing id must fail as an intelligible ValueError *before* the
+        # relation-sync refresh: the AttributeError of ``refresh(None)`` used
+        # to be swallowed on the way to a silent None.
+        with pytest.raises(ValueError, match="999999") as exc_info:
+            await w.item_svc.update_entity_with_relations(
+                999999,
+                field_data={"rating": 7},
+                characteristics="c",
+                backstory="b",
+                related_changes={"organizations": {"current_ids": []}},
+            )
+        assert not isinstance(exc_info.value, AttributeError)

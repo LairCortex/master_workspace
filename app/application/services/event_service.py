@@ -166,10 +166,12 @@ class EventService:
     ):
         """Create an event (with description) and sync all four M2M collections.
 
-        1:1 port of the on_saved closure in main.py: commit on success,
-        rollback on error (error is swallowed, None is returned — the old
-        closure did not re-raise and did not notify the user). The optional
-        ``event_type_id`` (W4) assigns a type at creation (None = без типа).
+        Commit on success (the event is returned); on any failure the
+        transaction is rolled back and the exception propagates — the old
+        1:1 closure semantics (swallow the error, return None) went away with
+        ``save-error-reporting``: the caller must learn why the save failed.
+        The optional ``event_type_id`` (W4) assigns a type at creation
+        (None = без типа).
         """
         try:
             event = await self.create_event(
@@ -194,7 +196,7 @@ class EventService:
             return event
         except Exception:
             await self._session.rollback()
-            return None
+            raise
 
     async def update_event_with_relations(
         self,
@@ -209,9 +211,11 @@ class EventService:
     ):
         """Update event fields + description and resync all four M2M collections.
 
-        1:1 port of the on_event_updated closure in main.py. Returns the
-        updated event, or None if the event is missing / an error occurred
-        (rollback + silent fail, as before). W4: an explicit ``event_type_id``
+        Ported from the on_event_updated closure in main.py, except for the
+        failure path (``save-error-reporting``): commit on success returns the
+        updated event; a missing event raises ``ValueError`` before the
+        refresh; any failure rolls the transaction back and re-raises (no more
+        rollback + silent None). W4: an explicit ``event_type_id``
         (id or None for «без типа») reassigns the type; callers that predate
         the feature leave the sentinel and keep the current one.
         """
@@ -223,7 +227,11 @@ class EventService:
                 fields["event_type_id"] = event_type_id
             await self.update_event(event_id, **fields)
             updated_event = await self.get_event(event_id)
-            if updated_event and updated_event.description:
+            if updated_event is None:
+                # Without this check the refresh below would raise a bare
+                # AttributeError on None — the caller must see the real reason.
+                raise ValueError(f"событие {event_id} не найдено")
+            if updated_event.description:
                 updated_event.description.characteristics = characteristics
                 updated_event.description.backstory = backstory
 
@@ -243,7 +251,7 @@ class EventService:
             return updated_event
         except Exception:
             await self._session.rollback()
-            return None
+            raise
 
     # ── M2M relation sync (ported 1:1 from the main.py closures) ─────────
 

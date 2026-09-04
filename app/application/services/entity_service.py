@@ -118,8 +118,11 @@ class EntityService:
     ):
         """Update entity fields + description and resync M2M relations.
 
-        1:1 port of the on_entity_saved closure in on_entity_click (main.py):
-        commit on success, rollback + silent None on error.
+        Ported from the on_entity_saved closure in on_entity_click (main.py),
+        except for the failure path (``save-error-reporting``): commit on
+        success returns the updated entity; a missing entity raises
+        ``ValueError`` before the relation refresh; any failure rolls the
+        transaction back and re-raises (no more rollback + silent None).
         """
         try:
             # Snapshot the current image_id (if this entity type has the
@@ -137,7 +140,12 @@ class EntityService:
 
             # Update description
             refreshed = await self.get_entity(entity_id)
-            if refreshed and refreshed.description:
+            if refreshed is None:
+                # Without this check the relation-refresh below would raise a
+                # bare AttributeError on None — the caller must see the real
+                # reason (design D1 of fix-silent-dialog-save-debt).
+                raise ValueError(f"сущность {entity_id} не найдена")
+            if refreshed.description:
                 refreshed.description.characteristics = characteristics
                 refreshed.description.backstory = backstory
 
@@ -164,4 +172,4 @@ class EntityService:
             return refreshed
         except Exception:
             await self._session.rollback()
-            return None
+            raise
