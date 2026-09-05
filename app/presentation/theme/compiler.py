@@ -295,8 +295,8 @@ def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     separate top-level windows: an attached-root stylesheet cannot reach them,
     so this sheet is set on ``QApplication``. It deliberately contains *no*
     generic chrome rules — anything with a class selector (``QLineEdit`` etc.)
-    would also skin the widgets embedded in the sheet canvas
-    (``QGraphicsProxyWidget``) which W2a must not touch.
+    would leak onto widgets outside the themed catalog (the sheet's proxy
+    field editors back in W2a; that paint layer is a QML island since Q3b).
 
     Menu items have no ``:hover`` rule on purpose: a hovered ``QMenu`` item is
     already ``:selected`` for Qt, so an extra alpha-hover would only wash the

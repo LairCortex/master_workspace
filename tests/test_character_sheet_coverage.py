@@ -1,4 +1,9 @@
-"""Gap-fillers for character-sheet line coverage (CI fail_under=100)."""
+"""Gap-fillers for character-sheet line coverage (CI fail_under=100).
+
+Q3b 3.4: the widgets canvas/palette/rail/properties-panel gap tests retired
+with their modules — the island halves of those seams are pinned by
+tests/presentation/test_sheet_canvas_island.py and the window-island suites.
+"""
 from __future__ import annotations
 
 import json
@@ -6,8 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QEvent
-from PySide6.QtGui import QFocusEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -55,15 +58,12 @@ from app.infrastructure.repositories.character_sheet_instance_repository import 
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
+from app.presentation.qml.sheet_font import register_sheet_font
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     UNDO_STACK_LIMIT,
     CharacterSheetViewModel,
 )
 from app.presentation.viewmodels.sheet_list_view_model import TAB_INSTANCES
-from app.presentation.views.character_sheet.canvas import (
-    CharacterSheetCanvas,
-    register_sheet_font,
-)
 from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
@@ -71,12 +71,9 @@ from app.presentation.views.character_sheet.fill_dialog import (
     CharacterSheetFillDialog,
 )
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
-from app.presentation.views.character_sheet.page_rail import PageRail
-from app.presentation.views.character_sheet.palette import SheetPalette
 from app.presentation.views.character_sheet.preset_dialog import (
     CharacterSheetPresetDialog,
 )
-from app.presentation.views.character_sheet.properties_panel import SheetPropertiesPanel
 
 
 @pytest.fixture(scope="session")
@@ -370,20 +367,9 @@ async def test_fill_dialog_and_panels(async_session, qapp, monkeypatch, tmp_path
     d._closing = False
     d._teardown_vm_links()
     d._teardown_vm_links()
-    panel = d.properties_panel
-    panel._fid = None
-    panel._commit_text()
-    panel._commit_textarea()
-    panel._commit_checkbox(True)
-    panel._syncing = True
-    panel._commit_text()
-    panel._commit_textarea()
-    panel._commit_checkbox(False)
-    panel._syncing = False
-    panel._fid = "missing"
-    panel._commit_text()
-    panel._commit_textarea()
-    panel.eventFilter(panel.textarea, QFocusEvent(QEvent.Type.FocusOut))
+    # Q3b 3.4: the retired FillPropertiesPanel's commit branches moved to the
+    # island (pinned in test_sheet_window_islands_qml/test_fill_island_*);
+    # here only the facade's own popup-store branches stay in scope.
     monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     await d._store_and_set_image(text.id, str(tmp_path / "nope.png"))
@@ -402,6 +388,8 @@ async def test_fill_dialog_and_panels(async_session, qapp, monkeypatch, tmp_path
     monkeypatch.setattr(d.view_model, "save", boom_save2)
     await d.save()
     d.force_close()
+    d.deleteLater()
+    qapp.processEvents()  # run the deferred island deletes while the shell lives
 
     monkeypatch.setattr(
         "app.presentation.views.character_sheet.fill_dialog.QFileDialog.getOpenFileName",
@@ -455,51 +443,24 @@ async def test_list_dialog_edges(async_session, qapp, monkeypatch):
         staticmethod(lambda *a, **k: ("", False)),
     )
     await d2.create_instance()
-    row = await sheet_svc.create("Для рейки")
-    vm_for_rail = CharacterSheetViewModel(sheet_svc)
-    await vm_for_rail.load(row.id)
-    rail = PageRail(vm_for_rail, navigation_only=True)
-    rail._set_current(-1)
-    rail._renaming = True
-    rail._on_item_clicked(MagicMock())
-    pal = SheetPalette()
-    pal.set_active_tool("nope")
+    # Q3b 3.4: the retired PageRail/SheetPalette guard lines moved to the
+    # island rails/tools (test_sheet_window_islands_qml pins the semantics).
     d.close()
     d2.close()
 
 
-async def test_canvas_and_editor_panel_edges(async_session, qapp, monkeypatch):
-    svc = CharacterSheetService(CharacterSheetRepository(async_session))
-    row = await svc.create("Макет")
-    vm = CharacterSheetViewModel(svc)
-    await vm.load(row.id)
-    canvas = CharacterSheetCanvas(vm)
-    canvas._page_scene_pos("missing")
-    vm._template = None
-    canvas._template_size()
-    canvas.fit_width()
-    vm2 = CharacterSheetViewModel(svc)
-    await vm2.load(row.id)
-    canvas2 = CharacterSheetCanvas(vm2, fill_mode=True)
-    fid = vm2.place(FieldType.TEXT, 10, 10)
-    canvas2._page_scene_pos(fid)
-    canvas2._on_field_added("missing")
-    canvas2._on_field_removed("missing")
-    canvas2._fill_press(canvas2.mapFromScene(canvas2.mapToScene(0, 0)))
-    if canvas2._items:
-        canvas2._apply_fill_display(next(iter(canvas2._items.values())))
-    props = SheetPropertiesPanel(vm2)
-    props._fid = None
-    props._begin_edit()
-    props._end_edit()
-    import app.presentation.views.character_sheet.canvas as canvas_mod
-    canvas_mod._font_registered = False
+def test_register_sheet_font_logs_a_failed_load(qapp, monkeypatch):
+    """Q3b 1.3+: the island registration module keeps the loud-missing-font
+    branch — a -1 font id must hit the log, never a silent fallback."""
+    import app.presentation.qml.sheet_font as sheet_font_mod
+
+    sheet_font_mod._font_registered = False
     monkeypatch.setattr(
         "PySide6.QtGui.QFontDatabase.addApplicationFont",
         staticmethod(lambda *a, **k: -1),
     )
     register_sheet_font()
-    canvas_mod._font_registered = True
+    sheet_font_mod._font_registered = True
 
 
 def test_safe_disconnect_swallows_qt_errors():
@@ -532,12 +493,8 @@ async def test_editor_dialog_export_and_image_edges(async_session, qapp, monkeyp
     await d.load()
     d._closing = False
     await d.load()
-    d._on_paste()
-    d._on_orientation(0)
-    d.orientation_combo.addItem("нет", "unknown-orient")
-    d._sync_orientation("no-such")
-    d.view_model._template = None
-    d._sync_orientation()
+    d._on_paste()  # asks the island's canvas for its visibleCenter (D1 bridge)
+    # orientation combo is island chrome now (3.1); here: the dialog title edge.
     d.set_name("x")
     monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", "")))
     d._pick_image("x")
@@ -640,24 +597,9 @@ async def test_fill_dialog_remaining_branches(
         inst_svc, sheet_svc, inst.id, image_store=Store()
     )
     await d.load()
-    panel = d.properties_panel
-    panel._fid = number.id
-    panel.text_edit.setText("12")
-    panel._commit_text()
-    panel._fid = text.id
-    panel.text_edit.setText("текст")
-    panel._commit_text()
-    panel._fid = checkbox.id
-    panel._commit_checkbox(True)
-    picked = []
-    panel.image_pick_requested.disconnect(d._pick_image)
-    panel.image_pick_requested.connect(picked.append)
-    panel._fid = image.id
-    panel._pick()
-    assert picked == [image.id]
-    d.view_model.set_image(image.id, 5)
-    panel._clear_image()
-
+    # Q3b 3.4: the value-panel commit branches live in the fill island now
+    # (pinned by test_sheet_window_islands_qml); the retired panel's
+    # image-pick relay is the root's imagePickRequested signal — pinned there.
     monkeypatch.setattr(
         QMessageBox,
         "warning",
@@ -745,6 +687,7 @@ async def test_fill_dialog_remaining_branches(
         pages_changed=signal,
         current_page_changed=signal,
         history_changed=signal,
+        read_only_changed=signal,
     )
     d._teardown_vm_links()
     d._vm = real_vm
@@ -837,29 +780,6 @@ async def test_list_dialog_remaining_branches(async_session, qapp, monkeypatch):
     d.close()
 
 
-async def test_page_rail_remaining_guards(async_session, qapp):
-    service = CharacterSheetService(CharacterSheetRepository(async_session))
-    row = await service.create("Рейка веток")
-    vm = CharacterSheetViewModel(service)
-    await vm.load(row.id)
-    navigation = PageRail(vm, navigation_only=True)
-    navigation._on_item_changed(navigation.pages_list.item(0))
-
-    rail = PageRail(vm)
-    item = rail.pages_list.item(0)
-    real_template = vm._template
-    vm._template = None
-    rail._on_item_changed(item)
-    rail.pages_list.setCurrentRow(0)
-    rail._delete_page()
-    vm._template = real_template
-    rail._on_item_changed(item)
-    rail.pages_list.setCurrentRow(-1)
-    rail._delete_page()
-    rail.pages_list.setCurrentRow(0)
-    rail._delete_page()
-
-
 async def test_preset_dialog_remaining_branches(
     async_session, qapp, monkeypatch
 ):
@@ -885,56 +805,3 @@ async def test_preset_dialog_remaining_branches(
     await d._on_ok()
     d._show_error(RuntimeError("show failed"))
     d.close()
-
-
-async def test_properties_panel_remaining_guards(async_session, qapp):
-    service = CharacterSheetService(CharacterSheetRepository(async_session))
-    row = await service.create("Свойства веток")
-    vm = CharacterSheetViewModel(service)
-    await vm.load(row.id)
-    text_id = vm.place(FieldType.TEXT, 10, 10)
-    number_id = vm.place(FieldType.NUMBER, 10, 40)
-    checkbox_id = vm.place(FieldType.CHECKBOX, 10, 70)
-    dropdown_id = vm.place(FieldType.DROPDOWN, 10, 100)
-    vm.set_options(dropdown_id, ["a", "b"])
-    panel = SheetPropertiesPanel(vm)
-
-    panel.eventFilter(panel.content_edit, QFocusEvent(QEvent.Type.FocusOut))
-    real_template = vm._template
-    vm._template = None
-    assert panel._page_bounds() == (PAGE_WIDTH_PT, PAGE_HEIGHT_PT)
-    vm._template = real_template
-
-    panel._visible_section(FieldType.TEXT)
-    panel._visible_section(FieldType.NUMBER)
-    panel._fid = "missing"
-    panel._sync_section(FieldType.TEXT)
-    panel._on_props_changed("missing")
-
-    panel._fid = None
-    panel._on_number_commit()
-    panel._on_bound()
-    panel._on_checkbox_toggled(False)
-    panel._on_option_add()
-
-    panel._fid = text_id
-    panel._on_number_commit()
-    panel._on_bound()
-    panel._on_checkbox_toggled(False)
-
-    panel._fid = number_id
-    panel._sync_section(FieldType.NUMBER)
-    panel._on_bound()
-
-    panel._fid = checkbox_id
-    panel._sync_section(FieldType.CHECKBOX)
-    panel._on_checkbox_toggled(False)
-
-    panel._fid = None
-    panel._on_option_remove()
-    panel._fid = dropdown_id
-    panel._sync_section(FieldType.DROPDOWN)
-    panel.options_list.setCurrentRow(0)
-    panel._on_option_remove()
-    panel.options_list.setCurrentRow(-1)
-    panel._on_option_move(-1)

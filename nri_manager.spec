@@ -53,6 +53,15 @@ a = Analysis(
         # port-sheet-list-preset-dialogs-qml-q3a): SheetListRoot.qml /
         # SheetPresetRoot.qml are loaded via QQuickWidget.setSource from the
         # list/preset dialog facades; components come from nri.components.
+        ("app/presentation/qml/SheetCanvas.qml",
+         "app/presentation/qml"),
+        # Design/fill window islands (same change, Q3b task 4.3 pre-wired with
+        # the islands): SheetEditorRoot.qml / SheetFillRoot.qml are loaded via
+        # QQuickWidget.setSource from the editor/fill dialog facades.
+        ("app/presentation/qml/SheetEditorRoot.qml",
+         "app/presentation/qml"),
+        ("app/presentation/qml/SheetFillRoot.qml",
+         "app/presentation/qml"),
         ("app/presentation/qml/SheetListRoot.qml",
          "app/presentation/qml"),
         ("app/presentation/qml/SheetPresetRoot.qml",

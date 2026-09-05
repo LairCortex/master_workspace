@@ -244,8 +244,9 @@ def test_popup_menu_selection_is_not_washed_out_by_hover(tokens, theme):
 
 def test_popup_sheet_is_not_the_chrome_sheet(tokens):
     sheet = compile_popup_qss(tokens, "dark")
-    # No generic chrome rules leak into the application-wide sheet: that is
-    # how the canvas (QGraphicsProxyWidget fields) stays untouched (D2).
+    # No generic chrome rules leak into the application-wide sheet: this is
+    # how unthemed hybrids stayed untouched back in W2a (D2; the sheet's
+    # proxy-field layer was retired with the Q3b island).
     assert 'uiRole="chrome"' not in sheet
     assert "QLineEdit" not in sheet
     assert "QPushButton" not in sheet

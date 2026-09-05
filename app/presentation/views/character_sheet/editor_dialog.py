@@ -1,34 +1,48 @@
-"""The character-sheet editor window: palette | rail | canvas | properties.
+"""Character-sheet editor window: DESIGN content as a QML island under the
+native «Правка» menu.
 
-One non-modal QDialog per sheet. The ViewModel (one per window) is the only
-layout buffer; the window adds the explicit «Сохранить» action and a
-close-with-unsaved-changes confirmation. A rename in the list window reaches
-this one through :meth:`set_name` — it changes the title and never touches
-the dirty flag (a rename is not a layout edit).
+Q3b (change port-character-sheet-canvas-qml-q3b, task 3.3, designs D1/D6/D9):
+the frame, Esc and the menu stay native (``QDialog`` + ``QMenuBar``); the
+whole content (palette, page rail, canvas, property panel, action row) is a
+``QQuickWidget`` island loading ``app/presentation/qml/SheetEditorRoot.qml``.
+The widgets content (palette.py / page_rail.py / properties_panel.py /
+canvas.py) is gone — no flag, no second copy (precedent Q1/Q2.5a/Q3a). The
+external contract is unchanged: ``saved``, ``view_model``, ``load``,
+``set_name``, ``save``, ``export_pdf``, ``force_close``, the dirty
+``closeEvent`` — ``app/main.py`` imports this module verbatim.
 
-A-playable additions (design D1–D7): the page rail (its clicks scroll the
-canvas, the visible page becomes the current one), the template-wide orientation
-switch (clamps, never scales), and the image-field file pick — the file goes
-through the game's ``ImageStore`` like the entity cards (one pipeline).
+Division of labour (D1):
+
+* the island talks to the design ViewModel through its declared ``vm``
+  property only (setInitialProperties — the shared engine's root context is
+  global, the Q3a lesson); geometry, snapping, undo land on the VM's sync
+  entrances exactly as the widgets did;
+* every session/popup flow stays on this facade: save under ``run_locked``
+  with ``QMessageBox`` error surfaces, the PDF picker (``QFileDialog``), the
+  image ingest (ImageStore), the delete-page confirm (``QMessageBox``), the
+  paste position (the island's canvas answers its ``visibleCenter`` through
+  the ``pasteRequested`` bridge);
+* Enter clicks the island's ``defaultButton`` marker («Сохранить») — but only
+  when the island did not consume Enter itself (inline field editing owns the
+  key while focused; keys the Quick scene does not accept propagate here).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QKeyEvent, QKeySequence
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QComboBox,
+    QApplication,
     QDialog,
     QFileDialog,
-    QHBoxLayout,
-    QLabel,
     QMenuBar,
     QMessageBox,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -38,29 +52,23 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
 )
 from app.domain.character_sheet_pdf import write_sheet_pdf
-from app.domain.entities.character_sheet import (
-    ORIENTATION_LANDSCAPE,
-    ORIENTATION_PORTRAIT,
-    SheetTemplate,
-)
+from app.domain.entities.character_sheet import SheetTemplate
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
+from app.presentation.qml.tooltip_shim import install_island_tooltips
+from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme
+from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     CharacterSheetViewModel,
-)
-from app.presentation.views.character_sheet.canvas import CharacterSheetCanvas
-from app.presentation.views.character_sheet.page_rail import PageRail
-from app.presentation.views.character_sheet.palette import SheetPalette
-from app.presentation.views.character_sheet.properties_panel import (
-    SheetPropertiesPanel,
 )
 
 log = logging.getLogger(__name__)
 
-_PALETTE_WIDTH = 120
-_RAIL_WIDTH = 160
-_PANEL_WIDTH = 260
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "SheetEditorRoot.qml")
 
 _IMAGE_FILTER = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
 
@@ -99,38 +107,17 @@ class CharacterSheetEditorDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._sheet_id = sheet_id
-        self._vm = CharacterSheetViewModel(service)
+        self._vm = CharacterSheetViewModel(service)  # kept alive by this dialog
         self._force_closing = False
         self._closing = False
         self._run_locked = run_locked or _run_now
         self._image_store = image_store
-        self._theme = theme
+        # The island is skinned by the token bridge only; the widgets-era
+        # ``None`` falls back to the process default (the Q3a seam).
+        self._theme = theme if theme is not None else get_default_theme()
 
         self.setWindowTitle("Чар-лист")
         self.resize(1280, 800)
-
-        self.palette = SheetPalette(self)
-        self.palette.setFixedWidth(_PALETTE_WIDTH)
-        self.rail = PageRail(self._vm, self)
-        self.rail.setFixedWidth(_RAIL_WIDTH)
-        self.canvas = CharacterSheetCanvas(self._vm, self, image_store=image_store)
-        self.properties_panel = SheetPropertiesPanel(self._vm, self)
-        self.properties_panel.setFixedWidth(_PANEL_WIDTH)
-
-        self.orientation_combo = QComboBox(self)
-        self.orientation_combo.addItem("Книжная", ORIENTATION_PORTRAIT)
-        self.orientation_combo.addItem("Альбомная", ORIENTATION_LANDSCAPE)
-
-        self.save_button = QPushButton("Сохранить", self)
-        self.save_button.clicked.connect(lambda: asyncio.ensure_future(self.save()))
-        self.export_pdf_button = QPushButton("Экспорт в PDF…", self)
-        self.export_pdf_button.clicked.connect(
-            lambda: asyncio.ensure_future(self.export_pdf())
-        )
-
-        self.snap_check = self.properties_panel.snap_check
-        self.bring_front_button = self.properties_panel.bring_front_button
-        self.send_back_button = self.properties_panel.send_back_button
 
         self._menu_bar = QMenuBar(self)
         self.edit_menu = self._menu_bar.addMenu("Правка")
@@ -156,68 +143,63 @@ class CharacterSheetEditorDialog(QDialog):
             self.edit_menu.addAction(action)
         self._sync_edit_actions()
 
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Ориентация:", self))
-        top.addWidget(self.orientation_combo)
-        top.addStretch(1)
-
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        body.addWidget(self.palette)
-        body.addWidget(self.rail)
-        body.addWidget(self.canvas, 1)
-        body.addWidget(self.properties_panel)
-
-        bottom = QHBoxLayout()
-        bottom.addStretch(1)
-        bottom.addWidget(self.export_pdf_button)
-        bottom.addWidget(self.save_button)
-
         outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        # The canvas (a QGraphicsView) is deliberately not in the chrome rule
-        # set: its scene renders untouched (W2b D5 — proxy widgets included).
+        # The island reaches the dialog edges so no OS-palette band frames it
+        # (its surface comes from the token palette). Only the menu is chrome.
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("sheetEditorChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setMenuBar(self._menu_bar)
-        layout.addLayout(top)
-        layout.addLayout(body, 1)
-        layout.addLayout(bottom)
+        outer.setMenuBar(self._menu_bar)
+        outer.addWidget(self._build_island())
+        # the current game ImageStore feeds ``image://sheet`` (D7): bound for
+        # the live engine's provider and remembered for later registrations
+        bind_sheet_image_store(self._image_store)
 
-        self.palette.tool_requested.connect(self._vm.set_tool)
-        # one-shot placement resets the tool to the pointer in the VM; the
-        # palette buttons must follow that (D7), not stay on the place tool
-        self._vm.tool_changed.connect(self.palette.set_active_tool)
-        # rail click → the canvas scrolls to that sheet (D1)
-        self.rail.page_selected.connect(self.canvas.scroll_to_page)
-        # the sheet with the largest visible area becomes the current page
-        self.canvas.visible_page_changed.connect(self._on_visible_page)
-        # orientation: one per template, clamps without scaling (D4)
-        self.orientation_combo.currentIndexChanged.connect(self._on_orientation)
-        self._vm.orientation_changed.connect(self._sync_orientation)
-        # image field: double-click on the canvas or the panel button
-        self.canvas.image_field_double_clicked.connect(self._pick_image)
-        self.properties_panel.image_pick_requested.connect(self._pick_image)
+    # ── island seam (the Q3a dialog pattern) ─────────────────────────────────
+
+    def _build_island(self) -> QQuickWidget:
+        # The one process-wide engine (spec «Движок один на приложение»);
+        # ``setup_qml_shell`` is idempotent and the reference keeps it alive.
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self.quick = QQuickWidget(self._engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        # The VM goes in as the root's DECLARED property: the shared engine's
+        # root context is process-global, so per-dialog names would leak into
+        # every island (the Q3a lesson pinned in list_dialog.py). The palette
+        # is the same bridge the other islands read, dialog-owned and created
+        # after the widget (children die in creation order — the bridge
+        # outlives the scene).
+        self.quick.setInitialProperties({"vm": self._vm})
+        self._palette = QmlPalette(self._theme, parent=self)
+        # rootContext() of a shared-engine widget IS the engine context —
+        # ``islandPalette`` is the one agreed global chrome name (the
+        # launcher/timeline contract).
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        # Native tooltip display for the island chrome (Q2.5a D9): the bridge
+        # is parented to the island (raw-pointer context property).
+        self._tooltip_bridge = install_island_tooltips(self.quick)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        self._root = self.quick.rootObject()
+        self._wire_island()
+        if self._theme is not None:
+            attach_theme(self._menu_bar, self._theme)
+            self._theme.apply()
+        return self.quick
+
+    def _wire_island(self) -> None:
+        root = self._root
+        root.saveRequested.connect(
+            lambda: asyncio.ensure_future(self.save())
+        )
+        root.exportPdfRequested.connect(
+            lambda: asyncio.ensure_future(self.export_pdf())
+        )
+        root.imagePickRequested.connect(self._pick_image)
+        # the delete-page confirm is a native QMessageBox (D1)
+        root.pageRemoveRequested.connect(self._confirm_page_remove)
         self._vm.history_changed.connect(self._sync_edit_actions)
         self._vm.selection_changed.connect(lambda _fid: self._sync_edit_actions())
         self._vm.clipboard_changed.connect(self._sync_edit_actions)
-        self._apply_theme()
-
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1).
-
-        The canvas and its scene (proxy widgets included) stay off-skin (D5).
-        """
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            attach_theme(self._menu_bar, self._theme)
-            self._theme.apply()
 
     # -- data -----------------------------------------------------------------
 
@@ -237,7 +219,6 @@ class CharacterSheetEditorDialog(QDialog):
             return
         template = self._vm.template
         self.setWindowTitle(template.name)
-        self._sync_orientation()
 
     def set_name(self, name: str) -> None:
         """External rename from the list window: title only, dirty untouched."""
@@ -245,6 +226,55 @@ class CharacterSheetEditorDialog(QDialog):
             return
         self._vm.template.name = name
         self.setWindowTitle(name)
+
+    # -- island bridges ---------------------------------------------------------
+
+    def _on_paste(self) -> None:
+        # The migrated canvas.visible_page_center seam: ask the island, read
+        # the canvas' answer straight back (the emit runs QML synchronously).
+        page = self._vm.current_page_index
+        self._root.pasteRequested.emit(page)
+        center = self._root.property("pasteCenterOut")
+        point = None
+        if center is not None:
+            x = center.x() if hasattr(center, "x") else center["x"]
+            y = center.y() if hasattr(center, "y") else center["y"]
+            if x >= 0 and y >= 0:
+                point = (float(x), float(y))
+        self._vm.paste(visible_center=point)
+
+    def _confirm_page_remove(self, index: int) -> None:
+        """The rail's «−» (the retired page_rail._delete_page, verbatim rules)."""
+        template = self._vm.template
+        if template is None or not 0 <= index < len(template.pages):
+            return
+        if len(template.pages) <= 1:
+            return  # the last remaining page cannot be deleted
+        if template.pages[index].fields:
+            answer = QMessageBox.question(
+                self,
+                "Удалить страницу",
+                "На странице есть поля. Удалить её вместе с ними?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._vm.remove_page(index, confirmed=True)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt API
+        # Enter clicks the island's «Сохранить» marker — unless the island
+        # consumed the key first: a focused inline editor accepts Enter and
+        # the event never gets here (design D1, the Q3a marker pattern).
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            marker = (
+                self._root.property("defaultButton") if self._root is not None else None
+            )
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return
+        super().keyPressEvent(event)
 
     # -- actions ---------------------------------------------------------------
 
@@ -316,12 +346,12 @@ class CharacterSheetEditorDialog(QDialog):
         """Sever every ViewModel → view signal connection.
 
         ``load`` / ``save`` are coroutines that can still be in flight when the
-        window closes (e.g. closed mid-load). Their ``deleteLater`` defers the
-        C++ destruction of the canvas / rail / panel past the next emit, so an
-        emit landing on an already-deleted widget raises ``RuntimeError`` in the
-        event loop. The views live exactly as long as this dialog, so
-        disconnecting the (one-per-window) VM's signals on close is safe and
-        makes the in-flight mutations no-ops instead of crashes.
+        window closes (e.g. closed mid-load). The island's Connections objects
+        hold receivers bound to scene items; ``deleteLater`` defers the C++
+        destruction past the next emit, so an emit landing on an already-deleted
+        item raises ``RuntimeError`` in the event loop. The views live exactly
+        as long as this dialog, so disconnecting the (one-per-window) VM's
+        signals on close is safe and makes in-flight mutations no-ops.
         """
         vm = self._vm
         signals = (
@@ -343,8 +373,13 @@ class CharacterSheetEditorDialog(QDialog):
             vm.snap_changed,
             vm.clipboard_changed,
         )
-        for sig in signals:
-            _safe_disconnect(sig)
+        # QML Connections receivers are C++-side: a blanket Python disconnect
+        # attempts more than it can reach (shiboken's RuntimeWarning); the
+        # declarative links die with the released scene instead.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for sig in signals:
+                _safe_disconnect(sig)
 
     def closeEvent(self, event) -> None:
         if (
@@ -366,32 +401,22 @@ class CharacterSheetEditorDialog(QDialog):
         self._teardown_vm_links()
         super().closeEvent(event)
 
-    # -- A-playable: orientation / visible page / image pick --------------------
+    # ── island teardown (the Q1-accepted launcher pattern, as in list_dialog) ──
 
-    def _sync_orientation(self, orientation: str | None = None) -> None:
-        if orientation is None:
-            template = self._vm.template
-            if template is None:
-                return
-            orientation = template.orientation
-        index = self.orientation_combo.findData(orientation)
-        if index < 0:
-            index = 0
-        self.orientation_combo.blockSignals(True)
-        try:
-            self.orientation_combo.setCurrentIndex(index)
-        finally:
-            self.orientation_combo.blockSignals(False)
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
 
-    def _on_orientation(self, _index: int) -> None:
-        self._vm.set_orientation(self.orientation_combo.currentData())
+    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
+        """Release the island against its VM/palette before the dialog dies.
 
-    def _on_visible_page(self, index: int) -> None:
-        self._vm.set_current_page(index)
-
-    def _on_paste(self) -> None:
-        center = self.canvas.visible_page_center(self._vm.current_page_index)
-        self._vm.paste(visible_center=center)
+        The release is deferred one loop turn: a QML-originated close lands
+        here while the island's own handler is still on the stack, and
+        destroying the scene synchronously there is fatal. One-shot bound to
+        ``self`` — it runs when the JS stack unwound and never after the
+        dialog is gone (the list_dialog Q3a precedent, word for word).
+        """
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)
 
     def _sync_edit_actions(self) -> None:
         self.undo_action.setEnabled(self._vm.can_undo)
@@ -400,12 +425,11 @@ class CharacterSheetEditorDialog(QDialog):
         self.copy_action.setEnabled(has_sel)
         self.duplicate_action.setEnabled(has_sel)
         self.paste_action.setEnabled(self._vm.has_clipboard)
-        self.bring_front_button.setEnabled(has_sel)
-        self.send_back_button.setEnabled(has_sel)
+
+    # -- image field: the file bridge (D6, the same pipeline as entity cards) ---
 
     def _pick_image(self, field_id: str) -> None:
-        """File dialog first (sync UI), then the ingest on the loop (D6/D3:
-        the same ImageStore pipeline as the entity cards)."""
+        """File dialog first (sync UI), then the ingest on the loop."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Выберите изображение", "", _IMAGE_FILTER
         )

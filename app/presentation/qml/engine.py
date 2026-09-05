@@ -31,6 +31,8 @@ from PySide6.QtQml import QQmlEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
+from app.presentation.qml.sheet_font import register_sheet_font
+from app.presentation.qml.sheet_image_provider import register_sheet_image_provider
 from app.presentation.qml.tooltip_shim import register_tooltip_shim
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
@@ -60,8 +62,16 @@ def setup_qml_shell(qapp: QApplication, theme: ThemeRuntime) -> QQmlEngine:
     # import space before any island can load; the registration is
     # process-wide and idempotent, islands never register it themselves.
     register_tooltip_shim()
+    # Change Q3b (D7): the bundled sheet font is registered here — before any
+    # island (canvas included) can paint — once for the process, exactly as
+    # the widgets canvas used to do at its own import time.
+    register_sheet_font()
     engine = QQmlEngine(qapp)  # parented to the app: lives as long as it
     engine.addImportPath(QML_IMPORT_PATH)
+    # Change Q3b (D7): ``image://sheet/<imageId>`` resolves picture-field
+    # bytes through the ImageStore; registration is idempotent per engine and
+    # belongs to the shell because every island shares this engine.
+    register_sheet_image_provider(engine)
     palette = QmlPalette(theme, parent=engine)  # dies with the engine
     engine.rootContext().setContextProperty("palette", palette)
     # Q3a NOTE (apply-stage): no ``islandPalette`` is registered here. Widgets

@@ -7,10 +7,13 @@ An AST pass over ``app/presentation/views/**`` forbids:
 * calls to ``widget.palette()`` — OS-palette reads for chrome purposes are
   migrated to border/accent tokens.
 
-The character-sheet canvas (``character_sheet/canvas*``) is whitelisted: its
-QPainter colors are scene content, off-skin by design (D5), as are the paper
-and D1 CSS surfaces it renders. Comments are invisible to the AST; docstrings
-may mention old hexes (migration history) and are skipped.
+Since Q3b 3.4 nothing is whitelisted on the python pass: the widgets canvas —
+the only screen whose QPainter colors were scene content off-skin by design —
+was deleted along with the exception, together with its proxy-field carve-out
+in the W2 catalog. Off-skin now survives exactly once (design D8):
+``SheetCanvas.qml`` carries the 1:1 ported paper constants and is skipped by
+the QML scan below — one file, never to grow. Comments are invisible to the
+AST; docstrings may mention old hexes (migration history) and are skipped.
 
 QML islands (task 7.1, spec ui-theme «Зачистка QML-исходников», qml-shell
 «Мост токенов»): a text pass over ``app/presentation/qml/**.qml`` forbids the
@@ -43,13 +46,30 @@ from PySide6.QtGui import QColor
 
 VIEWS_DIR = Path(views_pkg.__file__).resolve().parent
 QML_DIR = Path(qml_pkg.__file__).resolve().parent
+APP_DIR = VIEWS_DIR.parents[1]
 
 HEX_COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
 
+# Q3b 3.4 grep-invariant: the character sheet left the QGraphics* machinery
+# behind for good (the canvas view, the scene, the proxy-embedded inline
+# editors). Nothing in app code — including comments and re-exports — may
+# name it again.
+QGRAPHICS_TOKENS_RE = re.compile(r"QGraphicsView|QGraphicsProxyWidget")
 
-def _is_whitelisted(path: Path) -> bool:
-    rel = path.relative_to(VIEWS_DIR).as_posix()
-    return rel.startswith("character_sheet/canvas")
+
+def test_no_qgraphics_view_or_proxy_names_remain_in_app():
+    hits: list[str] = []
+    for path in sorted(APP_DIR.rglob("*.py")):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if QGRAPHICS_TOKENS_RE.search(line):
+                rel = path.relative_to(APP_DIR).as_posix()
+                hits.append(f"{rel}:{lineno}: {line.strip()}")
+    assert not hits, (
+        "the QGraphicsView/proxy machinery was removed with Q3b 3.4:\n"
+        + "\n".join(hits)
+    )
 
 
 def _docstring_nodes(tree: ast.Module) -> set[int]:
@@ -87,7 +107,7 @@ def _violations(path: Path) -> list[str]:
 
 def test_chrome_screens_scan_actual_files():
     # A typo in the glob must not silently scan nothing.
-    scanned = [p for p in VIEWS_DIR.rglob("*.py") if not _is_whitelisted(p)]
+    scanned = sorted(VIEWS_DIR.rglob("*.py"))
     names = {p.name for p in scanned}
     assert "main_window.py" in names and "llm_setup_dialog.py" in names
     # W4 acceptance (task 7.2), re-pinned by Q2.5a (task 5.2): the scale
@@ -101,8 +121,6 @@ def test_chrome_screens_scan_actual_files():
 def test_no_hex_literals_or_palette_calls_in_chrome_views():
     violations: list[str] = []
     for path in sorted(VIEWS_DIR.rglob("*.py")):
-        if _is_whitelisted(path):
-            continue
         violations.extend(_violations(path))
     assert not violations, "chrome must read colors from tokens:\n" + "\n".join(violations)
 
@@ -129,6 +147,14 @@ QML_NAME_RE = re.compile(r"^[A-Za-z]+$")
 # with alpha 0 used as "no fill", not a skin color). Every theme-driven value
 # comes from the palette bridge instead.
 OFF_SKIN_NAMED_GLOBALS = {"white", "black", "gray", "lightgray", "transparent"}
+
+# Q3b design D8: the character-sheet scene stays unthemed. The paper/gutter/
+# frame/selection/grid/hexes are fixed content constants ported 1:1 from the
+# widgets canvas, and the scan exception of that off-skin layer
+# (the old python-pass proxy carve-out, removed in 3.4) follows them into
+# SheetCanvas.qml — exactly one
+# file, and only for the hex-color pass; chrome islands keep the strict scan.
+QML_PAPER_EXCEPTIONS = {"SheetCanvas.qml"}
 
 
 def _blank(text: str) -> str:
@@ -236,8 +262,17 @@ def test_qml_scanner_detects_planted_violations(tmp_path):
 def test_qml_islands_carry_no_hex_or_off_palette_colors():
     violations: list[str] = []
     for path in sorted(QML_DIR.rglob("*.qml")):
+        if path.name in QML_PAPER_EXCEPTIONS:
+            continue
         violations.extend(_qml_violations(path))
     assert not violations, "qml islands must read colors from the palette:\n" + "\n".join(violations)
+
+
+def test_paper_exception_stays_the_single_canvas_file():
+    # D8 forbids growing the exception list: the skipped name must exist and
+    # every other island file stays under the strict scan above.
+    assert QML_PAPER_EXCEPTIONS == {"SheetCanvas.qml"}
+    assert (QML_DIR / "SheetCanvas.qml").is_file()
 
 
 # ---------------------------------------------------------------------------

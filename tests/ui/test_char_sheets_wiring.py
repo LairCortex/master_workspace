@@ -38,6 +38,17 @@ _island_property = helpers.sheet_island_property
 _template_texts = helpers.sheet_template_texts
 
 
+# Q3b (change port-character-sheet-canvas-qml-q3b, task 3.3): the editor/fill
+# content is a QML island now — the retired «Сохранить» QPushButton clicked
+# the facade through the island's saveRequested signal, exactly as the real
+# button does (the mouse → signal path is pinned in
+# test_sheet_window_islands_qml).
+
+
+def _press_save(dlg) -> None:
+    dlg.quick.rootObject().saveRequested.emit()
+
+
 def _editors(qtop) -> list[CharacterSheetEditorDialog]:
     """Visible editor dialogs (a closed QDialog stays in topLevelWidgets, hidden)."""
     return [w for w in qtop if isinstance(w, CharacterSheetEditorDialog) and w.isVisible()]
@@ -495,7 +506,7 @@ async def test_design_and_fill_same_template_open_together(
     create_via_list(list_dlg, dialog_input, "Макет")
     editor = await wait_editor(app, wait_for, "Макет")
     editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
 
     create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
@@ -538,7 +549,7 @@ async def test_second_fill_dirty_prompt_rejected(
     create_via_list(list_dlg, dialog_input, "Макет")
     editor = await wait_editor(app, wait_for, "Макет")
     fid = editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
 
     create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист1")
@@ -565,7 +576,7 @@ async def test_second_fill_dirty_prompt_confirm_opens_other(
     create_via_list(list_dlg, dialog_input, "Макет")
     editor = await wait_editor(app, wait_for, "Макет")
     fid = editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
 
     create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист1")
@@ -589,7 +600,7 @@ async def test_save_design_reloads_fill_layout_dirty_does_not_stream(
     list_dlg = await open_list(app, wait_for)
     create_via_list(list_dlg, dialog_input, "Макет")
     editor = await wait_editor(app, wait_for, "Макет")
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
 
     create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
@@ -599,7 +610,7 @@ async def test_save_design_reloads_fill_layout_dirty_does_not_stream(
     assert editor.view_model.dirty
     assert fill.view_model.template.get_field(fid) is None
 
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: fill.view_model.template.get_field(fid) is not None)
     assert not editor.view_model.dirty
 
@@ -656,7 +667,7 @@ async def test_switch_game_with_dirty_fill_reject_keeps_game(
     create_via_list(list_dlg, dialog_input, "Макет")
     editor = await wait_editor(app, wait_for, "Макет")
     fid = editor.view_model.place(FieldType.TEXT, 30.0, 30.0)
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
 
     create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")

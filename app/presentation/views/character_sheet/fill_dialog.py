@@ -1,26 +1,39 @@
-"""Fill window: read-only layout canvas + value map (design D3/D4)."""
+"""Fill window: read-only layout canvas + value map as a QML island under the
+native «Правка» menu (design D3/D4).
+
+Q3b (change port-character-sheet-canvas-qml-q3b, task 3.3): the frame, Esc
+and the menu stay native; the whole content (navigation rail, canvas in fill
+mode, value panel, action row) is a ``QQuickWidget`` island loading
+``app/presentation/qml/SheetFillRoot.qml`` — the widgets rail and
+FillPropertiesPanel are gone (no flag, no second copy). External contract
+unchanged: ``binding_changed``, ``view_model``, ``load``/``load_instance``,
+``set_name``, ``save``, ``force_close``, ``set_read_only``, dirty
+``closeEvent``; ``main.py`` imports this module verbatim.
+
+Popup/menu rules (spec qml-shell): character binding stays a native
+``QInputDialog``; image pick a ``QFileDialog``; the canvas dropdown bridge is
+answered by a native ``QMenu`` in the field's global coordinates here (the
+island only reports fieldId + scene position, design D9).
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import QEvent, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QPoint, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QKeyEvent, QKeySequence
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
+    QApplication,
     QDialog,
     QFileDialog,
-    QHBoxLayout,
     QInputDialog,
-    QLabel,
-    QLineEdit,
+    QMenu,
     QMenuBar,
     QMessageBox,
-    QPlainTextEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -30,19 +43,22 @@ from app.application.services.character_sheet_instance_service import (
     CharacterSheetInstanceService,
 )
 from app.application.services.character_sheet_service import CharacterSheetService
-from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
+from app.presentation.qml.tooltip_shim import install_island_tooltips
+from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme
+from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.character_sheet_fill_viewmodel import (
     CharacterSheetFillViewModel,
 )
-from app.presentation.views.character_sheet.canvas import CharacterSheetCanvas
-from app.presentation.views.character_sheet.page_rail import PageRail
 
 log = logging.getLogger(__name__)
 
-_RAIL_WIDTH = 160
-_PANEL_WIDTH = 260
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "SheetFillRoot.qml")
+
 _IMAGE_FILTER = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
 
 
@@ -60,153 +76,6 @@ def character_choice_labels(chars) -> list[tuple[str, int]]:
 
 async def _run_now(coro: Coroutine) -> Any:
     return await coro
-
-
-class FillPropertiesPanel(QWidget):
-    """Value editor of the selected fillable field."""
-
-    image_pick_requested = Signal(str)
-
-    def __init__(self, vm: CharacterSheetFillViewModel, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._vm = vm
-        self._fid: str | None = None
-        self._syncing = False
-
-        self.hint = QLabel("Выберите поле", self)
-        self.text_edit = QLineEdit(self)
-        self.textarea = QPlainTextEdit(self)
-        self.textarea.setFixedHeight(80)
-        self.checkbox = QCheckBox("Вкл.", self)
-        self.dropdown = QComboBox(self)
-        self.image_pick = QPushButton("Выбрать…", self)
-        self.image_clear = QPushButton("Убрать", self)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Значение", self))
-        layout.addWidget(self.hint)
-        layout.addWidget(self.text_edit)
-        layout.addWidget(self.textarea)
-        layout.addWidget(self.checkbox)
-        layout.addWidget(self.dropdown)
-        row = QHBoxLayout()
-        row.addWidget(self.image_pick)
-        row.addWidget(self.image_clear)
-        layout.addLayout(row)
-        layout.addStretch(1)
-
-        self.text_edit.editingFinished.connect(self._commit_text)
-        self.textarea.installEventFilter(self)
-        self.checkbox.toggled.connect(self._commit_checkbox)
-        self.dropdown.currentTextChanged.connect(self._commit_dropdown)
-        self.image_pick.clicked.connect(self._pick)
-        self.image_clear.clicked.connect(self._clear_image)
-
-        vm.selection_changed.connect(self._on_selection)
-        vm.field_content_changed.connect(self._on_field)
-        vm.field_props_changed.connect(self._on_field)
-        vm.values_changed.connect(lambda: self._on_selection(self._fid))
-        vm.template_changed.connect(lambda: self._on_selection(self._fid))
-        self._show_none()
-
-    def _on_selection(self, field_id) -> None:
-        self._fid = field_id
-        self._refresh()
-
-    def _on_field(self, field_id: str) -> None:
-        if field_id == self._fid:
-            self._refresh()
-
-    def _field(self):
-        if self._fid is None or self._vm.template is None:
-            return None
-        return self._vm.template.get_field(self._fid)
-
-    def _show_none(self) -> None:
-        for w in (
-            self.text_edit, self.textarea, self.checkbox, self.dropdown,
-            self.image_pick, self.image_clear,
-        ):
-            w.hide()
-        self.hint.show()
-
-    def _refresh(self) -> None:
-        field = self._field()
-        if field is None or field.type in (FieldType.LABEL, FieldType.RECT, FieldType.LINE):
-            self._show_none()
-            return
-        self.hint.hide()
-        self._syncing = True
-        try:
-            value = self._vm.display_value(field.id)
-            self.text_edit.setVisible(field.type in (FieldType.TEXT, FieldType.NUMBER))
-            self.textarea.setVisible(field.type is FieldType.TEXTAREA)
-            self.checkbox.setVisible(field.type is FieldType.CHECKBOX)
-            self.dropdown.setVisible(field.type is FieldType.DROPDOWN)
-            self.image_pick.setVisible(field.type is FieldType.IMAGE)
-            self.image_clear.setVisible(field.type is FieldType.IMAGE)
-            if field.type in (FieldType.TEXT, FieldType.NUMBER):
-                self.text_edit.setText("" if value is None else str(value))
-            elif field.type is FieldType.TEXTAREA:
-                self.textarea.setPlainText("" if value is None else str(value))
-            elif field.type is FieldType.CHECKBOX:
-                self.checkbox.setChecked(bool(value))
-            elif field.type is FieldType.DROPDOWN:
-                options = list(field.options)
-                if isinstance(value, str) and value and value not in options:
-                    options = [value, *options]
-                self.dropdown.clear()
-                self.dropdown.addItems(options)
-                if isinstance(value, str):
-                    self.dropdown.setCurrentText(value)
-        finally:
-            self._syncing = False
-
-    def _commit_text(self) -> None:
-        if self._syncing or self._fid is None:
-            return
-        field = self._field()
-        if field is None:
-            return
-        if field.type is FieldType.NUMBER:
-            self._vm.set_number(self._fid, self.text_edit.text())
-            self._refresh()
-        else:
-            self._vm.set_text(self._fid, self.text_edit.text())
-
-    def _commit_textarea(self) -> None:
-        if self._syncing or self._fid is None:
-            return
-        field = self._field()
-        if field is None or field.type is not FieldType.TEXTAREA:
-            return
-        self._vm.set_text(self._fid, self.textarea.toPlainText())
-
-    def eventFilter(self, obj, event) -> bool:
-        if obj is self.textarea and event.type() == QEvent.Type.FocusOut:
-            self._commit_textarea()
-        return super().eventFilter(obj, event)
-
-    def _commit_checkbox(self, checked: bool) -> None:
-        if self._syncing or self._fid is None:
-            return
-        current = bool(self._vm.display_value(self._fid))
-        if current != checked:
-            self._vm.toggle_checkbox(self._fid)
-
-    def _commit_dropdown(self, text: str) -> None:
-        if self._syncing or self._fid is None or not text:
-            return
-        if not self._vm.set_dropdown(self._fid, text):
-            self._refresh()
-
-    def _pick(self) -> None:
-        if self._fid is not None:
-            self.image_pick_requested.emit(self._fid)
-
-    def _clear_image(self) -> None:
-        if self._fid is not None:
-            self._vm.clear_image(self._fid)
 
 
 class CharacterSheetFillDialog(QDialog):
@@ -235,27 +104,13 @@ class CharacterSheetFillDialog(QDialog):
         self._run_locked = run_locked or _run_now
         self._image_store = image_store
         self._character_service = character_service
-        self._theme = theme
+        self._theme = theme if theme is not None else get_default_theme()
+        # the native option-choice menu of a fill dropdown field (the retired
+        # canvas._dropdown_menu seam, same attribute name)
+        self.dropdown_menu: QMenu | None = None
 
         self.setWindowTitle("Лист")
         self.resize(1100, 800)
-
-        self.palette = None
-        self.rail = PageRail(self._vm, self, navigation_only=True)
-        self.rail.setFixedWidth(_RAIL_WIDTH)
-        self.canvas = CharacterSheetCanvas(
-            self._vm, self, image_store=image_store, fill_mode=True
-        )
-        self.properties_panel = FillPropertiesPanel(self._vm, self)
-        self.properties_panel.setFixedWidth(_PANEL_WIDTH)
-        self.properties_panel.setEnabled(not read_only)
-
-        self.save_button = QPushButton("Сохранить", self)
-        self.save_button.clicked.connect(lambda: asyncio.ensure_future(self.save()))
-        self.bind_button = QPushButton("Привязать…", self)
-        self.bind_button.clicked.connect(lambda: asyncio.ensure_future(self._bind_character()))
-        self.unbind_button = QPushButton("Отвязать", self)
-        self.unbind_button.clicked.connect(lambda: asyncio.ensure_future(self._unbind_character()))
 
         self._menu_bar = QMenuBar(self)
         self.edit_menu = self._menu_bar.addMenu("Правка")
@@ -268,68 +123,67 @@ class CharacterSheetFillDialog(QDialog):
         self.edit_menu.addAction(self.undo_action)
         self.edit_menu.addAction(self.redo_action)
         self._sync_edit_actions()
-
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(0)
-        body.addWidget(self.rail)
-        body.addWidget(self.canvas, 1)
-        body.addWidget(self.properties_panel)
-
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.bind_button)
-        bottom.addWidget(self.unbind_button)
-        bottom.addStretch(1)
-        bottom.addWidget(self.save_button)
+        if read_only:
+            self._menu_bar.hide()
 
         outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        # The canvas (a QGraphicsView) is deliberately not in the chrome rule
-        # set: its scene renders untouched (W2b D5 — proxy widgets included).
+        # The island reaches the dialog edges (its surface comes from the
+        # token palette); only the menu is chrome.
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("sheetFillChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setMenuBar(self._menu_bar)
-        layout.addLayout(body, 1)
-        layout.addLayout(bottom)
+        outer.setMenuBar(self._menu_bar)
+        outer.addWidget(self._build_island())
+        # the current game ImageStore feeds ``image://sheet`` (D7): bound for
+        # the live engine's provider and remembered for later registrations
+        bind_sheet_image_store(self._image_store)
 
-        self.rail.page_selected.connect(self.canvas.scroll_to_page)
-        self.canvas.visible_page_changed.connect(self._on_visible_page)
-        self.canvas.image_field_double_clicked.connect(self._pick_image)
-        self.properties_panel.image_pick_requested.connect(self._pick_image)
-        self._vm.history_changed.connect(self._sync_edit_actions)
-        if read_only:
-            self.save_button.hide()
-            self.bind_button.hide()
-            self.unbind_button.hide()
-            self._menu_bar.hide()
-        self._apply_theme()
+    # ── island seam (the Q3a dialog pattern) ─────────────────────────────────
 
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1).
-
-        The canvas and its scene (proxy widgets included) stay off-skin (D5).
-        """
+    def _build_island(self) -> QQuickWidget:
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self.quick = QQuickWidget(self._engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        # the VM as the island's DECLARED property (never an engine-wide
+        # context name for one dialog — the Q3a lesson)
+        self.quick.setInitialProperties({"vm": self._vm})
+        self._palette = QmlPalette(self._theme, parent=self)
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self._tooltip_bridge = install_island_tooltips(self.quick)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        self._root = self.quick.rootObject()
+        self._wire_island()
         if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
             attach_theme(self._menu_bar, self._theme)
             self._theme.apply()
+        return self.quick
+
+    def _wire_island(self) -> None:
+        root = self._root
+        root.saveRequested.connect(lambda: asyncio.ensure_future(self.save()))
+        root.bindRequested.connect(
+            lambda: asyncio.ensure_future(self._bind_character())
+        )
+        root.unbindRequested.connect(
+            lambda: asyncio.ensure_future(self._unbind_character())
+        )
+        root.imagePickRequested.connect(self._pick_image)
+        # the native-QMenu bridge (spec: island menus are native popups)
+        root.dropdownRequested.connect(self._popup_dropdown)
+        self._vm.history_changed.connect(self._sync_edit_actions)
+        self._sync_bind_buttons()
+
+    # ── public API (unchanged) ───────────────────────────────────────────────
 
     def set_read_only(self, value: bool) -> None:
+        """The master-view switch: the VM flag drives the island (panel
+        enabled, action buttons) through its bindings; the native menu is the
+        facade's own widget."""
         self._vm.set_read_only(value)
-        self.properties_panel.setEnabled(not value)
-        self.save_button.setVisible(not value)
-        self.bind_button.setVisible(not value)
-        self.unbind_button.setVisible(not value)
         self._menu_bar.setVisible(not value)
         if not value:
             self._sync_bind_buttons()
         self._sync_edit_actions()
-        self.canvas.update()
 
     async def load_instance(self, instance_id: int) -> None:
         self._instance_id = instance_id
@@ -379,13 +233,19 @@ class CharacterSheetFillDialog(QDialog):
             vm.pages_changed,
             vm.current_page_changed,
             vm.history_changed,
-            vm.template_changed,
+            vm.read_only_changed,
         )
-        for sig in signals:
-            try:
-                sig.disconnect()
-            except (TypeError, RuntimeError):
-                pass
+        # QML Connections receivers are C++-side: a blanket disconnect attempts
+        # more than Python can reach (shiboken's RuntimeWarning) and removes
+        # exactly what the old widgets teardown removed — its Python lambdas;
+        # the declarative links die with the released scene instead.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for sig in signals:
+                try:
+                    sig.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
 
     def closeEvent(self, event) -> None:
         if not self._force_closing and self._vm.dirty:
@@ -403,8 +263,59 @@ class CharacterSheetFillDialog(QDialog):
         self._teardown_vm_links()
         super().closeEvent(event)
 
-    def _on_visible_page(self, index: int) -> None:
-        self._vm.set_current_page(index)
+    # ── island teardown (the launcher/list-dialog pattern) ──────────────────
+
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
+        # Deferred scene release before the dialog's children go away (the
+        # Q3a list-dialog comment applies verbatim).
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)
+
+    # -- native bridges --------------------------------------------------------
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt API
+        # Enter clicks the island's «Сохранить» marker when the island did not
+        # consume the key (a focused inline editor accepts Enter first). In
+        # read-only there is no marker click to make (the button is hidden).
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not self._vm.read_only:
+            marker = (
+                self._root.property("defaultButton") if self._root is not None else None
+            )
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return
+        super().keyPressEvent(event)
+
+    def _popup_dropdown(self, field_id: str, x: float, y: float) -> None:
+        """The native option menu in the field's coordinates (the retired
+        canvas._popup_dropdown, branch-for-branch: orphan current disabled at
+        top, options trigger ``vm.set_dropdown``)."""
+        if self.dropdown_menu is not None:
+            self.dropdown_menu.close()
+            self.dropdown_menu.deleteLater()
+            self.dropdown_menu = None
+        template = self._vm.template
+        field = template.get_field(field_id) if template is not None else None
+        if field is None:
+            return
+        menu = QMenu(self)
+        current = self._vm.display_value(field_id)
+        options = list(field.options)
+        if isinstance(current, str) and current and current not in options:
+            orphan = menu.addAction(current)
+            orphan.setEnabled(False)
+            menu.addSeparator()
+        for opt in options:
+            action = menu.addAction(opt)
+            action.triggered.connect(
+                lambda _c=False, o=opt, fid=field_id: self._vm.set_dropdown(fid, o)
+            )
+        self.dropdown_menu = menu
+        menu.popup(self.quick.mapToGlobal(QPoint(int(x), int(y))))
 
     def _sync_edit_actions(self) -> None:
         self.undo_action.setEnabled(self._vm.can_undo)
@@ -443,8 +354,11 @@ class CharacterSheetFillDialog(QDialog):
         self._vm.set_image(field_id, image_id)
 
     def _sync_bind_buttons(self) -> None:
+        # the migrated unbind-button enable rule, pushed over the island's
+        # declared bridge (the VM fires no bind signal)
         bound = self._vm.character_id is not None
-        self.unbind_button.setEnabled(bound)
+        if self._root is not None:
+            self._root.setProperty("characterBound", bool(bound))
 
     async def _bind_character(self) -> None:
         if self._character_service is None:

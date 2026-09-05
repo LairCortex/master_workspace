@@ -1,9 +1,10 @@
-"""Tests for the character-sheet editor window (task 6.3 of add-character-sheet-a1).
+"""Tests for the character-sheet editor window (task 6.3 of add-character-sheet-a1;
+addressing re-targeted onto the QML island in Q3b task 3.3, semantics unchanged).
 
-One non-modal window per sheet: palette | canvas | properties + explicit
-«Сохранить». The VM (own instance per window) is the only layout buffer;
-close-with-dirty asks for confirmation; an external rename updates the title
-without touching the dirty flag.
+One non-modal window per sheet: the DESIGN island (palette | canvas | properties
++ explicit «Сохранить») under the native «Правка» menu. The VM (own instance per
+window) is the only layout buffer; close-with-dirty asks for confirmation; an
+external rename updates the title without touching the dirty flag.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import asyncio
 import json
 
 import pytest
+from PySide6.QtCore import QPointF
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -22,6 +24,35 @@ from app.infrastructure.repositories.character_sheet_repository import (
 from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
+from tests.presentation.qml_helpers import click_item, find_item, find_items, walk_items
+
+
+def _pump(qtbot) -> None:
+    for _ in range(4):
+        qtbot.wait(5)
+
+
+def _item(dlg, name: str):
+    return find_item(dlg.quick, name)
+
+
+def _click(dlg, name: str) -> None:
+    click_item(dlg.quick, _item(dlg, name))
+
+
+def _field_items(dlg) -> list:
+    return [i for i in walk_items(dlg.quick.rootObject())
+            if i.objectName().startswith("sheetField-")]
+
+
+def _press_save(dlg) -> None:
+    # the button's whole contract with the facade is this signal (the mouse →
+    # signal path itself is pinned in test_sheet_window_islands_qml)
+    dlg.quick.rootObject().saveRequested.emit()
+
+
+def _press_export(dlg) -> None:
+    dlg.quick.rootObject().exportPdfRequested.emit()
 
 
 @pytest.fixture(scope="session")
@@ -61,6 +92,7 @@ async def dlg(qtbot, service, row):
     d.resize(1200, 800)
     await d.load()
     d.show()
+    _pump(qtbot)  # the island materializes on the first frames
     yield d
     # force_close: some tests leave the window open and dirty (no prompt in teardown)
     d.force_close()
@@ -80,11 +112,13 @@ async def test_title_is_sheet_name(dlg):
 
 
 async def test_editor_has_palette_canvas_panel_and_save(dlg):
-    assert dlg.palette is not None
-    assert dlg.canvas is not None
-    assert dlg.properties_panel is not None
-    assert dlg.save_button is not None
-    assert dlg.canvas.item_count() == 0        # fresh sheet: empty A4 page
+    # the island's content contract (Q3b 3.3): palette, canvas, property panel
+    # and «Сохранить» are addressable; the Enter marker sits on the save button
+    for name in ("paletteTool-pointer", "sheetEditorCanvas", "propertiesPanel",
+                 "saveButton", "exportPdfButton"):
+        assert _item(dlg, name) is not None, name
+    assert dlg.quick.rootObject().property("defaultButton") is _item(dlg, "saveButton")
+    assert _field_items(dlg) == []             # fresh sheet: empty A4 page
 
 
 # ── saving ─────────────────────────────────────────────────────────────────
@@ -95,7 +129,7 @@ async def test_save_writes_layout_and_clears_dirty(dlg, service):
     vm.set_content(fid, "имя персонажа")
     assert vm.dirty is True
 
-    dlg.save_button.click()
+    _press_save(dlg)
     await asyncio.sleep(0.05)
     for _ in range(50):
         if not vm.dirty:
@@ -146,7 +180,7 @@ async def test_save_failure_shows_warning_and_keeps_dirty(dlg, service, save_box
 
     vm = dlg.view_model
     vm.place(FieldType.LABEL, 10, 10)         # dirty
-    dlg.save_button.click()
+    _press_save(dlg)
     await _wait_boxes(save_boxes, qtbot, 1)
 
     assert save_boxes[0] == ("warning", "тестовый сбой базы")
@@ -161,7 +195,7 @@ async def test_save_unexpected_error_shows_critical(dlg, service, save_boxes, qt
 
     vm = dlg.view_model
     vm.place(FieldType.LABEL, 10, 10)
-    dlg.save_button.click()
+    _press_save(dlg)
     await _wait_boxes(save_boxes, qtbot, 1)
 
     assert save_boxes[0][0] == "critical"
@@ -262,48 +296,57 @@ async def test_panel_content_is_one_undo_step(dlg, qtbot):
     vm = dlg.view_model
     fid = vm.place(FieldType.TEXT, 10.0, 10.0)
     await vm.save()
-    panel = dlg.properties_panel
     vm.select(fid)
-    panel.content_edit.setPlainText("а")
-    panel.content_edit.setPlainText("аб")
-    panel.content_edit.setPlainText("абв")
-    panel.content_edit.clearFocus()
-    qtbot.wait(10)
+    _pump(qtbot)
+    content = _item(dlg, "contentField")
+    # the island's typing session: focus (click), live writes, focus-out ends
+    # the session — begin/end on the VM make it ONE undo step
+    click_item(dlg.quick, content)
+    assert content.property("activeFocus") is True
+    content.setProperty("text", "а")
+    content.setProperty("text", "аб")
+    content.setProperty("text", "абв")
+    _pump(qtbot)
+    # focus-out (the old clearFocus): clicking the row's X field moves focus
+    # away, the TextArea ends the panel edit session there
+    click_item(dlg.quick, _item(dlg, "xField"))
+    _pump(qtbot)
     vm.undo()
     assert vm.template.get_field(fid).content == ""
 
 
-async def test_snap_toggle_and_z_order_buttons(dlg):
+async def test_snap_toggle_and_z_order_buttons(dlg, qtbot):
     vm = dlg.view_model
-    assert dlg.snap_check is not None
-    assert dlg.snap_check.isChecked() is False
+    snap = _item(dlg, "snapCheck")
+    assert snap.property("checked") is False
     assert vm.snap_enabled is False
 
-    dlg.snap_check.setChecked(True)
+    snap.setProperty("checked", True)
+    snap.toggled.emit()      # the user-toggle signal (programmatic checked stays silent)
+    _pump(qtbot)
     assert vm.snap_enabled is True
 
     a = vm.place(FieldType.LABEL, 10.0, 10.0)
     b = vm.place(FieldType.TEXT, 20.0, 20.0)
     vm.select(a)
-    dlg.bring_front_button.click()
+    click_item(dlg.quick, _item(dlg, "bringFrontButton"))
     assert [f.id for f in vm.template.page.fields] == [b, a]
-    dlg.send_back_button.click()
+    click_item(dlg.quick, _item(dlg, "sendBackButton"))
     assert [f.id for f in vm.template.page.fields] == [a, b]
 
 
 # ── PDF export (add-character-sheet-p) ──────────────────────────────────
 
 async def test_export_pdf_button_next_to_save(dlg):
-    assert dlg.export_pdf_button.text() == "Экспорт в PDF…"
-    # W2b: the dialog content lives inside the chrome container now.
-    chrome = dlg.chrome.layout()
-    bottom = chrome.itemAt(chrome.count() - 1).layout()
-    widgets = [
-        bottom.itemAt(i).widget()
-        for i in range(bottom.count())
-        if bottom.itemAt(i).widget() is not None
-    ]
-    assert widgets.index(dlg.export_pdf_button) == widgets.index(dlg.save_button) - 1
+    # the migrated adjacency meaning on the island: the export button reads
+    # «Экспорт в PDF…» and sits in the same bottom row, left of «Сохранить»
+    export = _item(dlg, "exportPdfButton")
+    save = _item(dlg, "saveButton")
+    assert export.property("text") == "Экспорт в PDF…"
+    ex = export.mapToScene(QPointF(0, 0))
+    sv = save.mapToScene(QPointF(0, 0))
+    assert abs(ex.y() - sv.y()) < 2.0, "same row"
+    assert ex.x() + export.width() <= sv.x() + 1.0, "export is left of save"
 
 
 async def test_export_pdf_cancel_does_not_write(dlg, monkeypatch):
@@ -316,7 +359,7 @@ async def test_export_pdf_cancel_does_not_write(dlg, monkeypatch):
         "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
         lambda *a, **k: calls.append(1),
     )
-    dlg.export_pdf_button.click()
+    _press_export(dlg)
     await asyncio.sleep(0.05)
     assert calls == []
 
@@ -333,7 +376,7 @@ async def test_export_pdf_suggested_name(dlg, monkeypatch):
         "app.presentation.views.character_sheet.editor_dialog.QFileDialog.getSaveFileName",
         staticmethod(fake_save),
     )
-    dlg.export_pdf_button.click()
+    _press_export(dlg)
     await asyncio.sleep(0.05)
     assert captured["directory"].endswith("Лист героя.pdf")
     assert "pdf" in captured["filter"].lower()
@@ -358,7 +401,7 @@ async def test_export_pdf_uses_dirty_canvas(dlg, monkeypatch, tmp_path):
     )
     fid = dlg.view_model.place(FieldType.LABEL, 10.0, 10.0)
     dlg.view_model.set_content(fid, "Черновик")
-    dlg.export_pdf_button.click()
+    _press_export(dlg)
     await asyncio.sleep(0.05)
     assert written
     template, dest, images = written[0]
@@ -375,7 +418,7 @@ async def test_export_pdf_oserror_shows_box(dlg, monkeypatch, save_boxes, qtbot)
         "app.presentation.views.character_sheet.editor_dialog.write_sheet_pdf",
         lambda *a, **k: (_ for _ in ()).throw(OSError("нет места")),
     )
-    dlg.export_pdf_button.click()
+    _press_export(dlg)
     await asyncio.sleep(0.05)
     await _wait_boxes(save_boxes, qtbot, 1)
 
@@ -404,7 +447,7 @@ async def test_export_pdf_collects_image_bytes(qtbot, service, row, monkeypatch,
     await d.load()
     fid = d.view_model.place(FieldType.IMAGE, 10.0, 10.0)
     d.view_model.set_image_id(fid, 7)
-    d.export_pdf_button.click()
+    _press_export(d)
     await asyncio.sleep(0.05)
     assert written[0][7] == b"PNGDATA"
     d.force_close()
@@ -447,7 +490,7 @@ async def test_export_pdf_preview_and_unreadable(qtbot, service, row, monkeypatc
     d.view_model.set_image_id(a, 1)
     d.view_model.set_image_id(b, 2)
     d.view_model.set_image_id(c, 3)
-    d.export_pdf_button.click()
+    _press_export(d)
     await asyncio.sleep(0.05)
     assert written[0] == {1: b"PREV"}
     d.force_close()
@@ -462,10 +505,79 @@ async def test_export_pdf_no_op_without_template(qtbot, service, row, monkeypatc
         staticmethod(lambda *a, **k: calls.append("picker") or ("/x.pdf", "PDF")),
     )
     d = CharacterSheetEditorDialog(service, row.id)
-    d.export_pdf_button.click()
+    _press_export(d)
     await asyncio.sleep(0.05)
     assert calls == []
     d.force_close()
     d.deleteLater()
     qtbot.wait(1)
 
+
+
+# ── Enter marker & page-remove bridge (Q3b D1 / migrated rail semantics) ─────
+# The wrapper's Enter must click the island's «Сохранить» marker only when the
+# island did not consume the key itself (a focused inline editor takes Enter
+# first — pinned island-side in test_sheet_canvas_island); the rail's «−»
+# reaches Python only through the bridge and keeps the retired page_rail rules
+# verbatim: last page untouchable, fields demand an explicit Yes.
+
+
+async def test_enter_on_the_wrapper_clicks_the_save_marker(dlg, qtbot):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    marker = dlg.quick.rootObject().property("defaultButton")
+    fired: list[int] = []
+    marker.clicked.connect(lambda: fired.append(1))
+
+    dlg.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                Qt.KeyboardModifier.NoModifier))
+    assert fired == [1]                      # Enter became the marker click
+    dlg.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Plus,
+                                Qt.KeyboardModifier.NoModifier))
+    assert fired == [1]                      # any other key does not
+
+
+def test_enter_before_the_first_load_is_a_noop_not_a_crash(qtbot, service, row):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    d = CharacterSheetEditorDialog(service, row.id)  # island not built yet
+    try:
+        d.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                  Qt.KeyboardModifier.NoModifier))  # no _root
+    finally:
+        d.deleteLater()
+        qtbot.wait(1)
+
+
+async def test_page_remove_bridge_keeps_the_retired_rail_rules(
+    dlg, confirm, qtbot
+):
+    root = dlg.quick.rootObject()
+    # the only remaining page cannot die — and without fields there is no
+    # prompt anyway, so the silence here is doubly checked
+    root.pageRemoveRequested.emit(0)
+    assert len(dlg.view_model.template.pages) == 1
+    assert confirm["calls"] == []
+    # a stale row index from the rail (double-«−» race) is dropped
+    root.pageRemoveRequested.emit(7)
+    assert len(dlg.view_model.template.pages) == 1
+
+    dlg.view_model.add_page(after_index=0)
+    # an EMPTY second page deletes without asking (the old rail behaviour)
+    root.pageRemoveRequested.emit(1)
+    assert len(dlg.view_model.template.pages) == 1
+    assert confirm["calls"] == []
+
+    dlg.view_model.add_page(after_index=0)
+    dlg.view_model.place("label", 20.0, 20.0, 1)   # page 1 now has a field
+    confirm["answer"] = QMessageBox.StandardButton.No
+    root.pageRemoveRequested.emit(1)
+    assert len(dlg.view_model.template.pages) == 2
+    assert confirm["calls"], "a page with fields must ask"
+    assert confirm["calls"][-1][0] == "Удалить страницу"
+
+    confirm["answer"] = QMessageBox.StandardButton.Yes
+    root.pageRemoveRequested.emit(1)
+    assert len(dlg.view_model.template.pages) == 1

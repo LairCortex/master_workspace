@@ -173,8 +173,19 @@ def test_nested_widget_without_role_is_not_recolored(qtbot, runtime, tokens, tmp
     set_role(themed, "field")
     root.show()
     qtbot.waitExposed(root)
-    image = root.grab().toImage()
     surface = QColor(tokens["color.bg.surface"]["dark"])
+
+    def scoped_and_themed() -> bool:
+        image = root.grab().toImage()
+        return (image.pixelColor(60, 64) == surface
+                and image.pixelColor(60, 24) != surface)
+
+    # QSS re-polish into child widgets travels via posted events; on a busy
+    # full-suite process the first grab can still precede it (the W2a-review
+    # family of offscreen flakes). Pumping is timing only — the equalities
+    # below stay the hard criterion either way.
+    qtbot.waitUntil(scoped_and_themed, timeout=5000)
+    image = root.grab().toImage()
     assert image.pixelColor(60, 64) == surface          # field role: token
     assert image.pixelColor(60, 24) != surface          # no role: OS palette
 

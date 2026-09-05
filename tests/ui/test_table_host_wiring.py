@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from app.domain.enums.field_type import FieldType
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
 from app.presentation.views.table_host.panel import TableHostPanel
+from tests.presentation.qml_helpers import find_item
 from tests.ui.test_char_sheets_wiring import (
     create_instance_via_list,
     create_via_list,
@@ -113,7 +114,9 @@ async def test_fill_writable_after_table_stop(
     fill = application._sheet_fill
     assert fill is not None
     assert fill.view_model.read_only is False
-    assert fill.save_button.isVisible()
+    # Q3b 3.3: the island's save row mirrors read-only (the retired
+    # save_button.isVisible — same semantics, island addressing)
+    assert find_item(fill.quick, "saveButton").property("visible") is True
     assert fill.view_model.set_text(fid, "снова") is True
     await fill.save()
     await wait_for(lambda: not fill.view_model.dirty)
@@ -490,10 +493,15 @@ async def test_refresh_cards_and_rename_and_editor_edges(
     fill = await wait_fill(app, wait_for, "Лист А")
     application._on_instance_renamed(fill.view_model.instance_id, "Новое")
     application._on_host_player_selected(fill.view_model.instance_id)
-    editor._sync_orientation()
+    # Q3b 3.3: the facade's _sync_orientation (combo mirror) moved into the
+    # island — the orientationCombo reads itself, popups included. Probe the
+    # mirrored property instead of the retired method.
+    combo = find_item(editor.quick, "orientationCombo")
+    assert int(combo.property("currentIndex")) == 0  # portrait template
     editor._on_paste()
     tmpl = editor.view_model.template
     editor.view_model._template = None
-    editor._sync_orientation(None)
+    # a template-less VM must not wedge the mirror either (vmReady guard)
+    assert combo.property("vmOrientation") == "portrait"
     editor.view_model._template = tmpl
 

@@ -40,11 +40,21 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from typing import Any
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    QObject,
+    Property,
+    Qt,
+    Signal,
+    Slot,
+)
 
 from app.domain.entities.character_sheet import (
+    GUTTER_PT,
     ORIENTATION_LANDSCAPE,
     ORIENTATION_PORTRAIT,
     SheetField,
@@ -52,7 +62,9 @@ from app.domain.entities.character_sheet import (
     clamp_rect,
     page_origin,
     scene_to_page,
+    tape_height,
 )
+from app.domain.entities.character_sheet_instance import resolve_display
 from app.domain.enums.field_type import FieldType
 
 UNDO_STACK_LIMIT: int = 50
@@ -91,6 +103,328 @@ _TOOL_TO_TYPE: dict[str, FieldType] = {
 def field_type_for_tool(tool: str) -> FieldType | None:
     """Map a palette tool to the field type it places (or None for pointer)."""
     return _TOOL_TO_TYPE.get(tool)
+
+
+def pages_layout_of(template: SheetTemplate | None) -> dict:
+    """The tape geometry the QML canvas lays its pages out from (Q3b 2.1:
+    «Repeater страниц page_origin/размер из домена, выводимые VM»).
+
+    Every number is the domain's own (``page_size`` / ``page_origin`` /
+    ``tape_height`` / gutter, plus the editor's grid step) — QML only indexes
+    the ``origins`` list, it never re-derives page positions. An empty map
+    before ``load`` (the canvas stays a clickable empty viewport, the same
+    tolerance the widgets canvas had).
+    """
+    if template is None:
+        return {}
+    page_w, page_h = template.page_size
+    n = len(template.pages)
+    return {
+        "width": page_w,
+        "height": page_h,
+        "count": n,
+        "gutter": GUTTER_PT,
+        "gridStep": SNAP_PT,
+        "tapeHeight": tape_height(n, page_h),
+        "origins": [list(page_origin(i, page_h)) for i in range(n)],
+        "orientation": template.orientation,
+    }
+
+
+def _field_type_for_value(type_value: str) -> FieldType | None:
+    """Map a raw type value (QML passes strings) to FieldType, unknown → None."""
+    try:
+        return FieldType(type_value)
+    except ValueError:
+        return None
+
+
+class SheetFieldModel(QAbstractListModel):
+    """Canvas fields as a QML-ready list model (Q3b D4 / spec «Питание QML-списков
+    списочной моделью», scenario «Поля канваса идут из модели»).
+
+    The rows are the live ``SheetField`` objects of the VM ``template`` in
+    flat order (page order, then the page's field order). The model never
+    copies the set: a mutation through the VM mutates the same row object in
+    place (identity preserved — verified by tests), and the role reads return
+    fresh values because they delegate to the field itself. Geometry,
+    per-type extras and the current-page rules are not re-derived here.
+
+    Feeding is incremental through the VM's existing signals (the contract is
+    unchanged): add/remove → ``beginInsertRows``/``beginRemoveRows``,
+    geometry/content/font/props → per-row ``dataChanged`` with the moved role
+    set, page structure / orientation / a full reload → model reset.
+
+    ``fill=True`` serves the fill view over the fill VM: the content/imageKey
+    for fillable fields resolve through the domain rule
+    :func:`resolve_display` (the instance value map first, the template
+    default otherwise — there is no second value-resolution implementation);
+    image fields render empty text (the image goes through ``imageKey``);
+    checkbox values reach the canvas as "true"/"false" strings, matching the
+    template-side storage form; ``disabled`` reflects the fill VM's
+    ``read_only``. Design rows never disable.
+    """
+
+    ID_ROLE = Qt.ItemDataRole.UserRole + 1
+    TYPE_ROLE = Qt.ItemDataRole.UserRole + 2
+    PAGE_ROLE = Qt.ItemDataRole.UserRole + 3
+    X_ROLE = Qt.ItemDataRole.UserRole + 4
+    Y_ROLE = Qt.ItemDataRole.UserRole + 5
+    W_ROLE = Qt.ItemDataRole.UserRole + 6
+    H_ROLE = Qt.ItemDataRole.UserRole + 7
+    FONT_SIZE_ROLE = Qt.ItemDataRole.UserRole + 8
+    CONTENT_ROLE = Qt.ItemDataRole.UserRole + 9
+    IMAGE_KEY_ROLE = Qt.ItemDataRole.UserRole + 10
+    OPTIONS_COUNT_ROLE = Qt.ItemDataRole.UserRole + 11
+    DISABLED_ROLE = Qt.ItemDataRole.UserRole + 12
+
+    GEOMETRY_ROLES = [PAGE_ROLE, X_ROLE, Y_ROLE, W_ROLE, H_ROLE]
+
+    def __init__(
+        self, view_model: QObject, fill: bool = False, parent: QObject | None = None
+    ) -> None:
+        super().__init__(parent)
+        self._vm = view_model
+        self._fill = bool(fill)
+        self._rows: list[SheetField] = []
+        self._page_of_row: list[int] = []
+        self._rebuild_rows()
+
+    # -- projection helpers ---------------------------------------------------
+
+    @property
+    def _template(self) -> SheetTemplate | None:
+        return self._vm.template
+
+    def _rebuild_rows(self) -> None:
+        rows: list[SheetField] = []
+        page_of_row: list[int] = []
+        template = self._template
+        if template is not None:
+            for i, page in enumerate(template.pages):
+                for field in page.fields:
+                    rows.append(field)
+                    page_of_row.append(i)
+        self._rows = rows
+        self._page_of_row = page_of_row
+
+    @property
+    def rows(self) -> tuple[SheetField, ...]:
+        """The delivered live field objects (introspection/test seam; the tuple
+        snapshot does not imply a copy of the set: entries are the template's
+        own fields — identity preserved by every transition)."""
+        return tuple(self._rows)
+
+    # -- incremental feeding (connected to the VM's existing signals) ---------
+
+    def on_field_added(self, field_id: str) -> None:
+        if self._row_in_projection(field_id) is not None:
+            # the id is already a row — something structural happened outside
+            # a clean add/remove pair; resync honestly.
+            self.on_template_changed()
+            return
+        row = self._flat_index_of(self._template, field_id)
+        if row > len(self._rows):
+            # structural surprise (id present but beyond the projection) —
+            # fall back to a reset: the QML view re-syncs correctly either
+            # way, the reset only costs delegate re-materialization.
+            self.on_template_changed()
+            return
+        field = self._template.get_field(field_id)
+        if field is None:  # raced with a removal — the remove path rebuilds
+            return
+        page_index = self._flat_index_page(self._template, row)
+        self.beginInsertRows(QModelIndex(), row, row)
+        self._rows.insert(row, field)
+        self._page_of_row.insert(row, page_index)
+        self.endInsertRows()
+
+    def on_field_removed(self, field_id: str) -> None:
+        row = self._row_in_projection(field_id)
+        if row is None:  # unknown id — nothing incremental to remove
+            self.on_template_changed()
+            return
+        self.beginRemoveRows(QModelIndex(), row, row)
+        del self._rows[row]
+        del self._page_of_row[row]
+        self.endRemoveRows()
+
+    def on_geometry_changed(self, field_id: str) -> None:
+        self._notify(field_id, list(self.GEOMETRY_ROLES))
+
+    def on_content_changed(self, field_id: str) -> None:
+        self._notify(field_id, [self.CONTENT_ROLE])
+
+    def on_font_changed(self, field_id: str) -> None:
+        self._notify(field_id, [self.FONT_SIZE_ROLE])
+
+    def on_props_changed(self, field_id: str) -> None:
+        self._notify(
+            field_id,
+            [self.CONTENT_ROLE, self.IMAGE_KEY_ROLE, self.OPTIONS_COUNT_ROLE],
+        )
+
+    def on_values_changed(self) -> None:
+        # the whole value map moved (undo/redo): every displayed value re-reads
+        self._notify_all([self.CONTENT_ROLE, self.IMAGE_KEY_ROLE])
+
+    def on_read_only_changed(self, _enabled: bool) -> None:
+        self._notify_all([self.DISABLED_ROLE])
+
+    def on_template_changed(self) -> None:
+        self.beginResetModel()
+        self._rebuild_rows()
+        self.endResetModel()
+
+    # -- QAbstractListModel contract -------------------------------------------
+
+    def _notify(self, field_id: str, roles: list[int]) -> None:
+        row = self._row_in_projection(field_id)
+        if row is None:
+            # the id lives outside the current projection (page removed — the
+            # following pages_changed resets the view anyway)
+            return
+        if self._flat_index_of(self._template, field_id) != row:
+            # the flat order (the tape's z-order) moved under this field
+            # (relocate-to-top within the page): dataChanged cannot reorder
+            # rows — the view honestly needs the structure reset
+            self.on_template_changed()
+            return
+        index = self.index(row)
+        self.dataChanged.emit(index, index, roles)
+
+    def _notify_all(self, roles: list[int]) -> None:
+        if not self._rows:
+            return
+        self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1), roles)
+
+    # -- row-position maths (template order is the single truth) ---------------
+
+    def _row_in_projection(self, field_id: str) -> int | None:
+        for i, field in enumerate(self._rows):
+            if field.id == field_id:
+                return i
+        return None
+
+    @staticmethod
+    def _flat_index_of(template: SheetTemplate | None, field_id: str) -> int:
+        """Row of ``field_id`` in the current template order, -1 when absent."""
+        if template is None:
+            return -1
+        row = 0
+        for page in template.pages:
+            for field in page.fields:
+                if field.id == field_id:
+                    return row
+                row += 1
+        return -1
+
+    @staticmethod
+    def _flat_index_page(template: SheetTemplate, index: int) -> int:
+        """Page of a flat row in the template order (the index space
+        insertRows announces to the view)."""
+        row = index
+        for page_index, page in enumerate(template.pages):
+            if row < len(page.fields):
+                return page_index
+            row -= len(page.fields)
+        raise IndexError(index)
+
+    # -- QAbstractListModel contract -------------------------------------------
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # Qt API name
+        return 0 if parent.isValid() else len(self._rows)
+
+    def data(
+        self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole
+    ):  # Qt API name
+        if not index.isValid() or not (0 <= index.row() < len(self._rows)):
+            return None
+        field = self._rows[index.row()]
+        if role == self.ID_ROLE:
+            return field.id
+        if role == self.TYPE_ROLE:
+            return field.type.value
+        if role == self.PAGE_ROLE:
+            return self._page_of_row[index.row()]
+        if role == self.X_ROLE:
+            return field.x
+        if role == self.Y_ROLE:
+            return field.y
+        if role == self.W_ROLE:
+            return field.w
+        if role == self.H_ROLE:
+            return field.h
+        if role == self.FONT_SIZE_ROLE:
+            return field.font_size
+        if role == self.CONTENT_ROLE:
+            return self._content_for(field)
+        if role == self.IMAGE_KEY_ROLE:
+            return self._image_key_for(field)
+        if role == self.OPTIONS_COUNT_ROLE:
+            return len(field.options)
+        if role == self.DISABLED_ROLE:
+            return bool(self._fill and getattr(self._vm, "read_only", False))
+        return None
+
+    # -- fill/design value rules: both delegate, never re-implement ------------
+
+    def _content_for(self, field: SheetField) -> str:
+        if not self._fill:
+            return field.content
+        if field.type is FieldType.IMAGE:
+            return ""
+        return self._display_text(field)
+
+    def _image_key_for(self, field: SheetField) -> str:
+        if not self._fill:
+            return "" if field.image_id is None else str(field.image_id)
+        if field.type is not FieldType.IMAGE:
+            return ""
+        return self._display_text(field)
+
+    def _display_text(self, field: SheetField) -> str:
+        # The domain's single value-resolution rule (instance map first,
+        # template default otherwise) — no second implementation (D4).
+        value = resolve_display(field, self._vm.values)
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    def roleNames(self) -> dict:  # Qt API name
+        return {
+            self.ID_ROLE: b"id",
+            self.TYPE_ROLE: b"type",
+            self.PAGE_ROLE: b"page",
+            self.X_ROLE: b"x",
+            self.Y_ROLE: b"y",
+            self.W_ROLE: b"w",
+            self.H_ROLE: b"h",
+            self.FONT_SIZE_ROLE: b"fontSize",
+            self.CONTENT_ROLE: b"content",
+            self.IMAGE_KEY_ROLE: b"imageKey",
+            self.OPTIONS_COUNT_ROLE: b"optionsCount",
+            self.DISABLED_ROLE: b"disabled",
+        }
+
+    # Q3b 2.1: the canvas hit-test/gesture maths run in the QML view layer and
+    # need row reads from plain JS, where the list-protocol (``.count`` /
+    # ``delegate.model``) is only available inside views. This is the same
+    # seam the timeline island's ``TimelineRowModel.get`` established (Q2.5a):
+    # a pure role projection through ``data()`` — no second geometry source,
+    # the values are the very ones ``data()`` returns to the delegates.
+    @Slot(int, result="QVariantMap")
+    def get(self, index: int) -> dict:
+        i = int(index)
+        if i < 0 or i >= len(self._rows):
+            return {}
+        model_index = self.index(i)
+        return {
+            name.decode("ascii"): self.data(model_index, role)
+            for role, name in self.roleNames().items()
+        }
 
 
 class CharacterSheetViewModel(QObject):
@@ -136,6 +470,19 @@ class CharacterSheetViewModel(QObject):
         self._snap_enabled: bool = False
         self._snap_override: bool | None = None
         self._clipboard: list[tuple[SheetField, int]] = []
+        # The QML canvas feeds from this projection of the same template:
+        # rows are the live domain fields, updated through the VM's existing
+        # granular signals only (Q3b D4 — no second set anywhere).
+        self._field_model = SheetFieldModel(self, parent=self)
+        self.field_added.connect(self._field_model.on_field_added)
+        self.field_removed.connect(self._field_model.on_field_removed)
+        self.field_geometry_changed.connect(self._field_model.on_geometry_changed)
+        self.field_content_changed.connect(self._field_model.on_content_changed)
+        self.field_font_changed.connect(self._field_model.on_font_changed)
+        self.field_props_changed.connect(self._field_model.on_props_changed)
+        self.template_changed.connect(self._field_model.on_template_changed)
+        self.pages_changed.connect(self._field_model.on_template_changed)
+        self.orientation_changed.connect(self._field_model.on_template_changed)
 
     # -- state ------------------------------------------------------------
 
@@ -191,8 +538,95 @@ class CharacterSheetViewModel(QObject):
             return 0
         return max(0, min(self._current_page, len(self._template.pages) - 1))
 
+    @property
+    def field_model(self) -> SheetFieldModel:
+        """The canvas field rows as a QML list model (Q3b 1.1 / D4).
+
+        The reference is constant for the VM's lifetime (the model outlives
+        templates — a reload only resets its rows), so no notify signal is
+        needed; ``QAbstractListModel`` is exactly what QML delegates bind to.
+        """
+        return self._field_model
+
+    # QML-side alias of :attr:`field_model` (the island binds ``model:
+    # vm.fieldModel``); ``"QVariant"`` because the meta-object builder rejects
+    # a concrete model-list type — and the identity is CONSTANT either way.
+    fieldModel = Property("QVariant", lambda self: self._field_model, constant=True)
+
+    # ── QML canvas reads (change Q3b, task 2.x) ──────────────────────────────
+    # The canvas binds view state only through these read-only Qt properties
+    # and the sync Slots below — never a Python ``@property`` (invisible to
+    # QML, pinned by tests/presentation/test_sheet_vm_invokables.py). Every
+    # notify signal already fired on EVERY transition of its value
+    # (pre-existing contract, unchanged), so the bindings below are live by
+    # construction: tool (set_tool/place/load), selection (select*/place/
+    # undo…), inline id (open/commit/cancel/_close_inline_session), current
+    # page (rail/scroll channel), snap flag (set_snap_enabled). The page tape
+    # is re-read from ``pages_layout()`` on ``pagesChanged`` (fires on every
+    # structural moment, load/reload/reorder/orientation/undo included).
+
+    @Slot(result="QVariantMap")
+    def pages_layout(self) -> dict:
+        """Tape geometry of the template (domain functions, see
+        :func:`pages_layout_of`); ``{}`` before the first ``load``."""
+        return pages_layout_of(self._template)
+
+    @Slot(float, float, result="QVariantMap")
+    def page_at(self, x: float, y: float) -> dict:
+        """Page under a tape point in page units: ``{page, x, y}`` page-local,
+        ``{}`` for a gutter/outside point (domain ``scene_to_page`` rule, D1 —
+        the canvas never re-derives it)."""
+        if self._template is None:
+            return {}
+        page_w, page_h = self._template.page_size
+        hit = scene_to_page(x, y, page_w, page_h, len(self._template.pages))
+        if hit is None:
+            return {}
+        return {"page": hit[0], "x": hit[1], "y": hit[2]}
+
+    @Slot(result="QStringList")
+    def page_names(self) -> list[str]:
+        """Page names in rail order (Q3b 3.1/3.2: the page rail is QML, the
+        names stay in the template — QML only displays them)."""
+        if self._template is None:
+            return []
+        return [page.name for page in self._template.pages]
+
+    @Slot(str, result="QVariantMap")
+    def field_props(self, field_id: str) -> dict:
+        """The per-type extras the property panel edits (Q3b 3.1): the number
+        bounds and the dropdown options (the list itself, not just its size)
+        are not field-model roles because they are edited, not rendered.
+        Geometry/content/font come from ``fieldModel.get()`` — one source."""
+        field = self._field(field_id)
+        if field is None:
+            return {}
+        return {
+            "min": field.min_value,
+            "max": field.max_value,
+            "options": list(field.options),
+            "page": self.page_of(field_id),
+        }
+
+    currentTool = Property(str, lambda self: self._tool, notify=tool_changed)
+    currentPage = Property(int, lambda self: self.current_page_index,
+                           notify=current_page_changed)
+    pagesLayout = Property("QVariant", lambda self: pages_layout_of(self._template),
+                           notify=pages_changed)
+    selectedIds = Property("QStringList", lambda self: list(self._selected_ids),
+                           notify=selection_changed)
+    inlineFieldId = Property("QVariant", lambda self: self._inline_id,
+                             notify=inline_changed)
+    snapOn = Property(bool, lambda self: self._snap_enabled, notify=snap_changed)
+
+    @Slot(int)
     def set_current_page(self, index: int) -> None:
-        """Set the rail/current page (clamped). No-op when already current."""
+        """Set the rail/current page (clamped). No-op when already current.
+
+        The canvas scroll channel (Q3b task 1.2): QML emits it on every
+        visible-page change; the visible page is read back through
+        ``current_page_index`` / ``current_page_changed``.
+        """
         if self._template is None:
             return
         clamped = max(0, min(index, len(self._template.pages) - 1))
@@ -254,19 +688,33 @@ class CharacterSheetViewModel(QObject):
 
     # -- tool & selection ---------------------------------------------------
 
+    @Slot(str)
     def set_tool(self, tool: str) -> None:
         if tool == self._tool:
             return
         self._tool = tool
         self.tool_changed.emit(tool)
 
+    @Slot(result=str)
+    def tool_field_type(self) -> str:
+        """Catalog value of the field type the active tool places ("" for
+        pointer / unknown — the QML press handler asks instead of
+        re-deriving the tool table, task 2.3)."""
+        field_type = field_type_for_tool(self._tool)
+        return "" if field_type is None else field_type.value
+
+    @Slot("QVariant")
     def select(self, field_id: str | None) -> None:
+        """QML passes the field id or null (Esc / empty-area click)."""
+        if isinstance(field_id, str) and not field_id:
+            field_id = None
         new = [] if field_id is None else [field_id]
         if new == self._selected_ids:
             return
         self._selected_ids = new
         self.selection_changed.emit(self.selection)
 
+    @Slot(str)
     def toggle_select(self, field_id: str) -> None:
         if field_id in self._selected_ids:
             self._selected_ids = [i for i in self._selected_ids if i != field_id]
@@ -274,6 +722,8 @@ class CharacterSheetViewModel(QObject):
             self._selected_ids.append(field_id)
         self.selection_changed.emit(self.selection)
 
+    @Slot("QStringList")
+    @Slot("QStringList", bool)
     def select_ids(self, ids: list[str], additive: bool = False) -> None:
         if additive:
             for field_id in ids:
@@ -283,9 +733,11 @@ class CharacterSheetViewModel(QObject):
             self._selected_ids = list(ids)
         self.selection_changed.emit(self.selection)
 
+    @Slot("QVariant")
     def set_snap_override(self, enabled: bool | None) -> None:
         self._snap_override = enabled
 
+    @Slot(bool)
     def set_snap_enabled(self, enabled: bool) -> None:
         flag = bool(enabled)
         if flag == self._snap_enabled:
@@ -318,7 +770,13 @@ class CharacterSheetViewModel(QObject):
             return None
         return self._template.page_of(field_id)
 
-    def place(self, field_type: FieldType, x: float, y: float,
+    # QML invokables: the type arrives as its catalog string (QML passes no
+    # Python enums); the page defaults to the current one, so the canvas can
+    # call place with the exact argument list it has. An unknown string places
+    # nothing (same "" as "no template loaded yet").
+    @Slot(str, float, float, result=str)
+    @Slot(str, float, float, int, result=str)
+    def place(self, field_type: FieldType | str, x: float, y: float,
               page_index: int | None = None,
               snap_override: bool | None = None) -> str:
         """Place one field (top-left at the click point, clamped) and select it.
@@ -329,8 +787,10 @@ class CharacterSheetViewModel(QObject):
         the new field id, or ``""`` when nothing was placed (no template loaded
         yet — the canvas can be clickable during ``load``).
         """
-        if self._template is None:
+        resolved = field_type if isinstance(field_type, FieldType) else _field_type_for_value(field_type)
+        if resolved is None or self._template is None:
             return ""
+        field_type = resolved
         if page_index is None:
             page_index = self.current_page_index
         page_index = max(0, min(page_index, len(self._template.pages) - 1))
@@ -352,6 +812,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return field.id
 
+    @Slot(str, float, float, result=bool)
     def move(self, field_id: str, x: float, y: float) -> bool:
         field = self._field(field_id)
         if field is None:
@@ -372,6 +833,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, float, float, float, float, result=bool)
     def resize(self, field_id: str, x: float, y: float, w: float, h: float) -> bool:
         if len(self._selected_ids) != 1:
             return False
@@ -391,6 +853,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, result=bool)
     def remove(self, field_id: str) -> bool:
         if self._template is None or self._template.get_field(field_id) is None:
             return False
@@ -408,6 +871,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, str, result=bool)
     def set_content(self, field_id: str, content: str) -> bool:
         field = self._field(field_id)
         if field is None or field.content == content:
@@ -419,6 +883,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, float, result=bool)
     def set_font_size(self, field_id: str, size: float) -> bool:
         field = self._field(field_id)
         if field is None or field.font_size == size:
@@ -431,6 +896,7 @@ class CharacterSheetViewModel(QObject):
 
     # -- per-type extras (A-playable, design D3) ------------------------------
 
+    @Slot(str, result=bool)
     def toggle_checkbox(self, field_id: str) -> bool:
         """Flip the checkbox default (double-click on the canvas or the panel).
 
@@ -445,6 +911,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, str, result=bool)
     def apply_number(self, field_id: str, text: str) -> bool:
         """Validate and store a number-field value (comma → dot, design D3).
 
@@ -475,10 +942,12 @@ class CharacterSheetViewModel(QObject):
             self._refresh_dirty()
         return True
 
+    @Slot(str, "QVariant", result=bool)
     def set_min_value(self, field_id: str, value: float | None) -> bool:
         """Optional lower bound of a number field (None = unbounded)."""
         return self._set_number_bound(field_id, "min_value", value)
 
+    @Slot(str, "QVariant", result=bool)
     def set_max_value(self, field_id: str, value: float | None) -> bool:
         """Optional upper bound of a number field (None = unbounded)."""
         return self._set_number_bound(field_id, "max_value", value)
@@ -513,6 +982,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, "QStringList", result=bool)
     def set_options(self, field_id: str, options: list[str]) -> bool:
         """Replace the dropdown's ordered options.
 
@@ -539,6 +1009,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, "QVariant", result=bool)
     def set_image_id(self, field_id: str, image_id: int | None) -> bool:
         """Point an image field at an ``images`` row (or clear it).
 
@@ -581,6 +1052,8 @@ class CharacterSheetViewModel(QObject):
         self._selected_ids = [field_id]
         self.selection_changed.emit(field_id)
 
+    @Slot(result="QVariant")
+    @Slot(int, result="QVariant")
     def add_page(self, after_index: int | None = None) -> int | None:
         """Insert a page after ``after_index`` (default: the current one).
 
@@ -601,6 +1074,8 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return pos
 
+    @Slot(int, result=bool)
+    @Slot(int, bool, result=bool)
     def remove_page(self, index: int, confirmed: bool = False) -> bool:
         """Remove page ``index`` along with its fields.
 
@@ -638,6 +1113,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(int, int, result=bool)
     def move_page(self, from_index: int, to_index: int) -> bool:
         """Reorder pages; the current page follows the moved one."""
         if self._template is None or len(self._template.pages) <= 1:
@@ -652,6 +1128,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(int, str, result=bool)
     def rename_page(self, index: int, new_name: str) -> bool:
         if self._template is None or not 0 <= index < len(self._template.pages):
             return False
@@ -671,6 +1148,7 @@ class CharacterSheetViewModel(QObject):
 
     # -- orientation (one per template; clamp, never scale, D4) -------------
 
+    @Slot(str, result=bool)
     def set_orientation(self, orientation: str) -> bool:
         """Switch the whole template; out-of-fit fields are clamped in place.
 
@@ -693,6 +1171,7 @@ class CharacterSheetViewModel(QObject):
 
     # -- cross-page drag (design D5) ----------------------------------------
 
+    @Slot(str, float, float, float, float)
     def drag_move(self, field_id: str, scene_x: float, scene_y: float,
                   grab_dx: float, grab_dy: float) -> None:
         """Live drag feedback: the field follows the cursor while the cursor
@@ -714,6 +1193,7 @@ class CharacterSheetViewModel(QObject):
         _, origin_y = page_origin(src, page_h)
         self.move(field_id, scene_x - grab_dx, scene_y - grab_dy - origin_y)
 
+    @Slot(str, int, float, float, result=bool)
     def relocate_field(self, field_id: str, to_page_index: int,
                        x: float, y: float) -> bool:
         """Move the field to page ``to_page_index`` (top-left at the page-local
@@ -741,6 +1221,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
         return True
 
+    @Slot(str, float, float, float, float, result="QVariant")
     def commit_drag(self, field_id: str, drop_scene_x: float, drop_scene_y: float,
                     grab_dx: float, grab_dy: float) -> int | None:
         """Resolve a drag on release (D5). The cursor drop point is in scene
@@ -773,6 +1254,7 @@ class CharacterSheetViewModel(QObject):
 
     # -- inline editing (state; the widget itself lives on the canvas) ------
 
+    @Slot(str)
     def open_inline(self, field_id: str) -> None:
         field = self._field(field_id)
         if field is None or self._inline_id == field_id:
@@ -785,6 +1267,7 @@ class CharacterSheetViewModel(QObject):
         self._selected_ids = [field_id]
         self.inline_changed.emit(field_id)
 
+    @Slot()
     def commit_inline(self) -> None:
         """Close inline editing keeping the current content (already written
         into the single buffer through ``set_content``)."""
@@ -806,6 +1289,7 @@ class CharacterSheetViewModel(QObject):
         self._selected_ids = [field_id]
         self.selection_changed.emit(field_id)
 
+    @Slot()
     def cancel_inline(self) -> None:
         """Close inline editing restoring the pre-double-click content; the
         field stays selected.
@@ -831,6 +1315,7 @@ class CharacterSheetViewModel(QObject):
 
     # -- undo / redo (D1) ---------------------------------------------------
 
+    @Slot()
     def undo(self) -> None:
         if not self._undo_stack or self._template is None:
             return
@@ -839,6 +1324,7 @@ class CharacterSheetViewModel(QObject):
         self._restore_layout(self._undo_stack.pop())
         self.history_changed.emit()
 
+    @Slot()
     def redo(self) -> None:
         if not self._redo_stack or self._template is None:
             return
@@ -851,6 +1337,8 @@ class CharacterSheetViewModel(QObject):
 
     _UNSET = object()
 
+    @Slot()
+    @Slot(bool)
     def begin_gesture(self, snap_override: object = _UNSET) -> None:
         if self._template is None:
             return
@@ -865,12 +1353,15 @@ class CharacterSheetViewModel(QObject):
         if snap_override is not self._UNSET:
             self._snap_override = snap_override  # type: ignore[assignment]
 
+    @Slot()
     def begin_edit(self) -> None:
         self.begin_gesture()
 
+    @Slot()
     def end_edit(self) -> None:
         self.end_gesture()
 
+    @Slot()
     def end_gesture(self) -> None:
         current = self._layout_snapshot()
         if self._undo_stack and self._undo_stack[-1] == current:
@@ -881,6 +1372,7 @@ class CharacterSheetViewModel(QObject):
 
     # -- selection operations (D2) ------------------------------------------
 
+    @Slot(float, float, result=bool)
     def move_selection(self, dx: float, dy: float) -> bool:
         ids = list(self._selected_ids)
         if not ids:
@@ -899,6 +1391,7 @@ class CharacterSheetViewModel(QObject):
             self._suppress_checkpoint = False
         return changed
 
+    @Slot(result=bool)
     def remove_selection(self) -> bool:
         ids = list(self._selected_ids)
         if not ids:
@@ -912,6 +1405,8 @@ class CharacterSheetViewModel(QObject):
             self._suppress_checkpoint = False
         return True
 
+    @Slot(float, float, float, float)
+    @Slot(float, float, float, float, "QVariant")
     def commit_drag_selection(
         self,
         drop_scene_x: float,
@@ -963,6 +1458,8 @@ class CharacterSheetViewModel(QObject):
                 self._suppress_checkpoint = False
         self.end_gesture()
 
+    @Slot(float, float, float, float)
+    @Slot(float, float, float, float, "QVariant")
     def drag_move_selection(
         self,
         scene_x: float,
@@ -999,9 +1496,11 @@ class CharacterSheetViewModel(QObject):
 
     # -- z-order (D4) -------------------------------------------------------
 
+    @Slot(result=bool)
     def bring_to_front(self) -> bool:
         return self._reorder_selected(to_front=True)
 
+    @Slot(result=bool)
     def send_to_back(self) -> bool:
         return self._reorder_selected(to_front=False)
 

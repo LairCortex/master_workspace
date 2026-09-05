@@ -18,8 +18,12 @@ import json
 import sqlite3
 from datetime import datetime
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
+
+from tests.presentation.qml_helpers import click_item, find_item
 
 from app.domain.entities.character_sheet import GUTTER_PT, PAGE_HEIGHT_PT
 from app.domain.enums.field_type import FieldType
@@ -47,11 +51,66 @@ from tests.ui.conftest import query_db
 _click_list = helpers.sheet_click
 _template_texts = helpers.sheet_template_texts
 
+# Q3b addressing (change port-character-sheet-canvas-qml-q3b, task 3.3): the
+# editor/fill content is a QML island now — the retired canvas/palette/panel/
+# rail QPushButton seams map 1:1 onto island items by objectName and tape
+# points on the QQuickWidget (the tests.presentation.qml_helpers / timeline
+# e2e pattern).
+
+
+def _item(dlg, name: str):
+    return find_item(dlg.quick, name)
+
+
+def _click_island(dlg, name: str) -> None:
+    click_item(dlg.quick, _item(dlg, name))
+
+
+def _press_save(dlg) -> None:
+    # the button's whole contract with the facade is this signal (the mouse →
+    # signal path is pinned in test_sheet_window_islands_qml)
+    dlg.quick.rootObject().saveRequested.emit()
+
+
+def _field_count(editor: CharacterSheetEditorDialog) -> int:
+    return len(editor.view_model.template.page.fields)
+
+
+def _tape_pos(editor: CharacterSheetEditorDialog, x: float, y: float) -> QPointF:
+    """A tape (page-unit) point → the island-widget position (the migrated
+    view.mapFromScene: zoom and the flick's scroll offset)."""
+    canvas = _item(editor, "sheetEditorCanvas")
+    flick = _item(editor, "sheetFlick")
+    z = float(canvas.property("zoom"))
+    return flick.mapToScene(
+        QPointF(x * z - float(flick.property("contentX")),
+                y * z - float(flick.property("contentY")))
+    )
+
+
+def _send(widget, kind, pos, button, buttons) -> None:
+    QApplication.sendEvent(widget, QMouseEvent(
+        kind, QPointF(pos), widget.mapToGlobal(QPointF(pos).toPoint()),
+        button, buttons, Qt.KeyboardModifier.NoModifier,
+    ))
+
+
 def _click_canvas(editor: CharacterSheetEditorDialog, scene_x: float, scene_y: float) -> None:
     """Click the canvas at the given page (scene) point."""
-    view = editor.canvas
-    pos = view.mapFromScene(QPointF(scene_x, scene_y))
-    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, pos)
+    pos = _tape_pos(editor, scene_x, scene_y)
+    _send(editor.quick, QEvent.Type.MouseButtonPress, pos,
+          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
+    _send(editor.quick, QEvent.Type.MouseButtonRelease, pos,
+          Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
+
+
+def _set_panel_content(editor: CharacterSheetEditorDialog, text: str) -> None:
+    """Type into the property panel's content field (the retired
+    content_edit.setPlainText): focus first (the panel edit begins there),
+    the onTextChanged bridge pushes set_content to the VM."""
+    content = _item(editor, "contentField")
+    click_item(editor.quick, content)
+    content.setProperty("text", text)
 
 
 def _editor_name(application) -> str:
@@ -93,18 +152,18 @@ async def test_layout_survives_save_and_reopen(app, dialog_input, wait_for, qtbo
     qtbot.wait(50)  # canvas fitted after show/resize
 
     # Place a label and a text field through palette tools + canvas clicks.
-    editor.palette.label_button.click()
+    _click_island(editor, "paletteTool-label")
     _click_canvas(editor, 100.0, 100.0)
-    await wait_for(lambda: editor.canvas.item_count() == 1)
+    await wait_for(lambda: _field_count(editor) == 1)
     label_id = editor.view_model.selection
-    editor.properties_panel.content_edit.setPlainText("Имя")
+    _set_panel_content(editor, "Имя")
     await wait_for(lambda: editor.view_model.template.get_field(label_id).content == "Имя")
 
-    editor.palette.text_button.click()
+    _click_island(editor, "paletteTool-text")
     _click_canvas(editor, 100.0, 200.0)
-    await wait_for(lambda: editor.canvas.item_count() == 2)
+    await wait_for(lambda: _field_count(editor) == 2)
     text_id = editor.view_model.selection
-    editor.properties_panel.content_edit.setPlainText("Иван Петров")
+    _set_panel_content(editor, "Иван Петров")
     await wait_for(
         lambda: editor.view_model.template.get_field(text_id).content == "Иван Петров"
     )
@@ -114,7 +173,7 @@ async def test_layout_survives_save_and_reopen(app, dialog_input, wait_for, qtbo
     assert editor.view_model.dirty
 
     # Save through the window's button.
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
     saved = _layout(editor)
     assert saved == before
@@ -141,21 +200,25 @@ async def test_layout_survives_save_and_reopen(app, dialog_input, wait_for, qtbo
 def _drag_canvas(editor: CharacterSheetEditorDialog,
                  from_scene: tuple[float, float],
                  to_scene: tuple[float, float], qtbot) -> None:
-    """Press at the first scene point, move (through the middle), release at
+    """Press at the first tape point, move (through the middle), release at
     the second — a cross-page drag of the field under the cursor."""
-    view = editor.canvas
-    p0 = view.mapFromScene(QPointF(*from_scene))
-    pm = view.mapFromScene(
-        QPointF((from_scene[0] + to_scene[0]) / 2, (from_scene[1] + to_scene[1]) / 2)
+    p0 = _tape_pos(editor, *from_scene)
+    pm = _tape_pos(
+        editor,
+        (from_scene[0] + to_scene[0]) / 2, (from_scene[1] + to_scene[1]) / 2,
     )
-    p1 = view.mapFromScene(QPointF(*to_scene))
-    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=p0)
+    p1 = _tape_pos(editor, *to_scene)
+    _send(editor.quick, QEvent.Type.MouseButtonPress, p0,
+          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
     qtbot.wait(1)
-    QTest.mouseMove(view.viewport(), pos=pm)
+    _send(editor.quick, QEvent.Type.MouseMove, pm,
+          Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
     qtbot.wait(1)
-    QTest.mouseMove(view.viewport(), pos=p1)
+    _send(editor.quick, QEvent.Type.MouseMove, p1,
+          Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
     qtbot.wait(1)
-    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=p1)
+    _send(editor.quick, QEvent.Type.MouseButtonRelease, p1,
+          Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
     qtbot.wait(1)
 
 
@@ -173,12 +236,12 @@ async def test_field_on_second_page_survives_save_and_reopen(app, dialog_input, 
     qtbot.wait(50)  # canvas fitted after show/resize
 
     # A text field on page 1, and a second page from the rail.
-    editor.palette.text_button.click()
+    _click_island(editor, "paletteTool-text")
     _click_canvas(editor, 100.0, 100.0)
-    await wait_for(lambda: editor.canvas.item_count() == 1)
+    await wait_for(lambda: _field_count(editor) == 1)
     field_id = editor.view_model.selection
 
-    editor.rail.add_button.click()
+    _click_island(editor, "railAddButton")
     await wait_for(lambda: editor.view_model.page_count == 2)
     # the new page is current and empty; the canvas shows the tape
     assert editor.view_model.current_page_index == 1
@@ -191,7 +254,7 @@ async def test_field_on_second_page_survives_save_and_reopen(app, dialog_input, 
     await wait_for(lambda: editor.view_model.page_of(field_id) == 1)
 
     # Save, close, reopen: the field stays on page 2 with the same id.
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
@@ -264,7 +327,7 @@ async def test_v1_sheet_open_and_save_writes_version_2(app, dialog_input, wait_f
 
     # The first save bumps the stored row to schema_version 2. (The sheet was
     # not edited, so wait on the written row itself, not on the dirty flag.)
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(
         lambda: query_db(
             application._db_path,
@@ -296,26 +359,26 @@ async def test_marquee_duplicate_undo_save(app, dialog_input, wait_for, qtbot):
     editor = await wait_editor(app, wait_for, "Макет")
     qtbot.wait(50)
 
-    editor.palette.label_button.click()
+    _click_island(editor, "paletteTool-label")
     _click_canvas(editor, 100.0, 100.0)
-    await wait_for(lambda: editor.canvas.item_count() == 1)
-    editor.palette.text_button.click()
+    await wait_for(lambda: _field_count(editor) == 1)
+    _click_island(editor, "paletteTool-text")
     _click_canvas(editor, 200.0, 200.0)
-    await wait_for(lambda: editor.canvas.item_count() == 2)
+    await wait_for(lambda: _field_count(editor) == 2)
 
     _drag_canvas(editor, (90.0, 90.0), (330.0, 230.0), qtbot)
     await wait_for(lambda: len(editor.view_model.selected_ids) == 2)
 
     ids_before = [f.id for f in editor.view_model.template.page.fields]
     editor.duplicate_action.trigger()
-    await wait_for(lambda: editor.canvas.item_count() == 4)
+    await wait_for(lambda: _field_count(editor) == 4)
     assert len(editor.view_model.template.page.fields) == 4
 
     editor.undo_action.trigger()
-    await wait_for(lambda: editor.canvas.item_count() == 2)
+    await wait_for(lambda: _field_count(editor) == 2)
     assert [f.id for f in editor.view_model.template.page.fields] == ids_before
 
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
     row = query_db(
         application._db_path,
@@ -337,15 +400,15 @@ async def test_instance_fill_survives_save_and_reopen(
     editor = await wait_editor(app, wait_for, "Макет")
     qtbot.wait(50)
 
-    editor.palette.text_button.click()
+    _click_island(editor, "paletteTool-text")
     _click_canvas(editor, 100.0, 100.0)
-    await wait_for(lambda: editor.canvas.item_count() == 1)
+    await wait_for(lambda: _field_count(editor) == 1)
     text_id = editor.view_model.selection
-    editor.properties_panel.content_edit.setPlainText("Иван")
+    _set_panel_content(editor, "Иван")
     await wait_for(
         lambda: editor.view_model.template.get_field(text_id).content == "Иван"
     )
-    editor.save_button.click()
+    _press_save(editor)
     await wait_for(lambda: not editor.view_model.dirty)
     editor.close()
     await wait_for(lambda: application._sheet_editor is None)
@@ -364,7 +427,7 @@ async def test_instance_fill_survives_save_and_reopen(
     assert field is not None, text_id
     assert fill.view_model.set_text(text_id, "Пётр") is True
     assert fill.view_model.dirty
-    fill.save_button.click()
+    _press_save(fill)
     await wait_for(lambda: not fill.view_model.dirty)
     fill.close()
     await wait_for(lambda: application._sheet_fill is None)
@@ -486,7 +549,7 @@ async def test_copied_preset_instance_fills_and_saves(
     )
     assert fill.view_model.set_text(name_field.id, "Гаррик") is True
     assert fill.view_model.dirty
-    fill.save_button.click()
+    _press_save(fill)
     await wait_for(lambda: not fill.view_model.dirty)
     fill.close()
     await wait_for(lambda: application._sheet_fill is None)
