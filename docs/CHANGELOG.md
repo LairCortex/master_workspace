@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Стабилизация жизненного цикла QML-островов в тестах (R1; change `stabilize-qml-island-test-lifetimes-r1`; **эпик R открыт**; врата островных тестов закрыты этим срезом: детерминированный порядок разрушения islands → engine → theme, DPR=1, guard; версии не трогаем — только test-only `reset_qml_shell`, pin DPI в `tests/conftest.py` и тесты изоляции; прод-поведение и контракт «движок один на приложение» не менялись; откат = revert commit)
+
+#### Исправлено
+- **Teardown QML-островов детерминирован:** `reset_qml_shell` сначала добирает `deleteLater` и нулевые `singleShot`-релизы (пока движок жив), затем отвязывает живые `QQuickWidget` (`setSource(QUrl())`) и уничтожает их раньше движка — нет живой сцены на мёртвом движке (SIGSEGV в `setSource`, «Object destroyed while…»)
+- **Grab-пиксель одинаков на Retina и в CI:** `tests/conftest.py` пинит `QT_ENABLE_HIGHDPI_SCALING=0` / `QT_AUTO_SCREEN_SCALE_FACTOR=0` / `QT_SCREEN_SCALE_FACTORS=1` / `QT_SCALE_FACTOR=1` до `QApplication`; guard-тест падает первым, если коэффициент снова станет не 1
+
+#### Тесты
+- `tests/presentation/test_qml_shell_isolation.py`: живой остров переживает ручной reset без падения процесса (`isValid` False, обращение → `RuntimeError`); отложенные `deleteLater` / `singleShot(0)` исполняются при живом движке; повторный `setup_qml_shell` даёт ровно один движок и grab 64×64; DPR-guard
+
+#### Проверено
+- `QT_QPA_PLATFORM=offscreen python -m pytest` ×3 подряд (macOS arm64) — **2270 passed**, flake = 0
+- Гейт `--cov=app --cov-fail-under=100` — **TOTAL 100.00%** (11348 stmts, 0 непокрытых); новых `# pragma: no cover` нет
+- `ruff check` на файлах среза — чисто (35 pre-existing замечаний на HEAD вне среза, как lint-job CI)
+
 ### Переезд канваса чар-листа и окон Design/Заполнения в QML-острова (Q3b; change `port-character-sheet-canvas-qml-q3b`, design зафиксирован design.md change'я; статус «влито» — по факту merge; версии не трогаем — срез только UI-слой (QML, Python-фасады, VM, тесты, бандл), миграций нет — данные и схемы не затронуты, откат = revert commit; **эпик Q ЗАКРЫТ этим срезом**: Q3 реализован целиком (Q3a + Q3b), последний заградитель эпика — канвас — снят; вне закрытого эпика остаются заблокированный Qx (`MentionTextEdit` с диалогами события и карточки) и не начатые плановые куски Q2a2/Q2b, не входящие в инвентарь спека `qml-shell`)
 
 #### Новый функционал

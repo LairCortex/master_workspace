@@ -10,6 +10,14 @@
 import os
 
 os.environ["QT_QUICK_BACKEND"] = "software"
+# Grab acceptance must be DPR=1 on Retina hosts and in CI (spec ui-testing
+# «Пиксельная приёмка при зафиксированном коэффициенте пикселей»). Qt reads
+# these at QApplication start; setdefault so an explicit QT_SCALE_FACTOR=2
+# still reaches the guard test. Existing _grab_scaled idioms stay as backup.
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "0")
+os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
+os.environ.setdefault("QT_SCREEN_SCALE_FACTORS", "1")
+os.environ.setdefault("QT_SCALE_FACTOR", "1")
 
 import pytest
 import pytest_asyncio
@@ -46,6 +54,10 @@ def isolated_qml_shell():
     die with it — otherwise tests would inherit a palette frozen on a dead
     runtime and leaked QQmlEngine children would break the "exactly one
     engine" assertion in tests/presentation/test_qml_engine.py.
+
+    Teardown order with the fixtures around this one: hide leftover
+    top-levels (``no_stale_windows``) → islands then engine (this reset) →
+    theme-runtime (``isolated_ui_theme_defaults``).
     """
     from app.presentation.qml.engine import reset_qml_shell
 

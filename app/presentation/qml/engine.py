@@ -97,12 +97,74 @@ def reset_qml_shell() -> None:
 
     The palette subscribes to the process-wide theme runtime via the weak
     listener registry, and the tests reset that runtime per test; the engine
-    must not outlive it with a stale palette. Reparenting detaches the
-    engine from ``findChildren`` immediately and hands C++ ownership back to
-    Python, so dropping the reference destroys it (palette child included)
-    without waiting for an event loop to process ``deleteLater``.
+    must not outlive it with a stale palette.
+
+    Destruction order is islands then engine: a ``QQuickWidget`` destructor
+    talks to the engine, so a live scene on a dead engine is use-after-free.
+    Pending ``deleteLater`` and zero-timer ``_release_island`` callbacks run
+    first, while the engine is still alive; leftover islands are unbound
+    (``setSource(QUrl())``) and deleted immediately; only then is the engine
+    reparented and dropped.
     """
     global _engine
-    if _engine is not None:
+    if _engine is None:
+        return
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QUrl
+    from PySide6.QtQuickWidgets import QQuickWidget
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+    import asyncio
+    import contextlib
+    import shiboken6
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    created_loop = None
+    previous_loop = None
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        with contextlib.suppress(RuntimeError):
+            previous_loop = asyncio.get_event_loop()
+        created_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(created_loop)
+    try:
+        QTest.qWait(5)
+
+        app = QApplication.instance()
+        living: list = []
+        seen: set[int] = set()
+        for top in list(app.topLevelWidgets()):
+            with contextlib.suppress(RuntimeError):
+                children = list(top.findChildren(QQuickWidget))
+                widgets = ([top] if isinstance(top, QQuickWidget) else []) + children
+                for widget in reversed(widgets):
+                    key = id(widget)
+                    if key not in seen:
+                        seen.add(key)
+                        living.append(widget)
+
+        for widget in living:
+            with contextlib.suppress(RuntimeError):
+                widget.hide()
+                widget.setSource(QUrl())
+                widget.setParent(None)
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QTest.qWait(1)
+
+        for widget in living:
+            with contextlib.suppress(RuntimeError):
+                if shiboken6.isValid(widget):
+                    shiboken6.delete(widget)
+
+        _engine.clearComponentCache()
+        _engine.collectGarbage()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
         _engine.setParent(None)
         _engine = None
+    finally:
+        if created_loop is not None:
+            created_loop.close()
+            asyncio.set_event_loop(previous_loop)

@@ -404,7 +404,10 @@ class CharacterSheetEditorDialog(QDialog):
     # ── island teardown (the Q1-accepted launcher pattern, as in list_dialog) ──
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        import shiboken6
+
+        if shiboken6.isValid(self.quick):
+            self.quick.setSource(QUrl())
 
     def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
         """Release the island against its VM/palette before the dialog dies.

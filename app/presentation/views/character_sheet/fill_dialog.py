@@ -266,7 +266,10 @@ class CharacterSheetFillDialog(QDialog):
     # ── island teardown (the launcher/list-dialog pattern) ──────────────────
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        import shiboken6
+
+        if shiboken6.isValid(self.quick):
+            self.quick.setSource(QUrl())
 
     def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
         # Deferred scene release before the dialog's children go away (the
