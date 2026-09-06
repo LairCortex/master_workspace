@@ -67,7 +67,7 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
 )
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.sheet_list_view_model import (
@@ -151,19 +151,21 @@ class CharacterSheetListDialog(QDialog):
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         # Q3a apply-time correction, pinned empirically: a QQuickWidget built
         # on the shared engine reports the ENGINE's root context from
-        # rootContext(), so ``setContextProperty`` here is visible to every
-        # island on the process engine. Consequences, both kept on the merged
-        # launcher/timeline precedent: the VM goes under an island-scoped name
-        # (the plain ``vm`` name belongs to that contract and this dialog
-        # coexists with the timeline island), and ``islandPalette`` is pushed
-        # per island facade — from a dialog-owned QmlPalette parented AFTER
-        # ``quick`` (dialog children die in creation order, so the palette
-        # outlives the scene, and ``done()`` releases the island before any of
-        # them anyway; the same seam as timeline_island.py).
-        self.quick.rootContext().setContextProperty("sheetListVm", self.vm)
+        # rootContext(), so a name written there is visible to — and owned by —
+        # every island on the process engine. A dialog must not write into it
+        # at all: when this one closes, the shared ``islandPalette`` entry it
+        # had overwritten dies with the dialog and strands the timeline (and
+        # every other live island) on the off-skin fallbacks. Both names go
+        # into a dialog-owned child context instead, the seam the detail panel
+        # and the newer dialog islands already use; the bridge is parented to
+        # that context so the scene (a child created BEFORE it) always dies
+        # first, and ``done()`` releases the island earlier anyway.
         self._palette = QmlPalette(self._theme, parent=self)
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        self._context = island_context(
+            engine, self, sheetListVm=self.vm, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
+        self._component = load_island(self.quick, self._context, ROOT_QML)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
 

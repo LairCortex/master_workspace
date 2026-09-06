@@ -168,4 +168,7 @@ class TestThemeRoles:
         )
         d = XlsxImportDialog("event", theme=runtime)
         qtbot.addWidget(d)
-        assert d.quick.rootContext().contextProperty("xlsxImportVm") is d.vm
+        # Dialog-owned context, not the shared engine root (whose names are a
+        # single global slot every island shares).
+        assert d._context.contextProperty("xlsxImportVm") is d.vm
+        assert d._engine.rootContext().contextProperty("xlsxImportVm") is None

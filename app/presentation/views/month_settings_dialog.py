@@ -10,7 +10,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.month_settings_view_model import MonthSettingsViewModel
@@ -41,10 +41,15 @@ class MonthSettingsDialog(QDialog):
         self._engine = engine
         self.quick = QQuickWidget(engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.quick.rootContext().setContextProperty("monthSettingsVm", self.vm)
         self._palette = QmlPalette(self._theme, parent=self)
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        # A dialog's names stay in a dialog-owned context: the shared engine's
+        # root context has one global slot per name, nulled for every live
+        # island when the facade that wrote it dies.
+        self._context = island_context(
+            engine, self, monthSettingsVm=self.vm, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
+        self._component = load_island(self.quick, self._context, ROOT_QML)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
         self._root = self.quick.rootObject()

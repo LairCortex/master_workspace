@@ -161,3 +161,14 @@ def test_done_uses_deferred_source_teardown(qtbot, tmp_path):
     bar = _bar(qtbot, tmp_path)
     bar.close()
     qtbot.waitUntil(lambda: bar.quick.source().isEmpty(), timeout=2000)
+
+
+def test_late_height_sync_is_inert_after_the_release(qtbot, tmp_path):
+    """The deferred release can land before a queued ``implicitHeightChanged``
+    is delivered: with the scene gone the mirror must no-op, not crash."""
+    bar = _bar(qtbot, tmp_path)
+    height_before = bar.height()
+    bar.close()
+    qtbot.waitUntil(lambda: bar.quick.rootObject() is None, timeout=2000)
+    bar._sync_island_height()
+    assert bar.height() == height_before

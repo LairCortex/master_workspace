@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.image_viewer_view_model import ImageViewerViewModel
@@ -59,10 +59,15 @@ class ImageViewerDialog(QDialog):
 
         self.quick = QQuickWidget(engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.quick.rootContext().setContextProperty("imageViewerVm", self.vm)
         self._palette = QmlPalette(self._theme, parent=self)
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        # Dialog-owned context: this viewer is opened over live islands and
+        # destroyed right after ``exec()``, so a bridge of its own in the
+        # shared engine root context would take their colors down with it.
+        self._context = island_context(
+            engine, self, imageViewerVm=self.vm, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
+        self._component = load_island(self.quick, self._context, ROOT_QML)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
         self._root = self.quick.rootObject()

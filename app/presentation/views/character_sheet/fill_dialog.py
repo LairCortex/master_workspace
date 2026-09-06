@@ -45,7 +45,7 @@ from app.application.services.character_sheet_instance_service import (
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.infrastructure.images.store import ImageStore
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
@@ -143,13 +143,18 @@ class CharacterSheetFillDialog(QDialog):
         self._engine = setup_qml_shell(QApplication.instance(), self._theme)
         self.quick = QQuickWidget(self._engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        # the VM as the island's DECLARED property (never an engine-wide
-        # context name for one dialog — the Q3a lesson)
-        self.quick.setInitialProperties({"vm": self._vm})
+        # the VM as the island's DECLARED property, the bridge in a
+        # dialog-owned context (never an engine-wide name for one dialog —
+        # the Q3a lesson)
         self._palette = QmlPalette(self._theme, parent=self)
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self._tooltip_bridge = install_island_tooltips(self.quick)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        self._context = island_context(
+            self._engine, self, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
+        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
+        self._component = load_island(
+            self.quick, self._context, ROOT_QML, {"vm": self._vm}
+        )
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         self._root = self.quick.rootObject()
         self._wire_island()

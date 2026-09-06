@@ -88,6 +88,8 @@ EXPECTED_COMPONENT_FILES = (
     "ThemeRatingCard.qml",
     "ThemeCheckBox.qml",
     "ThemeComboBox.qml",
+    "ThemeTabBar.qml",
+    "ThemeTabButton.qml",
     "TitleText.qml",
     "HintText.qml",
     "CardPanel.qml",

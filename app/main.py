@@ -8,6 +8,7 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
+from PySide6.QtCore import QTimer
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
@@ -372,12 +373,27 @@ class Application:
             dialog.open_instance_requested.connect(self._on_instance_open)
             dialog.renamed.connect(self._on_sheet_renamed)
             dialog.instance_renamed.connect(self._on_instance_renamed)
+            # Closing the dialog releases its QML island (list_dialog.done),
+            # so the instance is single-use: the next open builds a fresh one
+            # (the editor/fill ``_forget_*`` contract).
+            dialog.finished.connect(lambda _r, _d=dialog: self._forget_sheet_list(_d))
             self._sheet_list_dialog = dialog
         self._sheet_list_dialog.show()
         self._sheet_list_dialog.raise_()
         self._sheet_list_dialog.activateWindow()
         # Session-touching: go through the wiring's session lock like all others.
         self._wiring._spawn(self._sheet_list_refresh())
+
+    def _forget_sheet_list(self, dialog) -> None:
+        """Drop the closed list: its island is gone with ``done()``.
+
+        The delete is queued behind the dialog's own deferred
+        ``_release_island`` (same timer queue, FIFO), so the scene is already
+        unloaded when the dialog and its VM/palette die.
+        """
+        if self._sheet_list_dialog is dialog:
+            self._sheet_list_dialog = None
+        QTimer.singleShot(0, dialog, dialog.deleteLater)
 
     def _on_table_host(self) -> None:
         if self._table_host is None or self._window is None:

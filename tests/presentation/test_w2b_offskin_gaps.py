@@ -91,7 +91,11 @@ def test_image_viewer_with_theme_attaches_the_chrome_sheet(qtbot, runtime):
 
     dlg = ImageViewerDialog(QPixmap(10, 10), theme=runtime)
     qtbot.addWidget(dlg)
-    assert dlg.quick.rootContext().contextProperty("imageViewerVm") is dlg.vm
+    # The dialog's own context, never the shared engine root: names written
+    # there are one global slot, nulled for every live island when this
+    # short-lived viewer dies.
+    assert dlg._context.contextProperty("imageViewerVm") is dlg.vm
+    assert dlg._engine.rootContext().contextProperty("imageViewerVm") is None
 
 
 # ── doc viewer with no usable theme ───────────────────────────────────────

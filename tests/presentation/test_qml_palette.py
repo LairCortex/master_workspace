@@ -10,10 +10,12 @@ as the palette's ``changed`` signal without restarting or recreating anything.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtGui import QColor
 
 from app.infrastructure.ui_prefs.config import UiPrefsManager
 from app.presentation.theme.compiler import (
     REQUIRED_TOKEN_KEYS,
+    accent_argb,
     accent_rgba,
     load_tokens,
     mention_style,
@@ -91,8 +93,8 @@ def test_derived_keys_match_the_qss_compiler_output(runtime):
     qss = runtime.qss()
     palette = QmlPalette(runtime).tokens
 
-    assert palette["color.accent.hover"] == accent_rgba(tokens, runtime.theme, HOVER_ALPHA)
-    assert palette["color.accent.pressed"] == accent_rgba(tokens, runtime.theme, PRESSED_ALPHA)
+    assert palette["color.accent.hover"] == accent_argb(tokens, runtime.theme, HOVER_ALPHA)
+    assert palette["color.accent.pressed"] == accent_argb(tokens, runtime.theme, PRESSED_ALPHA)
     # The timeline washes (port-q2-5a): the accent verbatim as the wash
     # color plus its compiler-decided alpha as a scalar (the wash alphas
     # the retired widget applied inline — the compiler stays the only
@@ -103,10 +105,21 @@ def test_derived_keys_match_the_qss_compiler_output(runtime):
     assert palette["opacity.accent.rowHover"] == f"{ROW_HOVER_ALPHA:g}"
     assert palette["opacity.accent.ghost"] == f"{GHOST_ALPHA:g}"
     assert palette["style.mention"] == mention_style(tokens, runtime.theme)
-    # The derived strings are the exact literals compile_qss embeds in its
-    # :hover/:pressed rules — no second color derivation appeared (D3).
-    assert palette["color.accent.hover"] in qss
-    assert palette["color.accent.pressed"] in qss
+    # The island washes with the very accent and alphas compile_qss embeds in
+    # its :hover/:pressed rules — one derivation, two serializations (D3).
+    assert accent_rgba(tokens, runtime.theme, HOVER_ALPHA) in qss
+    assert accent_rgba(tokens, runtime.theme, PRESSED_ALPHA) in qss
+
+
+def test_every_color_entry_parses_as_a_qml_color(runtime):
+    """A QML ``color`` property is parsed by QColor: an unreadable value lands
+    as opaque black, so no entry may carry the sheet's CSS rgba() form."""
+    palette = QmlPalette(runtime).tokens
+
+    for key, value in palette.items():
+        if not key.startswith("color."):
+            continue
+        assert QColor.fromString(value).isValid(), f"{key} = {value!r}"
 
 
 def test_invalid_token_set_gives_empty_palette_without_changes(tmp_path):
@@ -144,13 +157,13 @@ def test_live_switch_reemits_with_values_of_the_new_theme(runtime):
     assert emits == [1]
     assert palette.tokens["color.bg.surface"] == tokens["color.bg.surface"]["light"]
     assert palette.tokens["color.accent"] == tokens["color.accent"]["light"]
-    assert palette.tokens["color.accent.hover"] == accent_rgba(tokens, "light", HOVER_ALPHA)
-    assert palette.tokens["color.accent.hover"] in runtime.qss()
+    assert palette.tokens["color.accent.hover"] == accent_argb(tokens, "light", HOVER_ALPHA)
+    assert accent_rgba(tokens, "light", HOVER_ALPHA) in runtime.qss()
 
     assert runtime.toggle() is True  # light → dark (both themes proven)
     assert emits == [1, 1]
     assert palette.tokens["color.accent"] == tokens["color.accent"]["dark"]
-    assert palette.tokens["color.accent.pressed"] == accent_rgba(tokens, "dark", PRESSED_ALPHA)
+    assert palette.tokens["color.accent.pressed"] == accent_argb(tokens, "dark", PRESSED_ALPHA)
 
 
 def test_reapplying_the_same_theme_emits_nothing(runtime):

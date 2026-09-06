@@ -12,8 +12,10 @@ Rectangle {
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
     readonly property bool vmReady: typeof imageViewerVm !== "undefined" && imageViewerVm !== null
+    readonly property color surfaceColor:
+        Tokens.token(root.islandTokens, "color.bg.surface", "white")
 
-    color: surfaceColor
+    color: root.surfaceColor
     implicitWidth: 700
     implicitHeight: 600
 

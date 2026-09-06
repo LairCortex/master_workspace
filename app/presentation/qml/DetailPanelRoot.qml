@@ -130,7 +130,7 @@ Rectangle {
             font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
         }
 
-        TabBar {
+        ThemeTabBar {
             id: tabBar
             objectName: "detailTabBar"
             Layout.fillWidth: true
@@ -138,52 +138,64 @@ Rectangle {
 
             Repeater {
                 model: detailPanelVm.tabTitles
-                TabButton {
+                ThemeTabButton {
                     required property string modelData
                     text: modelData
                 }
             }
         }
 
-        StackLayout {
-            id: stack
-            objectName: "detailStack"
+        // Tab pane: the frame that ties the list to the selected tab (the
+        // widget QTabWidget drew it, the token tab strip does not).
+        Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: tabBar.currentIndex
+            radius: Tokens.px(root.islandTokens, "radius.sm", 6)
+            color: root.canvasColor
+            border.color: root.borderColor
+            border.width: 1
+            clip: true
 
-            ListView {
-                id: organizationList
-                objectName: "organizationList"
-                model: detailPanelVm.organizations
-                delegate: detailRowDelegate
-                clip: true
-                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                boundsBehavior: Flickable.StopAtBounds
-            }
-            ListView {
-                objectName: "characterList"
-                model: detailPanelVm.characters
-                delegate: detailRowDelegate
-                clip: true
-                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                boundsBehavior: Flickable.StopAtBounds
-            }
-            ListView {
-                objectName: "itemList"
-                model: detailPanelVm.items
-                delegate: detailRowDelegate
-                clip: true
-                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                boundsBehavior: Flickable.StopAtBounds
-            }
-            ListView {
-                objectName: "locationList"
-                model: detailPanelVm.locations
-                delegate: detailRowDelegate
-                clip: true
-                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                boundsBehavior: Flickable.StopAtBounds
+            StackLayout {
+                id: stack
+                objectName: "detailStack"
+                anchors.fill: parent
+                anchors.margins: 1  // keep rows off the 1px border
+                currentIndex: tabBar.currentIndex
+
+                ListView {
+                    id: organizationList
+                    objectName: "organizationList"
+                    model: detailPanelVm.organizations
+                    delegate: detailRowDelegate
+                    clip: true
+                    spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+                    boundsBehavior: Flickable.StopAtBounds
+                }
+                ListView {
+                    objectName: "characterList"
+                    model: detailPanelVm.characters
+                    delegate: detailRowDelegate
+                    clip: true
+                    spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+                    boundsBehavior: Flickable.StopAtBounds
+                }
+                ListView {
+                    objectName: "itemList"
+                    model: detailPanelVm.items
+                    delegate: detailRowDelegate
+                    clip: true
+                    spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+                    boundsBehavior: Flickable.StopAtBounds
+                }
+                ListView {
+                    objectName: "locationList"
+                    model: detailPanelVm.locations
+                    delegate: detailRowDelegate
+                    clip: true
+                    spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+                    boundsBehavior: Flickable.StopAtBounds
+                }
             }
         }
     }

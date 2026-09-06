@@ -27,7 +27,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtQml import QQmlEngine
+from PySide6.QtCore import QObject, QUrl
+from PySide6.QtQml import QQmlComponent, QQmlContext, QQmlEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
@@ -80,11 +81,11 @@ def setup_qml_shell(qapp: QApplication, theme: ThemeRuntime) -> QQmlEngine:
     # built on one engine share the engine's root context (verified: a
     # ``setContextProperty`` from one island's ``rootContext()`` resolves in
     # every other island on the engine), so the library-bridge name belongs to
-    # the island that builds the surface — the launcher/timeline contract puts
-    # a dialog/panel-owned ``QmlPalette`` into that context before
-    # ``setSource`` (roadmap: «в контекст острова — … и islandPalette»). An
-    # engine-lifetime registration here would make the pinned off-skin
-    # scenario «прогон вовсе без islandPalette в контексте» unrepresentable.
+    # the island that builds the surface — each facade puts its own
+    # ``QmlPalette`` into a private child context (:func:`island_context`,
+    # roadmap: «в контекст острова — … и islandPalette»). An engine-lifetime
+    # registration here would make the pinned off-skin scenario «прогон вовсе
+    # без islandPalette в контексте» unrepresentable.
     _engine = engine
     return engine
 
@@ -92,6 +93,48 @@ def setup_qml_shell(qapp: QApplication, theme: ThemeRuntime) -> QQmlEngine:
 def qml_engine() -> QQmlEngine | None:
     """The shared engine when the shell is up (islands take it from here)."""
     return _engine
+
+
+def island_context(engine: QQmlEngine, owner: QObject, **objects: QObject) -> QQmlContext:
+    """A private child of the engine root context carrying an island's names.
+
+    A ``QQuickWidget`` built on the shared engine reports the ENGINE's root
+    context from ``rootContext()``, so a name written there is one global slot
+    every island shares — and the facade that wrote it last owns it: when that
+    facade dies, the entry is nulled for everyone else and the surviving
+    islands fall back to their off-skin colors (closing the chars-list left
+    the timeline painted white). An island therefore binds through a context
+    of its own, where its ``islandPalette``/VM names can neither be
+    overwritten by a neighbour nor outlive it.
+
+    The caller keeps owning the objects it passes; create the context AFTER
+    the island widget so the scene is torn down before them.
+    """
+    context = QQmlContext(engine.rootContext(), owner)
+    for name, obj in objects.items():
+        context.setContextProperty(name, obj)
+    return context
+
+
+def load_island(quick, context: QQmlContext, qml_path: str, initial_properties=None) -> QQmlComponent:
+    """Build ``qml_path`` inside ``context`` and hand the scene to ``quick``.
+
+    ``setSource`` would compile the root against the widget's own (engine-wide)
+    context, which is exactly what :func:`island_context` avoids — an island
+    with a private context creates its root through a component instead. The
+    component is parented to the context; the caller keeps the reference the
+    same way it keeps the widget.
+    """
+    source = QUrl.fromLocalFile(qml_path)
+    component = QQmlComponent(context.engine(), source, context)
+    root = (
+        component.createWithInitialProperties(initial_properties, context)
+        if initial_properties
+        else component.create(context)
+    )
+    assert root is not None, component.errors()
+    quick.setContent(source, component, root)
+    return component
 
 
 def reset_qml_shell() -> None:

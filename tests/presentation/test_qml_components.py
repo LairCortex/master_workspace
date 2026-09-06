@@ -178,6 +178,8 @@ def test_qmldir_declares_module_and_future_component_entries():
             "ThemeRatingCard",
             "ThemeCheckBox",
             "ThemeComboBox",
+            "ThemeTabBar",
+            "ThemeTabButton",
             "TitleText",
             "HintText",
             "CardPanel",
@@ -551,6 +553,9 @@ GALLERY_OBJECT_NAMES = (
     "galleryRow",
     "galleryRowText",
     "galleryComboRows",
+    "galleryTabBar",
+    "galleryTabSelected",
+    "galleryTabPlain",
 )
 
 # The off-skin fallbacks the guarded lookups (gallery page included) land on
@@ -709,6 +714,8 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
     card = _find_item(widget, "galleryCard")
     row = _find_item(widget, "galleryRow")
     row_text = _find_item(widget, "galleryRowText")
+    tab_selected = _find_item(widget, "galleryTabSelected")
+    tab_plain = _find_item(widget, "galleryTabPlain")
 
     # ── state-free surfaces (single grab) ──────────────────────────────────
     img = _grab_rgb(widget)
@@ -748,6 +755,16 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
     # fg text.
     assert _item_pixel(widget, img, row, 2, row.height() / 2) == page_rgb
     assert _exact_pixel_in_bounds(widget, img, row_text, fg_rgb) is not None
+    # Tabs carry the button family's surfaces: the current tab is the accent
+    # action with accentFg glyphs, the rest the canvas fill behind the border
+    # hairline; the transparent bar leaves the danger surround between them.
+    assert _item_pixel(widget, img, tab_selected, 4, tab_selected.height() / 2) == accent_rgb
+    assert _item_pixel(widget, img, tab_plain, 4, tab_plain.height() / 2) == canvas_rgb
+    assert _item_pixel(widget, img, tab_plain, 0, tab_plain.height() / 2) == border_rgb
+    selected_label = tab_selected.property("contentItem")
+    plain_label = tab_plain.property("contentItem")
+    assert _exact_pixel_in_bounds(widget, img, selected_label, accent_fg_rgb) is not None
+    assert _exact_pixel_in_bounds(widget, img, plain_label, fg_rgb) is not None
 
     # ── state-dependent surfaces (interaction states of the skinned set) ───
     field.setProperty("text", "WWW")

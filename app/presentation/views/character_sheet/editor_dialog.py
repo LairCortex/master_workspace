@@ -56,7 +56,7 @@ from app.domain.entities.character_sheet import SheetTemplate
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
@@ -162,22 +162,23 @@ class CharacterSheetEditorDialog(QDialog):
         self._engine = setup_qml_shell(QApplication.instance(), self._theme)
         self.quick = QQuickWidget(self._engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        # The VM goes in as the root's DECLARED property: the shared engine's
-        # root context is process-global, so per-dialog names would leak into
-        # every island (the Q3a lesson pinned in list_dialog.py). The palette
-        # is the same bridge the other islands read, dialog-owned and created
-        # after the widget (children die in creation order — the bridge
-        # outlives the scene).
-        self.quick.setInitialProperties({"vm": self._vm})
+        # The VM goes in as the root's DECLARED property; the token bridge —
+        # which nested library components look up by name — into the dialog's
+        # own context. Neither reaches the shared engine root context, whose
+        # names are one global slot per island: the facade that writes last
+        # owns it and nulls it for everyone when it dies (the Q3a lesson,
+        # pinned in list_dialog.py).
         self._palette = QmlPalette(self._theme, parent=self)
-        # rootContext() of a shared-engine widget IS the engine context —
-        # ``islandPalette`` is the one agreed global chrome name (the
-        # launcher/timeline contract).
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self._context = island_context(
+            self._engine, self, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
         # Native tooltip display for the island chrome (Q2.5a D9): the bridge
         # is parented to the island (raw-pointer context property).
-        self._tooltip_bridge = install_island_tooltips(self.quick)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
+        self._component = load_island(
+            self.quick, self._context, ROOT_QML, {"vm": self._vm}
+        )
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         self._root = self.quick.rootObject()
         self._wire_island()

@@ -260,7 +260,8 @@ async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(
 
     await wait_for(lambda: application._window is not window and "beta" in application._window.windowTitle())
 
-    assert not list_dlg.isVisible()  # list closed
+    # list closed (its C++ object may already be deleted, like the editor's)
+    assert not _visible_list_dialogs(QApplication.instance().topLevelWidgets())
     assert application._sheet_editor is None  # editor_a closed and forgotten
     assert len(_editors(QApplication.instance().topLevelWidgets())) == 0  # no editor visible
     assert application._sheet_list_dialog is None

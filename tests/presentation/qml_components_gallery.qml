@@ -45,7 +45,7 @@ Item {
     // `skinned` (off-skin flips this to false without any exception).
     readonly property bool allSkinned: btnAccent.skinned && btnPlain.skinned && ai.skinned
         && fld.skinned && area.skinned && mention.skinned && sw.skinned && chk.skinned && cbo.skinned && ttl.skinned && hnt.skinned
-        && card.skinned && rw.skinned
+        && card.skinned && rw.skinned && tabs.skinned && tabSelected.skinned && tabPlain.skinned
 
     // Off-skin escape detector: the AND above alone would let a SINGLE
     // component stuck on `skinned: true` (design D7 violation) pass every
@@ -54,7 +54,7 @@ Item {
     // (spec «Поведение компонентов вне валидной темы»).
     readonly property bool anySkinned: btnAccent.skinned || btnPlain.skinned || ai.skinned
         || fld.skinned || area.skinned || mention.skinned || sw.skinned || chk.skinned || cbo.skinned || ttl.skinned || hnt.skinned
-        || card.skinned || rw.skinned
+        || card.skinned || rw.skinned || tabs.skinned || tabSelected.skinned || tabPlain.skinned
 
     // Page surface — color.danger (see header). Declared first so every
     // component sits above it in the sibling paint order.
@@ -151,6 +151,15 @@ Item {
         id: mention
         objectName: "galleryMentionField"
         x: 240; y: 288; width: 150; height: 32
+    }
+    // Tabs: index 0 stays current, so one selected and one plain tab surface
+    // are pixel-addressable in the same grab.
+    ThemeTabBar {
+        id: tabs
+        objectName: "galleryTabBar"
+        x: 10; y: 225; width: 200
+        ThemeTabButton { id: tabSelected; objectName: "galleryTabSelected"; text: "MMM" }
+        ThemeTabButton { id: tabPlain; objectName: "galleryTabPlain"; text: "WWW" }
     }
     ThemeAiButton {
         id: ai

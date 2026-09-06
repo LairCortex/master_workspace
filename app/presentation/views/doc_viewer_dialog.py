@@ -8,7 +8,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.doc_viewer_view_model import DocViewerViewModel
@@ -56,10 +56,14 @@ class DocViewerDialog(QDialog):
         self._engine = engine
         self.quick = QQuickWidget(engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.quick.rootContext().setContextProperty("docViewerVm", self.vm)
         self._palette = QmlPalette(self._theme, parent=self)
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        # Dialog-owned context (never the shared engine root): a name written
+        # there is nulled for every other island when this dialog dies.
+        self._context = island_context(
+            engine, self, docViewerVm=self.vm, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
+        self._component = load_island(self.quick, self._context, ROOT_QML)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
 

@@ -14,6 +14,7 @@ from app.presentation.theme.compiler import (
     CHART_TOKEN_KEYS,
     REQUIRED_TOKEN_KEYS,
     THEMES as COMPILER_THEMES,
+    accent_argb,
     accent_rgba,
     compile_css_root,
     compile_popup_qss,
@@ -210,6 +211,12 @@ def test_qss_hover_pressed_highlights_are_accent_derived(tokens, theme):
 def test_accent_rgba_falls_back_to_raw_value_when_not_hex():
     fake = {"color.accent": {"light": "not-a-color", "dark": "not-a-color"}}
     assert accent_rgba(fake, "light", 0.5) == "not-a-color"
+
+
+def test_accent_argb_falls_back_to_raw_value_when_not_hex():
+    """The #AARRGGBB sibling keeps the same raw-value fallback for QSS form."""
+    fake = {"color.accent": {"light": "not-a-color", "dark": "not-a-color"}}
+    assert accent_argb(fake, "light", 0.5) == "not-a-color"
 
 
 # ── popup sheet (W2a D2) ────────────────────────────────────────────────────

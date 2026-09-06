@@ -88,17 +88,17 @@ Rectangle {
         // Tabs — the migrated QTabWidget («Шаблоны»/«Листы»). The bar mirrors
         // `sheetListVm.currentTab` and pushes taps back through the sync slot; the VM
         // ignores repeat/out-of-range indices, so the round trip is idempotent.
-        TabBar {
+        ThemeTabBar {
             id: tabBar
             Layout.fillWidth: true
             currentIndex: sheetListVm.currentTab
             onCurrentIndexChanged: sheetListVm.setCurrentTab(currentIndex)
 
-            TabButton {
+            ThemeTabButton {
                 objectName: "tabTemplates"
                 text: "Шаблоны"
             }
-            TabButton {
+            ThemeTabButton {
                 objectName: "tabInstances"
                 text: "Листы"
             }

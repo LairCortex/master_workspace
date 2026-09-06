@@ -145,14 +145,14 @@ Rectangle {
             }
         }
 
-        TabBar {
+        ThemeTabBar {
             id: tabs
             objectName: "eventRelatedTabs"
             Layout.fillWidth: true
-            TabButton { text: "Организации" }
-            TabButton { text: "Персонажи" }
-            TabButton { text: "Предметы" }
-            TabButton { text: "Локации" }
+            ThemeTabButton { text: "Организации" }
+            ThemeTabButton { text: "Персонажи" }
+            ThemeTabButton { text: "Предметы" }
+            ThemeTabButton { text: "Локации" }
         }
 
         StackLayout {

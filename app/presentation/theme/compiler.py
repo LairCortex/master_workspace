@@ -142,6 +142,22 @@ def accent_rgba(tokens: Tokens, theme: str, alpha: float) -> str:
     return f"rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {alpha:g})"
 
 
+def accent_argb(tokens: Tokens, theme: str, alpha: float) -> str:
+    """The same wash as ``accent_rgba``, spelled ``#AARRGGBB`` for QML.
+
+    QML parses colors with ``QColor``, which reads hex and SVG names but not
+    the CSS ``rgba(…)`` function a stylesheet needs — handed that form a
+    control paints opaque black. Both serializations start from this one
+    derivation, so a QML island and the sheet keep washing with the same
+    accent at the same alpha; a non-hex token returns raw, as above.
+    """
+    value = tokens["color.accent"][theme]
+    rgb = _hex_rgb(value)
+    if rgb is None:
+        return value
+    return f"#{round(alpha * 255):02x}{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+
+
 def token_rgb(tokens: Tokens, theme: str, key: str) -> Optional[tuple[int, int, int]]:
     """Token color as ``(r, g, b)`` for QPainter code outside QSS (W3 D4).
 

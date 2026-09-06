@@ -5,8 +5,10 @@ A thin QObject exposing the current theme as one flat ``tokens`` dictionary
 the ``tokens.json`` names; on top of them the Python compiler's own
 derivations are added (hover/pressed washes of ``color.accent``, the
 @mention inline style), so QML never computes a color and a third style
-generator never appears — the same ``accent_rgba``/``mention_style`` calls
-that ``compile_qss`` embeds as literals feed this dictionary verbatim.
+generator never appears — the compiler's own ``accent_argb``/``mention_style``
+calls feed this dictionary, washing with the same accent at the same alphas
+``compile_qss`` embeds, only serialized in the hex form QML's color parser
+accepts.
 
 Invalid tokens (D7) empty the dictionary: QML bindings then resolve to
 ``undefined`` and the controls stay on the plain Basic style — the QML
@@ -23,13 +25,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Property, Signal
 
-from app.presentation.theme.compiler import accent_rgba, mention_style
+from app.presentation.theme.compiler import accent_argb, mention_style
 from app.presentation.theme.runtime import ThemeRuntime
 
 # The alphas compile_qss uses for its QPushButton:hover/:pressed washes —
 # kept as named constants here (the compiler inlines them in the sheet).
 # tests/presentation/test_qml_palette.py pins both numbers against the QSS
-# output, so a drift on either side fails the suite.
+# output, so a drift on either side fails the suite. The wash reaches QML as
+# ``accent_argb``: the identical derivation in the hex form QColor reads (the
+# sheet's CSS rgba() form parses to opaque black in a QML color property).
 HOVER_ALPHA = 0.85
 PRESSED_ALPHA = 0.7
 
@@ -92,8 +96,8 @@ class QmlPalette(QObject):
             return {}  # off-skin (D7): bindings get undefined, Controls stay Basic
         theme = self._runtime.theme
         palette = {key: values[theme] for key, values in tokens.items()}
-        palette["color.accent.hover"] = accent_rgba(tokens, theme, HOVER_ALPHA)
-        palette["color.accent.pressed"] = accent_rgba(tokens, theme, PRESSED_ALPHA)
+        palette["color.accent.hover"] = accent_argb(tokens, theme, HOVER_ALPHA)
+        palette["color.accent.pressed"] = accent_argb(tokens, theme, PRESSED_ALPHA)
         # Timeline washes: the accent color verbatim (QML-parsable hex) plus
         # its compiler-decided alpha as a scalar — see the constants above.
         palette["color.accent.rowHover"] = palette["color.accent"]

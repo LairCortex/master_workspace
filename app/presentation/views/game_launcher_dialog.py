@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
 from app.presentation.viewmodels.launcher_viewmodel import LauncherViewModel
@@ -72,11 +72,15 @@ class GameLauncherDialog(QDialog):
         self._engine = engine
         self.quick = QQuickWidget(engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.quick.rootContext().setContextProperty("vm", self.vm)
         # The QSS-``palette`` name is shadowed by Qt Quick Controls, hence
-        # ``islandPalette`` (see the LauncherRoot.qml context contract).
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        # ``islandPalette`` (see the LauncherRoot.qml context contract). Both
+        # names live in a dialog-owned context: the launcher is reopened over
+        # a running app on a game switch, and the shared engine root context
+        # would hand its bridge to every island until this dialog dies.
+        self._context = island_context(
+            engine, self, vm=self.vm, islandPalette=self._palette
+        )
+        self._component = load_island(self.quick, self._context, ROOT_QML)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
 

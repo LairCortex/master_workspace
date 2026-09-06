@@ -50,7 +50,7 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
 )
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.sheet_preset_view_model import (
@@ -107,17 +107,17 @@ class CharacterSheetPresetDialog(QDialog):
         self._engine = engine
         self.quick = QQuickWidget(engine, self)
         self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        # Island-scoped VM name + per-island palette push (see list_dialog's
-        # identical apply-time note): rootContext() on the shared engine is
-        # the ENGINE root, the plain ``vm`` name belongs to the
-        # launcher/timeline contract, and ``islandPalette`` rides a dialog-
-        # owned QmlPalette parented AFTER ``quick`` — the launcher/timeline
-        # pattern (dialog children die in creation order, and ``done()``
-        # unwinds the scene before either context object anyway).
-        self.quick.rootContext().setContextProperty("sheetPresetVm", self.vm)
+        # Dialog-owned context (see list_dialog's identical apply-time note):
+        # rootContext() on the shared engine is the ENGINE root, where a name
+        # is a single global slot — this dialog is explicitly deleted when it
+        # finishes, and a bridge of its own left there would strand the list
+        # (and the editor behind it) on the off-skin colors.
         self._palette = QmlPalette(self._theme, parent=self)
-        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
-        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        self._context = island_context(
+            engine, self, sheetPresetVm=self.vm, islandPalette=self._palette
+        )
+        self._palette.setParent(self._context)
+        self._component = load_island(self.quick, self._context, ROOT_QML)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
 

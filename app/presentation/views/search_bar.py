@@ -63,6 +63,21 @@ class SearchBar(QWidget):
         self._vm.searchRequested.connect(self.search_requested)
         self._vm.resultSelected.connect(self.result_selected)
 
+        # A QQuickWidget in SizeRootObjectToView never reports the scene's
+        # implicit height as a size hint, so the results list laid out below
+        # the field stayed clipped to the field's own height. The facade
+        # mirrors the island's implicit height onto the widget instead.
+        self._root.implicitHeightChanged.connect(self._sync_island_height)
+        self._sync_island_height()
+
+    def _sync_island_height(self) -> None:
+        root = self.quick.rootObject()
+        if root is None:
+            return
+        height = int(round(root.implicitHeight()))
+        if height > 0 and height != self.height():
+            self.setFixedHeight(height)
+
     def _release_island(self) -> None:
         self.quick.setSource(QUrl())
 

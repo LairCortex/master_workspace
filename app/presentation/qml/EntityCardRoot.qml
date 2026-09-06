@@ -281,13 +281,13 @@ Rectangle {
                 Layout.leftMargin: Tokens.px(root.islandTokens, "space.md", 16)
                 Layout.rightMargin: Tokens.px(root.islandTokens, "space.md", 16)
 
-                TabBar {
+                ThemeTabBar {
                     id: relatedTabs
                     objectName: "entityRelatedTabs"
                     Layout.fillWidth: true
                     Repeater {
                         model: entityCardVm.relatedSections
-                        TabButton {
+                        ThemeTabButton {
                             objectName: "entityRelatedTab_" + modelData.attr
                             text: modelData.label
                         }

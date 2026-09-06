@@ -80,6 +80,10 @@ CheckBox {
     Text {
         id: themedLabel
         visible: control.skinned  // floats invisible while off-skin
+        // The control lays the contentItem over the whole padding rect, the
+        // indicator included (Basic's own CheckLabel carries the same inset);
+        // without it the label paints on top of the box.
+        leftPadding: control.indicator ? control.indicator.width + control.spacing : 0
         text: control.text
         font: control.font
         color: control.enabled ? control.fgColor : control.mutedColor

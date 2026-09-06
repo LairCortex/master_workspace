@@ -32,6 +32,8 @@ ThemeDateField ThemeDateField.qml
 ThemeRatingCard ThemeRatingCard.qml
 ThemeCheckBox ThemeCheckBox.qml
 ThemeComboBox ThemeComboBox.qml
+ThemeTabBar ThemeTabBar.qml
+ThemeTabButton ThemeTabButton.qml
 TitleText TitleText.qml
 HintText HintText.qml
 CardPanel CardPanel.qml
