@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
 from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
@@ -282,7 +283,10 @@ class EntityCardDialog(QDialog):
         self._close_guard = None
         self._date_target = "start"
         self.setWindowTitle(f"Карточка: {entity_type}")
-        self.setMinimumSize(750 if self._has_image_field else 550, 550)
+        # Floor only: the window opens at the island's content size below, so
+        # every field, the related section and the action row are visible.
+        self._size_floor = (750 if self._has_image_field else 550, 550)
+        self.setMinimumSize(*self._size_floor)
 
         self.vm = EntityCardIslandViewModel(
             entity_type,
@@ -322,6 +326,7 @@ class EntityCardDialog(QDialog):
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
         self._root = root
+        fit_dialog_to_island(self, root, floor=self._size_floor)
 
         for host in self.vm.hosts.values():
             host.attachWidget(self.quick)

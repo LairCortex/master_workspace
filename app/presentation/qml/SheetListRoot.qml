@@ -47,8 +47,16 @@ Rectangle {
     id: root
     objectName: "sheetListRoot"
 
-    implicitWidth: 420
-    implicitHeight: 520
+    // Natural content size (island_size.py mirrors it onto the window): the
+    // button row declares the width the six actions need, so the dialog opens
+    // wide enough instead of squeezing their texts off the window. The old
+    // 420x520 stays as the floor.
+    readonly property real contentMargin:
+        Tokens.px(islandTokens, "space.md", 16)
+    implicitWidth: Math.max(
+        420, sheetListColumn.implicitWidth + 2 * contentMargin)
+    implicitHeight: Math.max(
+        520, sheetListColumn.implicitHeight + 2 * contentMargin)
 
     // ── root contract to the facade (the migrated button flows) ─────────────
     // Argument-free: the facade reads the tab + per-tab selection back from
@@ -74,8 +82,9 @@ Rectangle {
     color: surfaceColor
 
     ColumnLayout {
+        id: sheetListColumn
         anchors.fill: parent
-        anchors.margins: Tokens.px(root.islandTokens, "space.md", 16)
+        anchors.margins: root.contentMargin
         spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
         // The migrated «Чар-листы текущей игры» hint caption (hint role).

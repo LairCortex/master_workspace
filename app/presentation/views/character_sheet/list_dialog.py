@@ -68,6 +68,7 @@ from app.application.services.character_sheet_service import (
 )
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
+from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.sheet_list_view_model import (
@@ -128,7 +129,10 @@ class CharacterSheetListDialog(QDialog):
         self._theme = theme if theme is not None else get_default_theme()
 
         self.setWindowTitle("Чар-листы")
-        self.resize(420, 520)
+        # The size a hardcoded resize() used to pin: the window now opens at the
+        # island's content size (never smaller), so the whole button row fits
+        # instead of being squeezed out of the window.
+        self._size_floor = (420, 520)
 
         self._preset_dialog: CharacterSheetPresetDialog | None = None
 
@@ -170,6 +174,7 @@ class CharacterSheetListDialog(QDialog):
         layout.addWidget(self.quick)
 
         self._root = self.quick.rootObject()
+        fit_dialog_to_island(self, self._root, floor=self._size_floor)
         self._wire_island()
 
     # ---- island -> facade wiring ------------------------------------------------

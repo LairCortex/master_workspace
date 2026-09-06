@@ -23,8 +23,17 @@ Rectangle {
         Tokens.token(islandTokens, "color.accent", "black")
 
     color: surfaceColor
-    implicitWidth: entityCardVm.hasImage ? 750 : 550
-    implicitHeight: 550
+    // Natural content size (island_size.py mirrors it onto the window), so the
+    // dialog opens big enough to show the related section and the action row
+    // instead of pushing them under the scroll. The sizes the port pinned
+    // (750/550 with an image, 550 without) stay as the floors; the content is
+    // measured plus the scroll bar's track, which the scene never owns.
+    readonly property real scrollbarReserve: 16
+    implicitWidth: Math.max(
+        entityCardVm.hasImage ? 750 : 550,
+        cardColumn.implicitWidth + scrollbarReserve)
+    implicitHeight: Math.max(
+        550, cardColumn.implicitHeight + scrollbarReserve)
 
     ScrollView {
         id: scroll
@@ -33,6 +42,7 @@ Rectangle {
         contentWidth: availableWidth
 
         ColumnLayout {
+            id: cardColumn
             width: scroll.availableWidth
             spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
