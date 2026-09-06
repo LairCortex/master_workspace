@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime
 from typing import Any, Coroutine
 
 from PySide6.QtWidgets import QMessageBox
@@ -20,20 +19,6 @@ from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
-
-
-def _as_date(value: Any) -> date | None:
-    """Normalize a signal payload to ``datetime.date`` (Qt may wrap dates)."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    to_python = getattr(value, "toPython", None)
-    if callable(to_python):
-        return _as_date(to_python())
-    return value
 
 
 class ApplicationWiring:
@@ -283,8 +268,8 @@ class ApplicationWiring:
                     )
                 except Exception as exc:  # noqa: BLE001 — причину показывает модалка
                     # Транзакцию уже откатил сервис; ленту перегружаем до модалки
-                    # (как в on_event_dates_moved), чтобы под блокирующий
-                    # QMessageBox осталось консистентное состояние.
+                    # (тот же приём, что в других save-handler'ах), чтобы под
+                    # блокирующий QMessageBox осталось консистентное состояние.
                     await _reload_timeline()
                     QMessageBox.critical(
                         window, "Ошибка", f"Не удалось сохранить событие: {exc}",
@@ -399,8 +384,8 @@ class ApplicationWiring:
                         )
                     except Exception as exc:  # noqa: BLE001 — причину показывает модалка
                         # Откат уже выполнен сервисом. Перезагружаем ленту до
-                        # модалки (паттерн on_event_dates_moved); детальную
-                        # панель НЕ обновляем — «обновлённой» версии нет,
+                        # модалки (тот же приём, что в других save-handler'ах);
+                        # детальную панель НЕ обновляем — «обновлённой» версии нет,
                         # показываем прежнее.
                         await _reload_timeline()
                         QMessageBox.critical(
@@ -434,83 +419,6 @@ class ApplicationWiring:
             lambda eid: self._spawn(on_edit_event(eid))
         )
 
-        async def on_event_dates_moved(event_id, start, end):
-            """Drop-gesture commit (task 5.3), under the session lock.
-
-            The ACTIVE «Выбор даты» window first grows to cover the new dates
-            (:meth:`cover_window_for_span`), then one write, one reload and
-            the selection raised. A failure rolls the dates back, reloads the
-            old tape and shows exactly one modal error dialog — the widened
-            window deliberately remains (spec «Сбой сохранения откатывает и
-            сообщает»)."""
-            start_d, end_d = _as_date(start), _as_date(end)
-            window.timeline_widget.cover_window_for_span(start_d, end_d)
-            try:
-                if end_d is None:
-                    await event_service.update_event(event_id, start_date=start_d)
-                else:
-                    await event_service.update_event(
-                        event_id, start_date=start_d, end_date=end_d,
-                    )
-                await event_service._session.commit()
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
-                timeline_vm.select_event_by_id(event_id)
-                window.timeline_widget.set_selected(event_id)
-                event = timeline_vm.selected_event
-                if event:
-                    await detail_vm.load_details(event.id)
-                    window.detail_panel.show_event(detail_vm.event)
-            except Exception as exc:  # noqa: BLE001
-                try:
-                    await event_service._session.rollback()
-                except Exception:
-                    pass
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
-                QMessageBox.critical(
-                    window, "Ошибка", f"Не удалось сохранить даты события: {exc}",
-                )
-
-        window.timeline_widget.event_dates_moved.connect(
-            lambda eid, start, end: self._spawn(on_event_dates_moved(eid, start, end))
-        )
-
-        async def on_event_create_at(day, name):
-            """Inline commit from an empty day (task 6.1), under the session lock.
-
-            An empty field or a missing day is a no-op (spec «Пустое поле не
-            создаёт»); otherwise ``vm.create_event_at`` writes a one-day event
-            at the clicked day, reloads and selects it — then the panel draws
-            the fresh tape, reveals and highlights the new card and opens it in
-            the detail panel (spec «Быстрое создание»). A write failure reloads
-            the old tape and shows exactly one modal error (mirrors the
-            date-move failure path); the session is left usable by the VM's
-            rollback."""
-            day_d = _as_date(day)
-            name_s = (name or "").strip()
-            if day_d is None or not name_s:
-                return
-            try:
-                event = await timeline_vm.create_event_at(day_d, name_s)
-            except Exception as exc:  # noqa: BLE001
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
-                QMessageBox.critical(
-                    window, "Ошибка", f"Не удалось создать событие: {exc}",
-                )
-                return
-            if event is None:
-                return
-            window.timeline_widget.update_events(timeline_vm.events)
-            window.timeline_widget.set_selected(event.id)
-            await detail_vm.load_details(event.id)
-            window.detail_panel.show_event(detail_vm.event)
-
-        window.timeline_widget.event_create_requested.connect(
-            lambda day, name: self._spawn(on_event_create_at(day, name))
-        )
-
         # Search
         async def on_search(query):
             await search_vm.search(query)
@@ -526,19 +434,19 @@ class ApplicationWiring:
                 # this handler already holds the session lock), then scroll
                 # the scale so the highlighted row is visible (W3b panel API).
                 # The gate checks the WHOLE sample, not the windowed slice:
-                # a result the current rung/window excludes must still reach
-                # ``select_event_by_id``, whose descent drops to «сутки» and
-                # resets «Все дни» before the selection lands (spec «Внешний
-                # выбор с крупной ступени спускает лестницу»). An id the
-                # timeline never held stays a plain miss — the tape untouched.
+                # a result the current window excludes must still reach
+                # ``select_event_by_id``, which resets the window to «Все
+                # дни» before the selection lands (spec «Внешний выбор вне
+                # окна сбрасывает окно»). An id the timeline never held
+                # stays a plain miss — the list untouched.
                 if any(ev.id == entity_id for ev in timeline_vm.all_events):
                     await on_event_selected(entity_id)
                     scale = window.timeline_widget
-                    # The descent may have re-opened the tape to «Все дни»:
-                    # the list repaints from the ViewModel before the
-                    # highlight — the same sample push every other mutation
-                    # path performs, otherwise the re-modelled card would
-                    # exist in the VM but not on the tape.
+                    # The window reset may have re-modelled the list to
+                    # «Все дни»: the list repaints from the ViewModel before
+                    # the highlight — the same sample push every other
+                    # mutation path performs, otherwise the re-modelled row
+                    # would exist in the VM but not on the panel.
                     scale.update_events(timeline_vm.events)
                     scale.set_selected(entity_id)
                     scale.scroll_to_event(entity_id)
@@ -614,8 +522,8 @@ class ApplicationWiring:
                         )
                     except Exception as exc:  # noqa: BLE001 — причину показывает модалка
                         # Откат уже выполнен сервисом; перегружаем ленту до
-                        # модалки (паттерн on_event_dates_moved), деталь не
-                        # обновляем — обновлённой версии нет.
+                        # модалки (тот же приём, что в других save-handler'ах),
+                        # деталь не обновляем — обновлённой версии нет.
                         await _reload_timeline()
                         QMessageBox.critical(
                             window, "Ошибка", f"Не удалось сохранить сущность: {exc}",

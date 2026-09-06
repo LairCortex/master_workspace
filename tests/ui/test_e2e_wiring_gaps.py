@@ -17,7 +17,6 @@ from app.application.services.event_service import EventService
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
-from app.presentation.views.timeline_rows import ScaleUnit
 
 from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
@@ -48,8 +47,8 @@ async def _open_entity_card(window, wait_for, entity_type: str, entity_id: int) 
 
 async def test_window_and_unknown_type_guards(app, wait_for):
     application, window = app
-    # A closed 1300 event: a window that does not cross it excludes it under
-    # the day-ladder overlap visibility (an open end would reach into 1400).
+    # A closed 1300 event: a window whose interval does not cross it excludes
+    # it (the flat window rule; an open end would reach into 1400).
     await helpers.create_event_via_ui(
         window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1),
         end_date=QDate(1300, 7, 1),
@@ -94,8 +93,8 @@ async def test_window_out_of_the_selected_event_clears_every_layer(app, wait_for
     detail panel holding an object the canvas had already forgotten.
     """
     application, window = app
-    # Closed event: the 1400 window excludes it (no overlap); an open end
-    # would cross the window and keep it visible (day-ladder semantics).
+    # Closed event: the 1400 window excludes it (no interval crossing); an
+    # open end would cross the window and keep it visible (flat window rule).
     await helpers.create_event_via_ui(
         window, wait_for, "Война", start_date=QDate(1300, 7, 1),
         end_date=QDate(1300, 7, 1),
@@ -214,16 +213,14 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     ))
 
 
-async def test_search_result_descends_ladder_past_an_excluding_window(
-    app, wait_for
-):
-    """Spec «Внешний выбор с крупной ступени спускает лестницу» through the
-    REAL search channel (regression: the wiring once gated on the windowed
-    slice, silently dropping results the active «Выбор даты» window excluded).
+async def test_search_result_resets_an_excluding_window(app, wait_for):
+    """Spec «Внешний выбор вне окна сбрасывает окно» through the REAL search
+    channel (regression: the wiring once gated on the windowed slice, silently
+    dropping results the active «Выбор даты» window excluded).
 
-    «Ранний» is cut out by a June-only window while the ladder stands on
-    «месяц»; its search result must still descend to сутки, reset the window
-    to «Все дни», repaint the tape and land the highlight on its card."""
+    «Ранний» is cut out by a June-only window; its search result must reset
+    the window to «Все дни», repaint the list and land the highlight on its
+    single row (there is no ladder left to descend — flat list, design D3)."""
     application, window = app
     widget = window.timeline_widget
     view = timeline_probe.tape(window)
@@ -238,28 +235,20 @@ async def test_search_result_descends_ladder_past_an_excluding_window(
     await helpers.wait_until_settled()
     early_id = helpers.find_event_id(window, "Ранний")
 
-    # The user drills the window onto June and zooms out to «месяц»: «Ранний»
-    # leaves both the window and the visible sample (but not the VM's sample).
+    # The user narrows the window onto June: «Ранний» leaves the visible
+    # sample (but not the VM's whole loaded sample).
     widget._on_window_range(datetime.date(1200, 6, 1), datetime.date(1200, 6, 30))
     await helpers.wait_until_settled()
     vm = application._wiring._timeline_vm
-    vm.level = __import__(
-        "app.presentation.views.timeline_rows", fromlist=["ScaleUnit"]
-    ).ScaleUnit.MONTH
-    widget.update_events(vm.events)
-    await helpers.wait_until_settled()
-    assert widget._vm.level.name == "MONTH"
     assert all(e.name != "Ранний" for e in view.events)  # excluded by the window
 
     # …and the search result for that very event must still reach it.
     window.search_bar.result_selected.emit("event", early_id)
     await helpers.wait_until_settled()
 
-    assert vm.level.name == "DAY"                      # ladder descended
     assert vm.window is None                           # «Все дни» reset
-    assert widget._vm.level.name == "DAY"                    # the tape followed
-    assert view.window == (None, None)
-    assert view.selected_id == early_id                # card highlighted
+    assert view.window == (None, None)                 # the list followed
+    assert view.selected_id == early_id                # row highlighted
     assert view.index_for_event(early_id) is not None  # …and pictured, visible
     assert vm.selected_event is not None and vm.selected_event.name == "Ранний"
 
@@ -543,128 +532,6 @@ async def test_create_related_without_service_is_noop(app, wait_for, menu_qmenu)
     assert query_db(db_path, "SELECT COUNT(*) FROM characters")[0][0] == 1
     section = card._related_sections["items"].list_widget
     assert section.count() == 0
-
-
-# ── the tape's write branches: a commit that fails, a payload that is not one ──
-
-async def test_date_move_failure_reports_once_even_when_the_rollback_fails(
-    app, wait_for, monkeypatch, message_boxes
-):
-    """on_event_dates_moved: the write fails, the rollback itself fails (the
-    inner guard swallows it), the tape reloads the stored dates and exactly one
-    modal error is shown."""
-    application, window = app
-    await helpers.create_event_via_ui(
-        window, wait_for, "Держись",
-        start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 2),
-    )
-    widget = window.timeline_widget
-    view = timeline_probe.tape(window)
-    await wait_for(lambda: len(view.events) == 1)
-    event_id = view.events[0].id
-
-    async def boom_update(*args, **kwargs):
-        raise RuntimeError("db write failed")
-
-    session = application._wiring._event_service._session
-    real_rollback = session.rollback
-    attempts: list[str] = []
-
-    async def flaky_rollback():
-        attempts.append("rollback")
-        if len(attempts) == 1:
-            raise RuntimeError("rollback itself failed")
-        await real_rollback()
-
-    monkeypatch.setattr(EventService, "update_event", boom_update)
-    monkeypatch.setattr(type(session), "rollback", lambda _s: flaky_rollback())
-
-    widget.event_dates_moved.emit(
-        event_id, datetime.date(1200, 4, 1), datetime.date(1200, 4, 2),
-    )
-    await wait_for(lambda: any(kind == "critical" for kind, _, _ in message_boxes))
-    await helpers.wait_until_settled()
-
-    assert attempts == ["rollback"]  # the swallowed failure happened once
-    assert [text for kind, _, text in message_boxes if kind == "critical"] == [
-        "Не удалось сохранить даты события: db write failed"
-    ]
-    # The reload after the failed write shows what is actually stored
-    await wait_for(lambda: view.events[0].start_date == datetime.date(1200, 3, 1))
-
-
-async def test_inline_create_without_a_day_or_a_name_creates_nothing(
-    app, wait_for, message_boxes
-):
-    """The widget normally filters these out; the wiring must agree with it and
-    treat a missing day or a blank draft as no create at all."""
-    application, window = app
-    db_path = application._db_path
-
-    window.timeline_widget.event_create_requested.emit(None, "Имя без дня")
-    window.timeline_widget.event_create_requested.emit(
-        datetime.date(1200, 3, 5), "   ",
-    )
-    await helpers.wait_until_settled()
-
-    assert query_db(db_path, "SELECT COUNT(*) FROM events")[0][0] == 0
-    assert message_boxes == []
-
-
-async def test_inline_create_failure_repaints_the_tape_and_reports_once(
-    app, wait_for, monkeypatch, message_boxes
-):
-    """create_event_at re-raises over its own rollback: the old tape stays
-    truthful and exactly one modal error names the failure."""
-    application, window = app
-    await helpers.create_event_via_ui(
-        window, wait_for, "Якорь",
-        start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 1),
-    )
-    view = timeline_probe.tape(window)
-    await wait_for(lambda: len(view.events) == 1)
-
-    async def boom_create(*args, **kwargs):
-        raise RuntimeError("db write failed")
-
-    monkeypatch.setattr(EventService, "create_event", boom_create)
-
-    window.timeline_widget.event_create_requested.emit(
-        datetime.date(1200, 3, 5), "Не создастся",
-    )
-    await wait_for(lambda: any(kind == "critical" for kind, _, _ in message_boxes))
-    await helpers.wait_until_settled()
-
-    assert [text for kind, _, text in message_boxes if kind == "critical"] == [
-        "Не удалось создать событие: db write failed"
-    ]
-    await wait_for(lambda: len(view.events) == 1)
-    assert [e.name for e in view.events] == ["Якорь"]
-
-
-async def test_inline_create_without_a_record_stops_before_the_panel(
-    app, wait_for, monkeypatch, message_boxes
-):
-    """No record came back (the ViewModel's own empty-name guard): no card is
-    selected, the detail panel stays empty and no error is shown."""
-    application, window = app
-    view = timeline_probe.tape(window)
-    seen: list[tuple] = []
-
-    async def no_record(day, name):
-        seen.append((day, name))
-        return None
-
-    monkeypatch.setattr(application._wiring._timeline_vm, "create_event_at", no_record)
-
-    window.timeline_widget.event_create_requested.emit(
-        datetime.date(1200, 3, 5), "Черновик",
-    )
-    await helpers.wait_until_settled()
-
-    assert seen == [(datetime.date(1200, 3, 5), "Черновик")]
-    assert message_boxes == []
-    assert view.selected_id is None
 
 
 async def test_sheet_list_refresh_skips_a_missing_or_dead_dialog(app, wait_for):

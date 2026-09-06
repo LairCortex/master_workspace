@@ -1,10 +1,10 @@
 """RED wiring tests for ``fix-silent-dialog-save-debt`` (spec save-error-reporting).
 
 The four dialog save paths — create event, edit event, update entity card,
-solo entity create from the «+» menu — must adopt the semantics the drag
-path (``on_event_dates_moved``) already honors: the service rolls back, the
-handler reloads what the success path would have shown, and the user sees
-exactly ONE ``QMessageBox.critical`` whose text carries the failure reason.
+solo entity create from the «+» menu — must honor the save-failure semantics:
+the service rolls back, the handler reloads what the success path would have
+shown, and the user sees exactly ONE ``QMessageBox.critical`` whose text
+carries the failure reason.
 
 The autouse ``message_boxes`` fixture (tests/ui/conftest.py) is the spy: it
 replaces the modal-spinning ``QMessageBox`` statics with record-and-dismiss

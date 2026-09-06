@@ -1,20 +1,22 @@
 """QML-addressing probe for the timeline island (Q2.5a task 6.3).
 
-The widgets list (``rows_view``) died with the Q2.5a port; every e2e address
-into the scale now goes through the island: rows/events/selection are read
-from the ViewModel (the single mutation point), tape geometry from the
+The widgets list (``rows_view``) died with the Q2.5a port and the ladder
+machinery (run/sticky/gap/jump/hide-empty, rungs, drag/wheel gestures) left
+with the flat-list rewrite (simplify-event-timeline-flat-list): every e2e
+address into the scale goes through the island — events/rows/selection read
+from the ViewModel (the single mutation point), flat-list geometry from the
 ``eventList`` ListView's visual tree (``walk_items`` — the same offscreen
-machinery the launcher island tests and ``qml_helpers`` established), and
+machinery the launcher island tests and ``qml_helpers`` established) — and
 interactions are real synthetic input on the ``QQuickWidget`` at the target
 item's scene position. Names mirror the retired view addresses one-for-one
-(``rows``, ``events``, ``index_for_event``, ``scroll_to_event``, ``set_knobs``,
+(``rows``, ``events``, ``index_for_event``, ``scroll_to_event``,
 ``selected_id``) so the ported e2e bodies keep their reading.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent, QWheelEvent
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -51,16 +53,6 @@ class Tape:
         if knob is None:
             return (None, None)
         return tuple(knob)
-
-    @property
-    def level(self):
-        """The ladder rung the tape renders (retired ``rows_view.level``)."""
-        return vm(self._window).level
-
-    @property
-    def hide_empty(self) -> bool:
-        """The «Скрыть даты без событий» knob (retired ``rows_view.hide_empty``)."""
-        return vm(self._window).hide_empty
 
     def index_for_event(self, event_id):
         return index_for_event(self._window, event_id)
@@ -133,18 +125,6 @@ def scroll_to_event(window, event_id) -> None:
     panel(window).scroll_to_event(event_id)
 
 
-def set_knobs(window, level=None, window_range=None, hide_empty=None) -> None:
-    """Move the VM knobs the app's own paths move them (old ``set_knobs``)."""
-    view_model = vm(window)
-    if level is not None:
-        view_model.level = level
-    if window_range is not None:
-        view_model.window = window_range
-    if hide_empty is not None:
-        view_model.hide_empty = hide_empty
-    panel(window)._sync_from_vm()
-
-
 def content_y(window) -> float:
     return float(event_list(window).property("contentY"))
 
@@ -157,13 +137,13 @@ def set_content_y(window, value: float) -> None:
 def row_delegate(window, idx: int):
     """The materialized delegate answering for row ``idx`` (``None`` = the
     recycling window does not carry it — reveal the row first).
+
+    The flat list knows exactly one row kind: the delegate's ``eventRow``
+    objectName contract (TimelineRowDelegate.qml), addressed by its delivered
+    ``index``.
     """
     for it in walk_items(root(window)):
-        if not it.objectName().endswith("Row"):
-            continue
-        if it.property("kind") is None:
-            continue
-        if it.property("index") == idx:
+        if it.objectName() == "eventRow" and it.property("index") == idx:
             return it
     return None
 
@@ -188,9 +168,9 @@ def scene_point(window, it, x: float | None = None, y_ratio: float = 0.5) -> QPo
 
 
 def row_center(window, idx: int) -> QPoint:
-    """Scene point on row ``idx`` in the text zone (the old ``row_center``:
-    right of the type dot, on the card proper — the MouseArea spans the row,
-    the inset just mirrors where a user aims).
+    """Scene point on row ``idx`` in the text zone: right of the type mark, on
+    the row proper — the MouseArea spans the whole row, the inset just mirrors
+    where a user aims.
     """
     delegate = row_delegate(window, idx)
     assert delegate is not None, f"row {idx} is not laid out"
@@ -214,13 +194,34 @@ def tooltip_of(window, object_name: str):
     return attached[0].property("tooltip") if attached else None
 
 
-def sticky_text(window) -> str:
-    return item(window, "stickyCurrentText").property("text")
+def tooltip_of_item(it):
+    """The ``Nri.tooltip`` text declared on an arbitrary item (row delegates
+    share the non-unique ``eventRow`` name, so ``tooltip_of`` cannot address
+    them; the attached :class:`NriAttached` still rides as the host's child)."""
+    from app.presentation.qml.tooltip_shim import NriAttached
+
+    attached = it.findChildren(NriAttached)
+    return attached[0].property("tooltip") if attached else None
+
+
+def move_over(window, pos: QPoint) -> None:
+    """A synthetic hover move at a scene point (the HoverHandler input)."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    target = quick(window)
+    QApplication.sendEvent(target, QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(pos), target.mapToGlobal(pos),
+        Qt.MouseButton.NoButton,
+        QApplication.instance().mouseButtons(),
+        Qt.KeyboardModifier.NoModifier,
+    ))
+    pump(2)
 
 
 def _send_mouse(window, kind, pos: QPoint, button, buttons) -> None:
-    """One explicit-button mouse event to the island (the wheel-notch style,
-    task 6.3). QTest's helpers consult the process-global button state, which
+    """One explicit-button mouse event to the island. QTest's helpers consult
+    the process-global button state, which
     long e2e runs can leave stale (a leaked down bit makes a right click read
     as left); spelling every event's ``buttons`` out pins the gesture.
     """
@@ -254,36 +255,6 @@ def click(window, pos: QPoint, *, button=Qt.MouseButton.LeftButton,
 def click_object(window, object_name: str, *, button=Qt.MouseButton.LeftButton) -> None:
     pump(3)
     click(window, scene_point(window, item(window, object_name)), button=button)
-
-
-def drag(window, start: QPoint, end: QPoint) -> None:
-    """Press, one dragged move past the arming threshold, release — the
-    MouseArea keeps the grab through the whole explicit-button sequence.
-    """
-    _send_mouse(window, QEvent.Type.MouseButtonPress, start,
-                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
-    pump(1)
-    _send_mouse(window, QEvent.Type.MouseMove, end,
-                Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton)
-    pump(1)
-    _send_mouse(window, QEvent.Type.MouseButtonRelease, end,
-                Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton)
-    pump(1)
-
-
-def wheel(window, pos: QPoint, dy: int,
-          modifiers=Qt.KeyboardModifier.NoModifier) -> None:
-    """One wheel notch over a scene position (the position anchors the Alt
-    gesture; the tape rows live under the wheel overlay).
-    """
-    QApplication.sendEvent(quick(window), QWheelEvent(
-        QPointF(pos), quick(window).mapToGlobal(pos),
-        QPoint(0, 0), QPoint(0, dy),
-        Qt.MouseButton.NoButton, modifiers,
-        Qt.ScrollPhase.NoScrollPhase, False,
-    ))
-
-    pump()
 
 
 def pump(ticks: int = 2) -> None:

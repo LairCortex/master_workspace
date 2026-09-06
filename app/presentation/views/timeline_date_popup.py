@@ -2,11 +2,14 @@
 
 Moved verbatim-mechanics from ``timeline_widget.py`` (change
 port-event-timeline-qml-island-q2-5a, task 3.2): the two-tap live-apply pick,
-the backwards-tap re-arm, «Сбросить», the current-window/gap pre-fill and the
+the backwards-tap re-arm, «Сбросить», the current-window pre-fill and the
 low-screen fallback are untouched. What moved is the ENTRY the popover hangs
 on: the day chip is QML now, so the panel's facade opens this popover from a
 GLOBAL RECTANGLE (the chip's, reported by the island — design D5
 «позиция от прямоугольника чипа») instead of from a native anchor widget.
+With the flat list (simplify-event-timeline-flat-list, task 3.4) the chip is
+the popover's ONLY opener: the collapsed-gap pre-fill entry died with the
+gaps, the picking mechanics did not.
 
 This stays the ONE documented widgets-popover exception (spec qml-shell
 «QML-каркас приложения»): a QML popover would be clipped by the low island's
@@ -120,9 +123,10 @@ class _DateWindowPopup(QWidget):
         QML chip reports its scene rect and the island's facade maps it (task
         3.2); the popover lands under its bottom-left, exactly where the old
         native-button anchor put it. ``current`` pre-fills the two calendars
-        (the active window on a chip click, the gap bounds on a collapsed-gap
-        click — task 7.1), without applying anything: only taps inside the
-        popover mutate the window. Month names are re-read on every open
+        with the ACTIVE window (the chip is the popover's only opener; the
+        flat list deleted the collapsed-gap pre-fill along with the gaps),
+        without applying anything: only taps inside the popover mutate the
+        window. Month names are re-read on every open
         (``refresh_month_names`` reads the process-global map), so a rename
         while the panel stood idle is visible without any wiring around it.
         """

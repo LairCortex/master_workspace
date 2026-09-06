@@ -63,13 +63,14 @@ def _rename_selected_type(dialog, name: str) -> None:
 
 
 def _type_dot_pixel(window, name: str):
-    """The pixel at the center of the type dot of ``name``'s EVENT card on
-    the QML island (probe 6.2/6.3: delegate address + island grab)."""
+    """The pixel at the center of the type mark of ``name``'s flat row on
+    the QML island (delegate address + island grab; the mark's objectName
+    contract lives in TimelineRowDelegate.qml)."""
     event_id = helpers.find_event_id(window, name)
     idx = timeline_probe.index_for_event(window, event_id)
     delegate = timeline_probe.reveal(window, idx)
     dot = next(c for c in delegate.childItems()
-               if c.objectName() == "eventTypeDot")
+               if c.objectName() == "eventTypeMark")
     image = timeline_probe.quick(window).grab().toImage()
     scale = image.width() / max(timeline_probe.quick(window).width(), 1)
     point = timeline_probe.scene_point(window, dot)
