@@ -169,6 +169,13 @@ def test_qmldir_declares_module_and_future_component_entries():
         for name in (
             "ThemeButton",
             "ThemeField",
+            "ThemeTextArea",
+            "MentionField",
+                "ThemeAiButton",
+                "RelatedSection",
+            "ThemeSwatch",
+            "ThemeDateField",
+            "ThemeRatingCard",
             "ThemeCheckBox",
             "ThemeComboBox",
             "TitleText",
@@ -272,11 +279,9 @@ Item {
 
     // aggregate + live-retheme probes (component properties, so the notify
     // of the component's own token bindings is what these re-evaluate on)
-    property bool allSkinned: btn.skinned && fld.skinned && chk.skinned
+    property bool allSkinned: btn.skinned && fld.skinned && area.skinned && mention.skinned && sw.skinned && chk.skinned
         && cbo.skinned && ttl.skinned && hnt.skinned && card.skinned && rw.skinned
-    // Off-skin escape detector: off-skin tests must prove NO single component
-    // stays skinned (the AND above cannot see one stubborn control).
-    property bool anySkinned: btn.skinned || fld.skinned || chk.skinned
+    property bool anySkinned: btn.skinned || fld.skinned || area.skinned || mention.skinned || sw.skinned || chk.skinned
         || cbo.skinned || ttl.skinned || hnt.skinned || card.skinned || rw.skinned
     property color btnAccent: btn.accentColor
     property color rowFill: rw.color
@@ -299,6 +304,15 @@ Item {
         onClicked: probe.buttonClicks += 1
     }
     ThemeField { id: fld; objectName: "probeField"; x: 10; y: 50; width: 180 }
+    ThemeTextArea { id: area; objectName: "probeTextArea"; x: 200; y: 50; width: 180; height: 40 }
+    MentionField { id: mention; x: 240; y: 175; width: 140; height: 40 }
+    ThemeAiButton { id: ai; objectName: "probeAiButton"; x: 420; y: 10; aiState: "active" }
+    RelatedSection {
+        id: related
+        objectName: "probeRelatedSection"
+        x: 420; y: 50; width: 260; height: 180
+    }
+    ThemeSwatch { id: sw; objectName: "probeSwatch"; x: 390; y: 50; colorIndex: 1 }
     ThemeCheckBox { id: chk; objectName: "probeCheck"; text: "Chk"; x: 10; y: 95 }
     ThemeComboBox { id: cbo; objectName: "probeCombo"; model: ["a", "b"]; x: 10; y: 130 }
     TitleText { id: ttl; objectName: "probeTitle"; text: "Title"; x: 10; y: 175 }
@@ -330,6 +344,11 @@ Item {
 PROBE_OBJECT_NAMES = (
     "probeButton",
     "probeField",
+    "probeTextArea",
+    "mentionField",
+    "probeAiButton",
+    "probeRelatedSection",
+    "probeSwatch",
     "probeCheck",
     "probeCombo",
     "probeTitle",
@@ -519,6 +538,11 @@ GALLERY_OBJECT_NAMES = (
     "galleryButtonAccent",
     "galleryButtonPlain",
     "galleryField",
+    "galleryTextArea",
+    "galleryMentionField",
+    "galleryAiButton",
+    "galleryRelatedSection",
+    "gallerySwatch",
     "galleryCheckBox",
     "galleryCombo",
     "galleryTitle",
@@ -674,8 +698,10 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
     assert widget.errors() == []
 
     button = _find_item(widget, "galleryButtonAccent")
+    ai_button = _find_item(widget, "galleryAiButton")
     plain = _find_item(widget, "galleryButtonPlain")
     field = _find_item(widget, "galleryField")
+    textarea = _find_item(widget, "galleryTextArea")
     checkbox = _find_item(widget, "galleryCheckBox")
     combo = _find_item(widget, "galleryCombo")
     title = _find_item(widget, "galleryTitle")
@@ -692,11 +718,14 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
     # border token, its padding band the canvas token (surround is the danger
     # token, so an unpainted border could not fake the edge pixel).
     assert _item_pixel(widget, img, button, 4, button.height() / 2) == accent_rgb
+    assert _item_pixel(widget, img, ai_button, 4, ai_button.height() / 2) == accent_rgb
     assert _item_pixel(widget, img, plain, 4, plain.height() / 2) == canvas_rgb
     assert _item_pixel(widget, img, plain, 0, plain.height() / 2) == border_rgb
     # Field background + idle border.
     assert _item_pixel(widget, img, field, field.width() - 10, field.height() / 2) == canvas_rgb
     assert _item_pixel(widget, img, field, 0, field.height() / 2) == border_rgb
+    assert _item_pixel(widget, img, textarea, textarea.width() - 10, textarea.height() / 2) == canvas_rgb
+    assert _item_pixel(widget, img, textarea, 0, textarea.height() / 2) == border_rgb
     # Checkbox (unchecked): indicator is the canvas token, label the fg token.
     box = checkbox.property("indicator")
     assert box is not None

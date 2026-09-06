@@ -28,7 +28,7 @@ from typing import Protocol, Sequence
 
 from app.presentation.utils.date_utils import format_game_date, month_name
 
-#: Inclusive calendar bounds of ``CustomDateEdit`` (W5 D2/D7). A drop target
+#: Inclusive calendar bounds of the native date popup (W5 D2/D7). A drop target
 #: never leaves this interval — the gesture cannot mint a date the card
 #: cannot display.
 CALENDAR_MIN = date(100, 1, 1)

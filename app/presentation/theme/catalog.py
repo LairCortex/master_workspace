@@ -65,7 +65,7 @@ def attach_theme(
     item background brushes, inline HTML in a rich-text document) that must
     repaint itself. It is the root-level sugar over
     ``ThemeRuntime.add_listener``, which is what a content widget that is not a
-    chrome root (e.g. ``MentionTextEdit``) calls directly. Held weakly by the
+    chrome root calls directly. Held weakly by the
     runtime, so a closed dialog never keeps the subscription.
     """
     from app.presentation.theme import get_default_theme

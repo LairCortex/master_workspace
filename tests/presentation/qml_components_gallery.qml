@@ -27,7 +27,7 @@ Item {
     id: gallery
     objectName: "componentsGallery"
     implicitWidth: 420
-    implicitHeight: 330
+    implicitHeight: 520
 
     // Guarded bridge lookup (the components all repeat this; the page uses
     // the same insurance, so the whole gallery degrades together).
@@ -43,8 +43,8 @@ Item {
 
     // Aggregate skin flag: every themed component answers with its own
     // `skinned` (off-skin flips this to false without any exception).
-    readonly property bool allSkinned: btnAccent.skinned && btnPlain.skinned
-        && fld.skinned && chk.skinned && cbo.skinned && ttl.skinned && hnt.skinned
+    readonly property bool allSkinned: btnAccent.skinned && btnPlain.skinned && ai.skinned
+        && fld.skinned && area.skinned && mention.skinned && sw.skinned && chk.skinned && cbo.skinned && ttl.skinned && hnt.skinned
         && card.skinned && rw.skinned
 
     // Off-skin escape detector: the AND above alone would let a SINGLE
@@ -52,8 +52,8 @@ Item {
     // off-skin run unnoticed — the OR aggregate pins the per-component
     // contract "no component considers itself skinned without the bridge"
     // (spec «Поведение компонентов вне валидной темы»).
-    readonly property bool anySkinned: btnAccent.skinned || btnPlain.skinned
-        || fld.skinned || chk.skinned || cbo.skinned || ttl.skinned || hnt.skinned
+    readonly property bool anySkinned: btnAccent.skinned || btnPlain.skinned || ai.skinned
+        || fld.skinned || area.skinned || mention.skinned || sw.skinned || chk.skinned || cbo.skinned || ttl.skinned || hnt.skinned
         || card.skinned || rw.skinned
 
     // Page surface — color.danger (see header). Declared first so every
@@ -81,6 +81,18 @@ Item {
         id: fld
         objectName: "galleryField"
         x: 10; y: 60; width: 200; height: 32
+    }
+    ThemeTextArea {
+        id: area
+        objectName: "galleryTextArea"
+        x: 220; y: 60; width: 170; height: 32
+        readOnly: true
+    }
+    ThemeSwatch {
+        id: sw
+        objectName: "gallerySwatch"
+        x: 380; y: 10
+        colorIndex: 1
     }
     ThemeCheckBox {
         id: chk
@@ -134,5 +146,21 @@ Item {
         // text check (task 4.2) scans these rows too.
         model: ["MMM", "WWW"]
         delegate: cbo.delegate
+    }
+    MentionField {
+        id: mention
+        objectName: "galleryMentionField"
+        x: 240; y: 288; width: 150; height: 32
+    }
+    ThemeAiButton {
+        id: ai
+        objectName: "galleryAiButton"
+        x: 290; y: 10; width: 36; height: 36
+        aiState: "active"
+    }
+    RelatedSection {
+        id: related
+        objectName: "galleryRelatedSection"
+        x: 10; y: 340; width: 380; height: 160
     }
 }

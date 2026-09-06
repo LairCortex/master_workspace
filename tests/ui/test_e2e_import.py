@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QPushButton
-
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
 
+from tests.presentation.qml_helpers import click_item, find_item
 from tests.ui import timeline_probe
 
 FIXTURE_XLSX = Path(__file__).resolve().parent.parent / "fixtures" / "import_sample.xlsx"
@@ -21,8 +20,7 @@ async def test_xlsx_import_events_to_timeline(app, file_dialogs, wait_for):
     dialog = window.findChildren(XlsxImportDialog)[0]
 
     # "Обзор…" → stubbed getOpenFileName returns the fixture path
-    browse = next(b for b in dialog.findChildren(QPushButton) if "Обзор" in b.text())
-    browse.click()
+    click_item(dialog.quick, find_item(dialog.quick, "browseButton"))
     assert dialog.path_edit.text() == str(FIXTURE_XLSX)
 
     dialog.import_btn.click()
@@ -36,11 +34,11 @@ async def test_xlsx_import_events_to_timeline(app, file_dialogs, wait_for):
 
     # Imported records are found by search (results list)
     bar = window.search_bar
-    bar.search_input.setText("караван")
-    bar.search_button.click()
+    find_item(bar.quick, "searchInput").setProperty("text", "караван")
+    click_item(bar.quick, find_item(bar.quick, "searchButton"))
     await wait_for(lambda: any(
-        "Поход каравана на восток" in bar.results_list.item(i).text()
-        for i in range(bar.results_list.count())
+        "Поход каравана на восток" in row["text"]
+        for row in bar._vm.rows
     ))
 
 
@@ -62,8 +60,7 @@ async def test_xlsx_import_partial_errors_in_message(app, file_dialogs, wait_for
     window.import_events_action.trigger()
     await wait_for(lambda: bool(window.findChildren(XlsxImportDialog)))
     dialog = window.findChildren(XlsxImportDialog)[0]
-    browse = next(b for b in dialog.findChildren(QPushButton) if "Обзор" in b.text())
-    browse.click()
+    click_item(dialog.quick, find_item(dialog.quick, "browseButton"))
     dialog.import_btn.click()
 
     await wait_for(lambda: any(
@@ -94,8 +91,7 @@ async def test_xlsx_import_missing_file_shows_critical(app, file_dialogs, wait_f
     window.import_events_action.trigger()
     await wait_for(lambda: bool(window.findChildren(XlsxImportDialog)))
     dialog = window.findChildren(XlsxImportDialog)[0]
-    browse = next(b for b in dialog.findChildren(QPushButton) if "Обзор" in b.text())
-    browse.click()
+    click_item(dialog.quick, find_item(dialog.quick, "browseButton"))
     dialog.import_btn.click()
 
     await wait_for(lambda: any(

@@ -13,7 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QDialog
 
 from app.application.services.xlsx_import_service import XlsxImportService
@@ -120,21 +119,13 @@ def test_import_game_errors(tmp_path):
 
 # ── search bar: empty results with a short query ──────────────────────────
 
-class _StubSearchVm(QObject):
-    results_changed = Signal()
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.results: dict = {}
-
-
 def test_search_bar_hides_empty_short_query(qapp):
-    from app.presentation.views.search_bar import SearchBar
+    from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 
-    bar = SearchBar(_StubSearchVm())
-    bar.search_input.clear()
-    bar._show_results()  # zero results and query shorter than 2 chars
-    assert not bar.results_list.isVisible()
+    vm = SearchViewModel(None)
+    vm.setQuery("x")
+    assert vm.rows == []
+    assert vm.listVisible is False
 
 
 # ── main window path helpers: dev + frozen ────────────────────────────────

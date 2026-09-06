@@ -7,6 +7,7 @@ from typing import Any, List, Sequence
 from sqlalchemy import select
 
 from app.application.services.entity_service import EntityService
+from app.application.services.mention_rewrite import rewrite_mentions
 from app.infrastructure.db.models import EventModel
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
@@ -220,6 +221,8 @@ class EventService:
         the feature leave the sentinel and keep the current one.
         """
         try:
+            current = await self.get_event(event_id)
+            old_name = current.name if current else None
             fields: dict[str, Any] = {
                 "name": name, "start_date": start_date, "end_date": end_date,
             }
@@ -247,6 +250,8 @@ class EventService:
                 relations.get("items", []),
                 relations.get("locations", []),
             )
+            if name != old_name:
+                await rewrite_mentions(self._session, "event", event_id, name)
             await self._session.commit()
             return updated_event
         except Exception:

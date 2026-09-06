@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Диалог события на QML-острове (R6; change `port-event-dialog-qml-r6`)
+
+#### Новый функционал
+- **`EventDialog` перенесён на QML-остров:** два `MentionField`, библиотечные `RelatedSection` и `ThemeAiButton`, даты и тип события работают через тонкую sync-VM и прокси
+- **Сохранение завершается через `finish_saving`:** успех закрывает диалог, ошибка оставляет введённые данные и не создаёт вторую модалку
+- **Связанные сущности выбираются нативным multi-select диалогом;** пустой набор кандидатов не открывает окно
+
+#### Далее
+- Следующий change в цепочке R — `port-entity-card-qml-r7`
+
+### Поле упоминаний для QML-островов (R5; change `add-qml-mention-field-r5`)
+
+#### Новый функционал
+- **`MentionField` добавлен в `nri.components`:** storage `@[Имя](тип:id)` сохраняется, видимый слой показывает атомарные кликабельные чипы
+- **Нативный попавер завершения общий** для widgets-редактора и QML-моста; поиск, клавиатура, вставка и IME остаются на тонком Python-хосте
+- **Live-retheme меняет только overlay:** storage и modified-состояние документа не мутируют
+
+#### Далее
+- Следующий change в цепочке R — `port-event-dialog-qml-r6`
+
+### Главные панели на QML-островах (R4; change `port-main-panels-qml-r4`)
+
+#### Новый функционал
+- **Поиск остаётся над splitter**, а детали и сводка мира — в прежних слотах splitter
+- **`ThemeDateField` и `ThemeRatingCard`** добавлены в `nri.components`
+- **Сводка мира** получает плоскую Python-модель и использует нативные date/tooltip-мосты
+
+#### Далее
+- Следующий change в цепочке R — `harden-mention-domain-r2`
+
+### Диалоги LLM и типов событий на QML-острова (R3 пачка 2; change `port-llm-event-types-qml-r3`)
+
+#### Новый функционал
+- **Настройка LLM и типы событий** — QML-острова в прежних `QDialog`-фасадах; async HTTP/service остаются на Python-стороне
+- **`ThemeField` password/echo и `ThemeSwatch`** — библиотечные контролы с пиксельной приёмкой
+- **Типы событий остаются write-through:** add/rename/recolor/move/remove применяются сразу, без Save/confirm
+
+### Четыре тонких диалога на QML-острова (R3 пачка 1; change `port-thin-dialogs-qml-r3`)
+
+#### Новый функционал
+- **Month settings, xlsx import, image viewer, doc-viewer** — QML-острова в прежних `QDialog`-обёртках; `ThemeTextArea` в `nri.components`; in-memory `image://dialog/<key>`
+- **Doc viewer** вынесен в `views/doc_viewer_dialog.py`, реэкспорт `_DocViewerDialog` из `main_window`
+
+#### Тесты
+- Пиксель `ThemeTextArea`; objectName-острова; semantic-тесты четырёх диалогов на QML-адресации
+
 ### Стабилизация жизненного цикла QML-островов в тестах (R1; change `stabilize-qml-island-test-lifetimes-r1`; **эпик R открыт**; врата островных тестов закрыты этим срезом: детерминированный порядок разрушения islands → engine → theme, DPR=1, guard; версии не трогаем — только test-only `reset_qml_shell`, pin DPI в `tests/conftest.py` и тесты изоляции; прод-поведение и контракт «движок один на приложение» не менялись; откат = revert commit)
 
 #### Исправлено

@@ -4,13 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QDate
-from PySide6.QtWidgets import QLineEdit, QPushButton
-
 from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.views.timeline_rows import (
     DayHeaderRow, header_caption,
 )
 
+from tests.presentation.qml_helpers import click_item, find_item
 from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
@@ -46,12 +45,10 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     window.month_settings_action.trigger()
     await wait_for(lambda: bool(window.findChildren(MonthSettingsDialog)))
     dialog = window.findChildren(MonthSettingsDialog)[0]
-    may_input = next(
-        inp for inp in dialog.findChildren(QLineEdit) if inp.placeholderText() == "Май"
-    )
-    may_input.setText(CUSTOM_MAY)
-    save_btn = next(b for b in dialog.findChildren(QPushButton) if b.text() == "Сохранить")
-    save_btn.click()
+    may_input = find_item(dialog.quick, "monthField5")
+    may_input.setProperty("text", CUSTOM_MAY)
+    save_btn = find_item(dialog.quick, "saveButton")
+    click_item(dialog.quick, save_btn)
     await helpers.wait_until_settled()  # the settings-save task owns the session
 
     # The tape re-reads the live month map: headers answer with the custom name.
@@ -68,12 +65,9 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
         lambda: any(d.isVisible() for d in window.findChildren(MonthSettingsDialog))
     )
     dialog2 = next(d for d in window.findChildren(MonthSettingsDialog) if d.isVisible())
-    may_input2 = next(
-        inp for inp in dialog2.findChildren(QLineEdit) if inp.placeholderText() == "Май"
-    )
-    may_input2.setText(f"{CUSTOM_MAY}-2")
-    save_btn2 = next(b for b in dialog2.findChildren(QPushButton) if b.text() == "Сохранить")
-    save_btn2.click()
+    may_input2 = find_item(dialog2.quick, "monthField5")
+    may_input2.setProperty("text", f"{CUSTOM_MAY}-2")
+    click_item(dialog2.quick, find_item(dialog2.quick, "saveButton"))
     await helpers.wait_until_settled()  # do not race the save task with shutdown
     await wait_for(lambda: f"01 {CUSTOM_MAY}-2 1200" in _header_captions(canvas))
     row2 = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")

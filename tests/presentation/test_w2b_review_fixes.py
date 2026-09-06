@@ -16,6 +16,8 @@ from PySide6.QtGui import QColor
 from app.infrastructure.ui_prefs.config import UiPrefs, UiPrefsManager
 from app.presentation.theme.compiler import tokens_file_path
 from app.presentation.theme.runtime import ThemeRuntime
+from app.presentation.viewmodels.search_viewmodel import SearchViewModel
+from tests.presentation.qml_helpers import find_item
 
 
 def _runtime(tmp_path, theme="dark", **token_overrides):
@@ -37,7 +39,7 @@ def _entity(i=1, rating=5):
     )
 
 
-# ── detail_panel: clear() must not keep dead item bookkeeping ──────────────
+# ── detail_panel: clear() empties the stable QML list models ───────────────
 
 class TestDetailPanelClearPrunes:
     def _panel(self, tmp_path, qtbot):
@@ -52,19 +54,15 @@ class TestDetailPanelClearPrunes:
         panel.show_event(event)
         return panel
 
-    def test_fill_tracks_live_item_widgets(self, tmp_path, qtbot):
+    def test_fill_populates_stable_models(self, tmp_path, qtbot):
         panel = self._panel(tmp_path, qtbot)
-        assert len(panel._item_widgets) == 2
+        assert [model.rowCount() for model in panel.vm.models] == [1, 1, 0, 0]
 
-    def test_clear_prunes_immediately(self, tmp_path, qtbot, qapp):
+    def test_clear_empties_models_immediately(self, tmp_path, qtbot, qapp):
         panel = self._panel(tmp_path, qtbot)
         panel.clear()
         qapp.processEvents()
-        from PySide6.QtCore import QEvent
-        qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        qapp.processEvents()
-        panel._prune_item_widgets()
-        assert panel._item_widgets == []
+        assert [model.rowCount() for model in panel.vm.models] == [0, 0, 0, 0]
 
     def test_toggle_after_clear_survives(self, tmp_path, qtbot, qapp):
         """The crash-shaped case: theme switch on a cleared panel must be a
@@ -87,7 +85,6 @@ class TestDetailPanelClearPrunes:
 
 class TestSnapshotRatingLiveRetheme:
     def test_node_background_moves_with_token(self, tmp_path, qtbot):
-        from PySide6.QtCore import Qt
         from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
         runtime = _runtime(
             tmp_path,
@@ -102,25 +99,33 @@ class TestSnapshotRatingLiveRetheme:
         )
         widget.populate([event], datetime.date(2020, 1, 1))
 
-        def entity_brush():
-            tree = widget.tree
-            for i in range(tree.topLevelItemCount()):
-                section = tree.topLevelItem(i)
-                for j in range(section.childCount()):
-                    child = section.child(j)
-                    data = child.data(0, Qt.ItemDataRole.UserRole)
-                    if data and data[0] == "character":  # event nodes carry no tint
-                        return child.background(0)
-            raise AssertionError("entity node missing")
+        roles = {
+            name.decode(): role
+            for role, name in widget.vm.rowModel.roleNames().items()
+        }
+
+        def entity_color():
+            for index in range(widget.vm.rowModel.rowCount()):
+                model_index = widget.vm.rowModel.index(index, 0)
+                if (
+                    widget.vm.rowModel.data(model_index, roles["rowKind"])
+                    == "entityRow"
+                    and widget.vm.rowModel.data(model_index, roles["type"])
+                    == "character"
+                ):
+                    return QColor(
+                        widget.vm.rowModel.data(model_index, roles["ratingHex"])
+                    )
+            raise AssertionError("entity row missing")
 
         dark = QColor(runtime.tokens["color.rating.high"]["dark"])
         dark.setAlpha(220)
-        assert entity_brush().color().getRgb() == dark.getRgb()
+        assert entity_color().getRgb() == dark.getRgb()
 
         assert runtime.toggle() is True
         light = QColor("#ff0000")
         light.setAlpha(220)
-        assert entity_brush().color().getRgb() == light.getRgb()
+        assert entity_color().getRgb() == light.getRgb()
 
     def test_populate_resets_tracking(self, tmp_path, qtbot):
         from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
@@ -132,9 +137,9 @@ class TestSnapshotRatingLiveRetheme:
             characters=[_entity()], organizations=[], items=[], locations=[],
         )
         widget.populate([event], datetime.date(2020, 1, 1))
-        assert widget._rated_nodes
+        assert widget.vm.rowModel.rowCount()
         widget._on_clear()
-        assert widget._rated_nodes == []
+        assert widget.vm.rowModel.rowCount() == 0
         assert runtime.toggle() is True  # no stale nodes to touch
 
 
@@ -142,61 +147,46 @@ class TestSnapshotRatingLiveRetheme:
 
 class TestSearchHeaderLiveRetheme:
     def test_header_recolors_after_toggle(self, tmp_path, qtbot):
-        from app.presentation.views.search_bar import SearchBar, _HEADER_DATA_ROLE
+        from app.presentation.views.search_bar import SearchBar
         runtime = _runtime(
             tmp_path,
             **{"color.border": {"light": "#101010", "dark": "#efefef"}},
         )
-        class _Sig:
-            def connect(self, _cb):  # SearchBar only connects
-                pass
-
-        vm = SimpleNamespace(results={}, results_changed=_Sig())
+        vm = SearchViewModel(None)
         bar = SearchBar(vm, theme=runtime)
         qtbot.addWidget(bar)
         vm.results = {"characters": [_entity(3)]}
-        bar._show_results()
-        header = next(
-            bar.results_list.item(i)
-            for i in range(bar.results_list.count())
-            if bar.results_list.item(i).data(_HEADER_DATA_ROLE)
-        )
-        before = QColor(header.background().color())
+        vm.setQuery("E3")
+        vm._publish_results()
+        header = find_item(bar.quick, "searchSectionHeader")
+        before = QColor(header.property("color"))
         assert before == QColor("#efefef")
         assert runtime.toggle() is True
-        assert QColor(header.background().color()) == QColor("#101010")
+        assert QColor(header.property("color")) == QColor("#101010")
 
     def test_unparsable_border_token_paints_nothing(self, tmp_path, qtbot):
         """A border token Qt cannot parse leaves the header uncoloured —
         ``QColor`` would hand back an invalid (black-rendering) color, and an
         invented black is exactly what D7 forbids."""
-        from PySide6.QtCore import Qt
-        from app.presentation.views.search_bar import SearchBar, _HEADER_DATA_ROLE
+        from app.presentation.views.search_bar import SearchBar
 
         runtime = _runtime(
             tmp_path,
             **{"color.border": {"light": "#101010", "dark": "не-цвет"}},
         )
 
-        class _Sig:
-            def connect(self, _cb):  # SearchBar only connects
-                pass
-
-        vm = SimpleNamespace(results={}, results_changed=_Sig())
+        vm = SearchViewModel(None)
         bar = SearchBar(vm, theme=runtime)
         qtbot.addWidget(bar)
         vm.results = {"characters": [_entity(3)]}
-        bar._show_results()
-        header = next(
-            bar.results_list.item(i)
-            for i in range(bar.results_list.count())
-            if bar.results_list.item(i).data(_HEADER_DATA_ROLE)
-        )
-        assert header.background().style() == Qt.BrushStyle.NoBrush
+        vm.setQuery("E3")
+        vm._publish_results()
+        header = find_item(bar.quick, "searchSectionHeader")
+        assert not QColor(header.property("color")).isValid()
         # The load-time contract still holds: the other theme's valid value
         # colors the header again after a live switch.
         assert runtime.toggle() is True
-        assert QColor(header.background().color()) == QColor("#101010")
+        assert QColor(header.property("color")) == QColor("#101010")
 
 
 # ── attach_theme(on_retheme=…): the screens' content re-render is wired ─────
@@ -213,94 +203,28 @@ class TestOnRethemeIsWired:
 
         runtime = _runtime(tmp_path)
 
-        class _Sig:
-            def connect(self, _cb):  # SearchBar only connects
-                pass
-
         panel = DetailPanel(SimpleNamespace(), theme=runtime)
-        bar = SearchBar(SimpleNamespace(results={}, results_changed=_Sig()), theme=runtime)
+        bar = SearchBar(SearchViewModel(None), theme=runtime)
         snapshot = WorldSnapshotWidget(theme=runtime)
         qtbot.addWidget(panel)
         qtbot.addWidget(bar)
         qtbot.addWidget(snapshot)
 
         callbacks = {
-            panel._on_theme_changed,
-            bar._retheme_headers,
-            snapshot._on_theme_changed,
+            panel.vm.retheme,
+            snapshot.vm._on_theme_changed,
         }
         assert callbacks <= set(runtime.subscribers)
-
-
-# ── mention editor: live re-tint keeps the undo history ────────────────────
-
-class TestMentionRetintUndo:
-    def test_undo_history_survives_theme_switch(self, qtbot, tmp_path):
-        from app.presentation.views.mention_text_edit import MentionTextEdit
-        runtime = _runtime(
-            tmp_path,
-            **{"color.accent": {"light": "#11eeaa", "dark": "#aa11ee"}},
-        )
-        edit = MentionTextEdit(theme=runtime)
-        qtbot.addWidget(edit)
-        edit.setContent("Текст с @[Артас](character:42) внутри")
-        assert not edit.document().isUndoAvailable()  # fresh document
-
-        assert runtime.toggle() is True
-        # The new accent reached the document…
-        assert "color:#11eeaa" in edit.toHtml()
-        # …and the switch itself was the only (undoable) document mutation:
-        # a full setHtml rebuild would have left no history at all, while the
-        # content edit *before* the switch is still revertible together with it.
-        assert edit.document().isUndoAvailable()
-        edit.document().undo()
-        text = edit.getContent()
-        assert "Текст с @[Артас](character:42) внутри" in text
-
-    def test_theme_switch_does_not_dirty_the_document(self, qtbot, tmp_path):
-        """A repaint is not user content: switching the theme must not make an
-        open entity card "dirty" (closing it would warn about colors nobody
-        typed), and it must not clear dirt the user really made either."""
-        from app.presentation.views.mention_text_edit import MentionTextEdit
-        runtime = _runtime(
-            tmp_path,
-            **{"color.accent": {"light": "#11eeaa", "dark": "#aa11ee"}},
-        )
-        edit = MentionTextEdit(theme=runtime)
-        qtbot.addWidget(edit)
-        edit.setContent("Текст с @[Артас](character:42) внутри")
-        assert not edit.document().isModified()
-
-        assert runtime.toggle() is True
-        assert "color:#11eeaa" in edit.toHtml()  # the repaint did happen
-        assert not edit.document().isModified()
-
-        edit.insertPlainText(" ещё")
-        assert edit.document().isModified()
-        assert runtime.toggle() is True
-        assert edit.document().isModified()  # a real edit stays dirty
-
-    def test_off_skin_switch_touches_nothing(self, tmp_path, qtbot):
-        """No tokens → no invented colors, and the toggle stays silent (D7)."""
-        from app.presentation.views.mention_text_edit import MentionTextEdit
-        tokens_path = tmp_path / "tokens.json"
-        tokens_path.write_text("{ broken", encoding="utf-8")
-        runtime = ThemeRuntime(
-            prefs=UiPrefsManager(tmp_path / "ui.json"), tokens_path=tokens_path
-        )
-        edit = MentionTextEdit(theme=runtime)
-        qtbot.addWidget(edit)
-        edit.setContent("@[A](character:1)")
-        assert "color:#aa11ee" not in edit.toHtml()
-        assert runtime.toggle() is False  # invalid tokens: no-op (W1 D7)
+        assert bar._palette._runtime is runtime
 
 
 # ── doc viewer: chrome-attached mono comes from the QSS rule, not setFont ──
 
 class TestDocViewerMonoLive:
     def test_attached_mono_follows_token(self, tmp_path, qtbot):
-        from PySide6.QtWidgets import QPlainTextEdit
         from app.presentation.views.main_window import _DocViewerDialog
+        from tests.presentation.qml_helpers import find_item
+
         runtime = _runtime(
             tmp_path,
             **{"font.family.mono": {
@@ -309,10 +233,13 @@ class TestDocViewerMonoLive:
         )
         dlg = _DocViewerDialog("t", tmp_path / "missing.md", theme=runtime)
         qtbot.addWidget(dlg)
-        edit = dlg.findChild(QPlainTextEdit)
         dlg.show()
         qtbot.waitExposed(dlg)
-        assert "Menlo" in edit.font().families()
+        area = find_item(dlg.quick, "docText")
+        assert "Menlo" in area.property("font").family()
         assert runtime.toggle() is True
-        # Live: the current theme's family is in effect at the next polish.
-        assert "Monaco" in edit.font().families()
+
+        def monaco() -> bool:
+            return "Monaco" in find_item(dlg.quick, "docText").property("font").family()
+
+        qtbot.waitUntil(monaco, timeout=5000)

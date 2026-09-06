@@ -61,42 +61,25 @@ class _DeadNode:
         raise RuntimeError("wrapped C++ object has been deleted")
 
 
-# ── ai_assist_button: _rgba pass-through (line 37) ─────────────────────────
-
-def test_unparsable_token_value_is_passed_through_verbatim():
-    from app.presentation.views.ai_assist_button import _rgba
-
-    assert _rgba("bogus-color", 0.5) == "bogus-color"
-
-
-# ── detail_panel: rating tint + off-skin paint + dead-wrapper loop ─────────
+# ── detail_panel: neutral tint + off-skin list-model rows ──────────────────
 
 def test_rating_tint_is_transparent_with_invalid_endpoints():
-    from app.presentation.views.detail_panel import rating_to_color
+    from app.presentation.theme.rating import rating_to_color
 
     assert rating_to_color(10, _BrokenRatingRuntime()).alpha() == 0
 
 
-def test_offskin_entity_item_paints_no_tint(qtbot):
-    from app.presentation.views.detail_panel import _EntityItemWidget
+def test_offskin_detail_row_has_transparent_tint():
+    from types import SimpleNamespace
+    from app.presentation.viewmodels.detail_panel_view_model import DetailRowsModel
 
-    widget = _EntityItemWidget("Имя", "краткое описание", rating=1, runtime=None)
-    qtbot.addWidget(widget)
-    widget.resize(220, 60)
-    assert widget._bg_color.alpha() == 0  # D7: no invented color off-skin
-    widget.grab()  # paintEvent must take the alpha==0 early return
-
-
-def test_detail_panel_retheme_loop_drops_dead_wrappers(qtbot):
-    from app.presentation.views.detail_panel import DetailPanel
-
-    panel = DetailPanel(detail_vm=MagicMock(), theme=None)
-    qtbot.addWidget(panel)
-    survivor = MagicMock()
-    dead = _DeadWrapper()
-    panel._item_widgets = [survivor, dead]
-    panel._on_theme_changed()
-    assert panel._item_widgets == [survivor]  # dead wrapper pruned, loop done
+    model = DetailRowsModel(runtime=None)
+    model.set_entities(
+        [SimpleNamespace(id=1, name="Имя", rating=1, description=None)],
+        "organization",
+    )
+    tint = model.data(model.index(0, 0), DetailRowsModel.RatingTintRole)
+    assert tint == "#00000000"
 
 
 # ── image_viewer_dialog: themed attach (lines 87–88) ───────────────────────
@@ -108,58 +91,32 @@ def test_image_viewer_with_theme_attaches_the_chrome_sheet(qtbot, runtime):
 
     dlg = ImageViewerDialog(QPixmap(10, 10), theme=runtime)
     qtbot.addWidget(dlg)
-    assert 'uiRole="chrome"' in dlg.chrome.styleSheet()
+    assert dlg.quick.rootContext().contextProperty("imageViewerVm") is dlg.vm
 
 
-# ── main_window: doc viewer with no usable theme (lines 92–93) ─────────────
+# ── doc viewer with no usable theme ───────────────────────────────────────
 
 def test_doc_viewer_survives_broken_default_theme(qtbot, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QPlainTextEdit
-
-    from app.presentation.views import main_window as main_window_module
-    from app.presentation.views.main_window import _DocViewerDialog
+    from app.presentation.views.doc_viewer_dialog import DocViewerDialog
+    import app.presentation.views.doc_viewer_dialog as doc_mod
 
     def boom():
         raise RuntimeError("no usable theme in this test")
 
-    monkeypatch.setattr(main_window_module, "get_default_theme", boom)
+    monkeypatch.setattr(doc_mod, "get_default_theme", boom)
     doc = tmp_path / "doc.md"
     doc.write_text("текст документа", encoding="utf-8")
-    dlg = _DocViewerDialog("Doc", doc, theme=None)
+    dlg = DocViewerDialog("Doc", doc, theme=None)
     qtbot.addWidget(dlg)
-    edit = dlg.findChild(QPlainTextEdit)
-    assert edit.toPlainText() == "текст документа"
+    assert dlg.vm.text == "текст документа"
 
 
-# ── mention_text_edit: refresh_content guards (lines 229, 232) ─────────────
+# ── world_snapshot_widget: off-skin retheme remains transparent ─────────────
 
-def test_refresh_content_offskin_is_noop(qtbot):
-    from app.presentation.views.mention_text_edit import MentionTextEdit
-
-    edit = MentionTextEdit()
-    qtbot.addWidget(edit)
-    edit.setContent("@Имя и текст")
-    edit.refresh_content()  # theme None → early return, no anchors changed
-
-
-def test_refresh_content_with_invalid_accent_is_noop(qtbot):
-    from app.presentation.views.mention_text_edit import MentionTextEdit
-
-    edit = MentionTextEdit(theme=_BadAccentRuntime())
-    qtbot.addWidget(edit)
-    edit.setContent("@Имя и текст")
-    before = edit.document().toHtml()
-    edit.refresh_content()  # accent unparsable → early return before pass 1
-    assert edit.document().toHtml() == before
-
-
-# ── world_snapshot_widget: dead-node prune (lines 105–106) ─────────────────
-
-def test_world_snapshot_retheme_drops_dead_nodes(qtbot):
+def test_world_snapshot_offskin_retheme_is_safe(qtbot):
     from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 
     widget = WorldSnapshotWidget(theme=None)
     qtbot.addWidget(widget)
-    widget._rated_nodes = [(_DeadNode(), 5)]
-    widget._on_theme_changed()
-    assert widget._rated_nodes == []
+    widget.vm._on_theme_changed()
+    assert widget.vm.rowModel.rowCount() == 0

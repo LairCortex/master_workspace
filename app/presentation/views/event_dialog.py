@@ -1,43 +1,229 @@
-"""Event creation/edit dialog."""
+"""Event creation/edit dialog: QML island in the stable QDialog facade."""
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
-from PySide6.QtCore import QDate, QEvent, Qt, Signal
+from PySide6.QtCore import QDate, QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtQml import QQmlComponent, QQmlContext
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFormLayout,
-    QHBoxLayout, QLineEdit,
-    QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QListWidget,
+    QListWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
-from app.presentation.theme.catalog import attach_theme, title
-from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
-from app.presentation.views.custom_date_edit import CustomDateEdit
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.event_dialog_island_view_model import (
+    EventDialogIslandViewModel,
+    RelatedSectionState,
+)
 from app.presentation.views.event_types_dialog import NO_TYPE_TEXT, type_dot_icon
-from app.presentation.views.mention_text_edit import MentionTextEdit
-from app.presentation.views.related_section import RelatedSection
+from app.presentation.views.theme_date_popup import ThemeDatePopup
 
-#: Second itemData role of the type combo: the type's palette color index, so
-#: live re-theming can repaint the dots without keeping a parallel list (W4).
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "EventDialogRoot.qml")
 ROLE_COLOR_INDEX = Qt.ItemDataRole.UserRole + 1
 
-# (public widget attribute, attr key, entity type, tab label)
 _TABS: list[tuple[str, str, str, str]] = [
     ("org_tab", "organizations", "organization", "Организации"),
     ("char_tab", "characters", "character", "Персонажи"),
     ("item_tab", "items", "item", "Предметы"),
     ("loc_tab", "locations", "location", "Локации"),
 ]
+_REL_ATTRS = tuple(attr for _, attr, _, _ in _TABS)
 
-# Derived from _TABS so a new tab type cannot silently drop out of
-# populate()/get_data().
-_REL_ATTRS: tuple[str, ...] = tuple(attr for _, attr, _, _ in _TABS)
+
+class _ClickProxy:
+    def __init__(self, callback: Callable[[], None], enabled: Callable[[], bool] = lambda: True):
+        self._callback = callback
+        self._enabled = enabled
+
+    def click(self) -> None:
+        if self._enabled():
+            self._callback()
+
+    def isEnabled(self) -> bool:
+        return self._enabled()
+
+
+class _FieldProxy:
+    def __init__(self, getter: Callable[[], str], setter: Callable[[str], None]):
+        self._getter = getter
+        self._setter = setter
+
+    def text(self) -> str:
+        return self._getter()
+
+    def setText(self, value: str) -> None:
+        self._setter(value)
+
+
+class _DateProxy:
+    def __init__(self, dialog: "EventDialog", which: str):
+        self._dialog = dialog
+        self._which = which
+
+    def date(self) -> QDate:
+        value = (
+            self._dialog.vm._start_date
+            if self._which == "start"
+            else self._dialog.vm._end_date
+        )
+        return QDate(value.year, value.month, value.day)
+
+    def setDate(self, value: QDate) -> None:
+        converted = value.toPython()
+        if self._which == "start":
+            self._dialog.vm.set_dates(start=converted)
+        else:
+            self._dialog.vm.set_dates(end=converted)
+
+    def isVisible(self) -> bool:
+        return self._which == "start" or not self._dialog.vm._no_end
+
+    def isHidden(self) -> bool:
+        return not self.isVisible()
+
+
+class _CheckProxy:
+    def __init__(self, vm: EventDialogIslandViewModel):
+        self._vm = vm
+
+    def isChecked(self) -> bool:
+        return self._vm._no_end
+
+    def setChecked(self, value: bool) -> None:
+        self._vm.set_no_end(value)
+
+
+class _TypeComboProxy:
+    def __init__(self, dialog: "EventDialog"):
+        self._dialog = dialog
+
+    def count(self) -> int:
+        return len(self._dialog.vm._types) + 1
+
+    def itemText(self, index: int) -> str:
+        return self._dialog.vm.typeNames[index]
+
+    def itemData(self, index: int, role=Qt.ItemDataRole.UserRole):
+        if index == 0:
+            return None
+        item = self._dialog.vm._types[index - 1]
+        if role == ROLE_COLOR_INDEX:
+            return getattr(item, "color_index", None)
+        if role == Qt.ItemDataRole.DecorationRole:
+            return type_dot_icon(self._dialog._theme, getattr(item, "color_index", 1))
+        return getattr(item, "id", None)
+
+    def itemIcon(self, index: int):
+        if index == 0:
+            from PySide6.QtGui import QIcon
+            return QIcon()
+        return type_dot_icon(
+            self._dialog._theme,
+            getattr(self._dialog.vm._types[index - 1], "color_index", 1),
+        )
+
+    def currentData(self):
+        return self._dialog.vm.selected_type_id
+
+    def currentIndex(self) -> int:
+        return self._dialog.vm._selected_type_index
+
+    def setCurrentIndex(self, index: int) -> None:
+        self._dialog.vm.selectType(index)
+
+    def findData(self, value) -> int:
+        if value is None:
+            return 0
+        for index, item in enumerate(self._dialog.vm._types, 1):
+            if getattr(item, "id", None) == value:
+                return index
+        return -1
+
+    def findText(self, value: str) -> int:
+        for index, text in enumerate(self._dialog.vm.typeNames):
+            if text == value:
+                return index
+        return -1
+
+
+class _ListItemProxy:
+    def __init__(self, row: dict, index: int):
+        self._row = row
+        self.index = index
+
+    def text(self) -> str:
+        return self._row["name"]
+
+    def data(self, role):
+        return self._row["id"] if role == 256 else None
+
+
+class _ListProxy:
+    def __init__(self, state: RelatedSectionState):
+        self._state = state
+
+    def count(self) -> int:
+        return len(self._state.rows)
+
+    def item(self, index: int):
+        return _ListItemProxy(self._state.rows[index], index)
+
+    def setCurrentRow(self, row: int) -> None:
+        self._state.select(row)
+
+    def setCurrentItem(self, item: _ListItemProxy) -> None:
+        self._state.select(item.index)
+
+    def currentRow(self) -> int:
+        return self._state.selectedIndex
+
+
+class _RelatedProxy:
+    def __init__(self, state: RelatedSectionState):
+        self._state = state
+        self.list_widget = _ListProxy(state)
+        self.link_button = _ClickProxy(state.requestLink)
+        self.create_button = _ClickProxy(state.requestCreate)
+        self.remove_button = _ClickProxy(
+            state.unlinkSelected, lambda: state.selectedIndex >= 0
+        )
+
+    @property
+    def _available(self):
+        return self._state._available
+
+    def set_entities(self, entities):
+        self._state.set_entities(entities)
+
+    def set_available(self, entities):
+        self._state.set_available(entities)
+
+    def add_entity(self, entity):
+        self._state.add_entity(entity)
+
+    def get_current_ids(self):
+        return self._state.get_current_ids()
+
+
+class _TabsProxy:
+    def isHidden(self) -> bool:
+        return False
 
 
 class EventDialog(QDialog):
     saved = Signal(dict)
-    create_related_requested = Signal(str, str)  # (attr_name, entity_type)
-    mention_clicked = Signal(str, int)  # (entity_type, entity_id)
+    create_related_requested = Signal(str, str)
+    mention_clicked = Signal(str, int)
 
     def __init__(
         self,
@@ -48,207 +234,111 @@ class EventDialog(QDialog):
         super().__init__(parent)
         self._vm = event_dialog_vm
         self._theme = theme
+        self._qml_theme = theme if theme is not None else get_default_theme()
         self._event_id: int | None = None
-        self._ai_buttons: list[AiAssistButton] = []
-        self._ai_row_layouts: dict[str, QHBoxLayout] = {}
-        self._sections: dict[str, RelatedSection] = {}
-        self._entity_row: QHBoxLayout | None = None
-        self._entity_button: EntityGenerateButton | None = None
-        self._save_locked: bool = False
-        self._close_guard: object | None = None
-        # W4 6.3: the type selector's selected value survives a (re)fill by id;
-        # ``populate`` may run before or after the game's types arrive.
         self._pending_type_id: int | None = None
+        self._saving = False
+        self._close_guard = None
+        self._date_target = "start"
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(700, 620)
-        self._init_ui()
-        self._apply_theme()
-        self._setup_ai_buttons()
-        self.characteristics_input.mention_clicked.connect(self.mention_clicked)
-        self.backstory_input.mention_clicked.connect(self.mention_clicked)
 
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1).
+        self.vm = EventDialogIslandViewModel(owner=self, parent=self)
+        self._ai_buttons = [
+            self.vm.nameAi,
+            self.vm.characteristicsAi,
+            self.vm.backstoryAi,
+        ]
+        self._entity_button = self.vm.entityAi
+        self._sections = self.vm.sections
 
-        The type combo's dots are painted outside QSS (item icons), so the
-        dialog also subscribes to the runtime to repaint them on a live swap.
-        """
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
-            self._theme.add_listener(self._restyle_type_icons)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._engine = setup_qml_shell(QApplication.instance(), self._qml_theme)
+        self.quick = QQuickWidget(self._engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self._palette = QmlPalette(self._qml_theme, parent=self)
+        self._context = QQmlContext(self._engine.rootContext(), self)
+        self._palette.setParent(self._context)
+        self.vm.setParent(self._context)
+        self._context.setContextProperty("eventDialogVm", self.vm)
+        self._context.setContextProperty("islandPalette", self._palette)
+        source = QUrl.fromLocalFile(ROOT_QML)
+        self._component = QQmlComponent(self._engine, source, self)
+        root = self._component.create(self._context)
+        assert root is not None, self._component.errors()
+        self.quick.setContent(source, self._component, root)
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = root
 
-    def _init_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("eventDialogChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(11, 11, 11, 11)
+        self.vm.characteristicsHost.attachWidget(self.quick)
+        self.vm.backstoryHost.attachWidget(self.quick)
+        self.vm.characteristicsEdit.mention_clicked.connect(self.mention_clicked)
+        self.vm.backstoryEdit.mention_clicked.connect(self.mention_clicked)
+        self.vm.saveRequested.connect(self._on_save)
+        self.vm.cancelRequested.connect(self._on_cancel_clicked)
+        self.vm.datePopupRequested.connect(self._open_date_popup)
 
-        form = QFormLayout()
-
-        self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("Название события *")
-        self.name_input.textChanged.connect(self._update_validity)
-        form.addRow("Название *:", self._make_ai_row(self.name_input, "name"))
-
-        self.start_date_input = CustomDateEdit()
-        self.start_date_input.setDate(QDate.currentDate())
-        self.start_date_input.dateChanged.connect(self._update_validity)
-        form.addRow("Дата начала *:", self.start_date_input)
-
-        end_row = QHBoxLayout()
-        self.end_date_input = CustomDateEdit()
-        self.end_date_input.setDate(QDate.currentDate())
-        self.end_date_input.dateChanged.connect(self._update_validity)
-        end_row.addWidget(self.end_date_input, 1)
-        self.no_end_date_cb = QCheckBox("Бессрочно")
-        def _on_no_end_toggled(checked):
-            self.end_date_input.setVisible(not checked)
-            self._update_validity()
-        self.no_end_date_cb.toggled.connect(_on_no_end_toggled)
-        end_row.addWidget(self.no_end_date_cb)
-        form.addRow("Дата конца:", end_row)
-
-        # W4 6.3: the event type is optional; the current game's set is filled
-        # by the wiring via set_event_types(), «Без типа» is always available.
-        self.type_combo = QComboBox()
-        self.type_combo.setObjectName("eventTypeCombo")
-        self.type_combo.addItem(NO_TYPE_TEXT, None)
-        form.addRow("Тип:", self.type_combo)
-
-        lbl = title("Описание (обязательные поля)")
-        # The old inline style carried 10px of top margin; restored as a
-        # layout margin on the label (spacing, not style).
-        lbl.setContentsMargins(0, 10, 0, 0)
-        form.addRow(lbl)
-
-        self.characteristics_input = MentionTextEdit(theme=self._theme)
-        self.characteristics_input.setPlaceholderText("Характеристики *")
-        self.characteristics_input.setMinimumHeight(60)
-        self.characteristics_input.textChanged.connect(self._update_validity)
-        form.addRow("Характеристики *:", self._make_ai_row(self.characteristics_input, "characteristics"))
-
-        self.backstory_input = MentionTextEdit(theme=self._theme)
-        self.backstory_input.setPlaceholderText("Предыстория *")
-        self.backstory_input.setMinimumHeight(60)
-        self.backstory_input.textChanged.connect(self._update_validity)
-        form.addRow("Предыстория *:", self._make_ai_row(self.backstory_input, "backstory"))
-
-        # Top-right corner of the form: the entity generate/cancel button.
-        self._entity_row = QHBoxLayout()
-        self._entity_row.setContentsMargins(0, 0, 0, 0)
-        self._entity_row.addStretch(1)
-        self._entity_button = EntityGenerateButton(self, theme=self._theme)
-        self._entity_row.addWidget(self._entity_button)
-        layout.addLayout(self._entity_row)
-        layout.addLayout(form)
-
-        # Entity tabs: name list + «Привязать существующего»/«Создать нового»/«Отвязать».
-        # No inline creation form — new entities are created in a separate card window.
-        self.tabs = QTabWidget()
-        for widget_attr, attr, entity_type, label in _TABS:
-            section = RelatedSection(attr, entity_type, label)
-            section.create_requested.connect(
+        self.date_popup = ThemeDatePopup(self)
+        self.date_popup.date_selected.connect(self._set_selected_date)
+        for _widget_attr, attr, entity_type, label in _TABS:
+            state = self._sections[attr]
+            state.createRequested.connect(
                 lambda a=attr, t=entity_type: self.create_related_requested.emit(a, t)
             )
-            setattr(self, widget_attr, section)
-            self._sections[attr] = section
-            self.tabs.addTab(section, label)
-        layout.addWidget(self.tabs, 1)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        self.save_button = QPushButton("Сохранить")
-        self.save_button.setEnabled(False)
-        self.save_button.clicked.connect(self._on_save)
-        self.cancel_button = QPushButton("Отмена")
-        self.cancel_button.clicked.connect(self._on_cancel_clicked)
-        btn_layout.addWidget(self.save_button)
-        btn_layout.addWidget(self.cancel_button)
-        layout.addLayout(btn_layout)
-
-    def populate(self, event: Any) -> None:
-        """Populate dialog for editing an existing event."""
-        self._event_id = getattr(event, "id", None)
-        self.setWindowTitle("Редактировать событие")
-
-        self.name_input.setText(getattr(event, "name", ""))
-        # W4: the type may arrive before or after set_event_types filled the
-        # combo — remembering the id lets either call order land on the item.
-        event_type = getattr(event, "event_type", None)
-        self._pending_type_id = getattr(event_type, "id", None)
-        self._apply_type_selection()
-        if hasattr(event, "start_date") and event.start_date:
-            self.start_date_input.setDate(
-                QDate(event.start_date.year, event.start_date.month, event.start_date.day)
+            state.linkRequested.connect(
+                lambda a=attr, l=label: self._open_related_picker(a, l)
             )
-        if hasattr(event, "end_date"):
-            if event.end_date:
-                self.end_date_input.setDate(
-                    QDate(event.end_date.year, event.end_date.month, event.end_date.day)
-                )
-                self.no_end_date_cb.setChecked(False)
-            else:
-                self.no_end_date_cb.setChecked(True)
 
-        desc = getattr(event, "description", None)
-        if desc:
-            self.characteristics_input.setContent(getattr(desc, "characteristics", "") or "")
-            self.backstory_input.setContent(getattr(desc, "backstory", "") or "")
-
-        # Pre-fill the related sections with currently linked entities
-        for attr in _REL_ATTRS:
-            self._sections[attr].set_entities(list(getattr(event, attr, [])))
-        self._update_validity()
+        # Transitional non-widget ducks keep existing Python wiring/tests usable;
+        # the visible content remains exclusively the QML island.
+        self.name_input = _FieldProxy(lambda: self.vm.name, lambda v: setattr(self.vm, "name", v))
+        self.characteristics_input = self.vm.characteristicsEdit
+        self.backstory_input = self.vm.backstoryEdit
+        self.start_date_input = _DateProxy(self, "start")
+        self.end_date_input = _DateProxy(self, "end")
+        self.no_end_date_cb = _CheckProxy(self.vm)
+        self.type_combo = _TypeComboProxy(self)
+        self.save_button = _ClickProxy(self.vm.requestSave, lambda: self.vm.valid)
+        self.cancel_button = _ClickProxy(self._on_cancel_clicked)
+        for widget_attr, attr, _entity_type, _label in _TABS:
+            setattr(self, widget_attr, _RelatedProxy(self._sections[attr]))
+        self.tabs = _TabsProxy()
 
     @property
     def event_id(self) -> int | None:
         return self._event_id
 
-    # ── Public API for wiring (same shape as EntityCardDialog) ────────────
-
-    # ── Event type selector (W4 6.3) ───────────────────────────────────────
+    def populate(self, event: Any) -> None:
+        self._event_id = getattr(event, "id", None)
+        self.setWindowTitle("Редактировать событие")
+        self.vm.name = getattr(event, "name", "")
+        event_type = getattr(event, "event_type", None)
+        self._pending_type_id = getattr(event_type, "id", None)
+        self.vm.set_event_types(self.vm._types, self._pending_type_id)
+        start = getattr(event, "start_date", None)
+        end = getattr(event, "end_date", None)
+        if start is not None:
+            self.vm.set_dates(start=start)
+        if end is not None:
+            self.vm.set_dates(end=end)
+            self.vm.set_no_end(False)
+        else:
+            self.vm.set_no_end(True)
+        description = getattr(event, "description", None)
+        if description is not None:
+            self.vm.characteristicsHost.storage = (
+                getattr(description, "characteristics", "") or ""
+            )
+            self.vm.backstoryHost.storage = getattr(description, "backstory", "") or ""
+        for attr in _REL_ATTRS:
+            self._sections[attr].set_entities(list(getattr(event, attr, []) or []))
 
     def set_event_types(self, types, current_type_id: int | None = None) -> None:
-        """(Re)fill the selector with «Без типа» + the game's current set.
-
-        Items carry the type id (``currentData``) and a dot icon of the type's
-        chart token (off-skin: numbered gray sample, D5). No colorpicker path
-        exists — the palette is the only choice (spec «Палитра, а не
-        colorpicker»).
-        """
         if current_type_id is not None:
             self._pending_type_id = current_type_id
-        combo = self.type_combo
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(NO_TYPE_TEXT, None)
-        for t in types:
-            combo.addItem(type_dot_icon(self._theme, t.color_index), t.name, t.id)
-            combo.setItemData(combo.count() - 1, t.color_index, ROLE_COLOR_INDEX)
-        combo.blockSignals(False)
-        self._apply_type_selection()
-
-    def _apply_type_selection(self) -> None:
-        index = self.type_combo.findData(self._pending_type_id)
-        self.type_combo.setCurrentIndex(index if index != -1 else 0)
-
-    def _restyle_type_icons(self) -> None:
-        """Live re-theme: repaint the combo's dots with the new chart tokens."""
-        combo = self.type_combo
-        for i in range(combo.count()):
-            color_index = combo.itemData(i, ROLE_COLOR_INDEX)
-            if color_index is not None:
-                combo.setItemData(
-                    i, type_dot_icon(self._theme, color_index),
-                    Qt.ItemDataRole.DecorationRole,
-                )
+        self.vm.set_event_types(list(types), self._pending_type_id)
 
     def set_available_entities(self, attr: str, entities: list[Any]) -> None:
         section = self._sections.get(attr)
@@ -260,94 +350,75 @@ class EventDialog(QDialog):
         if section is not None:
             section.add_entity(entity)
 
-    def _update_validity(self) -> None:
-        name = self.name_input.text().strip()
-        chars = self.characteristics_input.toPlainText().strip()
-        back = self.backstory_input.toPlainText().strip()
-
-        valid = bool(name) and bool(chars or back)
-        if not self.no_end_date_cb.isChecked():
-            start = self.start_date_input.date().toPython()
-            end = self.end_date_input.date().toPython()
-            valid = valid and end >= start
-        self.save_button.setEnabled(valid and not self._save_locked)
-
-    def set_save_locked(self, locked: bool) -> None:
-        """"Save" is blocked for the whole time any generation is running."""
-        self._save_locked = locked
-        self._update_validity()
-
     def get_data(self) -> dict:
         data = {
-            "name": self.name_input.text().strip(),
-            "characteristics": self.characteristics_input.getContent().strip(),
-            "backstory": self.backstory_input.getContent().strip(),
-            "start_date": self.start_date_input.date().toPython(),
-            "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
-            # W4: None = «Без типа» — a valid, round-trippable state.
-            "event_type_id": self.type_combo.currentData(),
+            "name": self.vm.name.strip(),
+            "characteristics": self.vm.characteristicsHost.storage.strip(),
+            "backstory": self.vm.backstoryHost.storage.strip(),
+            "start_date": self.vm._start_date,
+            "end_date": None if self.vm._no_end else self.vm._end_date,
+            "event_type_id": self.vm.selected_type_id,
         }
         if self._event_id is not None:
             data["event_id"] = self._event_id
         for attr in _REL_ATTRS:
             data[attr] = [
-                {"_existing_id": eid}
-                for eid in self._sections[attr].get_current_ids()
-                if eid is not None
+                {"_existing_id": entity_id}
+                for entity_id in self._sections[attr].get_current_ids()
+                if entity_id is not None
             ]
         return data
 
-    def get_mention_edits(self) -> list[MentionTextEdit]:
-        """Return all MentionTextEdit instances for wiring search."""
-        return [self.characteristics_input, self.backstory_input]
+    def get_mention_edits(self):
+        return [self.vm.characteristicsEdit, self.vm.backstoryEdit]
 
-    def _make_ai_row(self, field: QWidget, field_name: str) -> QWidget:
-        """Wrap a field in a horizontal row reserving the right slot for the AI button."""
-        row = QWidget()
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.addWidget(field, 1)
-        self._ai_row_layouts[field_name] = row_layout
-        return row
-
-    def _setup_ai_buttons(self) -> None:
-        fields: list[tuple[QWidget, str, str]] = [
-            (self.name_input, "name", "Название"),
-            (self.characteristics_input, "characteristics", "Характеристики"),
-            (self.backstory_input, "backstory", "Предыстория"),
-        ]
-        for widget, field_name, field_label in fields:
-            btn = AiAssistButton(widget, "event", field_name, field_label, theme=self._theme)
-            self._ai_buttons.append(btn)
-            # Single-line fields align to the middle; multi-line ones pin to the top edge.
-            align = (
-                Qt.AlignmentFlag.AlignVCenter
-                if isinstance(widget, QLineEdit)
-                else Qt.AlignmentFlag.AlignTop
-            )
-            self._ai_row_layouts[field_name].addWidget(btn, 0, align)
-
-    def get_ai_buttons(self) -> list[AiAssistButton]:
+    def get_ai_buttons(self):
         return list(self._ai_buttons)
 
-    def get_entity_button(self) -> EntityGenerateButton:
+    def get_entity_button(self):
         return self._entity_button
 
-    def _is_generation_active(self) -> bool:
-        if any(b.is_generating for b in self._ai_buttons):
-            return True
-        return self._entity_button is not None and self._entity_button.is_cancelling
+    def set_save_locked(self, locked: bool) -> None:
+        self.vm.set_save_locked(locked)
 
     def set_close_guard(self, fn) -> None:
-        """Wiring-provided callback for the close paths (X / «Отмена»).
-
-        «Отмена» always goes through it; X / close events — only while a
-        generation is active. The wiring's guard decides: outside generation
-        it simply rejects; in flight it may confirm, then cancel + close.
-        """
         self._close_guard = fn
 
+    def _is_generation_active(self) -> bool:
+        return any(button.is_generating for button in self._ai_buttons) or (
+            self._entity_button.is_cancelling
+        )
+
+    def _on_save(self) -> None:
+        if self._saving or not self.vm.valid:
+            return
+        self._saving = True
+        self.vm.set_saving(True)
+        self.saved.emit(self.get_data())
+
+    def finish_saving(self, success: bool) -> None:
+        self._saving = False
+        self.vm.set_saving(False)
+        if success:
+            self.accept()
+
+    def _on_cancel_clicked(self) -> None:
+        if self._saving:
+            return
+        if self._close_guard is not None:
+            self._close_guard()
+        else:
+            super().reject()
+
+    def reject(self) -> None:
+        if self._saving or self._is_generation_active():
+            return
+        super().reject()
+
     def closeEvent(self, event) -> None:
+        if self._saving:
+            event.ignore()
+            return
         if self._is_generation_active() and self._close_guard is not None:
             event.ignore()
             self._close_guard()
@@ -355,30 +426,68 @@ class EventDialog(QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:
-        # ESC must not close the dialog while a generation is in flight.
         if (
             event.type() == QEvent.Type.KeyPress
             and event.key() == Qt.Key.Key_Escape
-            and self._is_generation_active()
+            and (self._saving or self._is_generation_active())
         ):
             event.ignore()
             return
         super().keyPressEvent(event)
 
-    def _on_cancel_clicked(self) -> None:
-        # D5: the guard handles both cases — during a generation it may
-        # confirm and cancel the wave; outside generation it just rejects.
-        if self._close_guard is not None:
-            self._close_guard()
+    def _open_date_popup(
+        self, which: str, x: float, y: float, width: float, height: float
+    ) -> None:
+        self._date_target = which
+        top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
+        anchor = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
+        current = self.vm._start_date if which == "start" else self.vm._end_date
+        self.date_popup.open_at(anchor, current)
+
+    def _set_selected_date(self, selected) -> None:
+        if self._date_target == "start":
+            self.vm.set_dates(start=selected)
         else:
-            super().reject()
+            self.vm.set_dates(end=selected)
 
-    def reject(self) -> None:
-        # Safety net for direct reject() calls from outside the close paths.
-        if self._is_generation_active():
+    def _open_related_picker(self, attr: str, label: str) -> None:
+        section = self._sections[attr]
+        candidates = section.candidates()
+        if not candidates:
             return
-        super().reject()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Выберите {label.lower()}")
+        dialog.setMinimumSize(300, 400)
+        layout = QVBoxLayout(dialog)
+        items = QListWidget(dialog)
+        items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for entity in candidates:
+            item = QListWidgetItem(getattr(entity, "name", str(entity)))
+            item.setData(256, getattr(entity, "id", None))
+            items.addItem(item)
+        layout.addWidget(items)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_ids = {item.data(256) for item in items.selectedItems()}
+            for entity in candidates:
+                if getattr(entity, "id", None) in selected_ids:
+                    section.add_entity(entity)
 
-    def _on_save(self) -> None:
-        self.saved.emit(self.get_data())
-        super().accept()
+    def _update_validity(self) -> None:
+        self.vm.stateChanged.emit()
+
+    def _restyle_type_icons(self) -> None:
+        self.vm.stateChanged.emit()
+
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

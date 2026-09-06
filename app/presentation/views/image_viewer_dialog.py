@@ -1,28 +1,25 @@
-"""Full-size image viewer (design D10, task 5.3).
-
-A single ``QDialog`` (``QLabel`` inside a ``QScrollArea``) opened by clicking
-an image slot in the entity card or the detail panel. Decoupled from ORM
-entities on purpose: callers resolve the pixmaps themselves (``image_utils``)
-so this dialog also works for a freshly picked, not-yet-saved file (no
-entity row exists yet to resolve from).
-"""
+"""Full-size image viewer — QML island (R3 pack 1)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from pathlib import Path
+from uuid import uuid4
 
-from app.presentation.theme.catalog import attach_theme, set_role
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtGui import QKeyEvent, QPixmap
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
+
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.image_viewer_view_model import ImageViewerViewModel
+
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "ImageViewerRoot.qml")
 
 
 class ImageViewerDialog(QDialog):
-    """Shows ``original`` full-size; falls back to ``preview``; else a message.
-
-    Degradation matches spec image-display: missing/undecodable original
-    with a preview on disk shows the preview (with a note); missing both
-    shows an explanatory message instead of an empty window.
-    """
-
     def __init__(
         self,
         original: QPixmap | None,
@@ -31,20 +28,12 @@ class ImageViewerDialog(QDialog):
         theme=None,
     ) -> None:
         super().__init__(parent)
-        self._theme = theme
+        self._theme = theme if theme is not None else get_default_theme()
         self.setWindowTitle("Просмотр изображения")
         self.resize(700, 600)
+        self._key = uuid4().hex
 
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("imageViewerChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(11, 11, 11, 11)
-
+        self.vm = ImageViewerViewModel(parent=self)
         pixmap: QPixmap | None = None
         used_preview = False
         if original is not None and not original.isNull():
@@ -53,42 +42,48 @@ class ImageViewerDialog(QDialog):
             pixmap = preview
             used_preview = True
 
-        if pixmap is None:
-            message = QLabel("Изображение недоступно.")
-            message.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # The missing-image placeholder is a card: surface background and
-            # border from tokens (was the OS base/mid palette).
-            set_role(message, "card")
-            layout.addWidget(message, 1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        if pixmap is not None:
+            put_dialog_pixmap(self._key, pixmap)
+            self.vm.set_source(
+                f"image://dialog/{self._key}",
+                used_preview=used_preview,
+                unavailable=False,
+            )
         else:
-            image_label = QLabel()
-            image_label.setPixmap(pixmap)
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(False)
-            scroll.setWidget(image_label)
-            layout.addWidget(scroll, 1)
-            if used_preview:
-                note = QLabel("Оригинал недоступен — показан preview.")
-                note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                layout.addWidget(note)
+            self.vm.set_source("", used_preview=False, unavailable=True)
 
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        close_btn = QPushButton("Закрыть")
-        close_btn.clicked.connect(self.close)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self.quick.rootContext().setContextProperty("imageViewerVm", self.vm)
+        self._palette = QmlPalette(self._theme, parent=self)
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = self.quick.rootObject()
+        self._root.closeRequested.connect(self.close)
 
-        self._apply_theme()
-
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
             self.close()
             return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            marker = self._root.property("defaultButton") if self._root is not None else None
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return
         super().keyPressEvent(event)
+
+    def _release_island(self) -> None:
+        clear_dialog_pixmap(self._key)
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

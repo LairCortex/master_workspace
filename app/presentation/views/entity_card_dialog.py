@@ -1,33 +1,53 @@
-"""Entity card dialog — view/edit any entity type with related entities."""
+"""Entity card QML island in the stable native dialog facade."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
-from PySide6.QtCore import QDate, QEvent, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QDate, QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtQml import QQmlComponent, QQmlContext
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from app.presentation.theme.catalog import attach_theme, set_role
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
-from app.presentation.views.ai_assist_button import AiAssistButton, EntityGenerateButton
-from app.presentation.views.clickable_label import ClickableLabel
-from app.presentation.views.custom_date_edit import CustomDateEdit
+from app.presentation.viewmodels.entity_card_island_view_model import (
+    EntityCardIslandViewModel,
+)
+from app.presentation.views.event_dialog import (
+    _CheckProxy,
+    _ClickProxy,
+    _FieldProxy,
+    _ListProxy,
+)
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
-from app.presentation.views.mention_text_edit import MentionTextEdit
-from app.presentation.views.related_section import RelatedSection
+from app.presentation.views.theme_date_popup import ThemeDatePopup
 
-# Fields that only appear for certain entity types. The 5th entity type is
-# data in this table, not a code branch. kind: "mention" | "image".
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "EntityCardRoot.qml")
+
+
 @dataclass(frozen=True)
 class _FieldSpec:
-    name: str   # data key; widget attribute is "<name>_input"
-    label: str  # RU label without trailing colon
+    name: str
+    label: str
     kind: str
 
 
@@ -49,9 +69,6 @@ _FIELD_SPECS: dict[str, list[_FieldSpec]] = {
     "rating": [],
 }
 
-_EXTRA_FIELD_MIN_HEIGHT = 40
-
-# Related entities config: which entity types have which related sub-entities
 _RELATED_CONFIG: dict[str, list[dict[str, str]]] = {
     "organization": [
         {"attr": "characters", "label": "Персонажи", "entity_type": "character"},
@@ -78,13 +95,165 @@ _RELATED_CONFIG: dict[str, list[dict[str, str]]] = {
 _IMAGE_FILTERS = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
 
 
+class _ValueProxy:
+    def __init__(
+        self,
+        getter: Callable[[], int],
+        setter: Callable[[int], None],
+        minimum: int,
+        maximum: int,
+    ) -> None:
+        self._getter = getter
+        self._setter = setter
+        self._minimum = minimum
+        self._maximum = maximum
+
+    def value(self) -> int:
+        return self._getter()
+
+    def setValue(self, value: int) -> None:
+        self._setter(value)
+
+    def minimum(self) -> int:
+        return self._minimum
+
+    def maximum(self) -> int:
+        return self._maximum
+
+
+class _DateProxy:
+    def __init__(self, dialog: "EntityCardDialog", which: str) -> None:
+        self._dialog = dialog
+        self._which = which
+
+    def date(self) -> QDate:
+        value = (
+            self._dialog.vm._start_date
+            if self._which == "start"
+            else self._dialog.vm._end_date
+        )
+        return QDate(value.year, value.month, value.day)
+
+    def setDate(self, value: QDate) -> None:
+        if self._which == "start":
+            self._dialog.vm.set_dates(start=value.toPython())
+        else:
+            self._dialog.vm.set_dates(end=value.toPython())
+
+    def isVisible(self) -> bool:
+        return self._which == "start" or not self._dialog.vm._no_end
+
+    def isHidden(self) -> bool:
+        return not self.isVisible()
+
+
+class _VisibleProxy:
+    def __init__(
+        self,
+        visible: Callable[[], bool],
+        click: Callable[[], None] | None = None,
+        text: Callable[[], str] = lambda: "",
+    ) -> None:
+        self._visible = visible
+        self._click = click
+        self._text = text
+
+    def isVisible(self) -> bool:
+        return self._visible()
+
+    def isHidden(self) -> bool:
+        return not self._visible()
+
+    def click(self) -> None:
+        if self._click is not None:
+            self._click()
+
+    def text(self) -> str:
+        return self._text()
+
+
+class _MusicFieldProxy(_FieldProxy):
+    def __init__(self, dialog: "EntityCardDialog") -> None:
+        super().__init__(
+            lambda: dialog.vm._music_url,
+            dialog.vm.setMusicUrl,
+        )
+        self._dialog = dialog
+
+    def isVisible(self) -> bool:
+        return self._dialog.vm._music_editing or not self._dialog.vm._music_url
+
+    def isHidden(self) -> bool:
+        return not self.isVisible()
+
+    def setFocus(self) -> None:
+        return None
+
+
+class _ReadOnlyFieldProxy(_FieldProxy):
+    def __init__(self, getter, setter, ai_proxy) -> None:
+        super().__init__(getter, setter)
+        self._ai_proxy = ai_proxy
+
+    def isReadOnly(self) -> bool:
+        return self._ai_proxy.is_generating
+
+
+class _ImageProxy:
+    def __init__(self, dialog: "EntityCardDialog") -> None:
+        self._dialog = dialog
+
+    def pixmap(self) -> QPixmap:
+        return QPixmap(self._dialog._displayed_pixmap)
+
+    def text(self) -> str:
+        return "" if self._dialog.vm._image_available else "Нет изображения"
+
+    def click(self) -> None:
+        self._dialog._open_image_viewer()
+
+
+class _SectionProxy:
+    def __init__(self, dialog: "EntityCardDialog", attr: str) -> None:
+        self._dialog = dialog
+        self._attr = attr
+        self._state = dialog.vm.sections[attr]
+        self.create_requested = self._state.createRequested
+        self.list_widget = _ListProxy(self._state)
+        self.link_button = _ClickProxy(self._on_link_existing)
+        self.create_button = _ClickProxy(self._state.requestCreate)
+        self.remove_button = _ClickProxy(
+            self._state.unlinkSelected, lambda: self._state.selectedIndex >= 0
+        )
+
+    @property
+    def _available(self):
+        return self._state._available
+
+    def set_entities(self, entities) -> None:
+        self._state.set_entities(entities)
+
+    def set_available(self, entities) -> None:
+        self._state.set_available(entities)
+
+    def add_entity(self, entity) -> None:
+        self._state.add_entity(entity)
+
+    def get_current_ids(self):
+        return self._state.get_current_ids()
+
+    def _on_link_existing(self) -> None:
+        cfg = next(c for c in self._dialog._related_configs if c["attr"] == self._attr)
+        self._dialog._open_related_picker(self._attr, cfg["label"])
+
+    def _on_remove(self) -> None:
+        self._state.unlinkSelected()
+
+
 class EntityCardDialog(QDialog):
     saved = Signal(dict)
-    create_related_requested = Signal(str, str)  # (attr_name, entity_type)
-    mention_clicked = Signal(str, int)  # (entity_type, entity_id)
-    # Raw bytes of a freshly picked file — the owner (wiring) persists it via
-    # ImageStore.store() and reports the result back via set_stored_image_id
-    # (design D4: ImageStore is the single ingest pipeline, not the dialog).
+    create_related_requested = Signal(str, str)
+    mention_clicked = Signal(str, int)
     image_picked = Signal(bytes)
     open_character_sheet_requested = Signal()
 
@@ -98,204 +267,140 @@ class EntityCardDialog(QDialog):
         super().__init__(parent)
         self._vm = entity_vm
         self._theme = theme
+        self._qml_theme = theme if theme is not None else get_default_theme()
         self._entity_type = entity_type
-        self._populated_entity_id: int | None = None
-        self._related_sections: dict[str, RelatedSection] = {}
-        self._image_id: int | None = None
-        # Full-size viewer inputs (design D10/task 5.3) — kept in step with
-        # whatever is currently shown in the preview slot, so the viewer
-        # works both for a saved entity and for a freshly picked, not yet
-        # persisted file (no entity row to resolve a path from).
-        self._viewer_original: QPixmap = QPixmap()
-        self._viewer_preview: QPixmap = QPixmap()
-        self._extra_specs = _FIELD_SPECS.get(entity_type, [])
+        self._extra_specs = list(_FIELD_SPECS.get(entity_type, []))
+        self._related_configs = list(_RELATED_CONFIG.get(entity_type, []))
         self._has_image_field = any(spec.kind == "image" for spec in self._extra_specs)
-        self._extra_widgets: dict[str, MentionTextEdit] = {}
-        self._music_url: str = ""
-        self._ai_buttons: list[AiAssistButton] = []
-        self._ai_row_layouts: dict[str, QHBoxLayout] = {}
-        self._entity_row: QHBoxLayout | None = None
-        self._entity_button: EntityGenerateButton | None = None
-        self._form_layout: QVBoxLayout | None = None
-        self._save_locked: bool = False
-        self._close_guard: object | None = None
+        self._populated_entity_id: int | None = None
+        self._image_id: int | None = None
+        self._viewer_original = QPixmap()
+        self._viewer_preview = QPixmap()
+        self._displayed_pixmap = QPixmap()
+        self._image_key = f"entity-card-{uuid4().hex}"
+        self._saving = False
+        self._close_guard = None
+        self._date_target = "start"
         self.setWindowTitle(f"Карточка: {entity_type}")
         self.setMinimumSize(750 if self._has_image_field else 550, 550)
-        self._init_ui()
-        self._apply_theme()
-        self._setup_ai_buttons()
 
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
-
-    def _init_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("entityCardChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        root_layout = QVBoxLayout(self.chrome)
-        root_layout.setContentsMargins(11, 11, 11, 11)
-
-        # Top area: image (left) + form (right) for types with image
-        top_layout = QHBoxLayout()
-
-        if self._has_image_field:
-            img_col = QVBoxLayout()
-            img_col.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-            self.image_label = ClickableLabel()
-            self.image_label.setFixedSize(280, 280)
-            self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Placeholder chrome comes from the card role (surface/border from
-            # tokens) — no OS-palette mid/base literals anymore (W2b).
-            set_role(self.image_label, "card")
-            self.image_label.setText("Нет изображения")
-            self.image_label.clicked.connect(self._open_image_viewer)
-            img_col.addWidget(self.image_label)
-
-            img_btn_row = QHBoxLayout()
-            self.pick_image_btn = QPushButton("Выбрать файл")
-            self.pick_image_btn.clicked.connect(self._on_pick_image)
-            self.clear_image_btn = QPushButton("Убрать")
-            self.clear_image_btn.clicked.connect(self._on_clear_image)
-            self.clear_image_btn.setEnabled(False)
-            img_btn_row.addWidget(self.pick_image_btn)
-            img_btn_row.addWidget(self.clear_image_btn)
-            img_col.addLayout(img_btn_row)
-            img_col.addStretch()
-
-            top_layout.addLayout(img_col)
-
-        # Form column
-        form_widget = QWidget()
-        form_layout = QVBoxLayout(form_widget)
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        self._form_layout = form_layout
-
-        # Top-right corner of the form: the entity generate/cancel button.
-        self._entity_row = QHBoxLayout()
-        self._entity_row.setContentsMargins(0, 0, 0, 0)
-        self._entity_row.addStretch(1)
-        self._entity_button = EntityGenerateButton(form_widget, theme=self._theme)
-        self._entity_row.addWidget(self._entity_button)
-        form_layout.addLayout(self._entity_row)
-
-        form = QFormLayout()
-
-        self.name_input = QLineEdit()
-        form.addRow("Название:", self._make_ai_row(self.name_input, "name"))
-
-        self.rating_input = QSpinBox()
-        self.rating_input.setMinimum(1)
-        self.rating_input.setMaximum(20)
-        self.rating_input.setValue(1)
-        self.rating_input.setToolTip("1 — наименее важно, 20 — наиболее важно")
-        form.addRow("Рейтинг (1-20):", self.rating_input)
-
-        self.start_date_input = CustomDateEdit()
-        self.start_date_input.setDate(QDate.currentDate())
-        form.addRow("Дата начала:", self.start_date_input)
-
-        end_row = QHBoxLayout()
-        self.end_date_input = CustomDateEdit()
-        self.end_date_input.setDate(QDate.currentDate())
-        end_row.addWidget(self.end_date_input, 1)
-        self.no_end_date_cb = QCheckBox("Бессрочно")
-        self.no_end_date_cb.toggled.connect(lambda checked: self.end_date_input.setVisible(not checked))
-        end_row.addWidget(self.no_end_date_cb)
-        form.addRow("Дата конца:", end_row)
-
-        self.characteristics_input = MentionTextEdit(theme=self._theme)
-        self.characteristics_input.setMinimumHeight(60)
-        self.characteristics_input.mention_clicked.connect(self.mention_clicked)
-        form.addRow("Характеристики:", self._make_ai_row(self.characteristics_input, "characteristics"))
-
-        self.backstory_input = MentionTextEdit(theme=self._theme)
-        self.backstory_input.setMinimumHeight(60)
-        self.backstory_input.mention_clicked.connect(self.mention_clicked)
-        form.addRow("Предыстория:", self._make_ai_row(self.backstory_input, "backstory"))
-
-        # Music link (for all entity types)
-        music_row = QHBoxLayout()
-        self.music_display = QLabel()
-        self.music_display.setTextFormat(Qt.TextFormat.RichText)
-        self.music_display.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextBrowserInteraction
+        self.vm = EntityCardIslandViewModel(
+            entity_type,
+            self._extra_specs,
+            self._related_configs,
+            owner=self,
+            parent=self,
         )
-        self.music_display.setOpenExternalLinks(True)
-        self.music_display.hide()
+        self._ai_buttons = [
+            self.vm.nameAi,
+            self.vm.ai_proxies["characteristics"],
+            self.vm.ai_proxies["backstory"],
+            *[
+                self.vm.ai_proxies[spec.name]
+                for spec in self._extra_specs
+                if spec.kind == "mention"
+            ],
+        ]
+        self._entity_button = self.vm.entityAi
 
-        self.music_input = QLineEdit()
-        self.music_input.setPlaceholderText("Ссылка на музыку")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._engine = setup_qml_shell(QApplication.instance(), self._qml_theme)
+        self.quick = QQuickWidget(self._engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self._palette = QmlPalette(self._qml_theme, parent=self)
+        self._context = QQmlContext(self._engine.rootContext(), self)
+        self.vm.setParent(self._context)
+        self._palette.setParent(self._context)
+        self._context.setContextProperty("entityCardVm", self.vm)
+        self._context.setContextProperty("islandPalette", self._palette)
+        source = QUrl.fromLocalFile(ROOT_QML)
+        self._component = QQmlComponent(self._engine, source, self)
+        root = self._component.create(self._context)
+        assert root is not None, self._component.errors()
+        self.quick.setContent(source, self._component, root)
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = root
 
-        self.music_edit_btn = QPushButton("✎")
-        self.music_edit_btn.setToolTip("Редактировать ссылку на музыку")
-        self.music_edit_btn.setFixedWidth(28)
-        self.music_edit_btn.clicked.connect(self._on_toggle_music_edit)
+        for host in self.vm.hosts.values():
+            host.attachWidget(self.quick)
+        for proxy in self.vm.mention_proxies.values():
+            proxy.mention_clicked.connect(self.mention_clicked)
+        self.vm.saveRequested.connect(self._on_save)
+        self.vm.cancelRequested.connect(self._on_cancel_clicked)
+        self.vm.datePopupRequested.connect(self._open_date_popup)
+        self.vm.imagePickRequested.connect(self._on_pick_image)
+        self.vm.imageClearRequested.connect(self._on_clear_image)
+        self.vm.imageOpenRequested.connect(self._open_image_viewer)
+        self.vm.musicOpenRequested.connect(self._open_music_url)
+        self.vm.characterSheetRequested.connect(self.open_character_sheet_requested)
 
-        music_row.addWidget(self.music_display, 1)
-        music_row.addWidget(self.music_input, 1)
-        music_row.addWidget(self.music_edit_btn, 0)
-        form.addRow("Музыка:", music_row)
+        self.date_popup = ThemeDatePopup(self)
+        self.date_popup.date_selected.connect(self._set_selected_date)
 
-        # Entity-specific fields — built from _FIELD_SPECS (no per-type branches).
-        # Public widget attribute names stay stable: <name>_input.
-        self.personality_input = None
-        self.image_input = None  # kept for compatibility but hidden
-        self.tasks_input = None
+        self._related_sections: dict[str, _SectionProxy] = {}
+        for cfg in self._related_configs:
+            attr = cfg["attr"]
+            state = self.vm.sections[attr]
+            proxy = _SectionProxy(self, attr)
+            self._related_sections[attr] = proxy
+            state.createRequested.connect(
+                lambda a=attr, t=cfg["entity_type"]:
+                    self.create_related_requested.emit(a, t)
+            )
+            state.linkRequested.connect(
+                lambda a=attr, label=cfg["label"]:
+                    self._open_related_picker(a, label)
+            )
 
-        for spec in self._extra_specs:
-            if spec.kind == "image":
-                continue  # image panel is built in the top area
-            widget = MentionTextEdit(theme=self._theme)
-            widget.setMinimumHeight(_EXTRA_FIELD_MIN_HEIGHT)
-            widget.mention_clicked.connect(self.mention_clicked)
-            setattr(self, f"{spec.name}_input", widget)
-            self._extra_widgets[spec.name] = widget
-            form.addRow(f"{spec.label}:", self._make_ai_row(widget, spec.name))
-
-        form_layout.addLayout(form)
-        top_layout.addWidget(form_widget, 1)
-        root_layout.addLayout(top_layout)
-
-        # Related entities section
-        related_configs = _RELATED_CONFIG.get(self._entity_type, [])
-        if related_configs:
-            related_tabs = QTabWidget()
-            for cfg in related_configs:
-                section = RelatedSection(cfg["attr"], cfg["entity_type"], cfg["label"])
-                section.create_requested.connect(
-                    lambda a=cfg["attr"], t=cfg["entity_type"]: self.create_related_requested.emit(a, t)
-                )
-                self._related_sections[cfg["attr"]] = section
-                related_tabs.addTab(section, cfg["label"])
-            root_layout.addWidget(related_tabs, 1)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        self.open_sheet_button = QPushButton("Открыть чар-лист")
-        self.open_sheet_button.hide()
-        self.open_sheet_button.clicked.connect(self.open_character_sheet_requested.emit)
-        btn_layout.addWidget(self.open_sheet_button)
-        btn_layout.addStretch()
-        self.save_button = QPushButton("Сохранить")
-        self.save_button.clicked.connect(self._on_save)
-        self.cancel_button = QPushButton("Отмена")
-        self.cancel_button.clicked.connect(self._on_cancel_clicked)
-        btn_layout.addWidget(self.save_button)
-        btn_layout.addWidget(self.cancel_button)
-        root_layout.addLayout(btn_layout)
-
-    def set_character_sheet_available(self, available: bool) -> None:
-        self.open_sheet_button.setVisible(
-            self._entity_type == "character" and available
+        # Non-widget ducks preserve the Python facade while the visible form is QML.
+        self.name_input = _ReadOnlyFieldProxy(
+            lambda: self.vm.name,
+            lambda value: setattr(self.vm, "name", value),
+            self.vm.nameAi,
         )
+        self.rating_input = _ValueProxy(
+            lambda: self.vm._rating, self.vm.set_rating, 1, 20
+        )
+        self.start_date_input = _DateProxy(self, "start")
+        self.end_date_input = _DateProxy(self, "end")
+        self.no_end_date_cb = _CheckProxy(self.vm)
+        self.characteristics_input = self.vm.mention_proxies["characteristics"]
+        self.backstory_input = self.vm.mention_proxies["backstory"]
+        self.characteristics_input.isReadOnly = (
+            lambda: self.vm.ai_proxies["characteristics"].is_generating
+        )
+        self.backstory_input.isReadOnly = (
+            lambda: self.vm.ai_proxies["backstory"].is_generating
+        )
+        self._extra_widgets = {
+            spec.name: self.vm.mention_proxies[spec.name]
+            for spec in self._extra_specs if spec.kind == "mention"
+        }
+        for name, proxy in self._extra_widgets.items():
+            proxy.isReadOnly = lambda n=name: self.vm.ai_proxies[n].is_generating
+        self.personality_input = self._extra_widgets.get("personality")
+        self.tasks_input = self._extra_widgets.get("tasks")
+        self.image_input = None
+        self.music_input = _MusicFieldProxy(self)
+        self.music_display = _VisibleProxy(
+            lambda: bool(self.vm._music_url) and not self.vm._music_editing,
+            text=lambda: self.vm._music_url,
+        )
+        self.music_edit_btn = _ClickProxy(self.vm.toggleMusicEdit)
+        self.image_label = _ImageProxy(self) if self._has_image_field else None
+        self.pick_image_btn = _ClickProxy(self._on_pick_image)
+        self.clear_image_btn = _ClickProxy(
+            self._on_clear_image, lambda: self.vm._image_available
+        )
+        self.open_sheet_button = _VisibleProxy(
+            lambda: self.vm._character_sheet_available,
+            self.vm.requestCharacterSheet,
+            lambda: "Открыть чар-лист",
+        )
+        self.save_button = _ClickProxy(self.vm.requestSave, lambda: self.vm.saveEnabled)
+        self.cancel_button = _ClickProxy(self._on_cancel_clicked)
 
     @property
     def entity_type(self) -> str:
@@ -305,59 +410,53 @@ class EntityCardDialog(QDialog):
     def populated_entity_id(self) -> int | None:
         return self._populated_entity_id
 
+    def set_character_sheet_available(self, available: bool) -> None:
+        self.vm.set_character_sheet_available(
+            self._entity_type == "character" and available
+        )
+
     def _set_music_url(self, url: str) -> None:
-        self._music_url = url.strip()
-        if self._music_url:
-            safe_url = self._music_url.replace('"', "&quot;")
-            self.music_display.setText(f'<a href="{safe_url}">{self._music_url}</a>')
-            self.music_display.show()
-        else:
-            self.music_display.setText("")
-            self.music_display.hide()
-        # Always keep input in sync but hide when displaying as link
-        self.music_input.setText(self._music_url)
-        if self._music_url:
-            self.music_input.hide()
-        else:
-            self.music_input.show()
+        self.vm.set_music_url(url)
 
     def _on_toggle_music_edit(self) -> None:
-        if self.music_input.isVisible():
-            # Switch to link view (if any text)
-            self._set_music_url(self.music_input.text())
-        else:
-            # Switch to edit mode
-            self.music_display.hide()
-            self.music_input.show()
-            self.music_input.setFocus()
+        self.vm.toggleMusicEdit()
 
-    # ── Image handling ─────────────────────────────────────────────────────
+    def _open_music_url(self, url: str) -> None:
+        QDesktopServices.openUrl(QUrl(url))
 
     def _on_pick_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Выберите изображение", "", _IMAGE_FILTERS)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Выберите изображение", "", _IMAGE_FILTERS
+        )
         if not path:
             return
         try:
             data = Path(path).read_bytes()
         except OSError:
-            QMessageBox.warning(self, "Изображение", f"Не удалось прочитать файл: {path}")
+            QMessageBox.warning(
+                self, "Изображение", f"Не удалось прочитать файл: {path}"
+            )
             return
-        pm = QPixmap()
-        if not pm.loadFromData(data) or pm.isNull():
-            QMessageBox.warning(self, "Изображение", "Файл повреждён или не является изображением.")
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data) or pixmap.isNull():
+            QMessageBox.warning(
+                self, "Изображение", "Файл повреждён или не является изображением."
+            )
             return
-        # Not yet a durable image_id — resolved once the owner's ImageStore.store()
-        # completes (image_picked below) and calls set_stored_image_id().
         self._image_id = None
-        self._viewer_original = pm  # the picked file itself IS the "original"
+        self._viewer_original = pixmap
         self._viewer_preview = QPixmap()
-        self._display_pixmap(pm.scaled(
-            280, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
-        ))
+        self._display_pixmap(
+            pixmap.scaled(
+                280,
+                280,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
         self.image_picked.emit(data)
 
     def set_stored_image_id(self, image_id: int) -> None:
-        """Called by the owner once ``image_picked``'s bytes are persisted."""
         self._image_id = image_id
 
     def _on_clear_image(self) -> None:
@@ -370,170 +469,154 @@ class EntityCardDialog(QDialog):
         if not self._has_image_field:
             return
         ImageViewerDialog(
-            self._viewer_original, self._viewer_preview, parent=self, theme=self._theme,
+            self._viewer_original,
+            self._viewer_preview,
+            parent=self,
+            theme=self._theme,
         ).exec()
 
-    def _display_pixmap(self, pm: QPixmap) -> None:
+    def _display_pixmap(self, pixmap: QPixmap) -> None:
         if not self._has_image_field:
             return
-        if pm.isNull():
+        if pixmap.isNull():
             self._clear_preview()
             return
-        self.image_label.setPixmap(pm)
-        self.image_label.setText("")
-        self.clear_image_btn.setEnabled(True)
+        self._displayed_pixmap = QPixmap(pixmap)
+        put_dialog_pixmap(self._image_key, pixmap)
+        self.vm.set_image_source(f"image://dialog/{self._image_key}", True)
 
     def _clear_preview(self) -> None:
         if not self._has_image_field:
             return
-        self.image_label.setPixmap(QPixmap())
-        self.image_label.setText("Нет изображения")
-        self.clear_image_btn.setEnabled(False)
-
-    # ── Public API ─────────────────────────────────────────────────────────
+        self._displayed_pixmap = QPixmap()
+        clear_dialog_pixmap(self._image_key)
+        self.vm.set_image_source("", False)
 
     def populate(self, entity: Any) -> None:
         self._populated_entity_id = getattr(entity, "id", None)
-        self.name_input.setText(getattr(entity, "name", ""))
-        rating_val = getattr(entity, "rating", 1)
-        if isinstance(rating_val, int):
-            self.rating_input.setValue(max(1, min(20, rating_val)))
-        if hasattr(entity, "start_date") and entity.start_date:
-            self.start_date_input.setDate(QDate(entity.start_date.year, entity.start_date.month, entity.start_date.day))
-        if hasattr(entity, "end_date"):
-            if entity.end_date:
-                self.end_date_input.setDate(QDate(entity.end_date.year, entity.end_date.month, entity.end_date.day))
-                self.no_end_date_cb.setChecked(False)
-            else:
-                self.no_end_date_cb.setChecked(True)
-
-        desc = getattr(entity, "description", None)
-        if desc:
-            self.characteristics_input.setContent(getattr(desc, "characteristics", "") or "")
-            self.backstory_input.setContent(getattr(desc, "backstory", "") or "")
-
-        for name, widget in self._extra_widgets.items():
-            value = getattr(entity, name, None)
-            widget.setContent(value or "")
-
-        # Image from file storage (design D10) — entity.image_ref is
-        # eager-loaded (lazy="selectin"), so this resolves synchronously.
+        self.vm.name = getattr(entity, "name", "")
+        rating = getattr(entity, "rating", 1)
+        if isinstance(rating, int):
+            self.vm.set_rating(rating)
+        start = getattr(entity, "start_date", None)
+        end = getattr(entity, "end_date", None)
+        if isinstance(start, date):
+            self.vm.set_dates(start=start)
+        if isinstance(end, date):
+            self.vm.set_dates(end=end)
+            self.vm.set_no_end(False)
+        elif end is None:
+            self.vm.set_no_end(True)
+        description = getattr(entity, "description", None)
+        if description is not None:
+            self.vm.hosts["characteristics"].storage = (
+                getattr(description, "characteristics", "") or ""
+            )
+            self.vm.hosts["backstory"].storage = (
+                getattr(description, "backstory", "") or ""
+            )
+        for spec in self._extra_specs:
+            if spec.kind == "mention":
+                self.vm.hosts[spec.name].storage = getattr(entity, spec.name, "") or ""
         if self._has_image_field:
             self._image_id = getattr(entity, "image_id", None)
             self._viewer_original = load_entity_original(entity)
-            # Only needed as the viewer's fallback when the original is
-            # missing/corrupt — loaded at native preview size (≤512px, no
-            # further downscale), not the 280px slot shown in the card.
             self._viewer_preview = load_entity_preview(entity, slot_size=4096)
             self._display_pixmap(load_entity_preview(entity, slot_size=280))
-
-        # Music URL
-        music_url = getattr(entity, "music_url", None)
-        if not isinstance(music_url, str):
-            music_url = ""
-        self._set_music_url(music_url or "")
-
-        # Populate related entities
-        for attr, section in self._related_sections.items():
-            entities = getattr(entity, attr, [])
-            section.set_entities(list(entities))
+        music_url = getattr(entity, "music_url", "")
+        self.vm.set_music_url(music_url if isinstance(music_url, str) else "")
+        for attr, state in self.vm.sections.items():
+            state.set_entities(list(getattr(entity, attr, []) or []))
 
     def set_available_entities(self, attr: str, entities: list[Any]) -> None:
-        if attr in self._related_sections:
-            self._related_sections[attr].set_available(entities)
+        state = self.vm.sections.get(attr)
+        if state is not None:
+            state.set_available(entities)
 
     def add_related_entity(self, attr: str, entity: Any) -> None:
-        if attr in self._related_sections:
-            self._related_sections[attr].add_entity(entity)
+        state = self.vm.sections.get(attr)
+        if state is not None:
+            state.add_entity(entity)
 
     def get_data(self) -> dict:
         data = {
-            "name": self.name_input.text().strip(),
-            "rating": self.rating_input.value(),
-            "start_date": self.start_date_input.date().toPython(),
-            "end_date": None if self.no_end_date_cb.isChecked() else self.end_date_input.date().toPython(),
-            "characteristics": self.characteristics_input.getContent().strip(),
-            "backstory": self.backstory_input.getContent().strip(),
-            "music_url": self.music_input.text().strip(),
+            "name": self.vm.name.strip(),
+            "rating": self.vm._rating,
+            "start_date": self.vm._start_date,
+            "end_date": None if self.vm._no_end else self.vm._end_date,
+            "characteristics": self.vm.hosts["characteristics"].storage.strip(),
+            "backstory": self.vm.hosts["backstory"].storage.strip(),
+            "music_url": self.vm._music_url.strip(),
         }
-        for name, widget in self._extra_widgets.items():
-            data[name] = widget.getContent().strip()
+        for spec in self._extra_specs:
+            if spec.kind == "mention":
+                data[spec.name] = self.vm.hosts[spec.name].storage.strip()
         if self._has_image_field:
             data["image_id"] = self._image_id
-
-        # Related entity changes
-        if self._related_sections:
-            related_changes: dict[str, dict] = {}
-            for attr, section in self._related_sections.items():
-                related_changes[attr] = {"current_ids": section.get_current_ids()}
-            data["related_changes"] = related_changes
-
+        if self.vm.sections:
+            data["related_changes"] = {
+                attr: {"current_ids": state.get_current_ids()}
+                for attr, state in self.vm.sections.items()
+            }
         return data
 
-    def get_mention_edits(self) -> list[MentionTextEdit]:
-        """Return all MentionTextEdit instances for wiring search."""
-        edits = [self.characteristics_input, self.backstory_input]
-        edits.extend(self._extra_widgets.values())
-        return edits
-
-    def _make_ai_row(self, field: QWidget, field_name: str) -> QWidget:
-        """Wrap a field in a horizontal row reserving the right slot for the AI button."""
-        row = QWidget()
-        row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.addWidget(field, 1)
-        self._ai_row_layouts[field_name] = row_layout
-        return row
-
-    def _setup_ai_buttons(self) -> None:
-        et = self._entity_type
-        fields: list[tuple[QWidget, str, str]] = [
-            (self.name_input, "name", "Название"),
-            (self.characteristics_input, "characteristics", "Характеристики"),
-            (self.backstory_input, "backstory", "Предыстория"),
+    def get_mention_edits(self):
+        return [
+            self.vm.mention_proxies["characteristics"],
+            self.vm.mention_proxies["backstory"],
+            *[
+                self.vm.mention_proxies[spec.name]
+                for spec in self._extra_specs if spec.kind == "mention"
+            ],
         ]
-        for spec in self._extra_specs:
-            if spec.kind != "mention":
-                continue
-            fields.append((self._extra_widgets[spec.name], spec.name, spec.label))
 
-        for widget, field_name, field_label in fields:
-            btn = AiAssistButton(widget, et, field_name, field_label, theme=self._theme)
-            self._ai_buttons.append(btn)
-            # Single-line fields align to the middle; multi-line ones pin to the top edge.
-            align = (
-                Qt.AlignmentFlag.AlignVCenter
-                if isinstance(widget, QLineEdit)
-                else Qt.AlignmentFlag.AlignTop
-            )
-            self._ai_row_layouts[field_name].addWidget(btn, 0, align)
-
-    def get_ai_buttons(self) -> list[AiAssistButton]:
+    def get_ai_buttons(self):
         return list(self._ai_buttons)
 
-    def get_entity_button(self) -> EntityGenerateButton:
+    def get_entity_button(self):
         return self._entity_button
 
     def set_save_locked(self, locked: bool) -> None:
-        """"Save" is blocked for the whole time any generation is running."""
-        self._save_locked = locked
-        self.save_button.setEnabled(not locked)
-
-    def _is_generation_active(self) -> bool:
-        if any(b.is_generating for b in self._ai_buttons):
-            return True
-        return self._entity_button is not None and self._entity_button.is_cancelling
+        self.vm.set_save_locked(locked)
 
     def set_close_guard(self, fn) -> None:
-        """Wiring-provided callback for the close paths (X / «Отмена»).
-
-        «Отмена» always goes through it; X / close events — only while a
-        generation is active. The wiring's guard decides: outside generation
-        it simply rejects; in flight it may confirm, then cancel + close.
-        """
         self._close_guard = fn
 
+    def _is_generation_active(self) -> bool:
+        return any(button.is_generating for button in self._ai_buttons) or (
+            self._entity_button.is_cancelling
+        )
+
+    def _on_save(self) -> None:
+        if self._saving or not self.vm.saveEnabled:
+            return
+        self._saving = True
+        self.vm.set_saving(True)
+        self.saved.emit(self.get_data())
+
+    def finish_saving(self, success: bool) -> None:
+        self._saving = False
+        self.vm.set_saving(False)
+        if success:
+            self.accept()
+
+    def _on_cancel_clicked(self) -> None:
+        if self._saving:
+            return
+        if self._close_guard is not None:
+            self._close_guard()
+        else:
+            super().reject()
+
+    def reject(self) -> None:
+        if self._saving or self._is_generation_active():
+            return
+        super().reject()
+
     def closeEvent(self, event) -> None:
+        if self._saving:
+            event.ignore()
+            return
         if self._is_generation_active() and self._close_guard is not None:
             event.ignore()
             self._close_guard()
@@ -541,30 +624,63 @@ class EntityCardDialog(QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:
-        # ESC must not close the dialog while a generation is in flight.
         if (
             event.type() == QEvent.Type.KeyPress
             and event.key() == Qt.Key.Key_Escape
-            and self._is_generation_active()
+            and (self._saving or self._is_generation_active())
         ):
             event.ignore()
             return
         super().keyPressEvent(event)
 
-    def _on_cancel_clicked(self) -> None:
-        # D5: the guard handles both cases — during a generation it may
-        # confirm and cancel the wave; outside generation it just rejects.
-        if self._close_guard is not None:
-            self._close_guard()
+    def _open_date_popup(
+        self, which: str, x: float, y: float, width: float, height: float
+    ) -> None:
+        self._date_target = which
+        top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
+        anchor = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
+        current = self.vm._start_date if which == "start" else self.vm._end_date
+        self.date_popup.open_at(anchor, current)
+
+    def _set_selected_date(self, selected) -> None:
+        if self._date_target == "start":
+            self.vm.set_dates(start=selected)
         else:
-            super().reject()
+            self.vm.set_dates(end=selected)
 
-    def reject(self) -> None:
-        # Safety net for direct reject() calls from outside the close paths.
-        if self._is_generation_active():
+    def _open_related_picker(self, attr: str, label: str) -> None:
+        state = self.vm.sections[attr]
+        candidates = state.candidates()
+        if not candidates:
             return
-        super().reject()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Выберите {label.lower()}")
+        dialog.setMinimumSize(300, 400)
+        layout = QVBoxLayout(dialog)
+        items = QListWidget(dialog)
+        items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for entity in candidates:
+            item = QListWidgetItem(getattr(entity, "name", str(entity)))
+            item.setData(256, getattr(entity, "id", None))
+            items.addItem(item)
+        layout.addWidget(items)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_ids = {item.data(256) for item in items.selectedItems()}
+            for entity in candidates:
+                if getattr(entity, "id", None) in selected_ids:
+                    state.add_entity(entity)
 
-    def _on_save(self) -> None:
-        self.saved.emit(self.get_data())
-        super().accept()
+    def _release_island(self) -> None:
+        clear_dialog_pixmap(self._image_key)
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

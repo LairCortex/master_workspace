@@ -1,13 +1,14 @@
 """Tests for Views — TDD: tests first with pytest-qt."""
 from datetime import date
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import json
 import zipfile
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox, QSplitter
 
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.detail_panel import DetailPanel
@@ -16,6 +17,8 @@ from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
+from app.presentation.viewmodels.search_viewmodel import SearchViewModel
+from tests.presentation.qml_helpers import find_item
 
 
 @pytest.fixture(scope="session")
@@ -67,6 +70,33 @@ class TestMainWindow:
         )
         qtbot.addWidget(w)
         assert w.detail_panel is not None
+
+    def test_main_panels_keep_native_shell_geometry_and_public_contracts(self, qtbot):
+        w = MainWindow(
+            timeline_vm=MagicMock(),
+            detail_vm=MagicMock(),
+            search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        layout = w.centralWidget().layout()
+        splitter = layout.itemAt(1).widget()
+        assert layout.itemAt(0).widget() is w.search_bar
+        assert isinstance(splitter, QSplitter)
+        assert [splitter.widget(i) for i in range(3)] == [
+            w.timeline_widget, w.detail_panel, w.world_snapshot,
+        ]
+        assert [splitter.widget(i).minimumWidth() for i in range(3)] == [220, 280, 280]
+        assert [
+            splitter.widget(i).sizePolicy().horizontalStretch() for i in range(3)
+        ] == [1, 1, 1]
+        assert hasattr(w.search_bar, "search_requested")
+        assert hasattr(w.search_bar, "result_selected")
+        assert callable(w.detail_panel.show_event)
+        assert callable(w.detail_panel.clear)
+        assert hasattr(w.detail_panel, "entity_clicked")
+        assert hasattr(w.world_snapshot, "snapshot_requested")
+        assert callable(w.world_snapshot.populate)
+        assert hasattr(w.world_snapshot, "entity_clicked")
 
     def test_main_window_game_name_in_title(self, qtbot):
         w = MainWindow(
@@ -169,8 +199,7 @@ class TestMainWindow:
         class Spy(mw._DocViewerDialog):
             def __init__(self, title, file_path, parent=None, theme=None):
                 super().__init__(title, file_path, parent, theme=theme)
-                edit = self.findChild(QPlainTextEdit)
-                captured.append((title, edit.toPlainText()))
+                captured.append((title, self.vm.text))
 
             def open(self):
                 return True
@@ -189,8 +218,7 @@ class TestMainWindow:
 
         dlg = _DocViewerDialog("T", tmp_path / "missing.md")
         qtbot.addWidget(dlg)
-        edit = dlg.findChild(QPlainTextEdit)
-        assert "Файл не найден" in edit.toPlainText()
+        assert "Файл не найден" in dlg.vm.text
 
 
 class TestMainWindowLogToggleCleanup:
@@ -751,161 +779,82 @@ class TestDetailPanel:
         event.items = []
         event.locations = []
         w.show_event(event)
-        assert "Battle" in w.title_label.text()
+        assert "Battle" in w.vm.title
 
     def test_detail_panel_clear(self, qtbot):
         vm = MagicMock()
         w = DetailPanel(vm)
         qtbot.addWidget(w)
         w.clear()
-        assert w.title_label.text() == ""
+        assert w.vm.title == ""
 
 
 # ── SearchBar ────────────────────────────────────────────────────────────
 
 class TestSearchBar:
+    @staticmethod
+    def _vm(results=None):
+        return SearchViewModel(
+            SimpleNamespace(search_all=AsyncMock(return_value=results or {}))
+        )
+
     def test_search_bar_creates(self, qtbot):
-        vm = MagicMock()
-        w = SearchBar(vm)
+        w = SearchBar(self._vm())
         qtbot.addWidget(w)
-        assert w is not None
+        assert w.quick.rootObject().objectName() == "searchBarRoot"
 
     def test_search_bar_has_input(self, qtbot):
-        vm = MagicMock()
-        w = SearchBar(vm)
+        w = SearchBar(self._vm())
         qtbot.addWidget(w)
-        assert w.search_input is not None
+        assert find_item(w.quick, "searchInput") is not None
 
     def test_search_bar_has_results_list(self, qtbot):
-        vm = MagicMock()
-        w = SearchBar(vm)
+        w = SearchBar(self._vm())
         qtbot.addWidget(w)
-        assert w.results_list is not None
-        assert w.results_list.isHidden()
+        assert find_item(w.quick, "searchResultsList").property("visible") is False
 
     def test_search_bar_emits_on_return(self, qtbot):
-        vm = MagicMock()
+        vm = self._vm()
         w = SearchBar(vm)
         qtbot.addWidget(w)
-        w.search_input.setText("Battle")
+        field = find_item(w.quick, "searchInput")
+        field.setProperty("text", "Battle")
         with qtbot.waitSignal(w.search_requested, timeout=1000):
-            w.search_input.returnPressed.emit()
+            field.accepted.emit()
 
     def test_search_bar_no_emit_for_1_char(self, qtbot):
-        vm = MagicMock()
+        vm = self._vm()
         w = SearchBar(vm)
         qtbot.addWidget(w)
-        w.search_input.setText("B")
         emitted = []
         w.search_requested.connect(lambda q: emitted.append(q))
-        w._fire_search()
+        vm.setQuery("B")
+        vm.requestSearch()
         assert emitted == []
 
     def test_search_bar_emits_for_2_chars(self, qtbot):
-        vm = MagicMock()
+        vm = self._vm()
         w = SearchBar(vm)
         qtbot.addWidget(w)
-        w.search_input.setText("Ba")
+        vm.setQuery("Ba")
         with qtbot.waitSignal(w.search_requested, timeout=1000):
-            w._fire_search()
+            vm.requestSearch()
 
     def test_debounce_timer_starts_on_2_chars(self, qtbot):
-        vm = MagicMock()
+        vm = self._vm()
         w = SearchBar(vm)
         qtbot.addWidget(w)
-        w._on_text_changed("Ba")
-        assert w._debounce_timer.isActive()
+        vm.setQuery("Ba")
+        assert vm.debounceActive
 
     def test_debounce_timer_stops_on_1_char(self, qtbot):
-        vm = MagicMock()
+        vm = self._vm()
         w = SearchBar(vm)
         qtbot.addWidget(w)
-        w._on_text_changed("Ba")
-        assert w._debounce_timer.isActive()
-        w._on_text_changed("B")
-        assert not w._debounce_timer.isActive()
-        assert w.results_list.isHidden()
-
-    def test_show_results_grouped(self, qtbot):
-        vm = MagicMock()
-        event = MagicMock()
-        event.name = "Battle"
-        event.id = 1
-        event.start_date = date(1200, 1, 1)
-        org = MagicMock()
-        org.name = "Guild"
-        org.id = 2
-        org.start_date = date(1000, 1, 1)
-        vm.results = {
-            "events": [event],
-            "organizations": [org],
-            "characters": [],
-            "items": [],
-            "locations": [],
-        }
-        w = SearchBar(vm)
-        qtbot.addWidget(w)
-        w.search_input.setText("Ba")
-        w._show_results()
-        assert not w.results_list.isHidden()
-        # 2 headers + 2 items = 4
-        assert w.results_list.count() == 4
-
-    def test_show_results_empty(self, qtbot):
-        vm = MagicMock()
-        vm.results = {
-            "events": [], "organizations": [], "characters": [],
-            "items": [], "locations": [],
-        }
-        w = SearchBar(vm)
-        qtbot.addWidget(w)
-        w.search_input.setText("xyz")
-        w._show_results()
-        assert not w.results_list.isHidden()
-        assert w.results_list.count() == 1  # "Ничего не найдено"
-
-    def test_result_selected_signal_on_click(self, qtbot):
-        vm = MagicMock()
-        event = MagicMock()
-        event.name = "Battle"
-        event.id = 42
-        event.start_date = date(1200, 1, 1)
-        vm.results = {
-            "events": [event],
-            "organizations": [], "characters": [],
-            "items": [], "locations": [],
-        }
-        w = SearchBar(vm)
-        qtbot.addWidget(w)
-        w.search_input.setText("Ba")
-        w._show_results()
-        # Find the clickable item (skip header at index 0)
-        result_item = w.results_list.item(1)
-        with qtbot.waitSignal(w.result_selected, timeout=1000) as blocker:
-            w.results_list.itemClicked.emit(result_item)
-        assert blocker.args == ["event", 42]
-        assert w.results_list.isHidden()
-
-    def test_header_click_does_not_emit(self, qtbot):
-        vm = MagicMock()
-        event = MagicMock()
-        event.name = "Battle"
-        event.id = 1
-        event.start_date = date(1200, 1, 1)
-        vm.results = {
-            "events": [event],
-            "organizations": [], "characters": [],
-            "items": [], "locations": [],
-        }
-        w = SearchBar(vm)
-        qtbot.addWidget(w)
-        w.search_input.setText("Ba")
-        w._show_results()
-        header_item = w.results_list.item(0)
-        emitted = []
-        w.result_selected.connect(lambda t, i: emitted.append((t, i)))
-        w._on_result_clicked(header_item)
-        assert emitted == []
+        vm.setQuery("Ba")
+        vm.setQuery("B")
+        assert not vm.debounceActive
+        assert find_item(w.quick, "searchResultsList").property("visible") is False
 
 
     def test_detail_panel_no_edit_button(self, qtbot):
@@ -1194,27 +1143,27 @@ class TestRatingColor:
     """W2b: the endpoints come from ``color.rating.low/high``, read via runtime."""
 
     def test_rating_1_grey(self, tmp_path):
-        from app.presentation.views.detail_panel import rating_to_color
+        from app.presentation.theme.rating import rating_to_color
         c = rating_to_color(1, _rating_runtime(tmp_path))
         # At rating 1 red ≈ green ≈ blue (grey-ish)
         assert abs(c.red() - c.green()) <= 5
         assert abs(c.green() - c.blue()) <= 5
 
     def test_rating_20_red_dominant(self, tmp_path):
-        from app.presentation.views.detail_panel import rating_to_color
+        from app.presentation.theme.rating import rating_to_color
         c = rating_to_color(20, _rating_runtime(tmp_path))
         assert c.red() > c.green()
         assert c.red() > c.blue()
 
     def test_rating_20_higher_alpha(self, tmp_path):
-        from app.presentation.views.detail_panel import rating_to_color
+        from app.presentation.theme.rating import rating_to_color
         rt = _rating_runtime(tmp_path)
         c1 = rating_to_color(1, rt)
         c20 = rating_to_color(20, rt)
         assert c20.alpha() > c1.alpha()
 
     def test_mid_rating(self, tmp_path):
-        from app.presentation.views.detail_panel import rating_to_color
+        from app.presentation.theme.rating import rating_to_color
         c = rating_to_color(10, _rating_runtime(tmp_path))
         assert c.red() >= c.green()
         assert c.alpha() > 60
@@ -1222,7 +1171,7 @@ class TestRatingColor:
     def test_endpoints_are_the_runtime_tokens(self, tmp_path):
         from PySide6.QtGui import QColor
 
-        from app.presentation.views.detail_panel import rating_to_color
+        from app.presentation.theme.rating import rating_to_color
         rt = _rating_runtime(tmp_path)
         low = QColor(rt.tokens["color.rating.low"][rt.theme])
         high = QColor(rt.tokens["color.rating.high"][rt.theme])
@@ -1233,7 +1182,7 @@ class TestRatingColor:
 
     def test_no_runtime_paints_nothing(self):
         # Off-skin (no runtime / broken tokens): no invented content color.
-        from app.presentation.views.detail_panel import rating_to_color
+        from app.presentation.theme.rating import rating_to_color
         assert rating_to_color(20).alpha() == 0
 
 
@@ -1258,20 +1207,21 @@ class TestWorldSnapshotWidget:
     def test_creates(self, qtbot):
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        assert w.tree is not None
-        assert w.date_edit is not None
-        assert w.show_button is not None
+        assert w.quick.rootObject().objectName() == "worldSnapshotRoot"
+        assert w.vm.rowModel is not None
 
     def test_empty_state(self, qtbot):
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-        assert w.tree.topLevelItemCount() == 1  # placeholder
+        assert w.vm.rowModel.rowCount() == 0
+        assert "Выберите дату" in w.vm.emptyText
 
     def test_populate_no_events(self, qtbot):
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([], date(1200, 1, 1))
-        assert w.tree.topLevelItemCount() == 1  # "no events" placeholder
+        assert w.vm.rowModel.rowCount() == 0
+        assert w.vm.emptyText == "На эту дату нет активных событий"
 
     def test_populate_with_events(self, qtbot):
         loc = _mock_entity(1, "Деревня", "location", rating=5)
@@ -1292,21 +1242,15 @@ class TestWorldSnapshotWidget:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([event], date(1200, 1, 1))
-
-        # Events section + 1 location = 2 top-level items
-        assert w.tree.topLevelItemCount() >= 2
+        assert w.vm.rowModel.rowCount() >= 4
 
     def test_snapshot_requested_signal(self, qtbot):
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
-
-        from PySide6.QtCore import QDate
-        w.date_edit.setDate(QDate(1200, 6, 15))
-
+        w.vm.set_date(date(1200, 6, 15))
         received = []
         w.snapshot_requested.connect(lambda d: received.append(d))
-        w.show_button.click()
-
+        w.vm.requestShow()
         assert len(received) == 1
         assert received[0] == date(1200, 6, 15)
 
@@ -1328,22 +1272,13 @@ class TestWorldSnapshotWidget:
 
         received = []
         w.entity_clicked.connect(lambda t, i: received.append((t, i)))
-
-        # Find the location node inside the "Локации" section and double-click it
-        def _find_node(parent_item, target_data):
-            for ci in range(parent_item.childCount()):
-                child = parent_item.child(ci)
-                if child.data(0, Qt.ItemDataRole.UserRole) == target_data:
-                    return child
-            return None
-
-        for i in range(w.tree.topLevelItemCount()):
-            section = w.tree.topLevelItem(i)
-            node = _find_node(section, ("location", 1))
-            if node:
-                w.tree.itemDoubleClicked.emit(node, 0)
-                break
-
+        roles = {name.decode(): role for role, name in w.vm.rowModel.roleNames().items()}
+        target = next(
+            index for index in range(w.vm.rowModel.rowCount())
+            if w.vm.rowModel.data(w.vm.rowModel.index(index, 0), roles["type"]) == "location"
+            and w.vm.rowModel.data(w.vm.rowModel.index(index, 0), roles["id"]) == 1
+        )
+        w.vm.select(target)
         assert len(received) == 1
         assert received[0] == ("location", 1)
 
@@ -1362,11 +1297,10 @@ class TestWorldSnapshotWidget:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([event], date(1200, 1, 1))
-        assert w.tree.topLevelItemCount() >= 2
-
-        w.clear_button.click()
-        # After clear: placeholder only
-        assert w.tree.topLevelItemCount() == 1
+        assert w.vm.rowModel.rowCount() >= 2
+        w.vm.clear()
+        assert w.vm.rowModel.rowCount() == 0
+        assert "Выберите дату" in w.vm.emptyText
 
     def test_stats_label(self, qtbot):
         loc = _mock_entity(1, "Loc", "location")
@@ -1386,8 +1320,8 @@ class TestWorldSnapshotWidget:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([event], date(1200, 1, 1))
-        assert "Персонажей: 1" in w.stats_label.text()
-        assert "Локаций: 1" in w.stats_label.text()
+        assert "Персонажей: 1" in w.vm.statsText
+        assert "Локаций: 1" in w.vm.statsText
 
     def test_main_window_has_snapshot(self, qtbot):
         vm = MagicMock()
@@ -1402,5 +1336,5 @@ class TestWorldSnapshotWidget:
         qtbot.addWidget(w)
         received = []
         w.snapshot_requested.connect(lambda d: received.append(d))
-        w.show_all_button.click()
+        w.vm.requestShowAll()
         assert received == [None]

@@ -64,13 +64,15 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
     # Click the bar on the scale → detail panel loads the event.
     helpers.click_timeline_event(window, "Битва у моста")
     detail = window.detail_panel
-    await wait_for(lambda: detail.title_label.text() == "Битва у моста")
-    assert detail.date_label.text()
-    await wait_for(lambda: "Генерал Вард" in helpers.detail_panel_names(detail.char_list))
+    await wait_for(lambda: detail.vm.title == "Битва у моста")
+    assert detail.vm.dateText
+    await wait_for(lambda: "Генерал Вард" in helpers.detail_panel_names(detail.vm.characters))
 
-    # Edit the linked character from the detail panel (its card).
-    ent_item = detail.char_list.item(0)
-    helpers.double_click_item(detail.char_list, ent_item)
+    # Edit the linked character through the QML row activation seam.
+    detail.vm.activate(
+        "character",
+        helpers.detail_panel_entity_id(detail.vm.characters, "Генерал Вард"),
+    )
     await wait_for(lambda: [
         d for d in window.findChildren(EntityCardDialog)
         if d.isVisible() and d.name_input.text() == "Генерал Вард"
@@ -87,7 +89,10 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
     )) == 1)
     await helpers.wait_until_settled()
     # Detail panel refreshed with the updated entity
-    await wait_for(lambda: "Генерал Старый Вард" in helpers.detail_panel_names(detail.char_list))
+    await wait_for(
+        lambda: "Генерал Старый Вард"
+        in helpers.detail_panel_names(detail.vm.characters)
+    )
 
     # Edit the event itself (double-click on its bar → renamed on the scale and in the panel).
     helpers.double_click_timeline_event(window, "Битва у моста")
@@ -98,7 +103,7 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
     edit_dialog.name_input.setText("Битва у разрушенного моста")
     edit_dialog.save_button.click()
     await wait_for(lambda: helpers.has_event_named(window, "Битва у разрушенного моста"))
-    await wait_for(lambda: detail.title_label.text() == "Битва у разрушенного моста")
+    await wait_for(lambda: detail.vm.title == "Битва у разрушенного моста")
 
 
 # ── Popup entity creation (related-entity-creation spec) ─────────────────

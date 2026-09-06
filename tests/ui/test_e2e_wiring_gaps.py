@@ -78,7 +78,7 @@ async def test_window_and_unknown_type_guards(app, wait_for):
     # Unknown id on selection: the detail panel is cleared, not left stale
     window.timeline_widget.event_selected.emit(999999)
     await helpers.wait_until_settled()
-    assert window.detail_panel.title_label.text() == "" or not window.detail_panel.title_label.text()
+    assert not window.detail_panel.vm.title
 
     # Entity click with an unknown type or id: guards, no card
     window.detail_panel.entity_clicked.emit("no-such-type", 1)
@@ -104,7 +104,7 @@ async def test_window_out_of_the_selected_event_clears_every_layer(app, wait_for
     await wait_for(lambda: len(canvas.events) == 1)
 
     event_id = helpers.click_timeline_event(window, "Война")
-    await wait_for(lambda: "Война" in window.detail_panel.title_label.text())
+    await wait_for(lambda: "Война" in window.detail_panel.vm.title)
     assert canvas.selected_id == event_id
 
     window.timeline_widget.window_changed.emit(
@@ -115,7 +115,7 @@ async def test_window_out_of_the_selected_event_clears_every_layer(app, wait_for
 
     # canvas, view model and detail panel agree: nothing is selected
     assert canvas.selected_id is None
-    assert window.detail_panel.title_label.text() == ""
+    assert window.detail_panel.vm.title == ""
     assert application._wiring._timeline_vm.selected_event is None
 
 
@@ -452,11 +452,15 @@ async def test_popup_create_failure_rolls_back_and_notifies(
     dialog.name_input.setText("Сбой")
     dialog.characteristics_input.setContent("Текст")
 
-    await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Не сохранится"
+    sub = await helpers.create_related_via_popup(
+        window, wait_for, modal_qdialog, dialog, "characters", "character",
+        "Не сохранится", expect_success=False,
     )
-    # The (failing) save task already ran before the popup closed.
+    # Save failure preserves the popup data and unlocks retry.
     await helpers.wait_until_settled()
+    assert sub.isVisible()
+    assert sub.name_input.text() == "Не сохранится"
+    assert sub.save_button.isEnabled()
 
     # Nothing attached to the parent section, nothing persisted.
     assert dialog.char_tab.list_widget.count() == 0

@@ -1,123 +1,32 @@
-"""LLM setup wizard — connection, world prompt and field prompts."""
+"""LLM setup wizard — QML island (R3 pack 2) in the old QDialog facade.
+
+The dialog keeps its public contract (``saved``, ``get_connection``,
+``get_world_prompt``, ``get_field_prompts``, ``page_count``,
+``finish_saving``) and stays the effect boundary: the HTTP client, the
+provider and the connection check live here, the island only shows the view
+model and emits synchronous requests (design D2/D4).
+"""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QStackedWidget, QTextEdit,
-    QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import QTimer, QUrl, Signal
+from PySide6.QtQml import QQmlComponent, QQmlContext
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout, QWidget
 
-from app.application.services.llm_service import FIELD_CONFIG, FIELD_LABELS
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
 from app.infrastructure.llm.errors import LlmError
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
-from app.presentation.theme.catalog import attach_theme, hint, set_role, title
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.llm_setup_view_model import LlmSetupViewModel
 
-#: Restores the ``margin-bottom: 8px`` the inline hints carried (the catalog
-#: hint rule is generic and does not repeat it) — layout spacing, not style.
-_HINT_BOTTOM_GAP = 8
-
-_ENTITY_LABELS: dict[str, str] = {
-    "event": "События",
-    "organization": "Организации",
-    "character": "Персонажи",
-    "item": "Предметы",
-    "location": "Локации",
-}
-
-_ENTITY_ORDER = ["event", "organization", "character", "item", "location"]
-
-_ENDPOINT_PLACEHOLDER = (
-    "Базовый URL до /v1, например https://api.openai.com/v1"
-    " или http://localhost:11434/v1 (Ollama)"
-)
-
-_FIELD_PLACEHOLDERS: dict[str, dict[str, str]] = {
-    "event": {
-        "name": "Короткое название события в духе мира",
-        "characteristics": "Опиши ключевые характеристики события",
-        "backstory": "Напиши предысторию не менее 20 слов",
-    },
-    "organization": {
-        "name": "Название организации, подходящее сеттингу",
-        "characteristics": "Основные характеристики организации",
-        "backstory": "Предыстория организации",
-        "tasks": "Текущие задачи и цели организации",
-    },
-    "character": {
-        "name": "Имя персонажа, подходящее миру",
-        "characteristics": "Внешность и ключевые черты персонажа",
-        "backstory": "Предыстория персонажа не менее 20 слов",
-        "personality": "Черты характера и особенности поведения",
-        "tasks": "Текущие цели и задачи персонажа",
-    },
-    "item": {
-        "name": "Название предмета в духе мира",
-        "characteristics": "Описание и свойства предмета",
-        "backstory": "История предмета",
-    },
-    "location": {
-        "name": "Название локации, подходящее сеттингу",
-        "characteristics": "Описание и особенности локации",
-        "backstory": "История локации",
-        "tasks": "Что происходит в этой локации",
-    },
-}
-
-
-class _FieldPromptsPage(QWidget):
-    """One page of the wizard for configuring field prompts of a single entity type."""
-
-    def __init__(self, entity_type: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._entity_type = entity_type
-        self._inputs: dict[str, QLineEdit] = {}
-        self._init_ui()
-
-    def _init_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        layout.addWidget(title(
-            f"Промты полей — {_ENTITY_LABELS.get(self._entity_type, self._entity_type)}"
-        ))
-
-        page_hint = hint(
-            "Для каждого поля можно задать инструкцию для AI. "
-            "Пустое поле — используется только название поля."
-        )
-        page_hint.setWordWrap(True)
-        layout.addWidget(page_hint)
-        # The old inline hint carried ``margin-bottom: 8px``; the catalog hint
-        # rule is generic, so the gap is restored as layout spacing.
-        layout.addSpacing(_HINT_BOTTOM_GAP)
-
-        form = QFormLayout()
-        fields = FIELD_CONFIG.get(self._entity_type, [])
-        placeholders = _FIELD_PLACEHOLDERS.get(self._entity_type, {})
-        for field_name in fields:
-            inp = QLineEdit()
-            inp.setPlaceholderText(placeholders.get(field_name, ""))
-            self._inputs[field_name] = inp
-            label = FIELD_LABELS.get(field_name, field_name)
-            form.addRow(f"{label}:", inp)
-        layout.addLayout(form)
-        layout.addStretch()
-
-    def get_prompts(self) -> dict[str, str]:
-        return {name: inp.text().strip() for name, inp in self._inputs.items()}
-
-    def set_prompts(self, prompts: dict[str, str]) -> None:
-        for name, text in prompts.items():
-            if name in self._inputs:
-                self._inputs[name].setText(text)
-
-
-
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "LlmSetupRoot.qml")
 
 
 class LlmSetupDialog(QDialog):
@@ -135,23 +44,46 @@ class LlmSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Настройка AI-ассистента (LLM)")
         self.setMinimumSize(620, 480)
-        self._theme = theme
-        self._initial_config = config or LlmConfig()
-        self._world_prompt_initial = world_prompt
-        self._field_prompts_initial = field_prompts or {}
+        self._theme = theme if theme is not None else get_default_theme()
         self._http = http
-        self._field_pages: dict[str, _FieldPromptsPage] = {}
         self._saving = False
-        self._init_ui()
-        self._apply_theme()
-        self._update_nav_buttons()
-        self._update_check_button()
 
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
+        initial = config or LlmConfig()
+        self.vm = LlmSetupViewModel(
+            endpoint=initial.base_url,
+            model=initial.model,
+            api_key=initial.api_key,
+            world_prompt=world_prompt,
+            field_prompts=field_prompts,
+            parent=self,
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self._palette = QmlPalette(self._theme, parent=self)
+        # Keep the context on the dialog, not on the view: during teardown the
+        # QML root must die with ``quick`` before its context is invalidated.
+        self._context = QQmlContext(engine.rootContext(), self)
+        self._context.setContextProperty("llmSetupVm", self.vm)
+        self._context.setContextProperty("islandPalette", self._palette)
+        source = QUrl.fromLocalFile(ROOT_QML)
+        self._component = QQmlComponent(engine, source, self)
+        root = self._component.create(self._context)
+        assert root is not None, self._component.errors()
+        self.quick.setContent(source, self._component, root)
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = self.quick.rootObject()
+
+        self.vm.checkRequested.connect(lambda: asyncio.ensure_future(self._on_check()))
+        self.vm.saveRequested.connect(self._on_save)
+
+    # ---- closing is blocked while the async save runs (spec D4) ----
 
     def reject(self) -> None:
         if self._saving:
@@ -171,6 +103,7 @@ class LlmSetupDialog(QDialog):
         after «Сохранить» cannot race with the write.
         """
         self._saving = False
+        self.vm.set_saving(False)
         if success:
             self.accept()
         else:
@@ -180,187 +113,26 @@ class LlmSetupDialog(QDialog):
                 "Не удалось сохранить настройки. Попробуйте ещё раз.",
             )
 
-    def _init_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it
-        # (the W1 launcher / W2a month-dialog pattern).
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        self.chrome = QWidget()
-        self.chrome.setObjectName("llmSetupChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        root = QVBoxLayout(self.chrome)
-        root.setContentsMargins(11, 11, 11, 11)
-
-        self._stack = QStackedWidget()
-
-        # Page 0: connection
-        self._connection_page = self._build_connection_page()
-        self._stack.addWidget(self._connection_page)
-
-        # Page 1: world prompt
-        self._world_page = self._build_world_prompt_page()
-        self._stack.addWidget(self._world_page)
-
-        # Pages 2-6: field prompts per entity type
-        for etype in _ENTITY_ORDER:
-            page = _FieldPromptsPage(etype)
-            if etype in self._field_prompts_initial:
-                page.set_prompts(self._field_prompts_initial[etype])
-            self._field_pages[etype] = page
-            self._stack.addWidget(page)
-
-        # Page 7: warnings
-        self._warnings_page = self._build_warnings_page()
-        self._stack.addWidget(self._warnings_page)
-
-        root.addWidget(self._stack, 1)
-
-        # Navigation
-        nav = QHBoxLayout()
-        self._back_btn = QPushButton("Назад")
-        self._back_btn.clicked.connect(self._go_back)
-        self._next_btn = QPushButton("Далее")
-        self._next_btn.clicked.connect(self._go_next)
-        self._save_btn = QPushButton("Сохранить и закрыть")
-        self._save_btn.clicked.connect(self._on_save)
-        self._save_btn.hide()
-        nav.addWidget(self._back_btn)
-        nav.addStretch()
-        nav.addWidget(self._next_btn)
-        nav.addWidget(self._save_btn)
-        root.addLayout(nav)
-
-    def _build_connection_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        layout.addWidget(title("Шаг 1: Подключение к LLM"))
-
-        endpoint_hint = hint(
-            "Поддерживаются любые OpenAI-совместимые серверы:\n"
-            "• OpenAI: https://api.openai.com/v1\n"
-            "• Ollama: http://localhost:11434/v1\n"
-            "• vLLM: http://host:8000/v1\n"
-            "• LM Studio: http://localhost:1234/v1"
-        )
-        endpoint_hint.setWordWrap(True)
-        layout.addWidget(endpoint_hint)
-        layout.addSpacing(_HINT_BOTTOM_GAP)
-
-        form = QFormLayout()
-
-        self._endpoint_edit = QLineEdit()
-        self._endpoint_edit.setPlaceholderText(_ENDPOINT_PLACEHOLDER)
-        self._endpoint_edit.setText(self._initial_config.base_url)
-        self._endpoint_edit.textChanged.connect(self._update_check_button)
-        form.addRow("Endpoint:", self._endpoint_edit)
-
-        self._model_edit = QLineEdit()
-        self._model_edit.setPlaceholderText("Название модели, например gpt-4o-mini или llama3")
-        self._model_edit.setText(self._initial_config.model)
-        self._model_edit.textChanged.connect(self._update_check_button)
-        form.addRow("Модель:", self._model_edit)
-
-        self._key_edit = QLineEdit()
-        self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_edit.setPlaceholderText("Ключ API — необязательно для локальных серверов")
-        self._key_edit.setText(self._initial_config.api_key)
-        form.addRow("Ключ API:", self._key_edit)
-
-        layout.addLayout(form)
-
-        self._check_btn = QPushButton("Проверить соединение")
-        self._check_btn.setMinimumHeight(36)
-        self._check_btn.clicked.connect(lambda: asyncio.ensure_future(self._on_check()))
-        layout.addWidget(self._check_btn)
-
-        self._check_label = QLabel("")
-        self._check_label.setWordWrap(True)
-        layout.addWidget(self._check_label)
-
-        layout.addStretch()
-        return page
-
-    def _build_world_prompt_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        layout.addWidget(title("Шаг 2: Описание мира"))
-
-        world_hint = hint(
-            "Опишите мир, в котором вы водите: сеттинг, эпоха, стиль, ключевые особенности.\n"
-            "Этот текст будет основным контекстом для всех AI-генераций."
-        )
-        world_hint.setWordWrap(True)
-        layout.addWidget(world_hint)
-        layout.addSpacing(_HINT_BOTTOM_GAP)
-
-        self._world_prompt_edit = QTextEdit()
-        self._world_prompt_edit.setPlaceholderText(
-            "Опишите ваш мир: сеттинг, эпоха, стиль, ключевые особенности..."
-        )
-        self._world_prompt_edit.setPlainText(self._world_prompt_initial)
-        layout.addWidget(self._world_prompt_edit, 1)
-        return page
-
-    def _build_warnings_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        layout.addWidget(title("Информация"))
-
-        warnings = [
-            "• LLM будет редактировать и дополнять ваш текст на основе описания мира.",
-            "• Генерация выполняется по одному полю за раз. Если запущено несколько — "
-            "они встанут в очередь и будут обработаны последовательно.",
-            "• Во время генерации поле будет заблокировано, а окно нельзя будет закрыть.",
-            "• Ключ API хранится в локальном файле ~/.nri_manager/llm_config.json "
-            "(права 0600, только текущий пользователь).",
-        ]
-        for text in warnings:
-            lbl = QLabel(text)
-            lbl.setWordWrap(True)
-            layout.addWidget(lbl)
-            # The old inline style added 6px under each warning line; restored
-            # as spacing (layout, not style).
-            layout.addSpacing(6)
-
-        layout.addStretch()
-        return page
-
-    def _update_check_button(self, *_args) -> None:
-        self._check_btn.setEnabled(bool(self._endpoint_edit.text().strip()) and bool(self._model_edit.text().strip()))
+    # ---- values ----
 
     def get_connection(self) -> LlmConfig:
         return LlmConfig(
-            base_url=self._endpoint_edit.text().strip(),
-            model=self._model_edit.text().strip(),
-            api_key=self._key_edit.text().strip(),
+            base_url=self.vm.endpoint.strip(),
+            model=self.vm.model.strip(),
+            api_key=self.vm.apiKey.strip(),
         )
 
-    def _set_check_status(self, text: str, status: str | None) -> None:
-        """Status line colors come from the status-ok/status-error roles.
+    def get_world_prompt(self) -> str:
+        return self.vm.worldPrompt.strip()
 
-        The role is the whole story: inside the attached chrome the compiled
-        QSS paints the text. When the dialog runs off-skin (no runtime or its
-        tokens are invalid) the label simply keeps the OS palette — asking a
-        process-wide runtime for the one status color while the rest of the
-        dialog stays unthemed is the half-applied theme D7 forbids.
-        """
-        label = self._check_label
-        label.setStyleSheet("")
-        if status is None:
-            # In-progress: neutral hint color inside chrome, default fg outside.
-            set_role(label, "hint")
-            label.setText(text)
-            return
-        set_role(label, "status-ok" if status == "ok" else "status-error")
-        label.setText(text)
+    def get_field_prompts(self) -> dict[str, dict[str, str]]:
+        return self.vm.field_prompts_dict()
+
+    @property
+    def page_count(self) -> int:
+        return self.vm.pageCount
+
+    # ---- effects the island only asks for ----
 
     async def _on_check(self) -> None:
         """Run a minimal test request (1 token) against the entered settings."""
@@ -368,37 +140,13 @@ class LlmSetupDialog(QDialog):
         if not config.is_complete:
             return
 
-        self._check_btn.setEnabled(False)
-        self._set_check_status("Проверка соединения…", None)
-
+        self.vm.set_check_running("Проверка соединения…")
         provider = RemoteLlmProvider(config, self._http)
         try:
             await provider.check_connection()
-            self._set_check_status("Соединение установлено", "ok")
+            self.vm.set_check_result("Соединение установлено", "ok")
         except LlmError as exc:
-            self._set_check_status(f"Ошибка: {exc}", "error")
-        finally:
-            self._update_check_button()
-
-    def _go_back(self) -> None:
-        idx = self._stack.currentIndex()
-        if idx > 0:
-            self._stack.setCurrentIndex(idx - 1)
-        self._update_nav_buttons()
-
-    def _go_next(self) -> None:
-        idx = self._stack.currentIndex()
-        if idx < self._stack.count() - 1:
-            self._stack.setCurrentIndex(idx + 1)
-        self._update_nav_buttons()
-
-    def _update_nav_buttons(self) -> None:
-        idx = self._stack.currentIndex()
-        last = self._stack.count() - 1
-        self._back_btn.setEnabled(idx > 0)
-        is_last = idx == last
-        self._next_btn.setVisible(not is_last)
-        self._save_btn.setVisible(is_last)
+            self.vm.set_check_result(f"Ошибка: {exc}", "error")
 
     def _on_save(self) -> None:
         if self._saving:
@@ -413,18 +161,14 @@ class LlmSetupDialog(QDialog):
             return
 
         self._saving = True
-        world_prompt = self._world_prompt_edit.toPlainText().strip()
-        field_prompts = self.get_field_prompts()
-        self.saved.emit(config, world_prompt, field_prompts)
+        self.vm.set_saving(True)
+        self.saved.emit(config, self.get_world_prompt(), self.get_field_prompts())
         # The dialog accepts itself in finish_saving() once the application
         # has finished the async save.
 
-    def get_world_prompt(self) -> str:
-        return self._world_prompt_edit.toPlainText().strip()
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
 
-    def get_field_prompts(self) -> dict[str, dict[str, str]]:
-        return {etype: page.get_prompts() for etype, page in self._field_pages.items()}
-
-    @property
-    def page_count(self) -> int:
-        return self._stack.count()
+    def done(self, result: int) -> None:
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

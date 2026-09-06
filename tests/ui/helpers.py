@@ -192,17 +192,24 @@ def preset_type_name(preset_dlg, text: str) -> None:
     QTest.qWait(0)
 
 
-def detail_panel_names(detail_list: QListWidget) -> list[str]:
-    """Names shown in a DetailPanel entity list (first label of each item widget)."""
-    names: list[str] = []
-    for i in range(detail_list.count()):
-        item = detail_list.item(i)
-        w = detail_list.itemWidget(item)
-        if w is None:
-            continue
-        labels = w.findChildren(QLabel)
-        names.append(labels[0].text() if labels else "")
-    return names
+def detail_panel_rows(model) -> list[dict]:
+    """Render-ready rows exposed by a DetailPanel QML list model."""
+    roles = {bytes(name).decode(): role for role, name in model.roleNames().items()}
+    return [
+        {
+            name: model.data(model.index(row, 0), role)
+            for name, role in roles.items()
+        }
+        for row in range(model.rowCount())
+    ]
+
+
+def detail_panel_names(model) -> list[str]:
+    return [str(row["name"]) for row in detail_panel_rows(model)]
+
+
+def detail_panel_entity_id(model, name: str) -> int:
+    return next(int(row["entityId"]) for row in detail_panel_rows(model) if row["name"] == name)
 
 
 async def wait_until_settled(timeout_s: float = 90.0) -> None:
@@ -438,6 +445,7 @@ async def create_related_via_popup(
     entity_type: str,
     name: str,
     links: tuple[tuple[str, str], ...] = (),
+    expect_success: bool = True,
 ) -> EntityCardDialog:
     """Create a related entity through the section's «Создать нового» popup.
 
@@ -469,5 +477,8 @@ async def create_related_via_popup(
         )
     sub.name_input.setText(name)
     sub.save_button.click()
-    await wait_for(lambda: not sub.isVisible())
+    if expect_success:
+        await wait_for(lambda: not sub.isVisible())
+    else:
+        await wait_for(lambda: sub.isVisible() and sub.save_button.isEnabled())
     return sub

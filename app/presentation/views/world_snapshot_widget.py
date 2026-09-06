@@ -1,349 +1,104 @@
-"""World Snapshot widget — visual overview of the game world at a specific date."""
+"""World snapshot QML island behind the existing panel facade."""
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any, Sequence
 
-from PySide6.QtCore import QDate, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+from PySide6.QtCore import QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtQml import QQmlComponent, QQmlContext
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.tooltip_shim import install_island_tooltips
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.world_snapshot_view_model import (
+    WorldSnapshotViewModel,
 )
-
-from app.presentation.utils.date_utils import format_game_date
-from app.presentation.theme.catalog import attach_theme, set_role, title
-from app.presentation.views.custom_date_edit import CustomDateEdit
-from app.presentation.views.detail_panel import rating_to_color
-from app.presentation.utils.image_utils import load_entity_preview
+from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 
-# ── Icon helpers ──────────────────────────────────────────────────────────
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "WorldSnapshotRoot.qml")
+
 
 def _colored_circle(color: QColor, size: int = 16) -> QIcon:
-    """Create a small colored circle icon."""
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QBrush(color))
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(1, 1, size - 2, size - 2)
-    p.end()
-    return QIcon(pm)
+    """Compatibility helper retained for callers that build legend icons."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setBrush(QBrush(color))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(1, 1, size - 2, size - 2)
+    painter.end()
+    return QIcon(pixmap)
 
-
-def _text_icon(emoji: str, size: int = 20) -> QIcon:
-    """Render an emoji/character into a QIcon."""
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setFont(QFont("Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji", int(size * 0.7)))
-    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, emoji)
-    p.end()
-    return QIcon(pm)
-
-
-# Pre-built icons (created lazily on first use)
-_ICONS: dict[str, QIcon] = {}
-
-
-def _icon(key: str) -> QIcon:
-    if key not in _ICONS:
-        mapping = {
-            "location": ("📍", QColor(70, 130, 180)),
-            "organization": ("👥", QColor(180, 130, 70)),
-            "character": ("👤", QColor(100, 180, 100)),
-            "item": ("🗡", QColor(180, 180, 100)),
-            "event": ("📅", QColor(130, 100, 180)),
-            "no_location": ("🌐", QColor(120, 120, 120)),
-            "no_org": ("👤", QColor(120, 120, 120)),
-        }
-        emoji, color = mapping.get(key, ("•", QColor(150, 150, 150)))
-        _ICONS[key] = _text_icon(emoji)
-    return _ICONS[key]
-
-
-# ── World Snapshot Widget ─────────────────────────────────────────────────
 
 class WorldSnapshotWidget(QWidget):
-    """Shows the state of the game world at a given date as a tree.
+    """Thin shared-engine island preserving the original wiring surface."""
 
-    W2a pilot: one ``attach_theme`` on the root; title/tree/stats carry
-    catalog roles — the button stays a plain chrome button.
-    """
-
-    entity_clicked = Signal(str, int)  # (entity_type, entity_id)
-    snapshot_requested = Signal(object)  # date | None
+    entity_clicked = Signal(str, int)
+    snapshot_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None, theme=None) -> None:
         super().__init__(parent)
-        self._theme = theme
-        # (node, rating) pairs of the last populate — the rating tints are
-        # painted from token endpoints, so a live theme switch must re-tint
-        # them (W2b fix: without this the tree keeps the pre-switch gradient
-        # until the next snapshot request).
-        self._rated_nodes: list[tuple[QTreeWidgetItem, int]] = []
-        self._init_ui()
-        self._apply_theme()
+        self._theme = theme if theme is not None else get_default_theme()
+        self.vm = WorldSnapshotViewModel(self._theme, parent=self)
 
-    def _apply_theme(self) -> None:
-        """One attach point for the whole panel (catalog contract)."""
-        if self._theme is not None:
-            # Rating nodes are painted with QColor brushes (not QSS) → the
-            # retheme callback re-reads the token endpoints on every switch.
-            attach_theme(self, self._theme, on_retheme=self._on_theme_changed)
-            self._theme.apply()
-
-    def _on_theme_changed(self) -> None:
-        """Re-read the rating endpoints from the new theme and re-tint."""
-        alive: list[tuple[QTreeWidgetItem, int]] = []
-        for node, rating in self._rated_nodes:
-            try:
-                node.setBackground(0, QBrush(rating_to_color(rating, self._theme)))
-                alive.append((node, rating))
-            except RuntimeError:  # the tree was cleared since the last populate
-                pass
-        self._rated_nodes = alive
-
-    def _init_ui(self) -> None:
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # ── Title ──
-        self.title_label = title("Обзор мира")
-        layout.addWidget(self.title_label)
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self._palette = QmlPalette(self._theme, parent=self)
+        self._context = QQmlContext(engine.rootContext(), self)
+        self.vm.setParent(self._context)
+        self._palette.setParent(self._context)
+        self._context.setContextProperty("worldSnapshotVm", self.vm)
+        self._context.setContextProperty("islandPalette", self._palette)
+        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
 
-        # ── Date picker bar ──
-        date_bar = QHBoxLayout()
-        date_bar.setSpacing(6)
+        source = QUrl.fromLocalFile(ROOT_QML)
+        self._component = QQmlComponent(engine, source, self)
+        root = self._component.create(self._context)
+        assert root is not None, self._component.errors()
+        self.quick.setContent(source, self._component, root)
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = self.quick.rootObject()
 
-        date_bar.addWidget(QLabel("Дата:"))
-        self.date_edit = CustomDateEdit()
-        self.date_edit.setDate(QDate.currentDate())
-        date_bar.addWidget(self.date_edit, 1)
-
-        self.show_button = QPushButton("Показать")
-        self.show_button.clicked.connect(self._on_show)
-        date_bar.addWidget(self.show_button)
-
-        self.clear_button = QPushButton("Сброс")
-        self.clear_button.setEnabled(False)
-        self.clear_button.clicked.connect(self._on_clear)
-        date_bar.addWidget(self.clear_button)
-
-        self.show_all_button = QPushButton("Показать всё")
-        self.show_all_button.clicked.connect(self._on_show_all)
-        date_bar.addWidget(self.show_all_button)
-
-        layout.addLayout(date_bar)
-
-        # ── Tree ──
-        self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
-        self.tree.setAnimated(True)
-        self.tree.setIndentation(24)
-        self.tree.setIconSize(QSize(20, 20))
-        set_role(self.tree, "list")  # surface/border/item colors from tokens
-        self.tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        layout.addWidget(self.tree, 1)
-
-        # ── Stats bar ──
-        self.stats_label = QLabel("")
-        set_role(self.stats_label, "hint")  # muted fg from tokens (was #999)
-        self.stats_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        layout.addWidget(self.stats_label)
-
-        # ── Empty state ──
-        self._show_empty("Выберите дату и нажмите «Показать»")
-
-    # ── Public API ──
+        self.date_popup = ThemeDatePopup(self)
+        self.date_popup.date_selected.connect(self.vm.set_date)
+        self.vm.datePopupRequested.connect(self._open_date_popup)
+        self.vm.snapshotRequested.connect(self.snapshot_requested.emit)
+        self.vm.entitySelected.connect(self.entity_clicked.emit)
 
     def populate(self, events: Sequence[Any], for_date: date | None) -> None:
-        """Build the world tree from a list of events.
-        for_date: date for stats label; None means 'show all' mode.
-        """
-        self.tree.clear()
-        self._rated_nodes = []
-        self.clear_button.setEnabled(True)
+        self.vm.populate(events, for_date)
 
-        if not events:
-            self._show_empty(
-                "Нет событий в игре" if for_date is None else "На эту дату нет активных событий"
-            )
-            return
-
-        # ── Collect all unique entities from events ──
-        locations: dict[int, Any] = {}
-        characters: dict[int, Any] = {}
-        organizations: dict[int, Any] = {}
-        items: dict[int, Any] = {}
-
-        for ev in events:
-            for loc in getattr(ev, "locations", []):
-                locations[loc.id] = loc
-            for ch in getattr(ev, "characters", []):
-                characters[ch.id] = ch
-            for org in getattr(ev, "organizations", []):
-                organizations[org.id] = org
-            for it in getattr(ev, "items", []):
-                items[it.id] = it
-
-        # ── Helper: build a collapsible section ──
-        def _section(label: str, icon_key: str, count: int) -> QTreeWidgetItem:
-            node = QTreeWidgetItem(self.tree)
-            node.setText(0, f"{label} ({count})")
-            node.setFont(0, QFont("", -1, QFont.Weight.Bold))
-            node.setIcon(0, _icon(icon_key))
-            node.setExpanded(True)
-            return node
-
-        # ── Events section ──
-        if events:
-            ev_section = _section("📅  Активные события", "event", len(events))
-            ev_section.setExpanded(False)
-            for ev in events:
-                ev_item = QTreeWidgetItem(ev_section)
-                sd = format_game_date(ev.start_date)
-                ed = format_game_date(ev.end_date, "∞")
-                ev_item.setText(0, f"{sd} — {ed}  |  {ev.name}")
-                ev_item.setIcon(0, _icon("event"))
-                ev_item.setData(0, Qt.ItemDataRole.UserRole, ("event", ev.id))
-
-        # ── Locations section ──
-        if locations:
-            loc_section = _section("📍  Локации", "location", len(locations))
-            for loc in sorted(locations.values(), key=lambda x: x.name):
-                self._make_entity_node(loc_section, loc, "location", "📍")
-
-        # ── Organizations section ──
-        if organizations:
-            org_section = _section("👥  Организации", "organization", len(organizations))
-            for org in sorted(organizations.values(), key=lambda x: x.name):
-                self._make_entity_node(org_section, org, "organization", "👥")
-
-        # ── Characters section ──
-        if characters:
-            char_section = _section("🧑  Персонажи", "character", len(characters))
-            for ch in sorted(characters.values(), key=lambda x: -getattr(x, "rating", 1)):
-                self._make_entity_node(char_section, ch, "character", "🧑")
-
-        # ── Items section ──
-        if items:
-            item_section = _section("🗡  Предметы", "item", len(items))
-            for it in sorted(items.values(), key=lambda x: -getattr(x, "rating", 1)):
-                self._make_entity_node(item_section, it, "item", "🗡")
-
-        # ── Stats ──
-        if for_date is None:
-            stats_text = (
-                "Показано: все события  |  "
-                f"Событий: {len(events)}  |  "
-                f"Персонажей: {len(characters)}  |  "
-                f"Организаций: {len(organizations)}  |  "
-                f"Локаций: {len(locations)}  |  "
-                f"Предметов: {len(items)}"
-            )
-        else:
-            target = for_date
-            stats_text = (
-                f"Дата: {format_game_date(target)}  |  "
-                f"Событий: {len(events)}  |  "
-                f"Персонажей: {len(characters)}  |  "
-                f"Организаций: {len(organizations)}  |  "
-                f"Локаций: {len(locations)}  |  "
-                f"Предметов: {len(items)}"
-            )
-        self.stats_label.setText(stats_text)
-
-    # ── Tree node helpers ──
-
-    def _make_entity_node(
-        self,
-        parent: QTreeWidget | QTreeWidgetItem,
-        entity: Any,
-        entity_type: str,
-        emoji: str,
-    ) -> QTreeWidgetItem:
-        """Create a tree item for an entity with rating coloring and thumbnail."""
-        rating = getattr(entity, "rating", 1)
-        if not isinstance(rating, int):
-            rating = 1
-        name = getattr(entity, "name", str(entity))
-
-        node = QTreeWidgetItem(parent)
-        label = f"{emoji}  {name}"
-        if rating > 1:
-            label += f"  [{rating}/20]"
-        node.setText(0, label)
-        node.setData(0, Qt.ItemDataRole.UserRole, (entity_type, entity.id))
-
-        # Rating color
-        color = rating_to_color(rating, self._theme)
-        node.setBackground(0, QBrush(color))
-        self._rated_nodes.append((node, rating))
-
-        # Bold for high-rating entities
-        if rating >= 15:
-            f = node.font(0)
-            f.setBold(True)
-            node.setFont(0, f)
-
-        # Thumbnail for entities with images (file-backed, design D10)
-        pm = load_entity_preview(entity, slot_size=24)
-        if not pm.isNull():
-            node.setIcon(0, QIcon(pm))
-        else:
-            node.setIcon(0, _icon(entity_type))
-
-        # Tooltip with extra info
-        tooltip_parts = [f"<b>{name}</b> ({entity_type})"]
-        tooltip_parts.append(f"Рейтинг: {rating}/20")
-        desc = getattr(entity, "description", None)
-        if desc:
-            chars_text = getattr(desc, "characteristics", "")
-            if chars_text and chars_text.strip():
-                snippet = chars_text.strip()[:200]
-                tooltip_parts.append(f"<i>{snippet}</i>")
-        node.setToolTip(0, "<br>".join(tooltip_parts))
-
-        return node
-
-    # ── Slots ──
-
-    def _on_show(self) -> None:
-        target = self.date_edit.date().toPython()
-        self.snapshot_requested.emit(target)
-
-    def _on_show_all(self) -> None:
-        """Show snapshot without date filter (all events/entities)."""
-        self.snapshot_requested.emit(None)
+    def _open_date_popup(
+        self, x: float, y: float, width: float, height: float
+    ) -> None:
+        top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
+        anchor = QRect(
+            top_left,
+            QSize(max(int(width), 0), max(int(height), 0)),
+        )
+        self.date_popup.open_at(anchor, self.vm._date)
 
     def _on_clear(self) -> None:
-        self.tree.clear()
-        self._rated_nodes = []
-        self.clear_button.setEnabled(False)
-        self.stats_label.setText("")
-        self._show_empty("Выберите дату и нажмите «Показать»")
+        self.vm.clear()
 
-    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if data and isinstance(data, tuple) and len(data) == 2:
-            entity_type, entity_id = data
-            if entity_type != "event":
-                self.entity_clicked.emit(entity_type, entity_id)
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
 
-    def _show_empty(self, text: str) -> None:
-        self.tree.clear()
-        placeholder = QTreeWidgetItem(self.tree)
-        placeholder.setText(0, text)
-        # Italic-only placeholder: the color comes from the list role (W2a),
-        # no per-item gray literal.
-        f = placeholder.font(0)
-        f.setItalic(True)
-        placeholder.setFont(0, f)
-        placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
-        self.stats_label.setText("")
+    def closeEvent(self, event) -> None:  # Qt API name
+        QTimer.singleShot(0, self, self._release_island)
+        super().closeEvent(event)

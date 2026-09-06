@@ -9,6 +9,12 @@ The rename is also visible where the type is assigned (spec «Переимено
 6.3: assigning «Слух» in the event dialog marks the event's scale row with a
 pixel exactly equal to the ``color.chart.3`` token (the seeded color of
 Слух); un-assigning returns the row's dot to the muted token («Снятый тип»).
+
+Since R3 pack 2 the types dialog is a QML island: the list rows, the rename
+field and the eight swatches are addressed by ``objectName`` on the facade's
+``quick`` widget and driven with real synthetic clicks (the retired
+``type_list``/``name_input``/``swatch_buttons`` widgets are gone), while the
+write-through semantics under test are unchanged.
 """
 from __future__ import annotations
 
@@ -19,6 +25,12 @@ from PySide6.QtCore import QDate, Qt
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 
+from tests.presentation.qml_helpers import (
+    click_item,
+    find_item,
+    island_rows,
+    walk_items,
+)
 from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 from tests.ui.test_theme_grab import token_color
@@ -31,6 +43,23 @@ def _visible_dialog(window, cls):
         if dialog.isVisible():
             return dialog
     return None
+
+
+def _select_type_row(dialog, name: str) -> None:
+    """Tap the island row labelled ``name`` (the retired list_widget click)."""
+    for row in island_rows(dialog.quick, "typeRow"):
+        labels = [i for i in walk_items(row) if i.objectName() == "typeRowText"]
+        if labels and labels[0].property("text") == name:
+            click_item(dialog.quick, row)
+            return
+    raise AssertionError(f"no island row {name!r} in {dialog.type_names()}")
+
+
+def _rename_selected_type(dialog, name: str) -> None:
+    """Type into the island name field and finish the edit (write-through)."""
+    field = find_item(dialog.quick, "typeNameField")
+    field.setProperty("text", name)
+    field.editingFinished.emit()
 
 
 def _type_dot_pixel(window, name: str):
@@ -85,15 +114,13 @@ async def test_types_menu_entry_edits_apply_to_running_game(
     await wait_for(lambda: dialog.type_names() == SEEDED_ORDER)
 
     # Rename «Слух» → «Примета» (write-through, no dialog-level save).
-    row = dialog.type_names().index("Слух")
-    dialog.type_list.setCurrentRow(row)
-    dialog.name_input.setText("Примета")
-    dialog.name_input.editingFinished.emit()
+    _select_type_row(dialog, "Слух")
+    _rename_selected_type(dialog, "Примета")
     await wait_for(lambda: "Примета" in dialog.type_names())
     await helpers.wait_until_settled()
 
-    # Re-color it to palette sample №7 through the swatch row.
-    dialog.swatch_buttons[6].click()
+    # Re-color it to palette sample №7 through the island's swatch row.
+    click_item(dialog.quick, find_item(dialog.quick, "typeColorSwatch7"))
     await wait_for(lambda: "Примета" in dialog.type_names())
     await helpers.wait_until_settled()
 
@@ -124,6 +151,58 @@ async def test_types_menu_entry_edits_apply_to_running_game(
         " WHERE t.name = 'Примета'",
     )
     assert [r[0] for r in tagged] == ["Дракон у мельницы"]
+
+
+async def test_add_move_and_remove_are_written_through_without_save(
+    app, wait_for, menu_qmenu
+):
+    """R3 task 4.5: every set edit reaches the game the moment it is made, and
+    closing the dialog neither asks for a confirmation nor rolls anything back
+    (the island carries no Save affordance at all)."""
+    application, window = app
+    db_path = Path(application._db_path)
+
+    helpers.pick_menu_action(menu_qmenu, "Типы событий…")
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
+    await wait_for(lambda: _visible_dialog(window, EventTypesDialog) is not None)
+    dialog = _visible_dialog(window, EventTypesDialog)
+    await wait_for(lambda: dialog.type_names() == SEEDED_ORDER)
+
+    def stored_order() -> list[str]:
+        return [row[0] for row in query_db(
+            db_path, "SELECT name FROM event_types ORDER BY sort_order"
+        )]
+
+    # No Save button exists on the island (write-through, spec scenario).
+    names = {item.objectName() for item in walk_items(dialog.quick.rootObject())}
+    assert "saveButton" not in names and "applyButton" not in names
+
+    # Add: the name typed into the island field becomes a type at once.
+    find_item(dialog.quick, "typeNameField").setProperty("text", "Диво")
+    click_item(dialog.quick, find_item(dialog.quick, "typeAddButton"))
+    await wait_for(lambda: "Диво" in dialog.type_names())
+    await helpers.wait_until_settled()
+    assert stored_order()[-1] == "Диво"
+
+    # Move: ↑ rewrites the order in the game, no Save in between.
+    click_item(dialog.quick, find_item(dialog.quick, "typeUpButton"))
+    await wait_for(lambda: dialog.type_names()[-1] != "Диво")
+    await helpers.wait_until_settled()
+    assert stored_order() == dialog.type_names()
+    assert stored_order()[-2] == "Диво"
+
+    # Remove: a plain unbind, again with no confirmation dialog.
+    _select_type_row(dialog, "Ров будней")
+    click_item(dialog.quick, find_item(dialog.quick, "typeRemoveButton"))
+    await wait_for(lambda: "Ров будней" not in dialog.type_names())
+    await helpers.wait_until_settled()
+    assert "Ров будней" not in stored_order()
+
+    applied = stored_order()
+    dialog.close()  # closing accepts: nothing is asked, nothing is undone
+    await helpers.wait_until_settled()
+    assert stored_order() == applied
 
 
 # ── 6.3 — assigning «Слух» paints the row dot in the token hex ──────────────

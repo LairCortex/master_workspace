@@ -19,11 +19,11 @@ _TAB_ATTR = {
     "item": "item_tab",
     "location": "loc_tab",
 }
-_DETAIL_LIST_ATTR = {
-    "character": "char_list",
-    "organization": "org_list",
-    "item": "item_list",
-    "location": "loc_list",
+_DETAIL_MODEL_ATTR = {
+    "character": "characters",
+    "organization": "organizations",
+    "item": "items",
+    "location": "locations",
 }
 _REL_TABLE = {
     "character": ("event_character", "character_id"),
@@ -69,15 +69,11 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
 
     # 3. The entity is displayed in the detail panel after selecting the event
     helpers.click_timeline_event(window, event_name)
-    detail_list = getattr(window.detail_panel, _DETAIL_LIST_ATTR[entity_type])
-    await wait_for(lambda: name in helpers.detail_panel_names(detail_list))
+    detail_model = getattr(window.detail_panel.vm, _DETAIL_MODEL_ATTR[entity_type])
+    await wait_for(lambda: name in helpers.detail_panel_names(detail_model))
 
-    # 4. Edit in the card (double-click in the detail panel)
-    item = next(
-        detail_list.item(i) for i in range(detail_list.count())
-        if name in helpers.detail_panel_names(detail_list)
-    )
-    helpers.double_click_item(detail_list, item)
+    # 4. Edit in the card through the QML row activation seam.
+    window.detail_panel.vm.activate(entity_type, entity_id)
     await wait_for(lambda: [
         d for d in window.findChildren(EntityCardDialog)
         if d.isVisible() and d.name_input.text() == name
@@ -91,7 +87,7 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
     await wait_for(lambda: len(query_db(db_path, f"SELECT id FROM {table} WHERE name = ?", (new_name,))) == 1)
     await helpers.wait_until_settled()
     # Detail panel refreshed with the new name
-    await wait_for(lambda: new_name in helpers.detail_panel_names(detail_list))
+    await wait_for(lambda: new_name in helpers.detail_panel_names(detail_model))
 
     # 5. Unlink (UI-level delete): event edit → tab → "Удалить" → save
     helpers.double_click_timeline_event(window, event_name)
@@ -107,4 +103,4 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
     edit_dialog2.save_button.click()  # relations are persisted by the event dialog
     await wait_for(lambda: len(query_db(db_path, f"SELECT 1 FROM {rel_table} WHERE {rel_col} = ?", (entity_id,))) == 0)
     await helpers.wait_until_settled()
-    await wait_for(lambda: new_name not in helpers.detail_panel_names(detail_list))
+    await wait_for(lambda: new_name not in helpers.detail_panel_names(detail_model))

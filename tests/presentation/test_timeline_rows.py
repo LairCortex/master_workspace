@@ -40,7 +40,7 @@ def test_module_imports_without_qt_application():
 # ── clamp_calendar — the app-calendar clip (W5 1.5 / drop clamp) ───────────
 
 def test_clamp_calendar_pins_to_the_card_calendar_bounds():
-    """Bounds match ``CustomDateEdit`` (year 100 … 9999-12-31); no date the
+    """Bounds match the native date popup (year 100 … 9999-12-31); no date the
     card cannot display ever leaves the core. Nothing above MAX is
     representable as ``date``, so the upper side is the edge itself — the
     overflow paths (_add_one_year) clamp on their own."""

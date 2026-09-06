@@ -4,6 +4,13 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, Sequence
 
+from app.application.services.mention_rewrite import rewrite_mentions
+from app.infrastructure.db.models import (
+    CharacterModel,
+    ItemModel,
+    LocationModel,
+    OrganizationModel,
+)
 from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.base_repository import BaseRepository
 
@@ -14,6 +21,13 @@ _ATTR_TO_ENTITY_TYPE = {
     "items": "item",
     "organizations": "organization",
     "locations": "location",
+}
+
+_MODEL_TO_MENTION_TYPE = {
+    CharacterModel: "character",
+    OrganizationModel: "organization",
+    ItemModel: "item",
+    LocationModel: "location",
 }
 
 
@@ -125,14 +139,13 @@ class EntityService:
         transaction back and re-raises (no more rollback + silent None).
         """
         try:
-            # Snapshot the current image_id (if this entity type has the
-            # field) before mutating it, so a replace/remove can be GC'd
-            # after commit (design D6: commit-first, then gc_after_commit —
-            # never inside the same transaction as the ref mutation).
+            # Snapshot name and image_id before mutating so rename rewrite
+            # compares the pre-update name and image GC can run after commit.
+            current = await self.get_entity(entity_id)
+            old_name = getattr(current, "name", None) if current else None
             old_image_id = None
             has_image_field = "image_id" in field_data
             if has_image_field:
-                current = await self.get_entity(entity_id)
                 old_image_id = getattr(current, "image_id", None) if current else None
 
             # Update basic entity fields
@@ -161,6 +174,11 @@ class EntityService:
                 ent = await self.get_entity(entity_id)
                 await self._session.refresh(ent, attribute_names=[attr_name])
                 await self.sync_related(ent, attr_name, desired_ids)
+
+            new_name = field_data.get("name")
+            if new_name is not None and new_name != old_name:
+                mention_type = _MODEL_TO_MENTION_TYPE[self._repo._model]
+                await rewrite_mentions(self._session, mention_type, entity_id, new_name)
 
             await self._session.commit()
 

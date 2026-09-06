@@ -17,7 +17,7 @@ from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
 from app.main import Application
 from app.presentation.viewmodels.llm_viewmodel import _default_field_prompts
-from app.presentation.views.ai_assist_button import (
+from app.presentation.viewmodels.event_dialog_island_view_model import (
     AI_STATE_ACTIVE,
     AI_STATE_DISABLED,
     ai_state_is,
@@ -25,6 +25,7 @@ from app.presentation.views.ai_assist_button import (
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
+from tests.presentation.qml_helpers import click_item, find_item
 from tests.ui import timeline_probe
 from tests.ui.conftest import CANNED_LLM_CONTENT
 
@@ -55,21 +56,23 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert dialog.name_input.text() == ""
 
     # ── Wizard: menu → configure connection → check connection (canned 200)
+    # The wizard is a QML island: the e2e types into the island's fields and
+    # clicks its buttons by objectName.
     wizard = _open_wizard(window)
-    wizard._endpoint_edit.setText(ENDPOINT)
-    wizard._model_edit.setText(MODEL)
-    assert wizard._check_btn.isEnabled()
-    wizard._check_btn.click()
-    await wait_for(lambda: wizard._check_label.text() == "Соединение установлено")
+    _type(wizard, "endpointField", ENDPOINT)
+    _type(wizard, "modelField", MODEL)
+    assert find_item(wizard.quick, "checkButton").property("enabled")
+    _click(wizard, "checkButton")
+    await wait_for(lambda: wizard.vm.checkText == "Соединение установлено")
     check_payload = json.loads(llm_client.requests[0].content)
     assert check_payload["max_tokens"] == 1
 
     # ── World prompt + save (dialog accepts only after the async save is done)
-    wizard._next_btn.click()  # → world prompt page
-    wizard._world_prompt_edit.setPlainText(WORLD_PROMPT)
-    while not wizard._save_btn.isVisible():
-        wizard._next_btn.click()
-    wizard._save_btn.click()
+    _click(wizard, "nextButton")  # → world prompt page
+    _type(wizard, "worldPromptArea", WORLD_PROMPT)
+    while not find_item(wizard.quick, "saveButton").property("visible"):
+        _click(wizard, "nextButton")
+    _click(wizard, "saveButton")
 
     await wait_for(lambda: llm_vm.status == llm_vm.STATUS_READY)
     # The dialog accepts only after the async save (config + per-game prompts) finishes
@@ -91,6 +94,15 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     # All requests went through the single emulated client
     assert len(llm_client.requests) == 2
 
+
+
+def _type(wizard: LlmSetupDialog, object_name: str, text: str) -> None:
+    """Enter text into an island input the way the user's keystrokes do."""
+    find_item(wizard.quick, object_name).setProperty("text", text)
+
+
+def _click(wizard: LlmSetupDialog, object_name: str) -> None:
+    click_item(wizard.quick, find_item(wizard.quick, object_name))
 
 
 def _open_wizard(win) -> LlmSetupDialog:

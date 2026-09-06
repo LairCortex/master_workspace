@@ -78,8 +78,8 @@ def test_d1_key_list_is_exact():
 # each exemption must name its reader (W2b D4: rating endpoints are painted
 # by ``detail_panel.rating_to_color``, not by QSS).
 RUNTIME_READ_TOKENS = {
-    "color.rating.low": "app.presentation.views.detail_panel",
-    "color.rating.high": "app.presentation.views.detail_panel",
+    "color.rating.low": "app.presentation.theme.rating",
+    "color.rating.high": "app.presentation.theme.rating",
 }
 
 

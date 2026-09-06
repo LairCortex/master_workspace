@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import date
 
+from tests.presentation.qml_helpers import click_item, find_item
 
 
 def _result_texts(bar) -> list[str]:
-    return [bar.results_list.item(i).text() for i in range(bar.results_list.count())]
+    return [row["text"] for row in bar._vm.rows]
 
 
 async def test_search_is_case_insensitive(app, wait_for):
@@ -33,12 +34,12 @@ async def test_search_is_case_insensitive(app, wait_for):
     bar = window.search_bar
 
     # Uppercase query finds the lowercase-stored character name.
-    bar.search_input.setText("ВЕЛЬЗАРИАН")
-    bar.search_button.click()
+    find_item(bar.quick, "searchInput").setProperty("text", "ВЕЛЬЗАРИАН")
+    click_item(bar.quick, find_item(bar.quick, "searchButton"))
     await wait_for(lambda: any("Архимаг Вельзариан" in t for t in _result_texts(bar)))
     assert any("Персонажи" in t for t in _result_texts(bar))  # section header present
 
     # Mixed-case query finds an item.
-    bar.search_input.setText("меч суд")
-    bar.search_button.click()
+    find_item(bar.quick, "searchInput").setProperty("text", "меч суд")
+    click_item(bar.quick, find_item(bar.quick, "searchButton"))
     await wait_for(lambda: any("Меч Судьбы" in t for t in _result_texts(bar)))

@@ -60,6 +60,7 @@ class ApplicationWiring:
         self._search_vm = search_vm
         self._event_dialog_vm = event_dialog_vm
         self._event_service = event_service
+        self._on_edit_event = None
         # Serializes every task spawned below (via ``_spawn``) against the
         # single shared AsyncSession: SQLAlchemy's AsyncSession does not
         # support concurrent operations on one connection — two overlapping
@@ -288,9 +289,11 @@ class ApplicationWiring:
                     QMessageBox.critical(
                         window, "Ошибка", f"Не удалось сохранить событие: {exc}",
                     )
+                    dialog.finish_saving(False)
                     return
                 await timeline_vm.load_events()
                 window.timeline_widget.update_events(timeline_vm.events)
+                dialog.finish_saving(True)
 
             dialog.saved.connect(lambda data: self._spawn(on_saved(data)))
             dialog.create_related_requested.connect(
@@ -340,6 +343,9 @@ class ApplicationWiring:
                         QMessageBox.critical(
                             window, "Ошибка", f"Не удалось создать сущность: {exc}",
                         )
+                        dialog.finish_saving(False)
+                        return
+                    dialog.finish_saving(True)
 
                 dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
                 dialog.open()
@@ -400,6 +406,7 @@ class ApplicationWiring:
                         QMessageBox.critical(
                             window, "Ошибка", f"Не удалось сохранить событие: {exc}",
                         )
+                        dialog.finish_saving(False)
                         return
                     await timeline_vm.load_events()
                     window.timeline_widget.update_events(timeline_vm.events)
@@ -407,6 +414,7 @@ class ApplicationWiring:
                     # Refresh detail panel
                     await detail_vm.load_details(eid)
                     window.detail_panel.show_event(detail_vm.event)
+                    dialog.finish_saving(True)
 
                 dialog.saved.connect(lambda d: self._spawn(on_event_updated(d)))
                 dialog.create_related_requested.connect(
@@ -419,6 +427,8 @@ class ApplicationWiring:
                 dialog.open()
             except Exception:
                 await self._app._session.rollback()
+
+        self._on_edit_event = on_edit_event
 
         window.timeline_widget.event_double_clicked.connect(
             lambda eid: self._spawn(on_edit_event(eid))
@@ -610,12 +620,14 @@ class ApplicationWiring:
                         QMessageBox.critical(
                             window, "Ошибка", f"Не удалось сохранить сущность: {exc}",
                         )
+                        dialog.finish_saving(False)
                         return
 
                     # Refresh detail panel if an event is selected
                     if detail_vm.event:
                         await detail_vm.load_details(detail_vm.event.id)
                         window.detail_panel.show_event(detail_vm.event)
+                    dialog.finish_saving(True)
 
                 dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
 
@@ -659,6 +671,7 @@ class ApplicationWiring:
                 related_changes = sub_data.pop("related_changes", {})
                 sub_svc = self._app._get_entity_service(entity_type)
                 if not sub_svc:
+                    sub_dialog.finish_saving(False)
                     return
                 chars_text = sub_data.pop("characteristics", "")
                 backstory_text = sub_data.pop("backstory", "")
@@ -683,11 +696,13 @@ class ApplicationWiring:
                     QMessageBox.critical(
                         self._window, "Ошибка создания сущности", str(exc)
                     )
+                    sub_dialog.finish_saving(False)
                     return
                 parent_dialog.add_related_entity(attr_name, new_entity)
                 self._popup_created.setdefault(parent_dialog, []).append(
                     (entity_type, new_entity.id, new_entity.description_id)
                 )
+                sub_dialog.finish_saving(True)
 
             sub_dialog.saved.connect(lambda d: self._spawn(on_sub_saved(d)))
             sub_dialog.open()

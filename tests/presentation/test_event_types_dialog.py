@@ -1,19 +1,36 @@
-"""EventTypesDialog (W4 task 6.1): list, rename, ↑/↓ order, add, delete, colors.
+"""EventTypesDialog — QML island in the kept QDialog facade (R3 pack 2, §4).
 
-The dialog owns no state of its own — every edit must land in the game through
-``EventService`` and become readable back from it (round-trip "через service"),
-so the tests below drive real widgets against the real service on in-memory
-SQLite. Also pinned here: the palette-not-colorpicker contract (exactly the
-eight chart swatches), the numbered-gray off-skin samples and the live
-re-theme of the swatch icons without losing the list selection.
+Two halves, the same split the other islands use:
+
+* the ``objectName`` contract of ``EventTypesRoot.qml`` (task 4.1) — loaded
+  into a bare ``QQuickWidget`` with only ``eventTypesVm`` + ``islandPalette``
+  in context, driven by real synthetic clicks, so «QML лишь эмитит запросы»
+  is verified against the VM and nothing else;
+* the facade round-trips (tasks 4.3/4.5) — the real ``EventService`` on
+  in-memory SQLite, addressed through the island: every edit must land in the
+  game immediately (no Save, no confirmation on close) and become readable
+  back from the service, with the public API (ctor, ``types_changed``,
+  ``wait_idle``, ``reload``, ``type_names``) untouched by the port.
+
+The palette-not-colorpicker contract lives here too: exactly the eight
+``ThemeSwatch`` samples of ``color.chart.1…8`` (built by a ``Repeater`` from
+``eventTypesVm.paletteSize``) and no free-color affordance. Swatch pixels and
+their off-skin degradation are the library's acceptance
+(``test_theme_password_swatch.py``); this suite pins the island's wiring and
+the one live-retheme scenario (selection + order survive the swap).
 """
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import Qt as _Qt, QSize
+from PySide6.QtCore import QUrl
 from PySide6.QtGui import QColor
+from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QDialog
 
 from app.application.services.entity_service import EntityService
 from app.application.services.event_service import EventService
@@ -24,17 +41,51 @@ from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
 from app.infrastructure.repositories.location_repository import LocationRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
+from app.presentation import qml as qml_shell
 from app.presentation.theme.compiler import CHART_TOKEN_KEYS
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.event_types_view_model import EventTypesViewModel
 from app.presentation.views.event_types_dialog import (
     DEFAULT_NEW_TYPE_NAME,
+    NO_TYPE_TEXT,
     EventTypesDialog,
     _token_color,
+    type_dot_icon,
 )
 
+from tests.presentation.qml_helpers import (
+    click_item,
+    find_item,
+    find_items,
+    island_row_texts,
+    island_rows,
+    track,
+    walk_items,
+)
 from tests.ui.test_theme_grab import make_runtime, token_color
 
 D1 = date(1200, 1, 1)
 
+ROOT_QML = Path(qml_shell.__file__).resolve().parent / "EventTypesRoot.qml"
+
+#: The island's control contract — renames must fail this suite, not silently
+#: unbind the facade (the very names the facade and the e2e address).
+OBJECT_NAMES = (
+    "eventTypesRoot",
+    "typeHint",
+    "typeList",
+    "typeNameField",
+    "typeAddButton",
+    "typeRemoveButton",
+    "typeUpButton",
+    "typeDownButton",
+    "typeCloseButton",
+)
+
+DEFAULT_NAMES = ["Сюжет", "Побочное", "Слух", "Встреча"]
+
+
+# ── service / dialog fixtures ───────────────────────────────────────────────
 
 async def _make_service(session) -> EventService:
     desc_repo = BaseRepository(session, DescriptionModel)
@@ -61,21 +112,6 @@ async def _make_event(session, name: str, event_type_id: int | None = None) -> E
     return ev
 
 
-async def _open_dialog(service, qtbot, theme=None):
-    dialog = EventTypesDialog(service, theme=theme)
-    qtbot.addWidget(dialog)
-    await dialog.wait_idle()  # the initial load ran through `run`
-    return dialog
-
-
-def _select_item(dialog, name: str):
-    for i in range(dialog.type_list.count()):
-        if dialog.type_list.item(i).text() == name:
-            dialog.type_list.setCurrentRow(i)
-            return dialog.type_list.item(i)
-    raise AssertionError(f"no list item {name!r}")
-
-
 async def _seed_defaults(service) -> list:
     created = []
     for name, index in [
@@ -85,22 +121,178 @@ async def _seed_defaults(service) -> list:
     return created
 
 
-# ── round-trips through the service (task 6.1) ──────────────────────────────
+async def _open_dialog(service, qtbot, theme=None):
+    dialog = EventTypesDialog(service, theme=theme)
+    qtbot.addWidget(dialog)
+    await dialog.wait_idle()  # the initial load ran through `run`
+    return dialog
+
+
+# ── island addressing helpers (the production input route) ──────────────────
+
+def _row_texts(dialog) -> list[str]:
+    return island_row_texts(dialog.quick, "typeRow", "typeRowText")
+
+
+def _click(dialog, object_name: str) -> None:
+    click_item(dialog.quick, find_item(dialog.quick, object_name))
+
+
+def _enabled(dialog, object_name: str) -> bool:
+    return find_item(dialog.quick, object_name).property("enabled")
+
+
+def _select(dialog, name: str) -> None:
+    """Tap the island row whose label is ``name`` (the delegate's own click)."""
+    for row in island_rows(dialog.quick, "typeRow"):
+        labels = [i for i in walk_items(row) if i.objectName() == "typeRowText"]
+        if labels and labels[0].property("text") == name:
+            click_item(dialog.quick, row)
+            return
+    raise AssertionError(f"no island row {name!r} in {_row_texts(dialog)}")
+
+
+def _type_name(dialog, text: str) -> None:
+    """Type into the island name field, then finish the edit (rename route)."""
+    find_item(dialog.quick, "typeNameField").setProperty("text", text)
+
+
+def _finish_name_edit(dialog) -> None:
+    find_item(dialog.quick, "typeNameField").editingFinished.emit()
+
+
+def _name_text(dialog) -> str:
+    return find_item(dialog.quick, "typeNameField").property("text")
+
+
+# ── task 4.1: the island's objectName contract, VM requests only ────────────
+
+@pytest.fixture
+def island_palette(tmp_path):
+    return QmlPalette(make_runtime(tmp_path, "dark"))
+
+
+def _load_island(qtbot, vm, palette) -> QQuickWidget:
+    if QQuickStyle.name() != "Basic":
+        QQuickStyle.setStyle("Basic")
+    widget = QQuickWidget()
+    qtbot.addWidget(widget)
+    widget.resize(460, 340)
+    widget.engine().addImportPath(qml_shell.QML_IMPORT_PATH)
+    vm.setParent(widget)
+    palette.setParent(widget)
+    # Island-scoped context: the VM + the palette bridge, nothing else — no
+    # service, no http client, no `_run` (spec «Контекст типов изолирован»).
+    widget.rootContext().setContextProperty("eventTypesVm", vm)
+    widget.rootContext().setContextProperty("islandPalette", palette)
+    widget.setSource(QUrl.fromLocalFile(str(ROOT_QML)))
+    assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    return widget
+
+
+def _island_vm() -> EventTypesViewModel:
+    vm = EventTypesViewModel()
+    vm.set_rows([
+        SimpleNamespace(id=11, name="Сюжет", color_index=1, sort_order=0),
+        SimpleNamespace(id=12, name="Побочное", color_index=2, sort_order=1),
+    ])
+    return vm
+
+
+class TestIslandContract:
+    def test_every_interactive_control_carries_its_object_name(
+        self, qtbot, island_palette
+    ):
+        widget = _load_island(qtbot, _island_vm(), island_palette)
+        names = {widget.rootObject().objectName()} | {
+            item.objectName() for item in walk_items(widget.rootObject())
+        }
+        for expected in OBJECT_NAMES:
+            assert expected in names, expected
+        # Write-through: no Save button and no confirm affordance exists.
+        assert "saveButton" not in names
+        assert "confirmButton" not in names
+
+    def test_exactly_eight_chart_swatches_and_no_free_color_control(
+        self, qtbot, island_palette
+    ):
+        widget = _load_island(qtbot, _island_vm(), island_palette)
+        swatches = [
+            item for item in walk_items(widget.rootObject())
+            if item.objectName().startswith("typeColorSwatch")
+        ]
+        assert len(swatches) == len(CHART_TOKEN_KEYS) == 8
+        for index in range(1, 9):
+            swatch = find_item(widget, f"typeColorSwatch{index}")
+            assert swatch.property("colorIndex") == index
+        # The only color affordance is the closed palette.
+        assert find_items(widget, "colorPicker") == []
+        assert find_items(widget, "colorDialogButton") == []
+
+    def test_rows_are_listed_and_a_tap_selects_through_the_vm(
+        self, qtbot, island_palette
+    ):
+        vm = _island_vm()
+        widget = _load_island(qtbot, vm, island_palette)
+        assert island_row_texts(widget, "typeRow", "typeRowText") == [
+            "Сюжет", "Побочное",
+        ]
+        click_item(widget, island_rows(widget, "typeRow")[1])
+        assert vm.selectedId == 12
+
+    def test_clicks_emit_view_model_requests_only(self, qtbot, island_palette):
+        vm = _island_vm()
+        widget = _load_island(qtbot, vm, island_palette)
+        added = track(vm.addRequested)
+        removed = track(vm.removeRequested)
+        moved = track(vm.moveRequested)
+        recolored = track(vm.recolorRequested)
+        closed = track(vm.closeRequested)
+
+        click_item(widget, island_rows(widget, "typeRow")[0])
+        click_item(widget, find_item(widget, "typeColorSwatch6"))
+        click_item(widget, find_item(widget, "typeAddButton"))
+        click_item(widget, find_item(widget, "typeDownButton"))
+        click_item(widget, find_item(widget, "typeRemoveButton"))
+        click_item(widget, find_item(widget, "typeCloseButton"))
+
+        assert recolored == [(11, 6)]
+        assert added == [("Сюжет",)]  # the name field mirrors the selection
+        assert moved == [(11, 1)]
+        assert removed == [(11,)]
+        assert closed == [()]
+
+    def test_swatches_and_actions_are_dead_without_a_selection(
+        self, qtbot, island_palette
+    ):
+        vm = _island_vm()
+        widget = _load_island(qtbot, vm, island_palette)
+        recolored = track(vm.recolorRequested)
+        click_item(widget, find_item(widget, "typeColorSwatch3"))
+        assert recolored == []
+        assert find_item(widget, "typeRemoveButton").property("enabled") is False
+        assert find_item(widget, "typeUpButton").property("enabled") is False
+        assert find_item(widget, "typeDownButton").property("enabled") is False
+        assert find_item(widget, "typeAddButton").property("enabled") is True
+
+
+# ── tasks 4.3/4.5: round-trips through the service, addressed on the island ──
 
 class TestDialogRoundTripThroughService:
     async def test_initial_load_lists_types_in_order(self, async_session, qtbot):
         service = await _make_service(async_session)
         await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        assert dialog.type_names() == ["Сюжет", "Побочное", "Слух", "Встреча"]
+        assert dialog.type_names() == DEFAULT_NAMES
+        assert _row_texts(dialog) == DEFAULT_NAMES
 
     async def test_rename_persists_through_service(self, async_session, qtbot):
         service = await _make_service(async_session)
         types = await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        _select_item(dialog, "Слух")
-        dialog.name_input.setText("Примета")
-        dialog.name_input.editingFinished.emit()
+        _select(dialog, "Слух")
+        _type_name(dialog, "Примета")
+        _finish_name_edit(dialog)
         await dialog.wait_idle()
 
         stored = {t.name: t for t in await service.get_event_types()}
@@ -108,32 +300,35 @@ class TestDialogRoundTripThroughService:
         # Rename kept the type's identity: same id, same color (spec scenario).
         assert stored["Примета"].id == types[2].id
         assert stored["Примета"].color_index == 3
-        # The same type shows the new name in the list, color unchanged.
-        assert dialog.type_list.item(2).text() == "Примета"
+        # The same row shows the new name, the selection stayed on it.
+        assert _row_texts(dialog)[2] == "Примета"
+        assert dialog.vm.selectedId == types[2].id
 
-    async def test_empty_or_unchanged_rename_is_not_persisted(self, async_session, qtbot):
+    async def test_empty_or_unchanged_rename_is_not_persisted(
+        self, async_session, qtbot
+    ):
         service = await _make_service(async_session)
         await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        _select_item(dialog, "Сюжет")
-        dialog.name_input.setText("   ")
-        dialog.name_input.editingFinished.emit()
+        _select(dialog, "Сюжет")
+        _type_name(dialog, "   ")
+        _finish_name_edit(dialog)
+        _type_name(dialog, "Сюжет")
+        _finish_name_edit(dialog)
         await dialog.wait_idle()
-        assert [t.name for t in await service.get_event_types()] == [
-            "Сюжет", "Побочное", "Слух", "Встреча",
-        ]
+        assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
 
     async def test_swatch_color_choice_round_trips(self, async_session, qtbot):
         service = await _make_service(async_session)
         await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        _select_item(dialog, "Сюжет")
-        assert dialog.swatch_buttons[0].isChecked()  # reflects the current color
-        dialog.swatch_buttons[6].click()  # palette sample №7
+        _select(dialog, "Сюжет")
+        assert dialog.vm.selectedColorIndex == 1  # reflects the current color
+        _click(dialog, "typeColorSwatch7")  # palette sample №7
         await dialog.wait_idle()
         stored = {t.name: t for t in await service.get_event_types()}
         assert stored["Сюжет"].color_index == 7
-        assert dialog.swatch_buttons[6].isChecked()
+        assert dialog.vm.selectedColorIndex == 7
 
     async def test_add_appends_with_first_free_color_and_selects_it(
         self, async_session, qtbot
@@ -141,22 +336,22 @@ class TestDialogRoundTripThroughService:
         service = await _make_service(async_session)
         await _seed_defaults(service)  # colors 1..4 used
         dialog = await _open_dialog(service, qtbot)
-        dialog.type_list.clearSelection()
-        dialog.name_input.setText("Находка")
-        dialog.add_button.click()
+        _type_name(dialog, "Находка")
+        _click(dialog, "typeAddButton")
         await dialog.wait_idle()
 
         types = list(await service.get_event_types())
         assert [t.name for t in types][-1] == "Находка"
         assert types[-1].color_index == 5  # first unused palette index
-        assert dialog.type_list.currentItem().text() == "Находка"
+        assert dialog.vm.selectedId == types[-1].id
+        assert _name_text(dialog) == "Находка"
 
     async def test_add_without_name_falls_back_to_default_name(
         self, async_session, qtbot
     ):
         service = await _make_service(async_session)
         dialog = await _open_dialog(service, qtbot)
-        dialog.add_button.click()
+        _click(dialog, "typeAddButton")
         await dialog.wait_idle()
         names = [t.name for t in await service.get_event_types()]
         assert names == [DEFAULT_NEW_TYPE_NAME]
@@ -166,9 +361,8 @@ class TestDialogRoundTripThroughService:
         for k in range(1, 9):  # all eight palette colors are used
             await service.save_event_type(name=f"T{k}", color_index=k)
         dialog = await _open_dialog(service, qtbot)
-        dialog.type_list.clearSelection()
-        dialog.name_input.setText("Девятый")
-        dialog.add_button.click()
+        _type_name(dialog, "Девятый")
+        _click(dialog, "typeAddButton")
         await dialog.wait_idle()
         types = list(await service.get_event_types())
         idx = {t.name: t.color_index for t in types}["Девятый"]
@@ -178,13 +372,14 @@ class TestDialogRoundTripThroughService:
         service = await _make_service(async_session)
         await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        _select_item(dialog, "Встреча")
-        dialog.remove_button.click()  # plain unbind, no confirmation dialog
+        _select(dialog, "Встреча")
+        _click(dialog, "typeRemoveButton")  # plain unbind, no confirmation
         await dialog.wait_idle()
         assert [t.name for t in await service.get_event_types()] == [
             "Сюжет", "Побочное", "Слух",
         ]
         assert dialog.type_names() == ["Сюжет", "Побочное", "Слух"]
+        assert dialog.vm.selectedId is None  # the removed row took the selection
 
     async def test_delete_of_occupied_type_unbinds_events_intact(
         self, async_session, qtbot
@@ -196,13 +391,13 @@ class TestDialogRoundTripThroughService:
         ]
         await async_session.commit()
         dialog = await _open_dialog(service, qtbot)
-        _select_item(dialog, "Слух")
-        dialog.remove_button.click()
+        _select(dialog, "Слух")
+        _click(dialog, "typeRemoveButton")
         await dialog.wait_idle()
 
         assert list(await service.get_event_types()) == []
         all_events = list(await service.get_all_events())
-        assert {e.id for e in all_events} == {e.id for e in events}  # events intact
+        assert {e.id for e in all_events} == {e.id for e in events}  # intact
         for e in all_events:
             assert e.event_type is None  # every unbound, a valid typed-less event
 
@@ -210,162 +405,37 @@ class TestDialogRoundTripThroughService:
         service = await _make_service(async_session)
         await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        assert dialog.up_button.isEnabled() is False  # first row: nowhere to rise
-        _select_item(dialog, "Сюжет")
-        assert dialog.up_button.isEnabled() is False
-        dialog.down_button.click()
+        assert _enabled(dialog, "typeUpButton") is False  # nothing selected
+        _select(dialog, "Сюжет")
+        assert _enabled(dialog, "typeUpButton") is False  # first row
+        _click(dialog, "typeDownButton")
         await dialog.wait_idle()
         assert [t.name for t in await service.get_event_types()] == [
             "Побочное", "Сюжет", "Слух", "Встреча",
         ]
-        assert dialog.type_names() == ["Побочное", "Сюжет", "Слух", "Встреча"]
-        assert dialog.type_list.currentItem().text() == "Сюжет"  # selection keeps up
-        _select_item(dialog, "Сюжет")
-        dialog.up_button.click()
+        assert _row_texts(dialog) == ["Побочное", "Сюжет", "Слух", "Встреча"]
+        assert _name_text(dialog) == "Сюжет"  # selection kept up with the row
+        assert _enabled(dialog, "typeUpButton") is True
+        _click(dialog, "typeUpButton")
         await dialog.wait_idle()
-        assert [t.name for t in await service.get_event_types()] == [
-            "Сюжет", "Побочное", "Слух", "Встреча",
-        ]
+        assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
+        # The last row has nothing below it — the ↓ affordance is off there.
+        _select(dialog, "Встреча")
+        assert _enabled(dialog, "typeDownButton") is False
+        assert _enabled(dialog, "typeUpButton") is True
 
     async def test_each_edit_emits_types_changed(self, async_session, qtbot):
         service = await _make_service(async_session)
         await _seed_defaults(service)
         dialog = await _open_dialog(service, qtbot)
-        fired: list = []
-        dialog.types_changed.connect(lambda: fired.append(1))
-        _select_item(dialog, "Слух")
-        dialog.name_input.setText("Примета")
-        dialog.name_input.editingFinished.emit()
+        fired = track(dialog.types_changed)
+        _select(dialog, "Слух")
+        _type_name(dialog, "Примета")
+        _finish_name_edit(dialog)
         await dialog.wait_idle()
-        dialog.swatch_buttons[5].click()
+        _click(dialog, "typeColorSwatch6")
         await dialog.wait_idle()
         assert len(fired) == 2
-
-
-# ── palette, not a colorpicker (spec scenario) ──────────────────────────────
-
-class TestPaletteNotColorpicker:
-    async def test_exactly_eight_swatch_samples(self, async_session, qtbot):
-        service = await _make_service(async_session)
-        dialog = await _open_dialog(service, qtbot)
-        assert len(dialog.swatch_buttons) == len(CHART_TOKEN_KEYS) == 8
-        # The only color affordances are the fixed samples; the tooltip names
-        # the palette entry, no free-color control exists.
-        for index, button in enumerate(dialog.swatch_buttons, start=1):
-            assert button.toolTip() == f"Цвет {index}"
-            assert button.isCheckable()
-
-    async def test_off_skin_swarps_are_numbered_gray(self, async_session, qtbot):
-        service = await _make_service(async_session)
-        dialog = await _open_dialog(service, qtbot, theme=None)  # no skin at all
-        gray = QColor(_Qt.GlobalColor.gray)
-        for index, button in enumerate(dialog.swatch_buttons, start=1):
-            assert button.text() == str(index)  # the number carries the identity
-            image = button.icon().pixmap(QSize(18, 18)).toImage()
-            # A pixel inside the circle (above the digit) is the named Qt gray.
-            assert image.pixelColor(9, 2) == gray
-
-
-# ── attach_theme + live re-theme (task 6.1) ─────────────────────────────────
-
-class TestLiveRetheme:
-    async def test_swatch_icons_follow_theme_switch(
-        self, async_session, qtbot, tmp_path
-    ):
-        service = await _make_service(async_session)
-        await _seed_defaults(service)
-        runtime = make_runtime(tmp_path, "dark")
-        dialog = await _open_dialog(service, qtbot, theme=runtime)
-        _select_item(dialog, "Сюжет")  # selection must survive the swap
-
-        def center(button):
-            return button.icon().pixmap(QSize(18, 18)).toImage().pixelColor(9, 9)
-
-        for index, button in enumerate(dialog.swatch_buttons, start=1):
-            assert center(button) == token_color(CHART_TOKEN_KEYS[index - 1], "dark")
-
-        assert runtime.toggle()  # dark → light through the runtime
-        for index, button in enumerate(dialog.swatch_buttons, start=1):
-            assert center(button) == token_color(CHART_TOKEN_KEYS[index - 1], "light")
-        # Live swap repainted the circles in place: same widgets, same selection.
-        assert dialog.type_list.currentItem().text() == "Сюжет"
-        assert dialog.swatch_buttons[0].isChecked()
-
-    async def test_theme_switch_clears_off_skin_numbers(
-        self, async_session, qtbot, tmp_path
-    ):
-        service = await _make_service(async_session)
-        await _seed_defaults(service)
-        offskin = make_runtime(tmp_path, "dark", tokens_path=tmp_path / "absent.json")
-        assert not offskin.is_valid
-        dialog = await _open_dialog(service, qtbot, theme=offskin)
-        assert [b.text() for b in dialog.swatch_buttons] == [str(k) for k in range(1, 9)]
-
-
-# ── guards around the write actions (line-coverage gate) ────────────────────
-
-DEFAULT_NAMES = ["Сюжет", "Побочное", "Слух", "Встреча"]
-
-
-class TestWriteGuards:
-    async def test_no_selection_silences_every_write(self, async_session, qtbot):
-        """Nothing selected: no rename, recolor, delete or move starts a task."""
-        service = await _make_service(async_session)
-        await _seed_defaults(service)
-        dialog = await _open_dialog(service, qtbot)
-        dialog.type_list.setCurrentRow(-1)
-        emitted: list[int] = []
-        dialog.types_changed.connect(lambda: emitted.append(1))
-
-        dialog._on_rename()
-        dialog._on_swatch_clicked(2)
-        dialog._on_remove()
-        dialog._on_move(1)
-        dialog._on_move(-1)
-        await dialog.wait_idle()
-
-        assert dialog._task is None
-        assert emitted == []
-        assert dialog.type_names() == DEFAULT_NAMES
-
-    async def test_writes_are_quiet_while_another_write_is_in_flight(
-        self, async_session, qtbot
-    ):
-        """`_loading` is the re-entrancy guard of the reflected selection: the
-        field's own editingFinished and a stray swatch click must not queue."""
-        service = await _make_service(async_session)
-        await _seed_defaults(service)
-        dialog = await _open_dialog(service, qtbot)
-        _select_item(dialog, "Слух")
-        dialog._loading = True
-        try:
-            dialog.name_input.setText("Занятая")
-            dialog._on_rename()
-            dialog._on_swatch_clicked(5)
-            dialog._on_move(1)
-        finally:
-            dialog._loading = False
-        await dialog.wait_idle()
-
-        assert dialog._task is None
-        assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
-
-    async def test_move_past_the_ladder_edges_is_a_no_op(self, async_session, qtbot):
-        """The first row has nothing above it, the last nothing below (task 6.1)."""
-        service = await _make_service(async_session)
-        await _seed_defaults(service)
-        dialog = await _open_dialog(service, qtbot)
-
-        _select_item(dialog, "Сюжет")
-        dialog._on_move(-1)
-        await dialog.wait_idle()
-        assert dialog._task is None
-
-        _select_item(dialog, "Встреча")
-        dialog._on_move(1)
-        await dialog.wait_idle()
-        assert dialog._task is None
-        assert dialog.type_names() == DEFAULT_NAMES
 
     async def test_public_reload_picks_up_a_change_made_outside(
         self, async_session, qtbot
@@ -381,10 +451,160 @@ class TestWriteGuards:
         await dialog.reload()
 
         assert dialog.type_names() == DEFAULT_NAMES + ["Внешний"]
+        assert _row_texts(dialog) == DEFAULT_NAMES + ["Внешний"]
 
 
-def test_dot_token_is_none_outside_the_chart_palette():
-    """No token exists past the eight chart entries (D5) — off-skin by index."""
+# ── write-through: no Save, no confirmation on close (spec scenarios) ───────
+
+class TestWriteThroughClose:
+    async def test_close_accepts_without_confirmation_and_keeps_the_edits(
+        self, async_session, qtbot
+    ):
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        _select(dialog, "Слух")
+        _type_name(dialog, "Примета")
+        _finish_name_edit(dialog)
+        await dialog.wait_idle()
+
+        _click(dialog, "typeCloseButton")
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert not dialog.isVisible()
+        # Nothing rolled back: the applied rename is still the game's state.
+        assert "Примета" in [t.name for t in await service.get_event_types()]
+
+    async def test_esc_rejects_without_confirmation(self, async_session, qtbot):
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        dialog.reject()
+        assert dialog.result() == QDialog.DialogCode.Rejected
+        assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
+
+
+# ── write guards (line-coverage gate of the facade) ─────────────────────────
+
+class TestWriteGuards:
+    async def test_no_selection_silences_every_write(self, async_session, qtbot):
+        """Nothing selected: no rename, recolor, delete or move starts a task."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        emitted = track(dialog.types_changed)
+
+        _type_name(dialog, "Ничья")
+        _finish_name_edit(dialog)
+        _click(dialog, "typeColorSwatch2")
+        _click(dialog, "typeRemoveButton")
+        _click(dialog, "typeUpButton")
+        _click(dialog, "typeDownButton")
+        await dialog.wait_idle()
+
+        assert dialog._task is None
+        assert emitted == []
+        assert dialog.type_names() == DEFAULT_NAMES
+
+    async def test_move_past_the_ladder_edges_is_a_no_op(self, async_session, qtbot):
+        """The first row has nothing above it, the last nothing below."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+
+        _select(dialog, "Сюжет")
+        dialog.vm.moveRequested.emit(dialog.vm.selectedId, -1)
+        await dialog.wait_idle()
+        assert dialog._task is None
+
+        _select(dialog, "Встреча")
+        dialog.vm.moveRequested.emit(dialog.vm.selectedId, 1)
+        await dialog.wait_idle()
+        assert dialog._task is None
+        assert dialog.type_names() == DEFAULT_NAMES
+
+    async def test_requests_for_a_vanished_type_are_dropped(
+        self, async_session, qtbot
+    ):
+        """A stale id (the row was deleted behind the island) writes nothing."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        gone = 999
+
+        dialog.vm.renameRequested.emit(gone, "Никак")
+        dialog.vm.recolorRequested.emit(gone, 5)
+        dialog.vm.removeRequested.emit(gone)
+        dialog.vm.moveRequested.emit(gone, 1)
+        await dialog.wait_idle()
+
+        assert dialog._task is None
+        assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
+
+    async def test_done_releases_the_island(self, async_session, qtbot):
+        service = await _make_service(async_session)
+        dialog = await _open_dialog(service, qtbot)
+        dialog.done(0)
+        qtbot.waitUntil(lambda: dialog.quick.source().isEmpty(), timeout=2000)
+
+
+# ── the one live-retheme scenario of this island (task 5.1) ─────────────────
+
+class TestLiveRetheme:
+    async def test_theme_swap_keeps_selection_and_order(
+        self, async_session, qtbot, tmp_path
+    ):
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        runtime = make_runtime(tmp_path, "dark")
+        dialog = await _open_dialog(service, qtbot, theme=runtime)
+        _select(dialog, "Слух")
+        selected = dialog.vm.selectedId
+
+        def swatch_color(index: int) -> QColor:
+            return find_item(dialog.quick, f"typeColorSwatch{index}").property(
+                "chartColor"
+            )
+
+        for index, key in enumerate(CHART_TOKEN_KEYS, start=1):
+            assert swatch_color(index) == token_color(key, "dark")
+
+        assert runtime.toggle()  # dark → light through the runtime
+
+        for index, key in enumerate(CHART_TOKEN_KEYS, start=1):
+            assert swatch_color(index) == token_color(key, "light")
+        # Same island, same selection, same order (no rebuild, no reload).
+        assert dialog.vm.selectedId == selected
+        assert _name_text(dialog) == "Слух"
+        assert _row_texts(dialog) == DEFAULT_NAMES
+
+    async def test_off_skin_island_loads_without_a_palette(
+        self, async_session, qtbot, tmp_path
+    ):
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        offskin = make_runtime(tmp_path, "dark", tokens_path=tmp_path / "absent.json")
+        assert not offskin.is_valid
+        dialog = await _open_dialog(service, qtbot, theme=offskin)
+        assert _row_texts(dialog) == DEFAULT_NAMES
+        # The library swatch degrades to its numbered off-skin sample.
+        assert find_item(dialog.quick, "typeColorSwatch1").property("skinned") is False
+
+
+# ── helpers other screens import from this module (kept 1:1) ───────────────
+
+def test_type_palette_helpers_stay_exported_for_the_event_dialog():
+    """``event_dialog.py`` (still widgets) imports these two names."""
+    assert NO_TYPE_TEXT == "Без типа"
+    assert not type_dot_icon(None, 3).isNull()
     assert _token_color(None, 0) is None
     assert _token_color(None, -1) is None
     assert _token_color(None, len(CHART_TOKEN_KEYS) + 1) is None
+
+
+async def test_theme_none_takes_the_process_default_palette(async_session, qtbot):
+    """The island always needs a palette bridge: ``theme=None`` takes the
+    process default (the pack-1 facade rule), never a bare context."""
+    service = await _make_service(async_session)
+    dialog = await _open_dialog(service, qtbot)
+    assert dialog._palette.tokens["color.bg.surface"]
+    assert find_item(dialog.quick, "typeColorSwatch1").property("skinned") is True

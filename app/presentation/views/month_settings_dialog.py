@@ -1,30 +1,25 @@
-"""Dialog for configuring custom month names."""
+"""Dialog for configuring custom month names — QML island (R3 pack 1)."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
-from app.presentation.theme.catalog import attach_theme, hint, set_role
-from app.presentation.utils.date_utils import DEFAULT_MONTHS
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.month_settings_view_model import MonthSettingsViewModel
 
-#: Extra gap under the hint label — the pre-catalog inline style carried
-#: ``margin-bottom: 6px``, which the generic hint rule does not repeat.
-HINT_BOTTOM_GAP = 6
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "MonthSettingsRoot.qml")
 
 
 class MonthSettingsDialog(QDialog):
-    """Dialog with 12 input fields for custom month names.
-
-    W2a pilot: the chrome container is attached to the theme (one call),
-    hints come from the catalog factory — no inline colors.
-    """
-
-    saved = Signal(object)  # emits {1: "Name", 2: "Name", ...}
+    saved = Signal(object)
 
     def __init__(
         self,
@@ -33,74 +28,46 @@ class MonthSettingsDialog(QDialog):
         theme=None,
     ) -> None:
         super().__init__(parent)
-        self._theme = theme
+        self._theme = theme if theme is not None else get_default_theme()
         self.setWindowTitle("Названия месяцев")
         self.setMinimumWidth(380)
-        self._inputs: Dict[int, QLineEdit] = {}
-        self._init_ui(current_months or DEFAULT_MONTHS)
-        self._apply_theme()
 
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
+        self.vm = MonthSettingsViewModel(current_months, parent=self)
 
-    def _init_ui(self, months: Dict[int, str]) -> None:
         layout = QVBoxLayout(self)
-        # Like the launcher (W1): the chrome reaches the dialog edges so no
-        # OS-palette band frames it.
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
 
-        self.chrome = QWidget()
-        self.chrome.setObjectName("monthSettingsChrome")  # identifier, not style
-        layout.addWidget(self.chrome)
-        chrome_layout = QVBoxLayout(self.chrome)
-        chrome_layout.setContentsMargins(11, 11, 11, 11)
-        chrome_layout.setSpacing(6)
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self.quick.rootContext().setContextProperty("monthSettingsVm", self.vm)
+        self._palette = QmlPalette(self._theme, parent=self)
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = self.quick.rootObject()
+        self._root.saveRequested.connect(self._on_save)
+        self._root.cancelRequested.connect(self.reject)
+        self.vm.saved.connect(self.saved)
 
-        chrome_layout.addWidget(hint("Оставьте пустым для стандартного названия", italic=True))
-        # The first field used to sit 6px lower (the old inline hint carried
-        # ``margin-bottom: 6px``); the catalog hint rule is generic, so the gap
-        # is restored as layout spacing on this screen.
-        chrome_layout.addSpacing(HINT_BOTTOM_GAP)
-
-        form = QFormLayout()
-        for i in range(1, 13):
-            inp = QLineEdit()
-            set_role(inp, "field")
-            default = DEFAULT_MONTHS[i]
-            custom = months.get(i, default)
-            inp.setPlaceholderText(default)
-            if custom != default:
-                inp.setText(custom)
-            self._inputs[i] = inp
-            form.addRow(f"{i:2d}. {default}:", inp)
-        chrome_layout.addLayout(form)
-
-        btn_row = QHBoxLayout()
-        reset_btn = QPushButton("Сбросить")
-        reset_btn.clicked.connect(self._on_reset)
-        btn_row.addWidget(reset_btn)
-        btn_row.addStretch()
-        save_btn = QPushButton("Сохранить")
-        save_btn.setDefault(True)
-        save_btn.clicked.connect(self._on_save)
-        btn_row.addWidget(save_btn)
-        cancel_btn = QPushButton("Отмена")
-        cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(cancel_btn)
-        chrome_layout.addLayout(btn_row)
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            marker = self._root.property("defaultButton") if self._root is not None else None
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return
+        super().keyPressEvent(event)
 
     def _on_save(self) -> None:
-        result: Dict[int, str] = {}
-        for i, inp in self._inputs.items():
-            text = inp.text().strip()
-            result[i] = text if text else DEFAULT_MONTHS[i]
-        self.saved.emit(result)
+        self.vm.save()
         self.accept()
 
-    def _on_reset(self) -> None:
-        for inp in self._inputs.values():
-            inp.clear()
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

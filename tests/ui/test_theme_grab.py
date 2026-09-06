@@ -137,94 +137,11 @@ def test_main_window_top_left_pixel_is_themed(qtbot, tmp_path, theme):
 # ── W2a pilots (add-widget-catalog-chrome-mechanics-w2a) ───────────────────
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_month_dialog_hint_is_muted_token_and_edge_is_canvas(qtbot, tmp_path, theme):
-    # Pilot 4.1: hint through the catalog factory (no #888), chrome attaches
-    # to the dialog edge (no OS palette band).
-    from PySide6.QtWidgets import QLineEdit
-
-    from app.presentation.views.month_settings_dialog import MonthSettingsDialog
-
-    runtime = make_runtime(tmp_path, theme)
-    dlg = MonthSettingsDialog(theme=runtime)
-    qtbot.addWidget(dlg)
-    dlg.show()
-    qtbot.waitExposed(dlg)
-
-    hint_label = next(w for w in dlg.chrome.findChildren(QLabel) if "стандартного" in w.text())
-    assert _contains_pixel(hint_label.grab().toImage(), token_color("color.fg.muted", theme))
-    # Visual parity with the pre-catalog pilot: the hint kept its 6px bottom
-    # gap (restored as layout spacing), so the first field is not cramped.
-    first_field = dlg.findChildren(QLineEdit)[0]
-    assert first_field.y() - hint_label.geometry().bottom() - 1 >= 12
-
-    edge = dlg.grab().toImage()
-    for x, y in ((1, 1), (1, edge.height() - 2), (edge.width() - 2, 1)):
-        assert edge.pixelColor(x, y) == canvas_color(theme), (x, y)
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_month_dialog_fields_take_surface_token(qtbot, tmp_path, theme):
-    # The field role paints from tokens: a line edit pixel equals surface
-    # exactly, which the default OS widgets in this dialog do not match.
-    from PySide6.QtWidgets import QLineEdit
-
-    from app.presentation.views.month_settings_dialog import MonthSettingsDialog
-
-    runtime = make_runtime(tmp_path, theme)
-    dlg = MonthSettingsDialog(theme=runtime)
-    qtbot.addWidget(dlg)
-    dlg.show()
-    qtbot.waitExposed(dlg)
-    edit = dlg.findChild(QLineEdit)
-    image = edit.grab().toImage()
-    surface = token_color("color.bg.surface", theme)
-    probe = (image.pixelColor(image.width() - 3, image.height() // 2),
-             image.pixelColor(20, image.height() // 2))
-    assert any(px == surface for px in probe)
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_world_snapshot_show_button_is_accent_token(qtbot, tmp_path, theme):
-    # Pilot 4.2: «Показать» is a plain chrome button — accent, not #2d5a88.
-    from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
-
-    runtime = make_runtime(tmp_path, theme)
-    widget = WorldSnapshotWidget(theme=runtime)
-    widget.resize(420, 320)
-    qtbot.addWidget(widget)
-    widget.show()
-    qtbot.waitExposed(widget)
-    image = widget.show_button.grab().toImage()
-    assert image.pixelColor(image.width() - 3, image.height() // 2) == token_color(
-        "color.accent", theme
-    )
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_world_snapshot_title_is_primary_token_and_lg_keg(qtbot, tmp_path, theme):
-    from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
-
-    runtime = make_runtime(tmp_path, theme)
-    widget = WorldSnapshotWidget(theme=runtime)
-    widget.resize(420, 320)
-    qtbot.addWidget(widget)
-    widget.show()
-    qtbot.waitExposed(widget)
-    label = widget.title_label
-    label.ensurePolished()
-    assert label.font().pixelSize() == int(
-        load_tokens(tokens_file_path())["font.size.lg"][theme][:-2]
-    )
-    assert label.font().bold()
-    assert _contains_pixel(label.grab().toImage(), token_color("color.fg.primary", theme))
-
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
 def test_mention_popup_surface_and_accent_selection(qtbot, tmp_path, theme):
     # Pilot 4.3: the popup list gets its skin from the app-wide popup sheet.
     from PySide6.QtWidgets import QApplication
 
-    from app.presentation.views.mention_text_edit import _MentionPopup
+    from app.presentation.views.mention_popup import _MentionPopup
 
     runtime = make_runtime(tmp_path, theme)
     app = QApplication.instance()
@@ -287,8 +204,8 @@ def _rating_theme(tmp_path, theme: str, high_hex: str) -> ThemeRuntime:
     return make_runtime(tmp_path, theme, tokens_path=tokens_path)
 
 
-def _rating_card(qtbot, runtime: ThemeRuntime):
-    """DetailPanel showing one event whose only organization is rating 20."""
+def _detail_rating_tint(qtbot, runtime: ThemeRuntime):
+    """Render-ready tint published by the detail panel's Python model."""
     from types import SimpleNamespace
 
     from app.presentation.views.detail_panel import DetailPanel
@@ -306,57 +223,30 @@ def _rating_card(qtbot, runtime: ThemeRuntime):
         organizations=[entity], characters=[], items=[], locations=[],
     )
     panel.show_event(event)
-    panel.resize(400, 300)
-    panel.show()
-    qtbot.waitExposed(panel)
-    return panel.org_list.itemWidget(panel.org_list.item(0))
+    model = panel.vm.organizations
+    return QColor(model.data(model.index(0, 0), model.RatingTintRole))
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_rating_card_pixel_equals_token_composite(qtbot, tmp_path, theme):
-    """Card pixel = the token tint (unchanged 80..220 alpha ramp → 220 at
-    rating 20) over the surface token the card role paints underneath."""
+def test_detail_rating_role_equals_token_tint(qtbot, tmp_path, theme):
     high = "#123456"
-    card = _rating_card(qtbot, _rating_theme(tmp_path, theme, high))
-    image = card.grab().toImage()
-    pixel = image.pixelColor(card.width() - 8, card.height() - 4)
-    expected = _composite_over(token_color("color.bg.surface", theme), QColor(high), 220)
-    assert pixel == expected, (pixel.getRgb(), expected.getRgb())
+    tint = _detail_rating_tint(qtbot, _rating_theme(tmp_path, theme, high))
+    assert tint == QColor(0x12, 0x34, 0x56, 220)
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_rating_card_follows_token_change_without_screen_edits(qtbot, tmp_path, theme):
-    """Changing ``color.rating.high`` must move the pixel with no code change."""
-    from PySide6.QtTest import QTest
-
-    red = _rating_card(qtbot, _rating_theme(tmp_path, theme, "#c00000"))
-    QTest.qWait(0)
-    red_image = red.grab().toImage()
-    red_pixel = red_image.pixelColor(red.width() - 8, red.height() - 4)
-    blue = _rating_card(qtbot, _rating_theme(tmp_path, theme, "#0000c0"))
-    QTest.qWait(0)
-    blue_image = blue.grab().toImage()
-    blue_pixel = blue_image.pixelColor(blue.width() - 8, blue.height() - 4)
-    assert red_pixel != blue_pixel
+def test_detail_rating_role_follows_token_change(qtbot, tmp_path, theme):
+    red = _detail_rating_tint(qtbot, _rating_theme(tmp_path, theme, "#c00000"))
+    blue = _detail_rating_tint(qtbot, _rating_theme(tmp_path, theme, "#0000c0"))
+    assert red != blue
 
 
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_rating_card_keeps_its_frame_and_row_separation(qtbot, tmp_path, theme):
-    """The card frame (border token) survives the rating tint: painting the
-    whole ``rect()`` wiped it and left the related-list rows separated by
-    nothing but the tint (W2b review — the card role's frame is the separator)."""
-    from PySide6.QtTest import QTest
+def test_detail_root_delegates_card_chrome_to_library():
+    from app.presentation.qml.engine import QML_IMPORT_PATH
 
-    border = token_color("color.border", theme)
-    card = _rating_card(qtbot, _rating_theme(tmp_path, theme, "#c00000"))
-    QTest.qWait(0)
-    image = card.grab().toImage()
-    mid_y = card.height() // 2
-    assert image.pixelColor(0, mid_y) == border, "left card frame must survive"
-    assert image.pixelColor(card.width() - 1, mid_y) == border, "right card frame must survive"
-    assert image.pixelColor(card.width() // 2, 0) == border, "top card frame must survive"
-    # the tint paints inside the frame, up to the last inset pixel
-    assert image.pixelColor(3, mid_y) != border
+    source = (Path(QML_IMPORT_PATH) / "DetailPanelRoot.qml").read_text(encoding="utf-8")
+    assert "ThemeRatingCard {" in source
+    assert "rating_to_color" not in source
 
 
 # ── W2b (re-pinned by Q3b 3.4): char-sheet chrome is themed, the sheet
@@ -394,87 +284,3 @@ def test_editor_chrome_is_tokens_and_canvas_keeps_its_own_colors(qtbot, tmp_path
     m = re.search(r'gutterColor:\s*"(#[0-9a-fA-F]{6})"', qml)
     assert m is not None, "SheetCanvas.qml must carry the gutter constant"
     assert QColor(m.group(1)).isValid()
-
-
-# ── W2b final acceptance (specs ui-theme): one accent token drives them all ─
-
-@pytest.mark.parametrize("theme", ["dark", "light"])
-def test_accent_token_change_moves_mention_ai_and_selection_together(qtbot, tmp_path, theme):
-    """Changing ``color.accent`` in tokens alone recolors mentions, the AI
-    active state, list selections and the «Показать» button — no screen edits
-    (the «разделитель и выделение» / «упоминание и AI через токен» scenarios).
-
-    The AI state is pinned by its marker and by a pixel, never by grepping a
-    color substring out of a stylesheet (spec «Состояние AI-кнопки»)."""
-    from PySide6.QtWidgets import QApplication, QLineEdit
-
-    from app.presentation.views.ai_assist_button import AI_STATE_ACTIVE, AiAssistButton, ai_state_is
-    from app.presentation.views.mention_text_edit import MentionTextEdit
-    from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
-
-    new_accent = "#0f8c3c"
-    tokens = json.loads(tokens_file_path().read_text(encoding="utf-8"))
-    tokens["color.accent"][theme] = new_accent
-    tokens_path = tmp_path / "tokens.json"
-    tokens_path.write_text(json.dumps(tokens), encoding="utf-8")
-    runtime = make_runtime(tmp_path, theme, tokens_path=tokens_path)
-
-    app = QApplication.instance()
-    app.setStyleSheet("")
-    runtime.attach_app(app)
-    try:
-        # 1) mention markup carries the new accent through the compiler.
-        edit = MentionTextEdit(theme=runtime)
-        qtbot.addWidget(edit)
-        edit.setContent("@[A](character:1)")
-        assert f"color:{new_accent}" in edit.toHtml()
-
-        # 2) AI-active: the marker says active, the pixel says the accent
-        #    derivative (accent at 0.25 over the chrome canvas it sits on).
-        chrome = QWidget()
-        chrome.setObjectName("accentChrome")
-        chrome.resize(240, 80)
-        qtbot.addWidget(chrome)
-        row = QHBoxLayout(chrome)
-        field = QLineEdit()
-        ai = AiAssistButton(field, "character", "backstory", "П", parent=chrome, theme=runtime)
-        row.addWidget(field)
-        row.addWidget(ai)
-        attach_theme(chrome, runtime)
-        runtime.apply()
-        ai.update_llm_state("ready", True)
-        assert ai_state_is(ai, AI_STATE_ACTIVE)
-        chrome.show()
-        qtbot.waitExposed(chrome)
-        image, scale = _grab_scaled(chrome)
-        # QSS "rgba(…, 0.25)" reaches Qt as an 8-bit 0.25 * 255 alpha.
-        expected = _composite_over(canvas_color(theme), QColor(new_accent), int(0.25 * 255))
-        area = ai.geometry()
-        hits = [
-            (x, y)
-            for y in range(int(area.top() * scale), min(int(area.bottom() * scale) + 1, image.height()))
-            for x in range(int(area.left() * scale), min(int(area.right() * scale) + 1, image.width()))
-            if image.pixelColor(x, y) == expected
-        ]
-        assert hits, (
-            "AI-active must paint the accent derivative of the token",
-            expected.getRgb(),
-        )
-
-        # 3) «Показать» (chrome button) follows the accent token. List selections
-        #    are the same QSS accent (popup-surface test above pins the pixel).
-        widget = WorldSnapshotWidget(theme=runtime)
-        widget.resize(420, 320)
-        qtbot.addWidget(widget)
-        widget.show()
-        qtbot.waitExposed(widget)
-        image = widget.show_button.grab().toImage()
-        assert image.pixelColor(image.width() - 3, image.height() // 2) == QColor(new_accent)
-    finally:
-        # The popup sheet of a personalized token set must not survive the test:
-        # it lives on the QApplication and would paint every later test with an
-        # accent nobody shipped. Cleaned here and not by a global autouse
-        # fixture: clearing the application sheet makes the next push different
-        # from what the app carries, so every apply() re-polishes the whole
-        # process tree — the ×6 offscreen slowdown W2a removed.
-        app.setStyleSheet("")

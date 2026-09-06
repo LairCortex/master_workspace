@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.utils.date_utils import format_game_date
-from app.presentation.views.custom_date_edit import _CustomCalendar
+from app.presentation.views.theme_date_popup import _CustomCalendar
 
 # ── «Выбор даты» chip + popover captions (W3b D9; migrated with the popover) ─
 #: Chip caption while no window is applied; the caret marks it as a dropdown

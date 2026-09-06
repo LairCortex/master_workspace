@@ -23,6 +23,13 @@
 module nri.components
 ThemeButton ThemeButton.qml
 ThemeField ThemeField.qml
+ThemeTextArea ThemeTextArea.qml
+MentionField MentionField.qml
+ThemeAiButton ThemeAiButton.qml
+RelatedSection RelatedSection.qml
+ThemeSwatch ThemeSwatch.qml
+ThemeDateField ThemeDateField.qml
+ThemeRatingCard ThemeRatingCard.qml
 ThemeCheckBox ThemeCheckBox.qml
 ThemeComboBox ThemeComboBox.qml
 TitleText TitleText.qml

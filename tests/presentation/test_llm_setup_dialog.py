@@ -1,22 +1,32 @@
-"""Tests for LlmSetupDialog — connection page, check, wizard navigation, save."""
+"""LlmSetupDialog — the QML-island facade: connection, check, wizard, save.
+
+The dialog is a QDialog frame around one QQuickWidget island (R3 pack 2), so
+the tests address state through the island's view model and the facade's
+public API; the async HTTP check and the save lifecycle stay on the facade.
+"""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 import pytest
+from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import (
     QDialog,
-    QLabel,
+    QFormLayout,
     QLineEdit,
     QMessageBox,
     QProgressBar,
-    QPushButton,
+    QStackedWidget,
+    QTextEdit,
 )
 
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
+from app.presentation.qml.engine import qml_engine
+from app.presentation.views import llm_setup_dialog as dialog_module
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 
 _DEFAULT_PROMPTS = {
@@ -65,99 +75,124 @@ def dialog(make_dialog):
     return make_dialog()
 
 
+# --- island wiring ------------------------------------------------------------
+
+
+def test_island_runs_on_the_shared_engine_with_isolated_context(dialog, qapp):
+    assert QQmlEngine.contextForObject(dialog.quick.rootObject()).engine() is qml_engine()
+    assert len(qapp.findChildren(QQmlEngine)) == 1
+    context = dialog._context
+    assert context.contextProperty("llmSetupVm") is dialog.vm
+    assert context.contextProperty("islandPalette") is not None
+    assert dialog.quick.rootContext().contextProperty("llmSetupVm") is None
+    # Services never reach QML (spec qml-shell «Контекст LLM изолирован»).
+    for forbidden in ("http", "llmService", "provider", "vm"):
+        assert context.contextProperty(forbidden) is None
+
+
+def test_widgets_layout_is_gone(dialog):
+    assert dialog.findChildren(QStackedWidget) == []
+    assert dialog.findChildren(QLineEdit) == []
+    assert dialog.findChildren(QTextEdit) == []
+    assert dialog.findChildren(QProgressBar) == []
+    assert not dialog.findChildren(QFormLayout)
+    source = Path(dialog_module.__file__).read_text(encoding="utf-8")
+    for gone in ("QFormLayout", "QStackedWidget", "QLineEdit", "QTextEdit", "_FieldPromptsPage"):
+        assert gone not in source, gone
+
+
 # --- connection page ----------------------------------------------------------
 
 
 def test_connection_page_first_with_prefilled_values(dialog):
-    assert dialog._stack.currentIndex() == 0
-    assert dialog._endpoint_edit.text() == "https://api.openai.com/v1"
-    assert dialog._model_edit.text() == "gpt-4o-mini"
-    assert dialog._key_edit.text() == "sk-123"
+    assert dialog.vm.currentPage == 0
+    assert dialog.vm.endpoint == "https://api.openai.com/v1"
+    assert dialog.vm.model == "gpt-4o-mini"
+    assert dialog.vm.apiKey == "sk-123"
+    assert dialog.get_connection() == LlmConfig("https://api.openai.com/v1", "gpt-4o-mini", "sk-123")
 
 
-def test_key_field_is_masked(dialog):
-    assert dialog._key_edit.echoMode() == QLineEdit.EchoMode.Password
-
-
-def test_no_download_ui(dialog):
-    assert dialog.findChildren(QProgressBar) == []
-    assert dialog.findChildren(QPushButton, "Скачать модель") == []
-    assert dialog.findChildren(QPushButton, "Удалить модель") == []
-
-
-def test_endpoint_hint_mentions_format(dialog):
-    full = " ".join(lbl.text() for lbl in dialog._connection_page.findChildren(QLabel) if lbl.text())
-    assert "/v1" in full
+def test_missing_config_falls_back_to_empty_connection(make_dialog):
+    dlg = make_dialog(config=LlmConfig())
+    assert dlg.get_connection() == LlmConfig("", "", "")
 
 
 # --- check connection -----------------------------------------------------------
 
 
-def test_check_button_disabled_when_endpoint_empty(dialog):
-    dialog._endpoint_edit.setText("")
-    assert not dialog._check_btn.isEnabled()
-    dialog._endpoint_edit.setText("https://api.openai.com/v1")
-    assert dialog._check_btn.isEnabled()
+def test_check_disabled_when_endpoint_empty(dialog):
+    dialog.vm.endpoint = ""
+    assert dialog.vm.checkEnabled is False
+    dialog.vm.endpoint = "https://api.openai.com/v1"
+    assert dialog.vm.checkEnabled is True
 
 
-def test_check_button_disabled_when_model_empty(dialog):
-    dialog._model_edit.setText("")
-    assert not dialog._check_btn.isEnabled()
-    dialog._model_edit.setText("gpt-4o-mini")
-    assert dialog._check_btn.isEnabled()
+def test_check_disabled_when_model_empty(dialog):
+    dialog.vm.model = ""
+    assert dialog.vm.checkEnabled is False
+    dialog.vm.model = "gpt-4o-mini"
+    assert dialog.vm.checkEnabled is True
 
 
-@pytest.mark.asyncio
 async def test_check_success_shows_established(dialog):
     await dialog._on_check()
-    assert "установлено" in dialog._check_label.text().lower()
-    assert dialog._check_label.property("uiRole") == "status-ok"
-    assert dialog._check_btn.isEnabled()
+    assert "установлено" in dialog.vm.checkText.lower()
+    assert dialog.vm.checkStatus == "ok"
+    assert dialog.vm.checkEnabled is True
 
 
-@pytest.mark.asyncio
 async def test_check_401_shows_invalid_key(make_dialog):
     dlg = make_dialog(handler=_error_response(401, "Invalid API key"))
     await dlg._on_check()
-    assert "неверный ключ" in dlg._check_label.text().lower()
-    assert dlg._check_label.property("uiRole") == "status-error"
-    assert dlg._check_btn.isEnabled()
+    assert "неверный ключ" in dlg.vm.checkText.lower()
+    assert dlg.vm.checkStatus == "error"
+    assert dlg.vm.checkEnabled is True
 
 
-@pytest.mark.asyncio
-async def test_check_button_blocked_during_check(make_dialog):
+async def test_check_incomplete_connection_makes_no_request(make_dialog):
+    requests: list[httpx.Request] = []
+
+    def counting(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _ok_response(request)
+
+    dlg = make_dialog(handler=counting)
+    dlg.vm.model = ""
+    await dlg._on_check()
+    assert requests == []
+    assert dlg.vm.checkText == ""
+
+
+async def test_check_blocked_while_running(make_dialog):
     states: list[bool] = []
-    btns: dict = {}
+    holder: dict = {}
 
     def capturing(request: httpx.Request) -> httpx.Response:
-        states.append(btns["btn"].isEnabled())
+        states.append(holder["vm"].checkEnabled)
         return _ok_response(request)
 
     dlg = make_dialog(handler=capturing)
-    btns["btn"] = dlg._check_btn
+    holder["vm"] = dlg.vm
     await dlg._on_check()
     assert states == [False]
-    assert dlg._check_btn.isEnabled()
+    assert dlg.vm.checkEnabled is True
 
 
-
-@pytest.mark.asyncio
-async def test_check_button_click_runs_check(dialog):
-    """Qt signal -> async slot must be bridged into the event loop."""
-    dialog._check_btn.click()
+async def test_check_request_from_island_runs_the_facade_check(dialog):
+    """QML emits a sync request; the coroutine is scheduled by the facade."""
+    dialog.vm.requestCheck()
     for _ in range(200):
         await asyncio.sleep(0)
-        if dialog._check_label.text():
+        if dialog.vm.checkText and dialog.vm.checkStatus:
             break
-    assert "установлено" in dialog._check_label.text().lower()
+    assert "установлено" in dialog.vm.checkText.lower()
 
 
 # --- save -------------------------------------------------------------------------
 
 
-
 def test_save_blocked_when_endpoint_empty(dialog):
-    dialog._endpoint_edit.setText("")
+    dialog.vm.endpoint = ""
     emitted = []
     dialog.saved.connect(lambda *args: emitted.append(args))
     with patch.object(QMessageBox, "warning") as mock_warning:
@@ -168,7 +203,7 @@ def test_save_blocked_when_endpoint_empty(dialog):
 
 
 def test_save_blocked_when_model_empty(dialog):
-    dialog._model_edit.setText("")
+    dialog.vm.model = ""
     with patch.object(QMessageBox, "warning") as mock_warning:
         dialog._on_save()
     mock_warning.assert_called_once()
@@ -176,12 +211,12 @@ def test_save_blocked_when_model_empty(dialog):
 
 
 def test_save_emits_config_and_prompts(dialog, qtbot):
-    dialog._endpoint_edit.setText("http://localhost:11434/v1")
-    dialog._model_edit.setText("llama3")
-    dialog._key_edit.setText("")
+    dialog.vm.endpoint = "http://localhost:11434/v1"
+    dialog.vm.model = "llama3"
+    dialog.vm.apiKey = ""
 
     with qtbot.waitSignal(dialog.saved, timeout=1000) as blocker:
-        dialog._on_save()
+        dialog.vm.requestSave()
 
     config, world_prompt, field_prompts = blocker.args
     assert config == LlmConfig("http://localhost:11434/v1", "llama3", "")
@@ -191,11 +226,11 @@ def test_save_emits_config_and_prompts(dialog, qtbot):
 
 def test_dialog_not_accepted_until_save_finished(dialog):
     dialog._on_save()
-    # save button is not disabled; dialog stays open until the async save completes
-    assert dialog._saving
-    assert dialog._save_btn.isEnabled()
+    assert dialog.vm.saving is True
+    assert dialog.vm.saveEnabled is False
     assert not dialog.result()
     dialog.finish_saving(True)
+    assert dialog.vm.saving is False
     assert dialog.result() == QDialog.DialogCode.Accepted
 
 
@@ -204,6 +239,7 @@ def test_save_reentry_ignored_while_saving(dialog):
     dialog.saved.connect(lambda *a: counts.append(1))
     dialog._on_save()
     dialog._on_save()
+    dialog.vm.requestSave()
     assert len(counts) == 1
     dialog.finish_saving(True)
 
@@ -224,19 +260,24 @@ def test_close_and_reject_blocked_while_saving(dialog):
     assert dialog.result() == QDialog.DialogCode.Accepted
 
 
+def test_close_allowed_when_not_saving(dialog):
+    dialog.close()
+    assert not dialog.isVisible()
+
+
 def test_finish_saving_failure_shows_warning_and_keeps_open(dialog):
     dialog._on_save()
     with patch.object(QMessageBox, "warning") as mock_warning:
         dialog.finish_saving(False)
     mock_warning.assert_called_once()
     assert not dialog.result()
-    assert not dialog._saving
+    assert dialog.vm.saving is False
     # save can be retried after a failed attempt
     dialog._on_save()
     dialog.finish_saving(True)
 
 
-# --- wizard (unchanged parts) -------------------------------------------------------
+# --- wizard -------------------------------------------------------------------------
 
 
 def test_wizard_has_8_pages(dialog):
@@ -244,30 +285,32 @@ def test_wizard_has_8_pages(dialog):
 
 
 def test_navigation_back_forward(dialog):
-    assert dialog._stack.currentIndex() == 0
-    assert not dialog._back_btn.isEnabled()
+    assert dialog.vm.currentPage == 0
+    assert dialog.vm.backEnabled is False
 
-    dialog._go_next()
-    assert dialog._stack.currentIndex() == 1
-    assert dialog._back_btn.isEnabled()
+    dialog.vm.goNext()
+    assert dialog.vm.currentPage == 1
+    assert dialog.vm.backEnabled is True
 
-    dialog._go_back()
-    assert dialog._stack.currentIndex() == 0
+    dialog.vm.goBack()
+    assert dialog.vm.currentPage == 0
 
     for _ in range(10):
-        dialog._go_next()
-    assert dialog._stack.currentIndex() == 7
+        dialog.vm.goNext()
+    assert dialog.vm.currentPage == 7
 
 
-def test_save_btn_on_last_page(dialog):
+def test_save_shown_only_on_last_page(dialog):
+    assert dialog.vm.saveVisible is False
+    assert dialog.vm.nextVisible is True
     for _ in range(7):
-        dialog._go_next()
-    assert not dialog._save_btn.isHidden()
-    assert dialog._next_btn.isHidden()
+        dialog.vm.goNext()
+    assert dialog.vm.saveVisible is True
+    assert dialog.vm.nextVisible is False
 
 
 def test_world_prompt_saved_on_close(dialog):
-    dialog._world_prompt_edit.setPlainText("New world prompt")
+    dialog.vm.worldPrompt = "New world prompt"
     emitted = []
     dialog.saved.connect(lambda c, wp, fp: emitted.append(wp))
     dialog._on_save()
@@ -275,17 +318,18 @@ def test_world_prompt_saved_on_close(dialog):
 
 
 def test_field_prompts_pages(dialog):
-    assert len(dialog._field_pages["event"].get_prompts()) == 3
-    assert len(dialog._field_pages["character"].get_prompts()) == 5
-    assert len(dialog._field_pages["item"].get_prompts()) == 3
+    prompts = dialog.get_field_prompts()
+    assert len(prompts["event"]) == 3
+    assert len(prompts["character"]) == 5
+    assert len(prompts["item"]) == 3
 
 
 def test_field_prompts_prefilled_on_reopen(dialog):
-    assert dialog._field_pages["event"].get_prompts()["name"] == "Evt name"
+    assert dialog.get_field_prompts()["event"]["name"] == "Evt name"
 
 
 def test_get_world_prompt(dialog):
-    dialog._world_prompt_edit.setPlainText("My world")
+    dialog.vm.worldPrompt = "  My world  "
     assert dialog.get_world_prompt() == "My world"
 
 
@@ -295,8 +339,6 @@ def test_get_field_prompts(dialog):
         assert etype in result
 
 
-def test_warnings_mention_key_storage(dialog):
-    for _ in range(7):
-        dialog._go_next()
-    full_text = " ".join(lbl.text() for lbl in dialog._warnings_page.findChildren(QLabel) if lbl.text())
-    assert "llm_config.json" in full_text
+def test_done_releases_the_island(dialog, qtbot):
+    dialog.done(0)
+    qtbot.waitUntil(lambda: dialog.quick.source().isEmpty(), timeout=2000)

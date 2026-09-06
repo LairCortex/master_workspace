@@ -162,6 +162,7 @@ class TestUpdateEntityWithRelations:
     async def test_error_propagates_after_rollback(self, async_session, mocker):
         w = await _world(async_session)
         await async_session.commit()  # fixture baseline in its own transaction
+        item_id = w.item.id
         # save-error-reporting: a failing update is rolled back and the
         # exception propagates (the old silent None was the W5 debt;
         # TestUpdateEntityWithRelationsFailurePropagation covers the commit leg)
@@ -170,7 +171,7 @@ class TestUpdateEntityWithRelations:
         )
         with pytest.raises(RuntimeError, match="db gone"):
             await w.item_svc.update_entity_with_relations(
-                w.item.id,
+                item_id,
                 field_data={"rating": 7},
                 characteristics="c",
                 backstory="b",
@@ -179,7 +180,7 @@ class TestUpdateEntityWithRelations:
         # Prior committed state is intact
         from sqlalchemy import select
 
-        row = (await async_session.execute(select(ItemModel).where(ItemModel.id == w.item.id))).scalars().first()
+        row = (await async_session.execute(select(ItemModel).where(ItemModel.id == item_id))).scalars().first()
         assert row is not None
         assert row.rating == 3
 

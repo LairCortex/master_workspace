@@ -17,7 +17,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 import app.presentation.views.detail_panel as _detail_panel_mod
-import app.presentation.views.world_snapshot_widget as _world_snapshot_mod
+import app.presentation.viewmodels.detail_panel_view_model as _detail_vm_mod
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
@@ -70,6 +70,13 @@ def _mock_event(id_=1, name="E", **extra):
     return ev
 
 
+def _detail_row(model, row=0):
+    return {
+        bytes(name).decode(): model.data(model.index(row, 0), role)
+        for role, name in model.roleNames().items()
+    }
+
+
 # ── DetailPanel: summary branches and thumbnails ───────────────────────────
 
 class TestDetailPanelGaps:
@@ -78,21 +85,16 @@ class TestDetailPanelGaps:
         qtbot.addWidget(w)
         org = _mock_entity(1, "Org", description=MagicMock(characteristics="А" * 150, backstory=""))
         w.show_event(_mock_event(organizations=[org]))
-        from PySide6.QtWidgets import QLabel
-
-        item_widget = w.org_list.itemWidget(w.org_list.item(0))
-        labels = item_widget.findChildren(QLabel)
-        all_text = " ".join(lab.text() for lab in labels)
-        assert "…" in all_text
-        assert all_text.count("А") <= 120  # truncated to max_len chars
+        summary = _detail_row(w.vm.organizations)["summary"]
+        assert "…" in summary
+        assert summary.count("А") <= 120
 
     def test_character_personality_in_summary(self, qtbot):
         w = DetailPanel(MagicMock())
         qtbot.addWidget(w)
         ch = _mock_entity(1, "Герой", personality="Храбр")
         w.show_event(_mock_event(characters=[ch]))
-        labels = w.char_list.itemWidget(w.char_list.item(0)).findChildren(__import__("PySide6").QtWidgets.QLabel)
-        assert any("Личность" in lab.text() for lab in labels)
+        assert "Личность" in _detail_row(w.vm.characters)["summary"]
 
     def test_related_counts_in_summary(self, qtbot):
         w = DetailPanel(MagicMock())
@@ -100,38 +102,25 @@ class TestDetailPanelGaps:
         ch = _mock_entity(2, "Вард")
         org = _mock_entity(1, "Гильдия", characters=[ch])
         w.show_event(_mock_event(organizations=[org], characters=[ch]))
-        labels = w.org_list.itemWidget(w.org_list.item(0)).findChildren(__import__("PySide6").QtWidgets.QLabel)
-        all_text = " ".join(lab.text() for lab in labels)
-        assert "Связи" in all_text
-        assert "1 персонажей" in all_text
+        summary = _detail_row(w.vm.organizations)["summary"]
+        assert "Связи" in summary
+        assert "1 персонажей" in summary
 
-    def test_entity_image_renders_thumbnail(self, qtbot, monkeypatch):
-        from PySide6.QtWidgets import QLabel
-
-        monkeypatch.setattr(
-            _detail_panel_mod, "load_entity_preview", lambda entity, slot_size: _fake_thumbnail()
-        )
+    def test_entity_image_publishes_qml_source(self, qtbot, monkeypatch):
+        monkeypatch.setattr(_detail_vm_mod, "resolve_preview_path", lambda entity: "/tmp/pic.webp")
         w = DetailPanel(MagicMock())
         qtbot.addWidget(w)
         org = _mock_entity(1, "Орг")
         w.show_event(_mock_event(organizations=[org]))
-        item_widget = w.org_list.itemWidget(w.org_list.item(0))
-        thumbnails = [lab for lab in item_widget.findChildren(QLabel) if lab.pixmap() and not lab.pixmap().isNull()]
-        assert thumbnails, "expected a thumbnail QLabel with a pixmap"
+        assert _detail_row(w.vm.organizations)["imageSource"].startswith("file:")
 
     def test_event_without_end_date(self, qtbot):
         w = DetailPanel(MagicMock())
         qtbot.addWidget(w)
         w.show_event(_mock_event(end_date=None))
-        assert "∞" in w.date_label.text()
+        assert "∞" in w.vm.dateText
 
-    def test_clicking_thumbnail_opens_image_viewer(self, qtbot, monkeypatch):
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QMouseEvent
-
-        monkeypatch.setattr(
-            _detail_panel_mod, "load_entity_preview", lambda entity, slot_size: _fake_thumbnail()
-        )
+    def test_requesting_image_opens_image_viewer(self, qtbot, monkeypatch):
         monkeypatch.setattr(_detail_panel_mod, "load_entity_original", lambda entity: _fake_thumbnail())
         opened: list = []
         monkeypatch.setattr(
@@ -142,33 +131,34 @@ class TestDetailPanelGaps:
         qtbot.addWidget(w)
         org = _mock_entity(1, "Орг")
         w.show_event(_mock_event(organizations=[org]))
-        item_widget = w.org_list.itemWidget(w.org_list.item(0))
-        from app.presentation.views.clickable_label import ClickableLabel
-
-        thumb = item_widget.findChild(ClickableLabel)
-        assert thumb is not None
-        event = QMouseEvent(
-            QMouseEvent.Type.MouseButtonPress, thumb.rect().center(),
-            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-        )
-        thumb.mousePressEvent(event)
+        w.vm.requestImage("organization", org.id)
         assert len(opened) == 1
 
-    def test_entities_without_image_have_no_clickable_thumbnail(self, qtbot, monkeypatch):
-        monkeypatch.setattr(_detail_panel_mod, "load_entity_preview", lambda entity, slot_size: QPixmap())
+    def test_entities_without_image_have_empty_qml_source(self, qtbot):
         w = DetailPanel(MagicMock())
         qtbot.addWidget(w)
         org = _mock_entity(1, "Орг")
         w.show_event(_mock_event(organizations=[org]))
-        item_widget = w.org_list.itemWidget(w.org_list.item(0))
-        from app.presentation.views.clickable_label import ClickableLabel
-
-        assert item_widget.findChild(ClickableLabel) is None
+        assert _detail_row(w.vm.organizations)["imageSource"] == ""
 
 
 # ── WorldSnapshotWidget: items, show-all stats, rating fallback, tooltip ──
 
 class TestWorldSnapshotGaps:
+    @staticmethod
+    def _rows(widget):
+        roles = {
+            name.decode(): role
+            for role, name in widget.vm.rowModel.roleNames().items()
+        }
+        return [
+            {
+                key: widget.vm.rowModel.data(widget.vm.rowModel.index(index, 0), role)
+                for key, role in roles.items()
+            }
+            for index in range(widget.vm.rowModel.rowCount())
+        ]
+
     def test_colored_circle_helper(self):
         from PySide6.QtGui import QColor
 
@@ -182,8 +172,11 @@ class TestWorldSnapshotGaps:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([ev], __import__("datetime").date(1200, 1, 1))
-        sections = [w.tree.topLevelItem(i).text(0) for i in range(w.tree.topLevelItemCount())]
-        assert any("Предметы (1)" in s for s in sections)
+        sections = [
+            row["displayText"] for row in self._rows(w)
+            if row["rowKind"] == "sectionHeader"
+        ]
+        assert any("Предметы (1)" in text for text in sections)
 
     def test_show_all_stats_mode(self, qtbot):
         ch = _mock_entity(1, "Герой")
@@ -191,8 +184,8 @@ class TestWorldSnapshotGaps:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([ev], None)  # «Показать всё»
-        assert "Показано: все события" in w.stats_label.text()
-        assert "Персонажей: 1" in w.stats_label.text()
+        assert "Показано: все события" in w.vm.statsText
+        assert "Персонажей: 1" in w.vm.statsText
 
     def test_non_int_rating_falls_back_to_1(self, qtbot):
         # A float rating survives the sort key but is not an int → falls back to 1
@@ -201,9 +194,12 @@ class TestWorldSnapshotGaps:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([ev], None)
-        node = w.tree.topLevelItem(1).child(0)
-        assert "[15.5/20]" not in node.text(0)
-        assert "[1/20]" not in node.text(0)
+        row = next(
+            row for row in self._rows(w)
+            if row["rowKind"] == "entityRow" and row["type"] == "character"
+        )
+        assert "[15.5/20]" not in row["displayText"]
+        assert "[1/20]" not in row["displayText"]
 
     def test_high_rating_node_is_bold(self, qtbot):
         ch = _mock_entity(1, "Легенда", rating=19)
@@ -211,12 +207,15 @@ class TestWorldSnapshotGaps:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([ev], None)
-        node = w.tree.topLevelItem(1).child(0)
-        assert node.font(0).bold()
+        row = next(
+            row for row in self._rows(w)
+            if row["rowKind"] == "entityRow" and row["type"] == "character"
+        )
+        assert row["fontBold"]
 
     def test_entity_image_thumbnails_node_icon(self, qtbot, monkeypatch):
         monkeypatch.setattr(
-            _world_snapshot_mod, "load_entity_preview",
+            "app.presentation.viewmodels.world_snapshot_view_model.load_entity_preview",
             lambda entity, slot_size: _fake_thumbnail(size=slot_size),
         )
         ch = _mock_entity(1, "Герой")
@@ -224,8 +223,11 @@ class TestWorldSnapshotGaps:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([ev], None)
-        node = w.tree.topLevelItem(1).child(0)
-        widths = [s.width() for s in node.icon(0).availableSizes()]
+        row = next(
+            row for row in self._rows(w)
+            if row["rowKind"] == "entityRow" and row["type"] == "character"
+        )
+        widths = [size.width() for size in row["icon"].availableSizes()]
         assert 24 in widths, "thumbnail icon should be the 24px pixmap"
 
 
@@ -235,8 +237,11 @@ class TestWorldSnapshotGaps:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         w.populate([ev], None)
-        node = w.tree.topLevelItem(1).child(0)
-        assert "Тайный убийца гильдии" in node.toolTip(0)
+        row = next(
+            row for row in self._rows(w)
+            if row["rowKind"] == "entityRow" and row["type"] == "character"
+        )
+        assert "Тайный убийца гильдии" in row["tooltipHtml"]
 
 
 # ── EntityCardDialog: music toggle, image pick, related section, reject ────

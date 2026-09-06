@@ -88,44 +88,6 @@ class TestMonthSerialization:
         assert result == original
 
 
-# ── CustomDateEdit ────────────────────────────────────────────────────────
-
-
-class TestCustomDateEdit:
-    def setup_method(self):
-        set_custom_months(None)
-
-    def test_creates(self, qtbot):
-        from app.presentation.views.custom_date_edit import CustomDateEdit
-        edit = CustomDateEdit()
-        qtbot.addWidget(edit)
-        assert edit is not None
-
-    def test_text_shows_month_name(self, qtbot):
-        from app.presentation.views.custom_date_edit import CustomDateEdit
-        edit = CustomDateEdit()
-        qtbot.addWidget(edit)
-        edit.setDate(QDate(2026, 3, 15))
-        text = edit.textFromDateTime(QDate(2026, 3, 15))
-        assert "Март" in text
-        assert "2026" in text
-        assert "15" in text
-
-    def test_text_with_custom_months(self, qtbot):
-        from app.presentation.views.custom_date_edit import CustomDateEdit
-        set_custom_months({3: "Молнеград"})
-        edit = CustomDateEdit()
-        qtbot.addWidget(edit)
-        text = edit.textFromDateTime(QDate(2026, 3, 15))
-        assert "Молнеград" in text
-
-    def test_has_calendar_popup(self, qtbot):
-        from app.presentation.views.custom_date_edit import CustomDateEdit
-        edit = CustomDateEdit()
-        qtbot.addWidget(edit)
-        assert edit.calendarPopup() is True
-
-
 # ── MonthSettingsDialog ───────────────────────────────────────────────────
 
 
@@ -138,30 +100,36 @@ class TestMonthSettingsDialog:
 
     def test_creates_with_custom(self, qtbot):
         from app.presentation.views.month_settings_dialog import MonthSettingsDialog
+        from tests.presentation.qml_helpers import find_item
+
         custom = {1: "Зимостой", 2: "Февраль"}
         dlg = MonthSettingsDialog(current_months=custom)
         qtbot.addWidget(dlg)
-        assert dlg._inputs[1].text() == "Зимостой"
-        assert dlg._inputs[2].text() == ""  # same as default → empty
+        assert find_item(dlg.quick, "monthField1").property("text") == "Зимостой"
+        assert find_item(dlg.quick, "monthField2").property("text") == ""
 
     def test_save_emits_signal(self, qtbot):
         from app.presentation.views.month_settings_dialog import MonthSettingsDialog
+        from tests.presentation.qml_helpers import find_item
+
         dlg = MonthSettingsDialog()
         qtbot.addWidget(dlg)
-        dlg._inputs[1].setText("Зимостой")
+        find_item(dlg.quick, "monthField1").setProperty("text", "Зимостой")
         with qtbot.waitSignal(dlg.saved, timeout=1000) as blocker:
             dlg._on_save()
         result = blocker.args[0]
         assert result[1] == "Зимостой"
-        assert result[2] == "Февраль"  # default
+        assert result[2] == "Февраль"
 
     def test_reset_clears_inputs(self, qtbot):
         from app.presentation.views.month_settings_dialog import MonthSettingsDialog
+        from tests.presentation.qml_helpers import click_item, find_item
+
         dlg = MonthSettingsDialog({1: "Custom"})
         qtbot.addWidget(dlg)
-        assert dlg._inputs[1].text() == "Custom"
-        dlg._on_reset()
-        assert dlg._inputs[1].text() == ""
+        assert find_item(dlg.quick, "monthField1").property("text") == "Custom"
+        click_item(dlg.quick, find_item(dlg.quick, "resetButton"))
+        assert find_item(dlg.quick, "monthField1").property("text") == ""
 
 
 # ── MainWindow menu ──────────────────────────────────────────────────────

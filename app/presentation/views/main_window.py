@@ -8,13 +8,12 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QDialog, QMainWindow, QMenuBar, QPlainTextEdit,
-    QSplitter, QVBoxLayout, QWidget,
+    QMainWindow, QMenuBar, QSplitter, QVBoxLayout, QWidget,
 )
 
-from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
+from app.presentation.views.doc_viewer_dialog import DocViewerDialog as _DocViewerDialog
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_island import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
@@ -48,73 +47,6 @@ def _docs_dir() -> Path:
                 return candidate
         return exe.parent / "_internal" / "docs"  # fallback
     return Path(__file__).resolve().parent.parent.parent.parent / "docs"
-
-
-class _DocViewerDialog(QDialog):
-    """Read-only dialog that shows a text/markdown file."""
-
-    def __init__(
-        self,
-        title: str,
-        file_path: Path,
-        parent: QWidget | None = None,
-        theme=None,
-    ) -> None:
-        super().__init__(parent)
-        self._theme = theme
-        self.setWindowTitle(title)
-        self.setMinimumSize(640, 480)
-        self.resize(720, 560)
-
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("docViewerChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        text_edit = QPlainTextEdit()
-        text_edit.setReadOnly(True)
-        # The block gets field chrome + the monospace family from the
-        # font.family.mono token (W2b). Inside the attached chrome the
-        # [field][uiRoleMono] QSS rule carries the family and follows live
-        # theme switches — an explicit setFont would override it and freeze
-        # the old theme's family (W2b fix). Off-skin there is no sheet at
-        # all, so the family is applied as an explicit font fallback (D7).
-        set_role(text_edit, "field", mono=True)
-        runtime = self._theme
-        if runtime is None:
-            try:
-                runtime = get_default_theme()
-            except Exception:  # no usable theme (off-skin test)
-                runtime = None
-        tokens = runtime.tokens if runtime is not None else None
-        chrome_attached = self._theme is not None
-        if tokens and not chrome_attached:
-            font = text_edit.font()
-            font.setFamilies(
-                [f.strip() for f in tokens["font.family.mono"][runtime.theme].split(",")]
-            )
-            text_edit.setFont(font)
-        text_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
-
-        if file_path.exists():
-            text_edit.setPlainText(file_path.read_text(encoding="utf-8"))
-        else:
-            text_edit.setPlainText(f"Файл не найден: {file_path}")
-
-        layout.addWidget(text_edit)
-
-        self._apply_theme()
-
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
 
 
 class MainWindow(QMainWindow):

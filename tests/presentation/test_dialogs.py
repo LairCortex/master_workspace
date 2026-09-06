@@ -7,9 +7,12 @@ from PySide6.QtCore import QDate, QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import QDialog
 
-from app.presentation.views.ai_assist_button import EntityGenerateButton
+from app.presentation.viewmodels.event_dialog_island_view_model import (
+    EntityGenerateProxy,
+)
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
+from tests.presentation.qml_helpers import find_item
 
 
 # ── EventDialog ──────────────────────────────────────────────────────────
@@ -76,18 +79,18 @@ class TestEventDialog:
         vm.is_valid = False
         d = EventDialog(vm)
         qtbot.addWidget(d)
-        assert d.tabs is not None
+        assert find_item(d.quick, "eventRelatedTabs") is not None
 
     def test_event_dialog_tabs_are_related_sections_without_inline_form(self, qtbot):
-        from app.presentation.views.related_section import RelatedSection
-
         d = EventDialog(MagicMock())
         qtbot.addWidget(d)
-        for tab in (d.org_tab, d.char_tab, d.item_tab, d.loc_tab):
-            assert isinstance(tab, RelatedSection)
-            # no inline creation form inside the tab
-            assert not hasattr(tab, "name_input")
-            assert not hasattr(tab, "add_button")
+        for name in (
+            "organizationsRelatedSection",
+            "charactersRelatedSection",
+            "itemsRelatedSection",
+            "locationsRelatedSection",
+        ):
+            assert find_item(d.quick, name) is not None
 
     @pytest.mark.parametrize(
         ("tab_attr", "attr", "entity_type"),
@@ -132,20 +135,14 @@ class TestEventDialog:
         assert data["items"] == []
         assert data["locations"] == []
 
-    def test_event_dialog_ai_buttons_sit_right_of_field_in_row(self, qtbot):
-        """Each button is the last widget of its field's row layout (right side)."""
+    def test_event_dialog_ai_buttons_are_qml_controls_with_proxies(self, qtbot):
         d = EventDialog(MagicMock())
         qtbot.addWidget(d)
-        for field_name, widget in [
-            ("name", d.name_input),
-            ("characteristics", d.characteristics_input),
-            ("backstory", d.backstory_input),
-        ]:
-            row_layout = d._ai_row_layouts[field_name]
-            widgets = [row_layout.itemAt(i).widget() for i in range(row_layout.count())]
-            assert row_layout.itemAt(0).widget() is widget
-            btn = next(b for b in d.get_ai_buttons() if b.field_name == field_name)
-            assert widgets[-1] is btn
+        for field_name in ("Name", "Characteristics", "Backstory"):
+            assert find_item(d.quick, f"event{field_name}AiButton") is not None
+        assert [button.field_name for button in d.get_ai_buttons()] == [
+            "name", "characteristics", "backstory",
+        ]
 
 
 # ── EntityCardDialog ─────────────────────────────────────────────────────
@@ -297,23 +294,17 @@ class TestEntityCardDialog:
         assert len(d.get_ai_buttons()) == ai_button_count
 
     def test_entity_card_ai_buttons_sit_right_of_field_in_row(self, qtbot):
-        """Each button is the last widget of its field's row layout (right side)."""
+        """Each field has a deterministic QML AI control."""
         d = EntityCardDialog(MagicMock(), entity_type="character")
         qtbot.addWidget(d)
-        for field_name, widget in [
-            ("name", d.name_input),
-            ("characteristics", d.characteristics_input),
-            ("backstory", d.backstory_input),
-            ("personality", d.personality_input),
-            ("tasks", d.tasks_input),
-        ]:
-            row_layout = d._ai_row_layouts[field_name]
-            widgets = [row_layout.itemAt(i).widget() for i in range(row_layout.count())]
-            assert widget in widgets
-            btn = next(b for b in d.get_ai_buttons() if b.field_name == field_name)
-            assert widgets[-1] is btn
-            # The field is stretched; the button takes the fixed right slot.
-            assert row_layout.itemAt(0).widget() is widget
+        for object_name in (
+            "entityNameAiButton",
+            "entityCharacteristicsAiButton",
+            "entityBackstoryAiButton",
+            "entityExtraAiButton_personality",
+            "entityExtraAiButton_tasks",
+        ):
+            assert find_item(d.quick, object_name) is not None
 
 
 # ── Entity button & close guard (add-generate-entity) ─────────────────────
@@ -336,25 +327,20 @@ class TestDialogEntityButton:
     def test_entity_button_present(self, qtbot, kind):
         d = _make_dialog(qtbot, kind)
         btn = d.get_entity_button()
-        assert isinstance(btn, EntityGenerateButton)
-        # stretch + button: the rightmost widget of its row
-        row = d._entity_row
-        widgets = [
-            row.itemAt(i).widget() for i in range(row.count())
-            if row.itemAt(i).widget() is not None
-        ]
-        assert widgets[-1] is btn
+        if kind == "event":
+            assert btn is d.vm.entityAi
+            assert find_item(d.quick, "eventEntityAiButton") is not None
+            return
+        assert isinstance(btn, EntityGenerateProxy)
+        assert find_item(d.quick, "entityGenerateButton") is not None
 
     @pytest.mark.parametrize("kind", ["event", "card"])
     def test_entity_button_row_sits_at_top_of_form(self, qtbot, kind):
         d = _make_dialog(qtbot, kind)
         if kind == "event":
-            # W2b: the form lives inside the chrome container.
-            first = d.chrome.layout().itemAt(0)
-        else:
-            first = d._form_layout.itemAt(0)
-        assert first is not None
-        assert first.layout() is d._entity_row
+            assert find_item(d.quick, "eventEntityAiButton") is not None
+            return
+        assert find_item(d.quick, "entityGenerateButton") is not None
 
     @pytest.mark.parametrize("kind", ["event", "card"])
     def test_entity_button_not_ready_by_default(self, qtbot, kind):
@@ -362,7 +348,10 @@ class TestDialogEntityButton:
         btn = d.get_entity_button()
         # W2b: the dialog here runs off-skin (no runtime) — state carries the
         # aiState marker, colors only exist with tokens (D3/D7).
-        from app.presentation.views.ai_assist_button import AI_STATE_DISABLED, ai_state_is
+        from app.presentation.viewmodels.event_dialog_island_view_model import (
+            AI_STATE_DISABLED,
+            ai_state_is,
+        )
 
         assert ai_state_is(btn, AI_STATE_DISABLED)
         assert btn.isEnabled()  # clickable — the click shows the hint

@@ -681,7 +681,7 @@ class Application:
 
         Also queue the C++ teardown: the dialog is a child of the main window,
         so without ``deleteLater`` every closed editor would linger as a hidden
-        top-level widget (with its QGraphicsScene) until the app shuts down.
+        top-level widget until the app shuts down.
         """
         if self._sheet_editor is editor:
             self._sheet_editor = None
@@ -705,7 +705,7 @@ class Application:
             card.set_character_sheet_available(inst is not None)
 
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
-        """Connect mention search and click signals for a dialog's MentionTextEdits.
+        """Connect mention search and click signals for a dialog's mention proxies.
 
         Both signals touch the shared ``AsyncSession`` (search / entity load),
         so they must run through ``ApplicationWiring._spawn`` like every other
@@ -726,8 +726,27 @@ class Application:
                 lambda q, _fn=_do_search: self._wiring._spawn(_fn(q))
             )
 
+        async def _on_mention_clicked(entity_type, entity_id):
+            window = self._wiring._window
+            if entity_type == "event":
+                event = await self._wiring._event_service.get_event(entity_id)
+                if event:
+                    await self._wiring._on_edit_event(entity_id)
+                    return
+                QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
+                return
+            svc = self._get_entity_service(entity_type)
+            if svc is None:
+                QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
+                return
+            entity = await svc.get_entity(entity_id)
+            if entity is None:
+                QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
+                return
+            await on_entity_click_fn(entity_type, entity_id)
+
         dialog.mention_clicked.connect(
-            lambda t, i: self._wiring._spawn(on_entity_click_fn(t, i))
+            lambda t, i: self._wiring._spawn(_on_mention_clicked(t, i))
         )
 
     def _get_entity_service(self, entity_type: str) -> EntityService | None:

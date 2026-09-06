@@ -1,24 +1,27 @@
-"""Dialog for importing entities from .xlsx with format description and progress bar."""
+"""Dialog for importing entities from .xlsx — QML island (R3 pack 1)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from pathlib import Path
+
+from PySide6.QtCore import QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QKeyEvent
+from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
     QMessageBox,
-    QProgressBar,
-    QPushButton,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from app.presentation.theme.catalog import attach_theme, set_role, title
+from app.presentation.qml import setup_qml_shell
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.theme import get_default_theme
+from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.viewmodels.xlsx_import_view_model import XlsxImportViewModel
+
+ROOT_QML = str(Path(QML_IMPORT_PATH) / "XlsxImportRoot.qml")
 
 FORMAT_TEXTS: dict[str, str] = {
     "event": (
@@ -99,72 +102,93 @@ ENTITY_LABELS: dict[str, str] = {
 }
 
 
+class _PathEdit:
+    def __init__(self, vm: XlsxImportViewModel) -> None:
+        self._vm = vm
+
+    def text(self) -> str:
+        return self._vm.path
+
+    def setText(self, value: str) -> None:  # noqa: N802
+        self._vm.path = value
+
+
+class _ProgressBar:
+    def __init__(self, vm: XlsxImportViewModel) -> None:
+        self._vm = vm
+
+    def value(self) -> int:
+        return self._vm.progress
+
+
+class _ImportButton:
+    def __init__(self, dialog: "XlsxImportDialog") -> None:
+        self._dialog = dialog
+
+    def click(self) -> None:
+        self._dialog._on_import_clicked()
+
+    def isEnabled(self) -> bool:  # noqa: N802
+        return self._dialog.vm.importEnabled
+
+    def text(self) -> str:
+        return "Проверить и импортировать"
+
+
+class _FormatText:
+    def __init__(self, vm: XlsxImportViewModel) -> None:
+        self._vm = vm
+
+    def toPlainText(self) -> str:  # noqa: N802
+        return self._vm.formatText
+
+    def isReadOnly(self) -> bool:  # noqa: N802
+        return True
+
+
 class XlsxImportDialog(QDialog):
-    """Dialog to select .xlsx file and run import with progress."""
-    import_requested = Signal(str)  # path
+    import_requested = Signal(str)
 
     def __init__(self, entity_type: str, parent=None, theme=None):
         super().__init__(parent)
         self._entity_type = entity_type
-        self._theme = theme
+        self._theme = theme if theme is not None else get_default_theme()
         self._path: str = ""
         self.setWindowTitle(f"Импорт {ENTITY_LABELS.get(entity_type, entity_type)} из .xlsx")
         self.setMinimumSize(580, 480)
-        self._init_ui()
-        self._apply_theme()
 
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
+        self.vm = XlsxImportViewModel(FORMAT_TEXTS.get(entity_type, ""), parent=self)
+        self.path_edit = _PathEdit(self.vm)
+        self.progress_bar = _ProgressBar(self.vm)
+        self.import_btn = _ImportButton(self)
+        self.format_text = _FormatText(self.vm)
 
-    def _init_ui(self) -> None:
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("xlsxImportChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
-        layout.setContentsMargins(11, 11, 11, 11)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(title("Требования к файлу:"))
+        engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._engine = engine
+        self.quick = QQuickWidget(engine, self)
+        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        self.quick.rootContext().setContextProperty("xlsxImportVm", self.vm)
+        self._palette = QmlPalette(self._theme, parent=self)
+        self.quick.rootContext().setContextProperty("islandPalette", self._palette)
+        self.quick.setSource(QUrl.fromLocalFile(ROOT_QML))
+        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        layout.addWidget(self.quick)
+        self._root = self.quick.rootObject()
+        self.vm.browseRequested.connect(self._on_browse)
+        self.vm.importRequested.connect(self._on_import_from_vm)
+        self._root.cancelRequested.connect(self.reject)
 
-        self.format_text = QTextEdit()
-        self.format_text.setReadOnly(True)
-        self.format_text.setMaximumHeight(260)
-        # The mono format block: field chrome + the mono font-family token
-        # (was an inline ``font-family: monospace`` table before W2b).
-        set_role(self.format_text, "field", mono=True)
-        self.format_text.setPlainText(FORMAT_TEXTS.get(self._entity_type, ""))
-        layout.addWidget(self.format_text)
-
-        path_row = QHBoxLayout()
-        path_row.addWidget(QLabel("Файл:"))
-        self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("Выберите .xlsx файл…")
-        path_row.addWidget(self.path_edit, 1)
-        browse_btn = QPushButton("Обзор…")
-        browse_btn.clicked.connect(self._on_browse)
-        path_row.addWidget(browse_btn)
-        layout.addLayout(path_row)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        self.import_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.import_btn.setText("Проверить и импортировать")
-        self.import_btn.clicked.connect(self._on_import_clicked)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            marker = self._root.property("defaultButton") if self._root is not None else None
+            clicked = getattr(marker, "clicked", None) if marker is not None else None
+            if clicked is not None:
+                clicked.emit()
+                return
+        super().keyPressEvent(event)
 
     def _on_browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -174,28 +198,33 @@ class XlsxImportDialog(QDialog):
             "Excel (*.xlsx *.xls);;Все файлы (*)",
         )
         if path:
-            self.path_edit.setText(path)
+            self.vm.path = path
             self._path = path
 
+    def _on_import_from_vm(self, path: str) -> None:
+        self._on_import_clicked()
+
     def _on_import_clicked(self) -> None:
-        self._path = self.path_edit.text().strip()
+        self._path = self.vm.path.strip()
         if not self._path:
             QMessageBox.warning(self, "Ошибка", "Выберите файл.")
             return
-        self.import_btn.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.vm.begin_import()
         self.import_requested.emit(self._path)
 
     def get_path(self) -> str:
-        return self._path or self.path_edit.text().strip()
+        return self._path or self.vm.path.strip()
 
     def set_progress(self, current: int, total: int) -> None:
-        if total > 0:
-            self.progress_bar.setValue(int(100 * current / total))
-        else:
-            self.progress_bar.setValue(0)
+        self.vm.set_progress(current, total)
         QApplication.processEvents()
 
     def entity_type(self) -> str:
         return self._entity_type
+
+    def _release_island(self) -> None:
+        self.quick.setSource(QUrl())
+
+    def done(self, result: int) -> None:
+        QTimer.singleShot(0, self, self._release_island)
+        super().done(result)

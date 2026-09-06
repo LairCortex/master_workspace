@@ -31,6 +31,7 @@ from PySide6.QtQml import QQmlEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
+from app.presentation.qml.dialog_image_provider import register_dialog_image_provider
 from app.presentation.qml.sheet_font import register_sheet_font
 from app.presentation.qml.sheet_image_provider import register_sheet_image_provider
 from app.presentation.qml.tooltip_shim import register_tooltip_shim
@@ -72,6 +73,7 @@ def setup_qml_shell(qapp: QApplication, theme: ThemeRuntime) -> QQmlEngine:
     # bytes through the ImageStore; registration is idempotent per engine and
     # belongs to the shell because every island shares this engine.
     register_sheet_image_provider(engine)
+    register_dialog_image_provider(engine)
     palette = QmlPalette(theme, parent=engine)  # dies with the engine
     engine.rootContext().setContextProperty("palette", palette)
     # Q3a NOTE (apply-stage): no ``islandPalette`` is registered here. Widgets

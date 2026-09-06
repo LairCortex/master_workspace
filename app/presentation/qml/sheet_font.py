@@ -9,8 +9,7 @@ system font on all three OSes and the PDF shares these metrics); the text is
 rendered at the field's own point size.
 
 Called before any island loads: ``setup_qml_shell`` runs it while bringing the
-one shared engine up, so no island (or the widgets canvas during the
-transition) can paint before the family exists.
+one shared engine up, so no island can paint before the family exists.
 """
 from __future__ import annotations
 
@@ -30,9 +29,9 @@ def _font_path() -> Path:
     """The bundled TTF, at the path the ``datas`` bundle already ships.
 
     ``register_sheet_font`` moved here but the font file did not (D7: the
-    directory and the ``.spec`` datas stay as they were): the TTF lives next
-    to the (still present until Q3b 3.4) canvas module. The same layout the
-    dev tree holds in the PyInstaller bundle — the compiled module resolves
+    directory and the ``.spec`` datas stay as they were): the TTF stays in
+    the character-sheet views directory. The same layout the dev tree holds
+    in the PyInstaller bundle — the compiled module resolves
     inside the bundle right next to the datas-shipped ``fonts/`` directory,
     so no separate ``_MEIPASS`` lookup is needed.
     """

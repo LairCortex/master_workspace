@@ -34,6 +34,8 @@ TextField {
     bottomPadding: Tokens.px(islandTokens, "space.xs", 4)
     font.pixelSize: Tokens.px(islandTokens, "font.size.md", 13)
 
+    property bool echoPassword: false
+    echoMode: echoPassword ? TextInput.Password : TextInput.Normal
     color: control.fgColor
     // Catalog field-selection pair: selection-background-color accent,
     // selection-color accent.fg. (Qt 6 TextField dropped disabledTextColor;
