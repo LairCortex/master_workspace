@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox, QSplitter
+from PySide6.QtWidgets import QApplication, QMessageBox, QSplitter
 
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.detail_panel import DetailPanel
@@ -115,7 +115,7 @@ class TestMainWindow:
             search_vm=MagicMock(),
         )
         qtbot.addWidget(w)
-        assert w.windowTitle() == "НРИ Сценарий Менеджер"
+        assert w.windowTitle() == "Master Workspace"
 
     def test_set_game_name(self, qtbot):
         w = MainWindow(

@@ -44,7 +44,7 @@ QT_QPA_PLATFORM=offscreen python -m pytest   # headless (used by CI)
 ## Build & release
 
 - PyInstaller via `nri_manager.spec` (directory bundle; do NOT switch to `--onefile` — Qt 6 breaks). Spec bundles `docs/` and lists hiddenimports — keep both in sync with dependencies.
-- `python build_app.py --clean` — builds for the current OS only (no cross-compilation); on macOS it ad-hoc codesigns `dist/НРИ Сценарий Менеджер.app` (required to bypass Gatekeeper).
+- `python build_app.py --clean` — builds for the current OS only (no cross-compilation); on macOS it ad-hoc codesigns `dist/Master Workspace.app` (required to bypass Gatekeeper).
 - Branch `main`. CI (`.github/workflows/build.yml`): push → tests + 3-OS builds with artifacts; tag `v*` → GitHub Release.
 - Version is NOT single-sourced: `pyproject.toml`, `CFBundleShortVersionString` in `nri_manager.spec`, and `docs/CHANGELOG.md` all need updating together.
 - Commit format: `<TASK-KEY>: imperative English description` (e.g. `NRI-0001: add ...`).

@@ -9,6 +9,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
@@ -1167,6 +1168,14 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
     # instantiated in tests and run_forever() never returns, so it is exercised
     # by the manual smoke instead of the automated suite
     app = QApplication(sys.argv)
+    # Product name: the macOS app menu (a source checkout has no bundle plist,
+    # so Qt reads this), plus any place Qt falls back to the application name.
+    app.setApplicationName("Master Workspace")
+    # Window/taskbar icon. The macOS .app gets its Dock icon from the bundle's
+    # .icns; every other platform (and a source checkout) reads this PNG.
+    app_icon = Path(__file__).resolve().parent / "resources" / "app_icon.png"
+    if app_icon.exists():
+        app.setWindowIcon(QIcon(str(app_icon)))
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 

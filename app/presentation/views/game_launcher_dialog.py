@@ -47,7 +47,7 @@ class GameLauncherDialog(QDialog):
     def __init__(self, parent: QWidget | None = None, *, theme: ThemeRuntime) -> None:
         super().__init__(parent)
         self._theme = theme
-        self.setWindowTitle("НРИ Сценарий Менеджер — Выбор игры")
+        self.setWindowTitle("Master Workspace — Выбор игры")
         self.setMinimumSize(480, 400)
         self._selected_path: str | None = None
 

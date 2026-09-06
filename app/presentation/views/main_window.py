@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         theme=None,
     ) -> None:
         super().__init__(parent)
-        self._base_title = "НРИ Сценарий Менеджер"
+        self._base_title = "Master Workspace"
         self.llm_vm = llm_vm
         self._theme = theme
         self.set_game_name(game_name)

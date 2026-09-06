@@ -54,8 +54,8 @@ FATE_LICENSE_TEXT: str = (
 )
 
 MORK_BORG_LICENSE_TEXT: str = (
-    "НРИ Сценарий Менеджер is an independent production by НРИ Сценарий "
-    "Менеджер and is not affiliated with Ockult Örtmästare Games or Stockholm "
+    "Master Workspace is an independent production by Master Workspace and is "
+    "not affiliated with Ockult Örtmästare Games or Stockholm "
     "Kartell. It is published under the MÖRK BORG Third Party License.\n\n"
     "MÖRK BORG is ©2019 Ockult Örtmästare Games and Stockholm Kartell."
 )

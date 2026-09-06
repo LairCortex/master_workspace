@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for НРИ Сценарий Менеджер.
+"""PyInstaller spec for Master Workspace.
 
 Build:
     pyinstaller nri_manager.spec
@@ -8,9 +8,18 @@ The result is a directory-based bundle in dist/nri_manager/
 (--onefile is not recommended for Qt 6 apps).
 """
 
+import os
 import sys
 
 block_cipher = None
+
+# Application icons (see app/resources/). The .icns carries the macOS grid
+# (rounded body + padding) and is what BUNDLE puts in the .app; the .ico is the
+# Windows exe icon; the flat png ships as data so a source checkout and Linux
+# get the same picture through QApplication.setWindowIcon.
+ICON_DIR = os.path.join("app", "resources")
+EXE_ICON = os.path.join(ICON_DIR, "app_icon.ico") if sys.platform == "win32" else None
+BUNDLE_ICON = os.path.join(ICON_DIR, "app_icon.icns")
 
 a = Analysis(
     ["app/main.py"],
@@ -22,6 +31,7 @@ a = Analysis(
     # with PresetCatalog.list() (checked by tests/test_spec_presets_bundle.py).
     datas=[
         ("docs", "docs"),
+        ("app/resources/app_icon.png", "app/resources"),
         ("app/presentation/views/character_sheet/fonts",
          "app/presentation/views/character_sheet/fonts"),
         ("app/presentation/views/character_sheet/presets/fate_core.json",
@@ -202,6 +212,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,          # GUI app, no console window
+    icon=EXE_ICON,          # .ico on Windows, none elsewhere (see ICON_DIR)
     target_arch=None,
 )
 
@@ -219,11 +230,16 @@ coll = COLLECT(
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="НРИ Сценарий Менеджер.app",
-        icon=None,
+        name="Master Workspace.app",
+        icon=BUNDLE_ICON,
         bundle_identifier="com.nri.scenario-manager",
         info_plist={
             "CFBundleShortVersionString": "0.17.0",
+            # The name under the icon: Finder labels the bundle by its file
+            # name, the Dock and the app menu read CFBundleDisplayName
+            # (CFBundleName is the short fallback, e.g. in the window menu).
+            "CFBundleName": "Master Workspace",
+            "CFBundleDisplayName": "Master Workspace",
             "NSHighResolutionCapable": True,
         },
     )

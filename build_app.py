@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build script for НРИ Сценарий Менеджер.
+"""Build script for Master Workspace.
 
 Usage:
     python build_app.py          # build for current platform
@@ -54,7 +54,7 @@ def post_build() -> None:
     """Print summary of build results."""
     system = platform.system()
     if system == "Darwin":
-        app_bundle = DIST / "НРИ Сценарий Менеджер.app"
+        app_bundle = DIST / "Master Workspace.app"
         folder = DIST / "nri_manager"
         if app_bundle.exists():
             codesign_macos(app_bundle)
@@ -73,7 +73,7 @@ def post_build() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build НРИ Сценарий Менеджер")
+    parser = argparse.ArgumentParser(description="Build Master Workspace")
     parser.add_argument("--clean", action="store_true", help="Remove previous build first")
     args = parser.parse_args()
 
