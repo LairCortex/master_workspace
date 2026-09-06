@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.event_dialog_island_view_model import (
@@ -486,7 +486,7 @@ class EventDialog(QDialog):
         self.vm.stateChanged.emit()
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:
         QTimer.singleShot(0, self, self._release_island)

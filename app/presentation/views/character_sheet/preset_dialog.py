@@ -34,7 +34,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -50,7 +50,7 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
 )
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.sheet_preset_view_model import (
@@ -214,7 +214,7 @@ class CharacterSheetPresetDialog(QDialog):
     # land on the facade's Python handlers first).
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
         """Release the island against its VM/palette before the dialog dies.

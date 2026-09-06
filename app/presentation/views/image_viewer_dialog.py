@@ -4,14 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.image_viewer_view_model import ImageViewerViewModel
@@ -87,7 +87,7 @@ class ImageViewerDialog(QDialog):
 
     def _release_island(self) -> None:
         clear_dialog_pixmap(self._key)
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:
         QTimer.singleShot(0, self, self._release_island)

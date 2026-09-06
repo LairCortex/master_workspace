@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QPointF, QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -177,7 +177,6 @@ def _load_island(qtbot, vm, palette) -> QQuickWidget:
         QQuickStyle.setStyle("Basic")
     widget = QQuickWidget()
     qtbot.addWidget(widget)
-    widget.resize(460, 340)
     widget.engine().addImportPath(qml_shell.QML_IMPORT_PATH)
     vm.setParent(widget)
     palette.setParent(widget)
@@ -187,6 +186,14 @@ def _load_island(qtbot, vm, palette) -> QQuickWidget:
     widget.rootContext().setContextProperty("islandPalette", palette)
     widget.setSource(QUrl.fromLocalFile(str(ROOT_QML)))
     assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    # The same size the facade opens its window at (`fit_dialog_to_island`):
+    # a hardcoded box of the port's choosing hid whatever the fonts need and
+    # the suite would click on clipped controls instead of the real ones. The
+    # grab is what makes the layouts settle at the new size (the project's
+    # convention for delegate materialization rides the same render pass).
+    widget.resize(int(widget.rootObject().implicitWidth()),
+                  int(widget.rootObject().implicitHeight()))
+    widget.grab()
     return widget
 
 
@@ -239,6 +246,27 @@ class TestIslandContract:
         ]
         click_item(widget, island_rows(widget, "typeRow")[1])
         assert vm.selectedId == 12
+
+    def test_action_row_stays_inside_the_island_at_its_own_size(
+        self, qtbot, island_palette
+    ):
+        """↑/↓ must not fall off the right edge (the wide-font regression).
+
+        Implicit button widths come from the system font, so a port-time width
+        number is not a guarantee: whatever overflowed the frame was clipped and
+        stopped receiving clicks (Qt 6.11 does not deliver clicks to a clipped
+        control at all). The island therefore grows with its content, and this
+        checks the row against the island's own width, not a fixed number.
+        """
+        widget = _load_island(qtbot, _island_vm(), island_palette)
+        root = widget.rootObject()
+
+        for name in ("typeAddButton", "typeRemoveButton", "typeUpButton",
+                     "typeDownButton"):
+            button = find_item(widget, name)
+            origin = button.mapToScene(QPointF(0, 0))
+            assert button.width() > 0, name
+            assert origin.x() + button.width() <= root.width() + 1, name
 
     def test_clicks_emit_view_model_requests_only(self, qtbot, island_palette):
         vm = _island_vm()

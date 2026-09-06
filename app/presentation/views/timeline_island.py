@@ -45,13 +45,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
-from PySide6.QtCore import QPoint, QRect, QSize, QTimer, QUrl, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QMenu, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
@@ -378,7 +378,7 @@ class TimelineWidget(QWidget):
     # ── teardown (the launcher's deferred release) ──────────────────────────
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def closeEvent(self, event) -> None:  # Qt API name
         """Release the island against its VM/palette context properties.

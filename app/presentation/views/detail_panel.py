@@ -10,7 +10,7 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
@@ -82,7 +82,7 @@ class DetailPanel(QWidget):
         ).exec()
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def closeEvent(self, event) -> None:
         QTimer.singleShot(0, self, self._release_island)

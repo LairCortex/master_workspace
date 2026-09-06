@@ -25,6 +25,7 @@ Setup order facts pinned by tests/presentation/test_qml_engine.py:
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QUrl
@@ -42,6 +43,8 @@ from app.presentation.theme.runtime import ThemeRuntime
 # Import-path root for the island sources. Computed from this module's own
 # location so a frozen bundle resolves it relative to the deployed layout.
 QML_IMPORT_PATH = str(Path(__file__).resolve().parent)
+
+log = logging.getLogger(__name__)
 
 _engine: QQmlEngine | None = None
 
@@ -135,6 +138,27 @@ def load_island(quick, context: QQmlContext, qml_path: str, initial_properties=N
     assert root is not None, component.errors()
     quick.setContent(source, component, root)
     return component
+
+
+def release_island(quick) -> bool:
+    """Unbind an island's ``QQuickWidget`` from its scene, if it still exists.
+
+    Every facade releases its island one turn later (``QTimer.singleShot``) so
+    the release never runs inside the QML handler that closed the window. That
+    turn can outlive the widget: the window it belonged to is destroyed on the
+    spot (a game switch, a test teardown), and the deferred callback then meets
+    a C++ object Qt already deleted — which surfaces as a RuntimeError inside
+    the Qt event loop, attributed to whatever test or window runs next. A dead
+    island needs no unbinding anyway, so the callback just reports and leaves
+    (True: the scene was released, False: there was nothing left to release).
+    """
+    import shiboken6
+
+    if not shiboken6.isValid(quick):
+        log.info("island release skipped: the widget is already gone")
+        return False
+    quick.setSource(QUrl())
+    return True
 
 
 def reset_qml_shell() -> None:

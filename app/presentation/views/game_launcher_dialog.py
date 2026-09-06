@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
 from app.presentation.viewmodels.launcher_viewmodel import LauncherViewModel
@@ -193,7 +193,7 @@ class GameLauncherDialog(QDialog):
         return self._selected_path
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
         """Release the island against its VM/palette before the dialog dies.

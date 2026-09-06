@@ -36,7 +36,8 @@ from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
+from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.compiler import CHART_TOKEN_KEYS, token_rgb
 from app.presentation.theme.qml_palette import QmlPalette
@@ -133,6 +134,10 @@ class EventTypesDialog(QDialog):
         self.quick.setContent(source, self._component, root)
         assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
         layout.addWidget(self.quick)
+        # The island's own width is what its action row needs, and that grows
+        # with the system font: opening at the 420 floor instead clipped ↑/↓ on
+        # the right edge, where Qt neither paints nor delivers clicks.
+        fit_dialog_to_island(self, root, floor=(420, 320))
 
         self.vm.addRequested.connect(self._on_add)
         self.vm.renameRequested.connect(self._on_rename)
@@ -256,7 +261,7 @@ class EventTypesDialog(QDialog):
     # ── island lifecycle ───────────────────────────────────────────────────
 
     def _release_island(self) -> None:
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:
         QTimer.singleShot(0, self, self._release_island)

@@ -36,7 +36,23 @@ Rectangle {
     readonly property color borderColor: Tokens.token(root.islandTokens, "color.border", "lightgray")
 
     color: surfaceColor
-    implicitWidth: 460
+    readonly property real horizontalMargin:
+        Tokens.px(root.islandTokens, "space.md", 16)
+    readonly property real innerSpacing: Tokens.px(root.islandTokens, "space.sm", 8)
+    // The action row is the widest thing here that cannot wrap, and its width
+    // comes from the system font: «Добавить»/«Удалить» are wider with some
+    // fonts than the port's 460 assumed, and whatever falls off the frame's
+    // right edge is clipped and stops receiving clicks. The widths are summed
+    // from the buttons themselves (leaf controls, never layout-fed), so no
+    // binding of the layout points back at its own implicit size.
+    readonly property real actionRowGap: Tokens.px(root.islandTokens, "space.xs", 4)
+    readonly property real actionRowWidth:
+        addButton.implicitWidth + removeButton.implicitWidth
+        + upButton.implicitWidth + downButton.implicitWidth + 4 * actionRowGap
+    // + the gap to the list frame, its own minimum (1) and the side margins.
+    readonly property real contentWidth:
+        actionRowWidth + innerSpacing + 1 + 2 * horizontalMargin
+    implicitWidth: Math.max(460, contentWidth)
     implicitHeight: 320
 
     // The name field and the swatch row are written IMPERATIVELY from the VM
@@ -71,8 +87,8 @@ Rectangle {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: Tokens.px(root.islandTokens, "space.md", 16)
-        spacing: Tokens.px(root.islandTokens, "space.sm", 8)
+        anchors.margins: root.horizontalMargin
+        spacing: root.innerSpacing
 
         HintText {
             objectName: "typeHint"
@@ -88,10 +104,12 @@ Rectangle {
 
             // List frame: surface-in-canvas with the token border (the island
             // pattern — the ListView itself stays chromeless).
+            // fillWidth with no competing sibling flag: the actions column is
+            // not stretchable (below), so every leftover pixel lands here and
+            // the frame can never be squeezed out of the window by a minimum.
             Rectangle {
                 Layout.fillHeight: true
                 Layout.fillWidth: true
-                Layout.preferredWidth: 1
                 radius: Tokens.px(root.islandTokens, "radius.sm", 6)
                 color: root.canvasColor
                 border.color: root.borderColor
@@ -123,10 +141,21 @@ Rectangle {
             }
 
             ColumnLayout {
+                id: actionsColumn
+                objectName: "typeActionsColumn"
                 Layout.fillHeight: true
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                spacing: Tokens.px(root.islandTokens, "space.sm", 8)
+                // Pinned to the action row's own width on every platform: a
+                // nested layout left to a RowLayout stretches greedily and
+                // once starved the list frame (and with it every row click),
+                // so min AND max are the same number — only the list frame,
+                // the one fillWidth child, ever absorbs slack. The island's
+                // implicitWidth already carries this width plus the frame's
+                // own floor, so a wide font grows the window instead of
+                // clipping ↑/↓ off its right edge.
+                Layout.preferredWidth: root.actionRowWidth
+                Layout.minimumWidth: root.actionRowWidth
+                Layout.maximumWidth: root.actionRowWidth
+                spacing: root.innerSpacing
 
                 // Rename: the finished edit is the request (write-through).
                 ThemeField {
@@ -158,15 +187,19 @@ Rectangle {
                 }
 
                 RowLayout {
+                    id: actionRow
+                    objectName: "typeActionRow"
                     Layout.fillWidth: true
                     spacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
                     ThemeButton {
+                        id: addButton
                         objectName: "typeAddButton"
                         text: "Добавить"
                         onClicked: eventTypesVm.requestAdd()
                     }
                     ThemeButton {
+                        id: removeButton
                         objectName: "typeRemoveButton"
                         text: "Удалить"
                         enabled: eventTypesVm.canRemove
@@ -174,12 +207,14 @@ Rectangle {
                     }
                     Item { Layout.fillWidth: true }
                     ThemeButton {
+                        id: upButton
                         objectName: "typeUpButton"
                         text: "↑"
                         enabled: eventTypesVm.canMoveUp
                         onClicked: eventTypesVm.requestMove(-1)
                     }
                     ThemeButton {
+                        id: downButton
                         objectName: "typeDownButton"
                         text: "↓"
                         enabled: eventTypesVm.canMoveDown

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
-from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
 from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
@@ -684,7 +684,7 @@ class EntityCardDialog(QDialog):
 
     def _release_island(self) -> None:
         clear_dialog_pixmap(self._image_key)
-        self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:
         QTimer.singleShot(0, self, self._release_island)

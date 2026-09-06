@@ -34,7 +34,7 @@ import warnings
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -56,7 +56,7 @@ from app.domain.entities.character_sheet import SheetTemplate
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island
+from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
@@ -405,10 +405,7 @@ class CharacterSheetEditorDialog(QDialog):
     # ── island teardown (the Q1-accepted launcher pattern, as in list_dialog) ──
 
     def _release_island(self) -> None:
-        import shiboken6
-
-        if shiboken6.isValid(self.quick):
-            self.quick.setSource(QUrl())
+        release_island(self.quick)
 
     def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
         """Release the island against its VM/palette before the dialog dies.
