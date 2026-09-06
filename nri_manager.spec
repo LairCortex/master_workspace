@@ -234,7 +234,7 @@ if sys.platform == "darwin":
         icon=BUNDLE_ICON,
         bundle_identifier="com.nri.scenario-manager",
         info_plist={
-            "CFBundleShortVersionString": "0.17.0",
+            "CFBundleShortVersionString": "0.17.1",
             # The name under the icon: Finder labels the bundle by its file
             # name, the Dock and the app menu read CFBundleDisplayName
             # (CFBundleName is the short fallback, e.g. in the window menu).
