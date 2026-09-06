@@ -293,7 +293,9 @@ def test_editor_panel_projects_selected_field_and_edits_via_vm(
 ):
     vm, fid = editor_case
     widget = load_editor(qtbot, vm, palette)
-    panel = find_item(widget, "propertiesPanel")
+    # The panel itself is asserted by find_item (exactly one instance); the
+    # test's subject is the per-field box nested inside it.
+    find_item(widget, "propertiesPanel")
     box = find_item(widget, "fieldPropertiesBox")
     assert box.property("visible") is False  # nothing selected
 
@@ -461,7 +463,6 @@ def test_fill_rail_navigates_without_editing(qtbot, fill_case_two_pages, palette
 
 
 def test_fill_value_panel_branches_write_through_vm(qtbot, fill_case, palette):
-    import asyncio
 
     fvm, ids = fill_case
     widget = load_fill(qtbot, fvm, palette)

@@ -13,7 +13,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QDate
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QMenu, QListWidget, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QListWidget, QWidget
 
 from PySide6.QtCore import Qt
 

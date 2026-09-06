@@ -5,7 +5,6 @@ in one transaction, per-game isolation, and that selecting N events loads
 their `event_type` without N+1 (constant number of queries).
 """
 from datetime import date
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event as sa_event
@@ -14,7 +13,7 @@ from sqlalchemy import select
 from app.application.services.entity_service import EntityService
 from app.application.services.event_service import EventService
 from app.infrastructure.db.database import create_engine
-from app.infrastructure.db.models import DescriptionModel, EventModel, EventTypeModel
+from app.infrastructure.db.models import DescriptionModel, EventModel
 from app.infrastructure.db.migrations import init_db
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
@@ -101,6 +100,7 @@ class TestEventServiceEventTypes:
         svc = await _make_service(async_session)
         first = await svc.save_event_type(name="Побочное", color_index=2)
         second = await svc.save_event_type(name="Встреча", color_index=4)
+        assert second.name == "Встреча" and second.color_index == 4
         # Appended after the current last one
         assert [t.name for t in await svc.get_event_types()] == ["Побочное", "Встреча"]
 

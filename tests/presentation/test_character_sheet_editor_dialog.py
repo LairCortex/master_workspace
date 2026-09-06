@@ -24,7 +24,7 @@ from app.infrastructure.repositories.character_sheet_repository import (
 from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
-from tests.presentation.qml_helpers import click_item, find_item, find_items, walk_items
+from tests.presentation.qml_helpers import click_item, find_item, walk_items
 
 
 def _pump(qtbot) -> None:

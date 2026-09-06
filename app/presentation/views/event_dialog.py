@@ -25,7 +25,7 @@ from app.presentation.viewmodels.event_dialog_island_view_model import (
     EventDialogIslandViewModel,
     RelatedSectionState,
 )
-from app.presentation.views.event_types_dialog import NO_TYPE_TEXT, type_dot_icon
+from app.presentation.views.event_types_dialog import type_dot_icon
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EventDialogRoot.qml")
@@ -288,7 +288,7 @@ class EventDialog(QDialog):
                 lambda a=attr, t=entity_type: self.create_related_requested.emit(a, t)
             )
             state.linkRequested.connect(
-                lambda a=attr, l=label: self._open_related_picker(a, l)
+                lambda a=attr, lbl=label: self._open_related_picker(a, lbl)
             )
 
         # Transitional non-widget ducks keep existing Python wiring/tests usable;

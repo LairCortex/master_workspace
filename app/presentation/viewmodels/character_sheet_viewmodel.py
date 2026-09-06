@@ -40,7 +40,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any
 from uuid import uuid4
 
 from PySide6.QtCore import (

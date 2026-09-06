@@ -37,7 +37,6 @@ from app.domain.entities.character_sheet import (
     GUTTER_PT,
     ORIENTATION_PORTRAIT,
     PAGE_HEIGHT_PT,
-    PAGE_WIDTH_PT,
     SheetPage,
     SheetTemplate,
     _opt_image_id,
@@ -581,9 +580,9 @@ async def test_fill_dialog_remaining_branches(
     inst_svc = CharacterSheetInstanceService(inst_repo, sheet_svc)
     row = await sheet_svc.create("Ветки заполнения")
     template = await sheet_svc.load(row.id)
-    text = template.add_field(FieldType.TEXT, (10.0, 10.0))
-    number = template.add_field(FieldType.NUMBER, (10.0, 40.0))
-    checkbox = template.add_field(FieldType.CHECKBOX, (10.0, 70.0))
+    template.add_field(FieldType.TEXT, (10.0, 10.0))
+    template.add_field(FieldType.NUMBER, (10.0, 40.0))
+    template.add_field(FieldType.CHECKBOX, (10.0, 70.0))
     image = template.add_field(FieldType.IMAGE, (10.0, 100.0))
     await sheet_svc.update_pages(row.id, template)
     inst = await inst_svc.create("Лист веток", row.id)

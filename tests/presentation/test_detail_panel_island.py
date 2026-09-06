@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QImage
 from PySide6.QtQml import QQmlEngine
-from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 
 import app.presentation.viewmodels.detail_panel_view_model as detail_vm_module

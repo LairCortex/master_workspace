@@ -39,7 +39,7 @@ async def test_pick_image_persists_and_shows_in_card(
     _write_png(png)
     file_dialogs["open"] = str(png)
 
-    from tests.ui.helpers import pick_menu_action, right_click
+    from tests.ui.helpers import pick_menu_action
 
     pick_menu_action(menu_qmenu, "Новая организация")
     timeline_probe.click_object(
@@ -71,7 +71,7 @@ async def test_unreadable_file_warns_and_keeps_state(
     app, wait_for, menu_qmenu, modal_qdialog, file_dialogs, message_boxes, tmp_path,
 ):
     application, window = app
-    from tests.ui.helpers import pick_menu_action, right_click
+    from tests.ui.helpers import pick_menu_action
 
     bad = tmp_path / "bad.png"
     bad.write_text("not an image")
@@ -101,7 +101,7 @@ async def test_replace_image_gcs_old_files_keeps_new(
     _write_png(png1, Qt.GlobalColor.red)
     file_dialogs["open"] = str(png1)
 
-    from tests.ui.helpers import pick_menu_action, right_click
+    from tests.ui.helpers import pick_menu_action
 
     pick_menu_action(menu_qmenu, "Новая организация")
     timeline_probe.click_object(
@@ -150,7 +150,7 @@ async def test_store_failure_warns_and_leaves_image_id_unset(
     caught by the wiring's call into ImageStore.store() (design D4/6.1)."""
     application, window = app
     from app.infrastructure.images.store import ImageStore
-    from tests.ui.helpers import pick_menu_action, right_click
+    from tests.ui.helpers import pick_menu_action
 
     png = tmp_path / "art.png"
     _write_png(png)
@@ -175,7 +175,7 @@ async def test_no_image_store_configured_is_a_safe_noop(
     app, wait_for, menu_qmenu, modal_qdialog, file_dialogs, message_boxes, tmp_path,
 ):
     application, window = app
-    from tests.ui.helpers import pick_menu_action, right_click
+    from tests.ui.helpers import pick_menu_action
 
     png = tmp_path / "art.png"
     _write_png(png)
@@ -207,7 +207,7 @@ async def test_clear_image_removes_file(app, wait_for, menu_qmenu, modal_qdialog
     _write_png(png)
     file_dialogs["open"] = str(png)
 
-    from tests.ui.helpers import pick_menu_action, right_click
+    from tests.ui.helpers import pick_menu_action
 
     pick_menu_action(menu_qmenu, "Новая организация")
     timeline_probe.click_object(

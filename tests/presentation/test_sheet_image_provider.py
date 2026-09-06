@@ -34,7 +34,6 @@ from app.presentation.qml.sheet_image_provider import (
     SheetImageHub,
     SheetImageProvider,
     bind_sheet_image_store,
-    sheet_image_provider,
 )
 from app.presentation.theme import get_default_theme
 

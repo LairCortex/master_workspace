@@ -15,7 +15,7 @@ content/imageKey roles must equal whatever the domain's single
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtCore import QModelIndex
 from PySide6.QtWidgets import QApplication
 
 from app.application.services.character_sheet_instance_service import (

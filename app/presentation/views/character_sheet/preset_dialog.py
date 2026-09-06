@@ -34,7 +34,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (

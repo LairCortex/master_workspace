@@ -11,7 +11,6 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from app.infrastructure.ui_prefs.config import UiPrefsManager
-from app.presentation import qml as qml_shell
 from app.presentation.qml.engine import setup_qml_shell
 from app.presentation.theme.compiler import tokens_file_path
 from app.presentation.theme.qml_palette import QmlPalette

@@ -11,13 +11,14 @@ window, capped by the screen.
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QPointF, QSize
+from PySide6.QtCore import QPointF, QRect, QSize
 from PySide6.QtWidgets import QApplication, QDialog
 
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
+from app.presentation.qml import island_size
 from app.presentation.qml.island_size import SCREEN_COVER_LIMIT, fit_dialog_to_island
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -89,6 +90,66 @@ def test_fit_never_covers_the_whole_screen(qtbot):
     size = fit_dialog_to_island(dialog, _Scene(99999, 99999), floor=(420, 520))
 
     assert size == cap
+
+
+def test_fit_opens_a_broken_island_at_the_floor(qtbot):
+    """No root object (a scene that failed to load) must not open a 0x0 window."""
+    cap = _screen_cap()
+    dialog = QDialog()
+    qtbot.addWidget(dialog)
+
+    size = fit_dialog_to_island(dialog, None, floor=(420, 520))
+
+    assert size == QSize(min(420, cap.width()), min(520, cap.height()))
+
+
+class _StubScreen:
+    def __init__(self, width: int, height: int) -> None:
+        self._geometry = QRect(0, 0, width, height)
+
+    def availableGeometry(self) -> QRect:
+        return self._geometry
+
+
+class _StubDialogWithoutScreen:
+    """A dialog whose window cannot name a screen — the unshown/foreign case."""
+
+    def window(self):
+        return self
+
+    def screen(self):
+        return None
+
+
+def _app_reporting(screen):
+    """Stand-in for ``QGuiApplication`` with a fixed primary screen."""
+
+    class _App:
+        @staticmethod
+        def primaryScreen():
+            return screen
+
+    return _App
+
+
+def test_screen_limit_falls_back_to_the_primary_screen(monkeypatch):
+    """An unshown dialog has no screen of its own — the cap still applies."""
+    monkeypatch.setattr(
+        island_size, "QGuiApplication", _app_reporting(_StubScreen(1000, 800))
+    )
+
+    limit = island_size._screen_limit(_StubDialogWithoutScreen())
+
+    assert limit == QSize(900, 720)  # 0.9 of 1000x800
+
+
+def test_screen_limit_without_any_screen_imposes_no_cap(monkeypatch):
+    """Headless with no screen at all: nothing to cap against, no zero window."""
+    monkeypatch.setattr(island_size, "QGuiApplication", _app_reporting(None))
+
+    limit = island_size._screen_limit(_StubDialogWithoutScreen())
+
+    assert limit == QSize(100000, 100000)
 
 
 def _opened(floor: tuple[int, int], natural: tuple[int, int], cap: QSize) -> QSize:

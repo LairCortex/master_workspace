@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QVBoxLayout,
-    QWidget,
 )
 
 from app.presentation.qml import setup_qml_shell

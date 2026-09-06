@@ -314,14 +314,16 @@ def _relative_luminance(rgb: tuple[int, int, int]) -> float:
 
 
 def _contrast_ratio(rgb_a, rgb_b) -> float:
-    l1, l2 = sorted((_relative_luminance(rgb_a), _relative_luminance(rgb_b)), reverse=True)
-    return (l1 + 0.05) / (l2 + 0.05)
+    brighter, dimmer = sorted(
+        (_relative_luminance(rgb_a), _relative_luminance(rgb_b)), reverse=True
+    )
+    return (brighter + 0.05) / (dimmer + 0.05)
 
 
 def _hue_lightness(rgb: tuple[int, int, int]) -> tuple[float, float]:
     """``(r, g, b)`` → ``(hue degrees, lightness 0..100)``."""
-    h, l, _s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
-    return h * 360, l * 100
+    hue, lightness, _saturation = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    return hue * 360, lightness * 100
 
 
 def _hue_distance(a: float, b: float) -> float:
@@ -361,12 +363,12 @@ def test_chart_colors_contrast_with_their_surface(tokens, theme):
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_chart_hues_are_spread_and_lightness_varies(tokens, theme):
     hls = [_hue_lightness(token_rgb(tokens, theme, key)) for key in CHART_TOKEN_KEYS]
-    hues = sorted(h for h, _l in hls)
+    hues = sorted(hue for hue, _lightness in hls)
     gaps = [
         _hue_distance(hues[i], hues[i + 1]) for i in range(len(hues) - 1)
     ] + [_hue_distance(hues[-1], hues[0])]
     assert min(gaps) >= MIN_HUE_SEPARATION
-    lightnesses = [l for _h, l in hls]
+    lightnesses = [lightness for _hue, lightness in hls]
     assert max(lightnesses) - min(lightnesses) >= MIN_LIGHTNESS_SPREAD
 
 

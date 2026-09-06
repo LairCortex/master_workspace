@@ -8,7 +8,6 @@ must survive widgets whose C++ side died. These are the branches the CI
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
 
 import pytest
 

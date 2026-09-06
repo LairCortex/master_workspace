@@ -24,11 +24,9 @@ from unittest.mock import MagicMock
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from app.infrastructure.ui_prefs.config import UiPrefs, UiPrefsManager
 from app.presentation.theme import ThemeRuntime
-from app.presentation.theme.catalog import attach_theme
 from app.presentation.theme.compiler import load_tokens, tokens_file_path
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.views.main_window import MainWindow

@@ -13,9 +13,7 @@ from datetime import date
 from types import SimpleNamespace
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QComboBox
 
-from app.presentation.theme.compiler import CHART_TOKEN_KEYS
 from app.presentation.views.event_dialog import EventDialog
 
 from tests.ui.test_theme_grab import make_runtime, token_color

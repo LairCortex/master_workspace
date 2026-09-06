@@ -15,7 +15,7 @@ import base64
 import json
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, Qt, QUrl
+from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
@@ -40,7 +40,6 @@ from tests.presentation.qml_helpers import (
     click_item,
     find_item,
     find_items,
-    island_rows,
     walk_items,
 )
 
