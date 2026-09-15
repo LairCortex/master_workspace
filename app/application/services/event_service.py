@@ -75,8 +75,10 @@ class EventService:
     async def delete_event(self, event_id: int) -> bool:
         return await self._event_repo.delete(event_id)
 
-    async def get_events_at_date(self, target_date: date) -> Sequence:
-        return await self._event_repo.get_events_at_date(target_date)
+    async def get_events_at_date(self, target_key: int) -> Sequence:
+        """Events covering a moment given by its era key (design D2/D4) —
+        callers translate their (date, era) pair through ``era_key``."""
+        return await self._event_repo.get_events_at_date(target_key)
 
     # ── Event types (W4) ───────────────────────────────────────────────────
 
@@ -164,6 +166,8 @@ class EventService:
         backstory: str,
         relations: dict,
         event_type_id: int | None = None,
+        start_bc: bool = False,
+        end_bc: bool = False,
     ):
         """Create an event (with description) and sync all four M2M collections.
 
@@ -172,7 +176,8 @@ class EventService:
         1:1 closure semantics (swallow the error, return None) went away with
         ``save-error-reporting``: the caller must learn why the save failed.
         The optional ``event_type_id`` (W4) assigns a type at creation
-        (None = без типа).
+        (None = без типа). ``start_bc``/``end_bc`` (task 3.4) carry the dates'
+        eras into the ORM era columns; the model hooks derive the keys.
         """
         try:
             event = await self.create_event(
@@ -182,6 +187,8 @@ class EventService:
                 start_date=start_date,
                 end_date=end_date,
                 event_type_id=event_type_id,
+                start_bc=start_bc,
+                end_bc=end_bc,
             )
             await self._session.refresh(
                 event, attribute_names=self.RELATION_ATTRS + ["event_type"],
@@ -209,6 +216,8 @@ class EventService:
         backstory: str,
         relations: dict,
         event_type_id: Any = _TYPE_UNSET,
+        start_bc: bool = False,
+        end_bc: bool = False,
     ):
         """Update event fields + description and resync all four M2M collections.
 
@@ -219,12 +228,15 @@ class EventService:
         rollback + silent None). W4: an explicit ``event_type_id``
         (id or None for «без типа») reassigns the type; callers that predate
         the feature leave the sentinel and keep the current one.
+        ``start_bc``/``end_bc`` (task 3.4) rewrite the dates' eras; the model
+        hooks re-derive the chronological keys.
         """
         try:
             current = await self.get_event(event_id)
             old_name = current.name if current else None
             fields: dict[str, Any] = {
                 "name": name, "start_date": start_date, "end_date": end_date,
+                "start_bc": start_bc, "end_bc": end_bc,
             }
             if event_type_id is not _TYPE_UNSET:
                 fields["event_type_id"] = event_type_id

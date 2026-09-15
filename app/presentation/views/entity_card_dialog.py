@@ -33,6 +33,7 @@ from app.presentation.utils.image_utils import load_entity_original, load_entity
 from app.presentation.viewmodels.entity_card_island_view_model import (
     EntityCardIslandViewModel,
 )
+from app.presentation.utils.date_utils import era_flag, split_date_era
 from app.presentation.views.event_dialog import (
     _CheckProxy,
     _ClickProxy,
@@ -506,9 +507,13 @@ class EntityCardDialog(QDialog):
         start = getattr(entity, "start_date", None)
         end = getattr(entity, "end_date", None)
         if isinstance(start, date):
-            self.vm.set_dates(start=start)
+            self.vm.set_dates(
+                start=start, start_bc=era_flag(getattr(entity, "start_bc", False))
+            )
         if isinstance(end, date):
-            self.vm.set_dates(end=end)
+            self.vm.set_dates(
+                end=end, end_bc=era_flag(getattr(entity, "end_bc", False))
+            )
             self.vm.set_no_end(False)
         elif end is None:
             self.vm.set_no_end(True)
@@ -549,6 +554,9 @@ class EntityCardDialog(QDialog):
             "rating": self.vm._rating,
             "start_date": self.vm._start_date,
             "end_date": None if self.vm._no_end else self.vm._end_date,
+            # Era flags ride the same **kwargs path into the ORM (task 3.4).
+            "start_bc": self.vm._start_bc,
+            "end_bc": self.vm._end_bc,
             "characteristics": self.vm.hosts["characteristics"].storage.strip(),
             "backstory": self.vm.hosts["backstory"].storage.strip(),
             "music_url": self.vm._music_url.strip(),
@@ -644,14 +652,21 @@ class EntityCardDialog(QDialog):
         self._date_target = which
         top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
         anchor = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
-        current = self.vm._start_date if which == "start" else self.vm._end_date
+        # The popup bridge is a (date, era) pair (task 3.4).
+        if which == "start":
+            current = (self.vm._start_date, self.vm._start_bc)
+        else:
+            current = (self.vm._end_date, self.vm._end_bc)
         self.date_popup.open_at(anchor, current)
 
     def _set_selected_date(self, selected) -> None:
+        # The popup answers with a (date, era) pair; a bare date keeps the
+        # era the dialog already holds for that bound.
+        value, is_bc = split_date_era(selected)
         if self._date_target == "start":
-            self.vm.set_dates(start=selected)
+            self.vm.set_dates(start=value, start_bc=is_bc)
         else:
-            self.vm.set_dates(end=selected)
+            self.vm.set_dates(end=value, end_bc=is_bc)
 
     def _open_related_picker(self, attr: str, label: str) -> None:
         state = self.vm.sections[attr]

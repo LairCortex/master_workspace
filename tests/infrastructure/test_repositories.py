@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.date_era import era_key
 from app.infrastructure.db.models import (
     DescriptionModel, OrganizationModel,
     CharacterModel, ItemModel, LocationModel,
@@ -240,10 +241,48 @@ class TestEventRepository:
         repo = EventRepository(async_session)
         await repo.create(name="Closed", description_id=d1.id, start_date=date(1200, 1, 1), end_date=date(1200, 6, 30))
         await repo.create(name="Infinite", description_id=d2.id, start_date=date(1300, 1, 1), end_date=None)
-        names = {e.name for e in await repo.get_events_at_date(date(1200, 6, 15))}
+        names = {e.name for e in await repo.get_events_at_date(era_key(date(1200, 6, 15)))}
         assert names == {"Closed"}
-        names = {e.name for e in await repo.get_events_at_date(date(1300, 3, 1))}
+        names = {e.name for e in await repo.get_events_at_date(era_key(date(1300, 3, 1)))}
         assert names == {"Infinite"}
+
+    @pytest.mark.asyncio
+    async def test_mixed_era_ordering(self, async_session: AsyncSession):
+        # Spec «Единый хронологический порядок» / Scenario «Смешанная сортировка»:
+        # 500 г. до н.э. → 1 г. н.э. → 2026, не по возрастанию чисел года.
+        desc = await _make_desc(async_session)
+        repo = EventRepository(async_session)
+        await repo.create(name="New", description_id=desc.id,
+            start_date=date(2026, 1, 1), end_date=None)
+        await repo.create(name="Ancient", description_id=desc.id,
+            start_date=date(500, 1, 1), start_bc=1, end_date=None)
+        await repo.create(name="Threshold", description_id=desc.id,
+            start_date=date(1, 1, 5), end_date=None)
+        names = [e.name for e in await repo.get_all_ordered()]
+        assert names == ["Ancient", "Threshold", "New"]
+
+    @pytest.mark.asyncio
+    async def test_bc_open_ended_covered_by_ce_window(self, async_session: AsyncSession):
+        # Scenario «Бессрочное из доисторического прошлого накрыто окном н.э.»
+        desc = await _make_desc(async_session)
+        repo = EventRepository(async_session)
+        await repo.create(name="Ancient cult", description_id=desc.id,
+            start_date=date(300, 6, 1), start_bc=1, end_date=None)
+        names = {e.name for e in await repo.get_events_at_date(era_key(date(2026, 9, 15)))}
+        assert names == {"Ancient cult"}
+
+    @pytest.mark.asyncio
+    async def test_bc_event_before_ce_window_excluded(self, async_session: AsyncSession):
+        # Closed in BC — must NOT surface in a CE query: with raw date text
+        # the interval would look "future" and (end_date >= target) would
+        # wrongly pass; keys order it before every CE moment instead.
+        desc = await _make_desc(async_session)
+        repo = EventRepository(async_session)
+        await repo.create(name="Fallen kingdom", description_id=desc.id,
+            start_date=date(400, 1, 1), start_bc=1,
+            end_date=date(350, 1, 1), end_bc=1)
+        names = {e.name for e in await repo.get_events_at_date(era_key(date(2026, 9, 15)))}
+        assert names == set()
 
 
 # ── OrganizationRepository ────────────────────────────────────────────────

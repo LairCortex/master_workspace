@@ -425,8 +425,9 @@ class TestDateWindowPopupEntry:
         assert moves[0].x() <= top_left.x()
         popup.close()
 
-    def test_two_taps_live_apply_through_the_old_channel(self, qtbot, root_qml):
-        """Live-apply stays on the unchanged ``window_changed`` pair."""
+    def test_two_taps_live_apply_through_the_channel(self, qtbot, root_qml):
+        """Live-apply keeps the ``window_changed`` channel; bounds now ride it
+        whole as the popover's (date, era) pairs (task 4.2)."""
         panel = _island(qtbot, _StubVM(), root_qml)
         received: list = []
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
@@ -434,10 +435,27 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.clicked.emit(QDate(1200, 1, 5))
         assert received == []  # start alone is not a window yet
         popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
-        assert received == [(date(1200, 1, 5), date(1200, 1, 9))]
+        assert received == [((date(1200, 1, 5), False), (date(1200, 1, 9), False))]
         assert not popup.isVisible()
         assert panel._root.property("windowText") == (
             "05 Январь 1200 — 09 Январь 1200 ▾"
+        )
+
+    def test_mixed_era_window_reaches_channel_and_chip_with_suffix(
+        self, qtbot, root_qml
+    ):
+        """Task 4.2: the independent era check boxes reach the channel and the
+        chip suffix (spec «Границы окна через эпохи»)."""
+        panel = _island(qtbot, _StubVM(), root_qml)
+        received: list = []
+        panel.window_changed.connect(lambda s, e: received.append((s, e)))
+        popup = _open_via_chip(panel)
+        popup.start_calendar.set_era(True)  # «до н.э.» на начале
+        popup.start_calendar.clicked.emit(QDate(500, 1, 1))
+        popup.end_calendar.clicked.emit(QDate(100, 12, 31))
+        assert received == [((date(500, 1, 1), True), (date(100, 12, 31), False))]
+        assert panel._root.property("windowText") == (
+            "01 Январь 500 г. до н.э. — 31 Декабрь 100 ▾"
         )
 
     def test_earlier_second_tap_rearms_instead_of_backwards_range(
@@ -450,9 +468,11 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
         popup.start_calendar.clicked.emit(QDate(1200, 1, 3))  # earlier
         assert received == []
-        assert popup._pending_start == date(1200, 1, 3)
+        assert popup._pending_start == (date(1200, 1, 3), False)
         popup.start_calendar.clicked.emit(QDate(1200, 1, 12))
-        assert received == [(date(1200, 1, 3), date(1200, 1, 12))]
+        assert received == [
+            ((date(1200, 1, 3), False), (date(1200, 1, 12), False))
+        ]
 
     def test_finish_may_land_on_the_second_calendar(self, qtbot, root_qml):
         panel = _island(qtbot, _StubVM(), root_qml)
@@ -462,7 +482,9 @@ class TestDateWindowPopupEntry:
         popup._fit_low_screen(10_000)  # keep both calendars regardless of room
         popup.start_calendar.clicked.emit(QDate(1200, 2, 1))
         popup.end_calendar.clicked.emit(QDate(1200, 2, 20))
-        assert received == [(date(1200, 2, 1), date(1200, 2, 20))]
+        assert received == [
+            ((date(1200, 2, 1), False), (date(1200, 2, 20), False))
+        ]
 
     def test_reset_restores_all_days_and_hides(self, qtbot, root_qml):
         panel = _island(qtbot, _StubVM(), root_qml)
@@ -498,7 +520,21 @@ class TestDateWindowPopupEntry:
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
         popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
         popup.start_calendar.clicked.emit(QDate(1200, 1, 4))
-        assert received == [(date(1200, 1, 1), date(1200, 1, 4))]
+        assert received == [
+            ((date(1200, 1, 1), False), (date(1200, 1, 4), False))
+        ]
+
+    def test_bare_dates_stay_legal_on_the_window_channel(self, qtbot, root_qml):
+        """A legacy bare-date apply (no era pair) still lands, read as «н.э.»."""
+        panel = _island(qtbot, _StubVM(), root_qml)
+        received: list = []
+        panel.window_changed.connect(lambda s, e: received.append((s, e)))
+        panel._on_window_range(date(1200, 4, 3), date(1200, 5, 6))
+        assert received == [(date(1200, 4, 3), date(1200, 5, 6))]
+        assert panel._root.property("windowText") == (
+            "03 Апрель 1200 — 06 Май 1200 ▾"
+        )
+        assert panel._window_range == (date(1200, 4, 3), date(1200, 5, 6))
 
 
 # ── 3.3 — system menus through the mocked-choice harness ────────────────────

@@ -41,7 +41,6 @@ always was.
 """
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -74,7 +73,7 @@ ADD_MENU_ITEMS: tuple[tuple[str, str | None], ...] = (
 )
 
 #: Window knob normalized: ``None`` and ``(None, None)`` both mean «Все дни».
-_NO_WINDOW: tuple[date | None, date | None] = (None, None)
+_NO_WINDOW: tuple = (None, None)
 
 #: Stand for «this VM's window knob is no window at all» (a test double's
 #: attribute shape). Distinct from ``None``, which is the real «Все дни»
@@ -82,7 +81,7 @@ _NO_WINDOW: tuple[date | None, date | None] = (None, None)
 _UNREADABLE_KNOB = object()
 
 
-def _normalized_window(window) -> tuple[date | None, date | None]:
+def _normalized_window(window) -> tuple:
     """Normalize the window knob: ``None`` means «Все дни» == (None, None)."""
     if window is None:
         return _NO_WINDOW
@@ -118,7 +117,7 @@ class TimelineWidget(QWidget):
     add_event_requested = Signal()
     add_entity_requested = Signal(str)  # entity_type: character/location/organization/item
     event_types_requested = Signal()  # «Типы событий…» from the «+» menu
-    window_changed = Signal(object, object)  # window pair (start|None, end|None)
+    window_changed = Signal(object, object)  # window bounds ((date|pair|None) x2)
 
     def __init__(
         self,
@@ -133,7 +132,9 @@ class TimelineWidget(QWidget):
         # QML chrome is skinned by the token bridge only, but the bridge still
         # needs a runtime: an unset argument falls back to the process default.
         self._theme = theme if theme is not None else get_default_theme()
-        self._window_range: tuple[date | None, date | None] = (None, None)
+        # Applied window as the popover reads it back on reopen: bounds are bare
+        # dates or (date, is_bc) pairs — whatever `_on_window_range` received.
+        self._window_range: tuple = (None, None)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -371,7 +372,13 @@ class TimelineWidget(QWidget):
 
     def _on_window_range(self, start, end) -> None:
         """Popover live-apply: chip caption + the panel's single signal — the
-        unchanged ``window_changed`` wiring channel."""
+        unchanged ``window_changed`` wiring channel.
+
+        The popover applies ``(date, is_bc)`` pairs (task 3.3), and from task
+        4.2 the pairs ride the channel whole: the chip caption, the VM's
+        window and the core's filter all read eras off the same pair (the
+        bare-date contract stays a legal input — a date without a pair is
+        «н.э.», see :func:`split_date_era`)."""
         self._set_window_caption((start, end))
         self.window_changed.emit(start, end)
 

@@ -1,5 +1,6 @@
 """Tests for dialog Views — TDD: tests first with pytest-qt."""
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -473,3 +474,170 @@ class TestDialogCloseGuard:
         d.show()
         d.cancel_button.click()
         assert not d.isVisible()
+
+
+# ── Era-aware date bridges (add-era-aware-dates, task 3.4) ──────────────────
+
+
+class TestDialogDateEraBridges:
+    def test_event_dialog_dates_default_to_today_our_era(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        assert d.vm._start_date == date.today()
+        assert d.vm._end_date == date.today()
+        data = d.get_data()
+        assert data["start_bc"] is False
+        assert data["end_bc"] is False
+
+    def test_event_dialog_popup_answer_sets_date_and_era(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        d._date_target = "start"
+        d._set_selected_date((date(44, 3, 5), True))
+        assert d.vm._start_date == date(44, 3, 5)
+        assert d.vm._start_bc is True
+        assert "05 Март 44 г. до н.э." == d.vm.startDisplay
+        data = d.get_data()
+        assert data["start_date"] == date(44, 3, 5)
+        assert data["start_bc"] is True
+
+    def test_event_dialog_popup_answer_keeps_untouched_bound_era(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        d._date_target = "end"
+        d._set_selected_date((date(100, 12, 31), False))
+        assert d.vm._end_bc is False
+        d._date_target = "start"
+        d._set_selected_date((date(500, 1, 1), True))
+        assert d.vm._end_bc is False  # the other bound is not rewritten
+        assert d.vm._start_bc is True
+
+    def test_event_dialog_opens_popup_with_current_pair(self, qtbot, monkeypatch):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        opened: list = []
+        monkeypatch.setattr(
+            d.date_popup, "open_at",
+            lambda anchor, current: opened.append(current),
+        )
+        d._date_target = "start"
+        d._set_selected_date((date(44, 3, 5), True))
+        d._open_date_popup("start", 1, 2, 3, 4)
+        d._open_date_popup("end", 1, 2, 3, 4)
+        assert opened[0] == (date(44, 3, 5), True)
+        assert opened[1] == (date.today(), False)
+
+    def test_event_dialog_validity_is_chronological_across_eras(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        d.name_input.setText("Через границу")
+        d.characteristics_input.setPlainText("Из древности в наше время")
+        d._date_target = "start"
+        d._set_selected_date((date(100, 1, 1), True))  # 100 г. до н.э.
+        d._update_validity()
+        assert d.vm.valid  # бессрочное — окон нет, порядок не ломается
+
+        d.vm.set_no_end(False)
+        d._date_target = "end"
+        d._set_selected_date((date(100, 1, 1), False))  # 100 г. н.э. — позже
+        d._update_validity()
+        assert d.vm.valid
+
+        d._set_selected_date((date(200, 1, 1), True))  # 200 г. до н.э. — раньше
+        d._update_validity()
+        assert not d.vm.valid  # зеркальный числовой порядок не обманывает clamp
+
+    def test_event_dialog_populate_reads_era_flags(self, qtbot):
+        d = EventDialog(MagicMock())
+        qtbot.addWidget(d)
+        event = SimpleNamespace(
+            id=7,
+            name="Заговор",
+            event_type=None,
+            start_date=date(44, 3, 5),
+            end_date=None,
+            start_bc=1,
+            end_bc=0,
+            description=None,
+        )
+        d.populate(event)
+        assert d.vm._start_date == date(44, 3, 5)
+        assert d.vm._start_bc is True
+        data = d.get_data()
+        assert data["start_bc"] is True
+
+    def test_entity_card_defaults_are_today_our_era(self, qtbot):
+        d = EntityCardDialog(MagicMock(), entity_type="item")
+        qtbot.addWidget(d)
+        data = d.get_data()
+        assert data["start_date"] == date.today()
+        assert data["start_bc"] is False
+        assert data["end_bc"] is False
+
+    def test_entity_card_popup_answer_pairs_and_get_data(self, qtbot):
+        d = EntityCardDialog(MagicMock(), entity_type="item")
+        qtbot.addWidget(d)
+        d._date_target = "start"
+        d._set_selected_date((date(44, 3, 5), True))
+        assert d.vm._start_date == date(44, 3, 5)
+        assert d.vm._start_bc is True
+        assert d.vm.startDisplay == "05 Март 44 г. до н.э."
+        data = d.get_data()
+        assert data["start_date"] == date(44, 3, 5)
+        assert data["start_bc"] is True  # ключи уезжают в сервис **kwargs'ом
+
+    def test_entity_card_opens_popup_with_current_pair(self, qtbot, monkeypatch):
+        d = EntityCardDialog(MagicMock(), entity_type="item")
+        qtbot.addWidget(d)
+        opened: list = []
+        monkeypatch.setattr(
+            d.date_popup, "open_at",
+            lambda anchor, current: opened.append(current),
+        )
+        d._date_target = "end"
+        d._set_selected_date((date(500, 1, 1), True))
+        d._open_date_popup("start", 1, 2, 3, 4)
+        d._open_date_popup("end", 1, 2, 3, 4)
+        assert opened[0] == (date.today(), False)
+        assert opened[1] == (date(500, 1, 1), True)
+
+    def test_entity_card_populate_reads_era_flags(self, qtbot):
+        d = EntityCardDialog(MagicMock(), entity_type="item")
+        qtbot.addWidget(d)
+        entity = SimpleNamespace(
+            id=3,
+            name="Меч",
+            rating=1,
+            start_date=date(44, 3, 5),
+            end_date=date(30, 1, 1),
+            start_bc=1,
+            end_bc=0,
+            music_url="",
+            description=None,
+        )
+        d.populate(entity)
+        assert d.vm._start_bc is True
+        assert d.vm._end_bc is False
+        data = d.get_data()
+        assert data["start_bc"] is True
+        assert data["end_bc"] is False
+
+    def test_world_snapshot_popup_bridge_is_a_pair_with_today_ce_default(
+        self, qtbot
+    ):
+        from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
+
+        w = WorldSnapshotWidget()
+        qtbot.addWidget(w)
+        # Умолчание моста — «сегодня, н.э.» (design D6).
+        assert w.vm._date == date.today()
+        assert w.vm._date_bc is False
+        # The popup answers with (date, era) through the connected bridge.
+        w.date_popup.date_selected.emit((date(44, 3, 5), True))
+        assert w.vm._date == date(44, 3, 5)
+        assert w.vm._date_bc is True
+        assert w.vm.dateDisplay == "05 Март 44 г. до н.э."
+        received: list = []
+        w.snapshot_requested.connect(received.append)
+        w.vm.requestShow()
+        assert received == [(date(44, 3, 5), True)]

@@ -21,6 +21,7 @@ from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.utils.date_utils import era_flag, split_date_era
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     EventDialogIslandViewModel,
     RelatedSectionState,
@@ -320,9 +321,13 @@ class EventDialog(QDialog):
         start = getattr(event, "start_date", None)
         end = getattr(event, "end_date", None)
         if start is not None:
-            self.vm.set_dates(start=start)
+            self.vm.set_dates(
+                start=start, start_bc=era_flag(getattr(event, "start_bc", False))
+            )
         if end is not None:
-            self.vm.set_dates(end=end)
+            self.vm.set_dates(
+                end=end, end_bc=era_flag(getattr(event, "end_bc", False))
+            )
             self.vm.set_no_end(False)
         else:
             self.vm.set_no_end(True)
@@ -357,6 +362,8 @@ class EventDialog(QDialog):
             "backstory": self.vm.backstoryHost.storage.strip(),
             "start_date": self.vm._start_date,
             "end_date": None if self.vm._no_end else self.vm._end_date,
+            "start_bc": self.vm._start_bc,
+            "end_bc": self.vm._end_bc,
             "event_type_id": self.vm.selected_type_id,
         }
         if self._event_id is not None:
@@ -441,14 +448,21 @@ class EventDialog(QDialog):
         self._date_target = which
         top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
         anchor = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
-        current = self.vm._start_date if which == "start" else self.vm._end_date
+        # The popup bridge is a (date, era) pair (task 3.4).
+        if which == "start":
+            current = (self.vm._start_date, self.vm._start_bc)
+        else:
+            current = (self.vm._end_date, self.vm._end_bc)
         self.date_popup.open_at(anchor, current)
 
     def _set_selected_date(self, selected) -> None:
+        # The popup answers with a (date, era) pair; a bare date keeps the
+        # era the dialog already holds for that bound.
+        value, is_bc = split_date_era(selected)
         if self._date_target == "start":
-            self.vm.set_dates(start=selected)
+            self.vm.set_dates(start=value, start_bc=is_bc)
         else:
-            self.vm.set_dates(end=selected)
+            self.vm.set_dates(end=value, end_bc=is_bc)
 
     def _open_related_picker(self, attr: str, label: str) -> None:
         section = self._sections[attr]

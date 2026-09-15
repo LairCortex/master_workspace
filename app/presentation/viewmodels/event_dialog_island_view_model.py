@@ -7,6 +7,7 @@ from typing import Any, Callable
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
+from app.domain.date_era import era_key
 from app.presentation.utils.date_utils import format_game_date
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 AI_STATE_PROPERTY = "aiState"
@@ -291,8 +292,12 @@ class EventDialogIslandViewModel(QObject):
         super().__init__(parent)
         self._owner = owner
         self._name = ""
+        # Date bridges carry (date, era) pairs (task 3.4); the default is
+        # «сегодня, н.э.» (design D6).
         self._start_date = date.today()
         self._end_date = date.today()
+        self._start_bc = False
+        self._end_bc = False
         self._no_end = False
         self._save_locked = False
         self._saving = False
@@ -362,11 +367,20 @@ class EventDialogIslandViewModel(QObject):
     startIso = Property(str, lambda self: self._start_date.isoformat(), notify=stateChanged)
     endIso = Property(str, lambda self: self._end_date.isoformat(), notify=stateChanged)
     startDisplay = Property(
-        str, lambda self: format_game_date(self._start_date), notify=stateChanged
+        str,
+        lambda self: format_game_date(self._start_date, is_bc=self._start_bc),
+        notify=stateChanged,
     )
     endDisplay = Property(
-        str, lambda self: format_game_date(self._end_date), notify=stateChanged
+        str,
+        lambda self: format_game_date(self._end_date, is_bc=self._end_bc),
+        notify=stateChanged,
     )
+    # Era facets (add-era-aware-dates, task 4.1 / design D6): the display
+    # strings above already carry the «N г. до н.э.» suffix — QML never derives
+    # an era, it only mirrors these ready-made flags onto its field facets.
+    startBc = Property(bool, lambda self: self._start_bc, notify=stateChanged)
+    endBc = Property(bool, lambda self: self._end_bc, notify=stateChanged)
     noEnd = Property(bool, lambda self: self._no_end, notify=stateChanged)
     saveLocked = Property(bool, lambda self: self._save_locked, notify=stateChanged)
     saving = Property(bool, lambda self: self._saving, notify=stateChanged)
@@ -377,7 +391,13 @@ class EventDialogIslandViewModel(QObject):
             self.characteristicsHost.storage.strip()
             or self.backstoryHost.storage.strip()
         )
-        and (self._no_end or self._end_date >= self._start_date)
+        # «end не раньше start» lives on the single chronological key
+        # (design D2) — a bare date compare is wrong across the eras.
+        and (
+            self._no_end
+            or era_key(self._end_date, self._end_bc)
+            >= era_key(self._start_date, self._start_bc)
+        )
         and not self._save_locked
         and not self._saving,
         notify=stateChanged,
@@ -400,11 +420,21 @@ class EventDialogIslandViewModel(QObject):
         notify=stateChanged,
     )
 
-    def set_dates(self, start: date | None = None, end: date | None = None) -> None:
+    def set_dates(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+        start_bc: bool | None = None,
+        end_bc: bool | None = None,
+    ) -> None:
         if start is not None:
             self._start_date = start
         if end is not None:
             self._end_date = end
+        if start_bc is not None:
+            self._start_bc = bool(start_bc)
+        if end_bc is not None:
+            self._end_bc = bool(end_bc)
         self.stateChanged.emit()
 
     def set_no_end(self, value: bool) -> None:

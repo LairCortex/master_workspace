@@ -13,6 +13,22 @@ from tests.presentation.qml_helpers import find_item
 from tests.ui.test_theme_grab import make_runtime
 
 
+def test_bc_era_facets_and_the_suffix_reach_the_qml_date_field(qtbot):
+    """Task 4.1: the viewmodel exposes ready ``startBc``/``endBc`` facets and
+    pre-built display strings — the island's ThemeDateField paints the
+    «до н.э.» suffix without computing any era in QML."""
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.vm.set_dates(start=date(44, 3, 5), start_bc=True)
+    assert dialog.vm.startBc is True
+    assert dialog.vm.endBc is False
+    assert dialog.vm.startDisplay.endswith("44 г. до н.э.")
+    start_field = find_item(dialog.quick, "eventStartDateField")
+    assert start_field.property("display") == dialog.vm.startDisplay
+    assert start_field.property("display").endswith("44 г. до н.э.")
+    assert start_field.property("isoDate") == "0044-03-05"
+
+
 def test_island_vm_validity_and_save_request(qtbot):
     vm = EventDialogIslandViewModel()
     vm.name = "Event"

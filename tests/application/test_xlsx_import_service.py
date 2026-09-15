@@ -36,6 +36,7 @@ from app.application.services.xlsx_import_service import (
     LINK_TO_GHOST,
     XlsxImportService,
 )
+from app.domain.date_era import era_key
 from app.infrastructure.db import models
 from app.infrastructure.db.models import (
     CharacterModel,
@@ -463,6 +464,46 @@ class TestApplyFixture:
         ]
         assert (await _edge_count(async_session, models.event_character)) == 5
         assert await _count(async_session, CharacterModel) == 3
+
+
+# ── add-era-aware-dates 5.2 — BC dates through ghosts and planned rows ─────
+
+class TestApplyEraAware:
+    async def test_ghost_autocreates_from_a_bc_referring_row(self, tmp_path, async_session):
+        # A row with signed-ISO/text BC dates links an unknown item: the ghost
+        # materializes with the same era pair (bounds compared by era key),
+        # and both entities persist era flags + chronology keys derived by the
+        # ORM hook — the same single persistence path as any other row.
+        wb = Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet("События")
+        ws.append(["Имя", "Дата начала", "Дата конца", "Связь предметами"])
+        ws.append(["Угощение Юлии", "-0044-03-15", "5 марта 43 г. до н.э.", "Амфора"])
+        path = tmp_path / "bc_ghost.xlsx"
+        wb.save(path)
+
+        plan = await _svc().analyze_file(path, async_session)
+        ghost_plan = plan.ghosts[("item", "амфора")]
+        assert (ghost_plan.min_start, ghost_plan.min_start_bc) == (date(44, 3, 15), True)
+        assert (ghost_plan.max_end, ghost_plan.max_end_bc) == (date(43, 3, 5), True)
+
+        report = await _svc().apply_plan(plan, async_session)
+
+        event = await _one(async_session, EventModel, name="Угощение Юлии")
+        assert (event.start_date, bool(event.start_bc)) == (date(44, 3, 15), True)
+        assert (event.end_date, bool(event.end_bc)) == (date(43, 3, 5), True)
+        assert event.start_key == era_key(date(44, 3, 15), True)
+        assert event.end_key == era_key(date(43, 3, 5), True)
+
+        ghost = await _one(async_session, ItemModel, name="Амфора")
+        assert (ghost.start_date, bool(ghost.start_bc)) == (date(44, 3, 15), True)
+        assert (ghost.end_date, bool(ghost.end_bc)) == (date(43, 3, 5), True)
+        assert ghost.start_key < 0 < era_key(date(1, 1, 1), False)
+        assert [i.id for i in event.items] == [ghost.id]
+        assert any(i.id == event.id for i in ghost.events)
+
+        decision = next(d for d in report.decisions if "Амфора" in d)
+        assert "Автосоздание" in decision and "до н.э." in decision
 
 
 # ── 6.1 — transaction (spec «Транзакционность импорта») ────────────────────

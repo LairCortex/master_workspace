@@ -22,13 +22,15 @@ the popover's theme, so keep them exactly as they are.
 from __future__ import annotations
 
 from datetime import date
+from functools import partial
 
 from PySide6.QtCore import QDate, QPoint, QRect, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
-from app.presentation.utils.date_utils import format_game_date
+from app.domain.date_era import cmp_era_dates
+from app.presentation.utils.date_utils import format_game_date, split_date_era
 from app.presentation.views.theme_date_popup import _CustomCalendar
 
 # ── «Выбор даты» chip + popover captions (W3b D9; migrated with the popover) ─
@@ -47,11 +49,20 @@ WINDOW_RESET_TEXT = "Сбросить"
 WINDOW_DOUBLE_HEIGHT_FACTOR = 2
 
 
-def window_chip_text(start: date | None, end: date | None) -> str:
-    """Chip caption for the active window: «Все дни ▾» or game-formatted bounds."""
-    if start is None or end is None:
+def window_chip_text(start, end) -> str:
+    """Chip caption for the active window: «Все дни ▾» or game-formatted bounds.
+
+    Bounds ride as the popover applies them — a bare ``date`` (== «н.э.») or a
+    ``(date, is_bc)`` pair (add-era-aware-dates, task 4.2): a BC bound prints
+    with the «N г. до н.э.» suffix (spec «Границы окна через эпохи»)."""
+    start_date, start_bc = split_date_era(start)
+    end_date, end_bc = split_date_era(end)
+    if start_date is None or end_date is None:
         return WINDOW_CHIP_ALL
-    return f"{format_game_date(start)} — {format_game_date(end)} ▾"
+    return (
+        f"{format_game_date(start_date, is_bc=bool(start_bc))} — "
+        f"{format_game_date(end_date, is_bc=bool(end_bc))} ▾"
+    )
 
 
 class _DateWindowResetButton(QPushButton):
@@ -77,23 +88,26 @@ class _DateWindowPopup(QWidget):
     by the island's narrow rectangle.
 
     Picking (D9): the first click arms the start, the second applies
-    ``range_applied(start, end)`` and closes — the window lands LIVE, there is
-    no «Применить» button; an earlier second tap re-arms a new start instead of
-    emitting a backwards range. «Сбросить» closes with ``range_applied(None,
+    ``range_applied(start_pair, end_pair)`` and closes — the window lands
+    LIVE, there is no «Применить» button; each bound is a ``(date, is_bc)``
+    pair carrying its own calendar's independent «до н.э.» check box (Q9),
+    and the backwards-check is chronological across the eras (design D2).
+    An earlier second tap re-arms a new start instead of emitting a
+    backwards range. «Сбросить» closes with ``range_applied(None,
     None)`` (chip returns to «Все дни» — the window's only reset, spec
     «Живое применение и сброс»). When the room under the chip cannot host
     both calendars only one stays visible and the two taps assign start/finish
     there — the tip label mirrors the assignment.
     """
 
-    range_applied = Signal(object, object)  # (start date | None, end date | None)
+    range_applied = Signal(object, object)  # (start pair | None, end pair | None)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("timelineDateWindowPopup")  # identifier, not style
         # A plain QWidget only paints the sheet's background with the flag on.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._pending_start: date | None = None
+        self._pending_start: tuple[date, bool] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -110,8 +124,12 @@ class _DateWindowPopup(QWidget):
         reset_row.addWidget(self.reset_button)
         layout.addLayout(reset_row)
 
-        self.start_calendar.clicked.connect(self._on_day_clicked)
-        self.end_calendar.clicked.connect(self._on_day_clicked)
+        self.start_calendar.clicked.connect(
+            partial(self._on_day_clicked, self.start_calendar)
+        )
+        self.end_calendar.clicked.connect(
+            partial(self._on_day_clicked, self.end_calendar)
+        )
         self.reset_button.clicked.connect(self._on_reset)
 
     # ── opening ─────────────────────────────────────────────────────────────
@@ -135,11 +153,15 @@ class _DateWindowPopup(QWidget):
         self.start_calendar.refresh_month_names()
         self.end_calendar.refresh_month_names()
         start, end = current or (None, None)
-        for cal, day in ((self.start_calendar, start), (self.end_calendar, end)):
+        for cal, value in ((self.start_calendar, start), (self.end_calendar, end)):
+            day, is_bc = split_date_era(value)
             if day is not None:
                 qday = QDate(day.year, day.month, day.day)
                 cal.setSelectedDate(qday)
                 cal.setCurrentPage(qday.year(), qday.month())
+            # The era check box always mirrors the seeded bound (task 3.3):
+            # its own calendar's checkbox, independent for start and end.
+            cal.set_era(bool(is_bc))
         pos = QPoint(anchor_global.x(), anchor_global.y() + anchor_global.height() + 2)
         screen = QApplication.screenAt(pos)
         room = (
@@ -161,11 +183,13 @@ class _DateWindowPopup(QWidget):
 
     # ── tap handling ────────────────────────────────────────────────────────
 
-    def _on_day_clicked(self, qdate: QDate) -> None:
-        chosen = qdate.toPython()
-        if self._pending_start is None or chosen < self._pending_start:
-            # First tap arms the start; a second tap *before* it re-arms a new
-            # start rather than emitting a backwards range.
+    def _on_day_clicked(self, calendar: _CustomCalendar, qdate: QDate) -> None:
+        # Each bound carries its own calendar's independent era flag (Q9).
+        chosen: tuple[date, bool] = (qdate.toPython(), calendar.is_bc())
+        if self._pending_start is None or cmp_era_dates(chosen, self._pending_start) < 0:
+            # First tap arms the start; a second tap *chronologically before*
+            # it (across the eras, design D2) re-arms a new start rather than
+            # emitting a backwards range.
             self._pending_start = chosen
             self.start_calendar.setSelectedDate(qdate)
             self.end_calendar.setSelectedDate(qdate)

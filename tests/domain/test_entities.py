@@ -354,3 +354,75 @@ class TestBaseEntity:
                 description=Description(characteristics="x", backstory="y"),
                 start_date=date(1200, 1, 1),
             )
+
+
+# --- Era-aware date validation (through the era border) ---
+
+class TestEraAwareDateValidation:
+    def test_event_spanning_eras_is_allowed(self):
+        """Start 500 г. до н.э., end 100 г. н.э. — конец позже начала через границу эр."""
+        ev = Event(
+            name="Empire",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(500, 1, 1),
+            end_date=date(100, 1, 1),
+            start_bc=True,
+        )
+        assert ev.start_bc is True
+        assert ev.end_bc is False
+
+    def test_event_end_earlier_in_bc_era_is_rejected(self):
+        """Конец 200 г. до н.э. при начале 100 г. до н.э. — раньше начала."""
+        with pytest.raises(ValueError, match="end_date.*start_date"):
+            Event(
+                name="Test",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=date(100, 1, 1),
+                end_date=date(200, 1, 1),
+                start_bc=True,
+                end_bc=True,
+            )
+
+    def test_event_bc_same_year_ordering_follows_era_key(self):
+        """Внутри одного BC-года дни идут естественно: 15 марта раньше конца февраля нельзя."""
+        ev = Event(
+            name="Ides",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(44, 2, 1),
+            end_date=date(44, 3, 15),
+            start_bc=True,
+            end_bc=True,
+        )
+        assert ev.end_date > ev.start_date
+        with pytest.raises(ValueError, match="end_date.*start_date"):
+            Event(
+                name="Reversed",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=date(44, 3, 15),
+                end_date=date(44, 2, 1),
+                start_bc=True,
+                end_bc=True,
+            )
+
+    def test_rating_spanning_eras_is_allowed(self):
+        r = Rating(
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(300, 1, 1),
+            end_date=date(300, 1, 1),
+            level=3,
+            start_bc=True,
+        )
+        assert r.start_bc is True
+        assert r.end_bc is False
+
+    def test_rating_end_earlier_in_bc_era_is_rejected(self):
+        with pytest.raises(ValueError, match="end_date.*start_date"):
+            Rating(
+                description=Description(characteristics="x", backstory="y"),
+                start_date=date(100, 1, 1),
+                end_date=date(200, 1, 1),
+                level=2,
+                start_bc=True,
+                end_bc=True,
+            )
+

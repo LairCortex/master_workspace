@@ -14,7 +14,9 @@ from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.event_service import EventService, _TYPE_UNSET
 from app.application.services.xlsx_import_service import XlsxImportService
+from app.domain.date_era import era_key
 from app.infrastructure.db.models import DescriptionModel
+from app.presentation.utils.date_utils import split_date_era
 from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED_CONFIG
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
@@ -138,7 +140,9 @@ class ApplicationWiring:
 
         # «Выбор даты» window (task 7.1): the panel's single window_changed
         # channel writes the ViewModel's navigation window (None bounds =
-        # «Все дни»), the tape re-models over the overlap-visible sample.
+        # «Все дни»; from add-era-aware-dates 4.2 a bound may be a bare date
+        # or a (date, era) pair), the tape re-models over the overlap-visible
+        # sample.
         def on_window_changed(start, end):
             timeline_vm.window = (start, end)
             window.timeline_widget.update_events(timeline_vm.events)
@@ -268,6 +272,8 @@ class ApplicationWiring:
                         name=data.pop("name"),
                         start_date=data.pop("start_date"),
                         end_date=data.pop("end_date"),
+                        start_bc=data.pop("start_bc", False),
+                        end_bc=data.pop("end_bc", False),
                         characteristics=data.pop("characteristics", ""),
                         backstory=data.pop("backstory", ""),
                         relations=relations,
@@ -384,6 +390,8 @@ class ApplicationWiring:
                             name=data.pop("name"),
                             start_date=data.pop("start_date"),
                             end_date=data.pop("end_date"),
+                            start_bc=data.pop("start_bc", False),
+                            end_bc=data.pop("end_bc", False),
                             characteristics=data.pop("characteristics", ""),
                             backstory=data.pop("backstory", ""),
                             relations=relations,
@@ -626,13 +634,18 @@ class ApplicationWiring:
             lambda t, i: self._spawn(on_entity_click(t, i))
         )
 
-        # World snapshot — date query
-        async def on_snapshot_requested(target_date):
-            if target_date is None:
+        # World snapshot — date query. The bridge carries a (date, era) pair
+        # (task 3.4); the query itself is key-based, so era_key translates it
+        # here exactly once (a bare legacy date reads as «н.э.»).
+        async def on_snapshot_requested(target):
+            if target is None:
                 events = await event_service.get_all_events()
             else:
-                events = await event_service.get_events_at_date(target_date)
-            window.world_snapshot.populate(events, target_date)
+                target_date, target_bc = split_date_era(target)
+                events = await event_service.get_events_at_date(
+                    era_key(target_date, bool(target_bc))
+                )
+            window.world_snapshot.populate(events, target)
 
         window.world_snapshot.snapshot_requested.connect(
             lambda d: self._spawn(on_snapshot_requested(d))

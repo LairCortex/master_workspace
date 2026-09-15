@@ -7,6 +7,7 @@ import pytest
 from app.application.services.event_service import EventService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
+from app.domain.date_era import era_key
 from app.infrastructure.db.models import (
     DescriptionModel, EventModel, OrganizationModel,
 )
@@ -89,8 +90,11 @@ class TestEventService:
     async def test_get_events_at_date(self):
         svc, event_repo, _ = self._make_service()
         event_repo.get_events_at_date.return_value = [_mock_event(1)]
-        result = await svc.get_events_at_date(date(1200, 6, 15))
-        event_repo.get_events_at_date.assert_awaited_once_with(date(1200, 6, 15))
+        # The service forwards the era key (design D4) it received untouched.
+        result = await svc.get_events_at_date(era_key(date(1200, 6, 15)))
+        event_repo.get_events_at_date.assert_awaited_once_with(
+            era_key(date(1200, 6, 15))
+        )
         assert len(result) == 1
 
     @pytest.mark.asyncio

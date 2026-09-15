@@ -6,6 +6,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from app.domain.date_era import cmp_era_dates
+
 
 class EventDialogViewModel(QObject):
     validity_changed = Signal(bool)
@@ -25,7 +27,11 @@ class EventDialogViewModel(QObject):
             return False
         if self.start_date is None or self.end_date is None:
             return False
-        if self.end_date < self.start_date:
+        # Era-free legacy VM (no start_bc/end_bc fields): both operands read
+        # as «н.э.», but the check still goes through the single chronological
+        # helper so no raw date comparison lives outside app/domain/date_era.py
+        # (add-era-aware-dates, design D2).
+        if cmp_era_dates((self.end_date, False), (self.start_date, False)) < 0:
             return False
         if not self.characteristics and not self.backstory:
             return False

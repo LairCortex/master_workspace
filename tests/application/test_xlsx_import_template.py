@@ -34,8 +34,8 @@ TEMPLATE_PATH = REPO_ROOT / "resources" / "import_template.xlsx"
 # Sample rows keyed by column key (ColumnSpec.key) / link target type. The
 # rows cross-reference each other in BOTH directions with `;` lists (spec
 # «Ссылка на строку другого листа») so the template demonstrates the link
-# syntax; «Бал» carries a native date cell, the other rows ISO text — the
-# two accepted date forms.
+# syntax; «Бал» carries a native date cell, the other rows ISO text, and
+# «Заговор» shows both accepted BC text forms — all valid date spellings.
 SAMPLE_ROWS: dict[str, list[dict[str, object]]] = {
     "event": [
         {
@@ -52,6 +52,17 @@ SAMPLE_ROWS: dict[str, list[dict[str, object]]] = {
             "backstory": None, "rating": None, "event_type": "Дуэль",
             "character": "Иван", "organization": None,
             "item": None, "location": "Поляна",
+        },
+        {
+            # Era-aware dates (add-era-aware-dates): both accepted BC text
+            # forms in one row — the game wording in «Дата начала» and the
+            # signed ISO in «Дата конца».
+            "name": "Заговор", "start_date": "15 марта 44 г. до н.э.",
+            "end_date": "-0043-03-01",
+            "characteristics": "Сговор против Цезаря",
+            "backstory": None, "rating": None, "event_type": None,
+            "character": None, "organization": None,
+            "item": None, "location": None,
         },
     ],
     "character": [
@@ -226,7 +237,7 @@ class TestTemplateAnalyzeAndImport:
         assert report.updated == 0
         assert report.skipped == []
         assert report.warnings == []
-        assert await _names(async_session, EventModel) == {"Бал", "Дуэль"}
+        assert await _names(async_session, EventModel) == {"Бал", "Дуэль", "Заговор"}
         assert await _names(async_session, CharacterModel) == {"Иван", "Мария"}
         assert await _names(async_session, LocationModel) == {"Особняк", "Поляна"}
         assert await _names(async_session, OrganizationModel) == {"Городская управа"}
@@ -282,6 +293,14 @@ class TestTemplateAnalyzeAndImport:
         assert ivan.music_url == "https://example.org/tema-ivana.mp3"
         assert ivan.description.characteristics == "Городской кузнец"
         assert ivan.description.backstory.startswith("Учился ремеслу")
+        # BC sample row: both text forms land as one BC era pair of dates,
+        # keys derived (negative BC side, strictly ordered).
+        zagovor = (await async_session.execute(
+            select(EventModel).where(EventModel.name == "Заговор")
+        )).scalars().one()
+        assert zagovor.start_date == date(44, 3, 15) and zagovor.start_bc
+        assert zagovor.end_date == date(43, 3, 1) and zagovor.end_bc
+        assert zagovor.start_key < zagovor.end_key < 0
 
     async def test_event_type_autocreation_is_reported(self, async_session):
         plan = await _svc().analyze_file(TEMPLATE_PATH, async_session)

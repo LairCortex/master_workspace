@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.presentation.utils.date_utils import format_game_date
+from app.presentation.utils.date_utils import era_flag, format_game_date
 
 _TYPE_LABELS = {
     "events": "События",
@@ -155,7 +155,15 @@ class SearchViewModel(QObject):
             for entity in entities:
                 name = getattr(entity, "name", str(entity))
                 start_date = getattr(entity, "start_date", None)
-                date_text = format_game_date(start_date, "") if start_date else ""
+                date_text = (
+                    format_game_date(
+                        start_date,
+                        "",
+                        is_bc=era_flag(getattr(entity, "start_bc", False)),
+                    )
+                    if start_date
+                    else ""
+                )
                 text = f"{name}  [{date_text}]" if date_text else name
                 rows.append(
                     self._row(

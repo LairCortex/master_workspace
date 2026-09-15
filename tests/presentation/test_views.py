@@ -1293,7 +1293,8 @@ class TestWorldSnapshotWidget:
         w.snapshot_requested.connect(lambda d: received.append(d))
         w.vm.requestShow()
         assert len(received) == 1
-        assert received[0] == date(1200, 6, 15)
+        # Task 3.4: the date bridge carries a (date, era) pair.
+        assert received[0] == (date(1200, 6, 15), False)
 
     def test_entity_clicked_signal(self, qtbot):
         loc = _mock_entity(1, "Замок", "location")

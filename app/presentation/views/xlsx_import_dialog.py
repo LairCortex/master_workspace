@@ -107,8 +107,9 @@ def build_format_text() -> str:
     """Full column hint for all five sheets from the schema registry (D1).
 
     Continuity of the old per-type hint texts lives on: the descriptions in
-    the registry carry exactly those wordings («Дата начала (YYYY-MM-DD или
-    дата Excel)», «Ссылка на музыкальную тему», the image-format note).
+    the registry carry exactly those wordings («Ссылка на музыкальную тему»,
+    the image-format note); the date-column wording additionally names the
+    BC forms accepted since add-era-aware-dates.
     """
     lines = [
         "Один файл — все пять листов; импортируются только присутствующие",
@@ -116,8 +117,9 @@ def build_format_text() -> str:
         "первой строке, порядок колонок произвольный, лишние колонки",
         "игнорируются; старые английские заголовки читаются как алиасы.",
         "",
-        f"Даты: нативная ячейка Excel или текст YYYY-MM-DD."
-        f" Связи в ячейке — имена через «{xlsx_schema.LINK_SEPARATOR}».",
+        "Даты: нативная ячейка Excel или текст YYYY-MM-DD — это наша эра;",
+        "до н.э. — текст «5 марта 44 г. до н.э.» или знаковое ISO -0044-03-05.",
+        f"Связи в ячейке — имена через «{xlsx_schema.LINK_SEPARATOR}».",
         "Строки с проблемами пред-анализа пропускаются, остальные импортируются.",
     ]
     for sheet in xlsx_schema.all_sheets():

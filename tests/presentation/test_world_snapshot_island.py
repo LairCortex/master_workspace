@@ -51,6 +51,21 @@ def test_root_contract_and_isolated_context(qtbot):
     assert widget._context.contextProperty("snapshotFacade") is None
 
 
+def test_bc_era_facet_and_the_suffix_reach_the_qml_date_field(qtbot):
+    """Task 4.1: the snapshot viewmodel exposes a ready ``dateBc`` facet and
+    the pre-built display string — the island's field shows the «до н.э.»
+    suffix without computing an era in QML."""
+    widget = WorldSnapshotWidget()
+    qtbot.addWidget(widget)
+    widget.vm.set_date((date(44, 3, 5), True))
+    assert widget.vm.dateBc is True
+    assert widget.vm.dateDisplay.endswith("44 г. до н.э.")
+    field = find_item(widget.quick, "snapshotDateField")
+    assert field.property("display") == widget.vm.dateDisplay
+    assert field.property("display").endswith("44 г. до н.э.")
+    assert field.property("isoDate") == "0044-03-05"
+
+
 def test_actions_keep_public_signal_semantics(qtbot):
     widget = WorldSnapshotWidget()
     widget.resize(760, 420)
@@ -62,7 +77,9 @@ def test_actions_keep_public_signal_semantics(qtbot):
 
     click_item(widget.quick, find_item(widget.quick, "snapshotShowButton"))
     click_item(widget.quick, find_item(widget.quick, "snapshotShowAllButton"))
-    assert emitted == [date(1200, 6, 15), None]
+    # Task 3.4: the snapshot bridge transports a (date, era) pair; «Показать
+    # всё» stays None.
+    assert emitted == [(date(1200, 6, 15), False), None]
 
     widget.populate([_event()], None)
     assert widget.vm.clearEnabled is True
@@ -109,7 +126,7 @@ def test_date_popup_and_deferred_release(qtbot, monkeypatch):
         lambda anchor, current: opened.append((anchor, current)),
     )
     widget.vm.requestDatePopup(3, 4, 120, 30)
-    assert opened and opened[0][1] == widget.vm._date
+    assert opened and opened[0][1] == (widget.vm._date, False)
 
     widget.close()
     QCoreApplication.processEvents()

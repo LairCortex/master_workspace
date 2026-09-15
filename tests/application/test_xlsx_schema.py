@@ -188,17 +188,50 @@ def test_sheet_for_unknown_type_raises():
 
 # ── 1.3 value parsing ─────────────────────────────────────────────────────
 
-def test_parse_date_native_cell():
-    assert schema.parse_cell_date(datetime(2025, 12, 31, 10, 30)) == date(2025, 12, 31)
-    assert schema.parse_cell_date(date(1820, 5, 1)) == date(1820, 5, 1)
+def test_parse_date_native_cell_is_our_era():
+    # add-era-aware-dates D7: native Excel cells keep the «н.э.» era.
+    assert schema.parse_cell_date(datetime(2025, 12, 31, 10, 30)) == (date(2025, 12, 31), False)
+    assert schema.parse_cell_date(date(1820, 5, 1)) == (date(1820, 5, 1), False)
 
 
-def test_parse_date_text_iso():
-    assert schema.parse_cell_date("2025-12-31") == date(2025, 12, 31)
-    assert schema.parse_cell_date(" 2025-12-31 ") == date(2025, 12, 31)
+def test_parse_date_text_iso_is_our_era():
+    # A bare ISO date stays our era exactly as before.
+    assert schema.parse_cell_date("2025-12-31") == (date(2025, 12, 31), False)
+    assert schema.parse_cell_date(" 2025-12-31 ") == (date(2025, 12, 31), False)
+
+
+def test_parse_date_bc_text():
+    # Spec «Дата до нашей эры текстом»: the game wording with the mandatory
+    # «г. до н.э.» suffix; both the genitive scenario spelling and the
+    # nominative display spelling parse to the same (date, True) pair.
+    assert schema.parse_cell_date("5 марта 44 г. до н.э.") == (date(44, 3, 5), True)
+    assert schema.parse_cell_date("05 Март 44 г. до н.э.") == (date(44, 3, 5), True)
+    assert schema.parse_cell_date("  25 декабря 500 г до н э  ") == (date(500, 12, 25), True)
+    # Leap-year mirror: 29 февраля до н.э. exists in the same years as after.
+    assert schema.parse_cell_date("29 февраля 44 г. до н.э.") == (date(44, 2, 29), True)
+
+
+def test_parse_date_bc_signed_iso():
+    # Spec «Дата до нашей эры знаковым ISO»: same result as the text form.
+    assert schema.parse_cell_date("-0044-03-05") == (date(44, 3, 5), True)
+    assert schema.parse_cell_date(" -0500-01-01 ") == (date(500, 1, 1), True)
+    assert schema.parse_cell_date("-9999-12-31") == (date(9999, 12, 31), True)
+
+
+def test_parse_date_bc_forms_invalid_are_none():
+    # Year zero exists in neither era; month/day must be real and stated.
+    assert schema.parse_cell_date("-0000-01-01") is None
+    assert schema.parse_cell_date("-0044-13-01") is None
+    assert schema.parse_cell_date("-0044-02-30") is None
+    assert schema.parse_cell_date("-44-03-05") is None  # не форма -YYYY-MM-DD
+    assert schema.parse_cell_date("44 г. до н.э.") is None  # месяц обязателен
+    assert schema.parse_cell_date("5 флореля 44 г. до н.э.") is None
+    assert schema.parse_cell_date("5 марта 0 г. до н.э.") is None
+    assert schema.parse_cell_date("5 марта 44 г. до н.э. и после") is None
 
 
 def test_parse_date_bad_values_are_none():
+    # Unparsable content yields None — the caller raises it as a row problem.
     assert schema.parse_cell_date("31.12.2025") is None
     assert schema.parse_cell_date("не дата") is None
     assert schema.parse_cell_date("") is None

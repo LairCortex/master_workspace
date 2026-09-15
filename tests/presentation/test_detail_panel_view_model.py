@@ -144,3 +144,24 @@ def test_unknown_entity_requests_are_ignored():
 
     assert activated == []
     assert images == []
+
+
+def test_show_event_prints_bc_dates_with_the_suffix():
+    """Spec «Отображение эры» (add-era-aware-dates): the detail panel is one of
+    the places the event's date shows — every BC bound prints with the
+    «N г. до н.э.» suffix, an open end stays era-free ``∞``."""
+    vm = DetailPanelViewModel()
+    vm.show_event(_event(
+        start_date=date(44, 3, 5), end_date=date(40, 1, 1),
+        start_bc=True, end_bc=True,
+    ))
+
+    assert vm.dateText == "05 Март 44 г. до н.э. — 01 Январь 40 г. до н.э."
+
+
+def test_show_event_bc_start_open_end_keeps_unbounded_mark_era_free():
+    """Spec «Пометка открытого конца не зависит от эры»."""
+    vm = DetailPanelViewModel()
+    vm.show_event(_event(start_date=date(300, 6, 1), end_date=None, start_bc=True))
+
+    assert vm.dateText == "01 Июнь 300 г. до н.э. — ∞"

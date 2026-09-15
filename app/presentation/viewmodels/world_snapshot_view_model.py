@@ -16,7 +16,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
 from app.presentation.theme.rating import rating_to_color
-from app.presentation.utils.date_utils import format_game_date
+from app.presentation.utils.date_utils import era_flag, format_game_date, split_date_era
 from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
 
 
@@ -142,7 +142,10 @@ class WorldSnapshotViewModel(QObject):
         self._empty_text = "Выберите дату и нажмите «Показать»"
         self._stats_text = ""
         self._clear_enabled = False
+        # The snapshot date bridge carries a (date, era) pair (task 3.4);
+        # the default is «сегодня, н.э.» (design D6).
         self._date = date.today()
+        self._date_bc = False
         if theme is not None:
             theme.add_listener(self._on_theme_changed)
 
@@ -153,8 +156,14 @@ class WorldSnapshotViewModel(QObject):
     clearEnabled = Property(bool, lambda self: self._clear_enabled, notify=stateChanged)
     dateIso = Property(str, lambda self: self._date.isoformat(), notify=dateChanged)
     dateDisplay = Property(
-        str, lambda self: format_game_date(self._date), notify=dateChanged
+        str,
+        lambda self: format_game_date(self._date, is_bc=self._date_bc),
+        notify=dateChanged,
     )
+    # Era facet (add-era-aware-dates, task 4.1 / design D6): the display string
+    # above already carries the «N г. до н.э.» suffix — QML mirrors this flag,
+    # it never computes the era itself.
+    dateBc = Property(bool, lambda self: self._date_bc, notify=dateChanged)
 
     def populate(self, events: Sequence[Any], for_date: date | None) -> None:
         events = list(events)
@@ -228,15 +237,22 @@ class WorldSnapshotViewModel(QObject):
             return
         self.set_date(selected)
 
-    def set_date(self, value: date) -> None:
-        if value == self._date:
+    def set_date(self, value: date | tuple[date, bool]) -> None:
+        # Accepts the popup bridge's (date, era) pair; a bare date keeps the
+        # era the snapshot already shows (ISO input from QML carries none).
+        selected, is_bc = split_date_era(value)
+        if selected is None:  # the snapshot needs a concrete date
             return
-        self._date = value
+        era = self._date_bc if is_bc is None else is_bc
+        if selected == self._date and bool(era) == self._date_bc:
+            return
+        self._date = selected
+        self._date_bc = bool(era)
         self.dateChanged.emit()
 
     @Slot()
     def requestShow(self) -> None:  # noqa: N802
-        self.snapshotRequested.emit(self._date)
+        self.snapshotRequested.emit((self._date, self._date_bc))
 
     @Slot()
     def requestShowAll(self) -> None:  # noqa: N802
@@ -307,8 +323,15 @@ class WorldSnapshotViewModel(QObject):
         self._model.replace(rows)
 
     def _event_row(self, event: Any) -> dict[str, Any]:
-        start = format_game_date(getattr(event, "start_date", None))
-        end = format_game_date(getattr(event, "end_date", None), "∞")
+        start = format_game_date(
+            getattr(event, "start_date", None),
+            is_bc=era_flag(getattr(event, "start_bc", False)),
+        )
+        end = format_game_date(
+            getattr(event, "end_date", None),
+            "∞",
+            is_bc=era_flag(getattr(event, "end_bc", False)),
+        )
         name = str(getattr(event, "name", event))
         return {
             "rowKind": "entityRow",
@@ -376,10 +399,13 @@ class WorldSnapshotViewModel(QObject):
 
     @staticmethod
     def _stats(events, entities, for_date) -> str:
+        # ``for_date`` reaches here as the requested payload: a (date, era)
+        # pair from the date bridge or a bare legacy date (== «н.э.»).
+        shown_date, is_bc = split_date_era(for_date)
         prefix = (
             "Показано: все события"
-            if for_date is None
-            else f"Дата: {format_game_date(for_date)}"
+            if shown_date is None
+            else f"Дата: {format_game_date(shown_date, is_bc=bool(is_bc))}"
         )
         return (
             f"{prefix}  |  Событий: {len(events)}  |  "

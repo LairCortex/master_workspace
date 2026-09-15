@@ -336,6 +336,51 @@ class TestPlannedSkips:
         assert plan.lookup_row("event", "Е1").fields["start_date"] == date(1200, 3, 4)
         assert plan.lookup_row("event", "Е2").fields["start_date"] == date(2001, 2, 3)
 
+    async def test_bc_dates_plan_with_era_flags(self, tmp_path):
+        # add-era-aware-dates 5.1/5.2: both text BC forms land as (date, True)
+        # next to their date; native cells keep era «н.э.».
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", ["Имя", "Дата начала", "Дата конца"],
+               [
+                   ["П1", "5 марта 44 г. до н.э.", "-0001-01-01"],
+                   ["П2", "-0044-03-05", None],
+                   ["П3", date(44, 3, 5), None],
+               ])
+        plan = await _svc().analyze_file(_save(tmp_path, wb))
+        assert not plan.skipped_rows
+        p1 = plan.lookup_row("character", "П1").fields
+        assert (p1["start_date"], p1["start_bc"]) == (date(44, 3, 5), True)
+        assert (p1["end_date"], p1["end_bc"]) == (date(1, 1, 1), True)
+        p2 = plan.lookup_row("character", "П2").fields
+        assert (p2["start_date"], p2["start_bc"]) == (date(44, 3, 5), True)
+        assert "end_date" not in p2 and "end_bc" not in p2
+        p3 = plan.lookup_row("character", "П3").fields
+        assert (p3["start_date"], p3["start_bc"]) == (date(44, 3, 5), False)
+
+    async def test_month_less_bc_text_is_a_row_problem(self, tmp_path):
+        # Месяц обязателен (spec «Колонки листа»): «44 г. до н.э.» остаётся
+        # неразбираемым вводом → проблема строки, как и любая битая дата.
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", ["Имя", "Дата начала"], [["П4", "44 г. до н.э."]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb))
+        issue, = plan.skipped_rows
+        assert (issue.sheet, issue.row_number) == ("Персонажи", 2)
+        assert "44 г. до н.э." in issue.reason and "не является датой" in issue.reason
+        assert plan.planned_rows == []
+
+    async def test_bc_end_date_pair_survives_merge(self, tmp_path):
+        # Дата конца до н.э. из ранней строки сохраняется при слиянии, а её
+        # битая поздняя запись ничего не затирает (пары дата+эра атомарны).
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", ["Имя", "Дата начала", "Дата конца"],
+               [["Иван", "-0100-01-01", "-0050-12-31"],
+                ["Иван", "-0099-01-01", "31.12.2025"]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb))
+        assert not plan.skipped_rows
+        merged = plan.lookup_row("character", "Иван").fields
+        assert (merged["start_date"], merged["start_bc"]) == (date(99, 1, 1), True)
+        assert (merged["end_date"], merged["end_bc"]) == (date(50, 12, 31), True)
+
     async def test_rating_out_of_range_skips_row(self, tmp_path):
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS + ["Рейтинг"],
@@ -477,6 +522,24 @@ class TestNameIndex:
         assert ghost.min_start == date(1815, 1, 10)
         assert ghost.max_end == date(1820, 5, 1)
         assert ghost.referenced_by == [("События", 2), ("События", 3)]
+
+    async def test_ghost_bounds_compare_through_the_era_key(self, tmp_path, async_session):
+        # add-era-aware-dates 5.2: min/max считаются ключом эпохи. Наивное
+        # сравнение date-объектов взяло бы 100 г. до н.э. раньше 500 г. до н.э.
+        # и потеряло бы эру конца; через ключ min — 500 г. до н.э.,
+        # max — любой конец н.э.
+        await _seed_db(async_session)
+        wb = _new_workbook()
+        _sheet(wb, "События", ["Имя", "Дата начала", "Дата конца", "Связь предметами"],
+               [
+                   ["Позже в до н.э.", "-0100-01-01", None, "Амулет"],
+                   ["Раньше в до н.э.", "-0500-06-01", "-0499-12-31", "Амулет"],
+                   ["Наша эра", "2026-08-01", None, "Амулет"],
+               ])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        ghost = plan.ghosts[("item", "амулет")]
+        assert (ghost.min_start, ghost.min_start_bc) == (date(500, 6, 1), True)
+        assert (ghost.max_end, ghost.max_end_bc) == (date(2026, 8, 1), False)
 
     async def test_link_lookup_is_type_scoped_against_db(self, tmp_path, async_session):
         _, item = await _seed_db(async_session)  # «Фонарь» is an ITEM in DB

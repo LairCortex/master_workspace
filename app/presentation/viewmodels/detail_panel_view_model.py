@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from app.presentation.theme.rating import rating_to_color
-from app.presentation.utils.date_utils import format_game_date
+from app.presentation.utils.date_utils import era_flag, format_game_date
 from app.presentation.utils.image_utils import resolve_preview_path
 
 
@@ -193,8 +193,15 @@ class DetailPanelViewModel(QObject):
 
     def show_event(self, event: Any) -> None:
         self._title = getattr(event, "name", "")
-        start = format_game_date(getattr(event, "start_date", None))
-        end = format_game_date(getattr(event, "end_date", None), "∞")
+        start = format_game_date(
+            getattr(event, "start_date", None),
+            is_bc=era_flag(getattr(event, "start_bc", False)),
+        )
+        end = format_game_date(
+            getattr(event, "end_date", None),
+            "∞",
+            is_bc=era_flag(getattr(event, "end_bc", False)),
+        )
         self._date_text = f"{start} — {end}"
         self.headerChanged.emit()
         for model, attr, entity_type in zip(

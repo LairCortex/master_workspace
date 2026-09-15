@@ -15,7 +15,6 @@ ladder left to descend.
 """
 from __future__ import annotations
 
-from datetime import date
 from typing import Any, Sequence
 
 from PySide6.QtCore import (
@@ -28,8 +27,14 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from app.presentation.utils.date_utils import get_custom_months
+from app.presentation.utils.date_utils import era_flag, get_custom_months
 from app.presentation.views.timeline_rows import Row, build_rows, row_detail
+
+# The «Выбор даты» window bounds travel as they arrive on the panel channels:
+# a bare ``date`` (== «н.э.») or the ``(date, is_bc)`` pair the range popover
+# applies (add-era-aware-dates, task 4.2). The ViewModel stores them verbatim;
+# every comparison happens in the core :func:`build_rows` through the shared
+# era key — the window is never re-interpreted here.
 
 
 class _RowEntry:
@@ -172,8 +177,10 @@ class TimelineViewModel(QObject):
         self.selected_event: Any | None = None
         # The «Выбор даты» window (design D3) — the panel's single filter and
         # the session's only view state, never persisted; ``None``/a partial
-        # pair means «Все дни».
-        self._window: tuple[date | None, date | None] | None = None
+        # pair means «Все дни». Bounds ride as they arrive: a bare date (==
+        # «н.э.») or a (date, is_bc) pair from the popover (task 4.2); every
+        # comparison on them happens in the core through the shared era key.
+        self._window: tuple | None = None
         # Memo key behind the ``rows`` re-model (the «update_events no-op при
         # том же срезе» fast path): any window or content move invalidates it.
         self._rows_version: tuple | None = None
@@ -208,13 +215,14 @@ class TimelineViewModel(QObject):
     # ── the date window (design D3) ──────────────────────────────────────────
 
     @property
-    def window(self) -> tuple[date | None, date | None] | None:
+    def window(self) -> tuple | None:
         """«Выбор даты» window — the only filter of the list, ``None``/a
-        partial pair = «Все дни»."""
+        partial pair = «Все дни». Bounds are bare dates (== «н.э.») or
+        ``(date, is_bc)`` pairs; the core judges them by the shared era key."""
         return self._window
 
     @window.setter
-    def window(self, value: tuple[date | None, date | None] | None) -> None:
+    def window(self, value: tuple | None) -> None:
         # The window is navigation, not a property predicate: visibility rides
         # on intersection with it (design D1), so the visible sample itself is
         # recomputed — and a selection the new window excludes is pruned.
@@ -228,13 +236,15 @@ class TimelineViewModel(QObject):
     @staticmethod
     def _version_of(
         events: Any,
-        window: tuple[date | None, date | None] | None,
+        window: tuple | None,
     ) -> tuple:
-        """The rebuild key: the ``(id, start, end, name, color, detail)`` set
-        plus the ``window`` and the live game-month map.
+        """The rebuild key: the ``(id, start, start_bc, end, end_bc, name,
+        color, detail)`` set plus the ``window`` and the live game-month map.
 
         The window joins the key so a window change is never swallowed by the
-        identical-sample fast path. A rename or recolor moves the key too:
+        identical-sample fast path. The era flags join it because rows carry
+        era-suffixed captions: an era flip alone must re-model the list even
+        though no date moved. A rename or recolor moves the key too:
         rows carry captions and type-dot tokens, so the list must repaint even
         when no date moved. The description line joins it for the same reason
         — rows carry the bounded description text, so editing it alone must
@@ -247,6 +257,8 @@ class TimelineViewModel(QObject):
             tuple(
                 (
                     e.id, e.start_date, e.end_date, e.name,
+                    era_flag(getattr(e, "start_bc", False)),
+                    era_flag(getattr(e, "end_bc", False)),
                     getattr(getattr(e, "event_type", None), "color_index", None),
                     row_detail(e),
                 )

@@ -91,7 +91,8 @@ class WorldSnapshotWidget(QWidget):
             top_left,
             QSize(max(int(width), 0), max(int(height), 0)),
         )
-        self.date_popup.open_at(anchor, self.vm._date)
+        # The popup bridge is a (date, era) pair (task 3.4).
+        self.date_popup.open_at(anchor, (self.vm._date, self.vm._date_bc))
 
     def _on_clear(self) -> None:
         self.vm.clear()

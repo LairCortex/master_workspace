@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services import xlsx_schema as schema
 from app.application.services.event_service import COLOR_INDEX_MAX, COLOR_INDEX_MIN
+from app.domain.date_era import era_key
 from app.infrastructure.db.models import (
     CharacterModel,
     DescriptionModel,
@@ -133,13 +134,18 @@ class PlannedRow:
 @dataclass
 class PlannedGhost:
     """Auto-created link target (design D5): dates are the min start /
-    max end of the referring rows; materialized by the apply pass."""
+    max end of the referring rows in the shared chronological order (design
+    D2 era keys, add-era-aware-dates task 5.2 — a BC date always precedes any
+    our-era one regardless of its raw ``date`` value); materialized by the
+    apply pass with the matching eras."""
 
     entity_type: str
     key: tuple[str, str]
     name: str  # original case of the first referring cell
     min_start: date
     max_end: date
+    min_start_bc: bool = False  # era of min_start (add-era-aware-dates, D7)
+    max_end_bc: bool = False  # era of max_end
     referenced_by: list[tuple[str, int]] = field(default_factory=list)  # (sheet, row)
 
 
@@ -182,6 +188,11 @@ def _empty_cell(value: object) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
+def _era_text(d: date, is_bc: bool) -> str:
+    """ISO date annotated with the era marker for BC («… до н.э.»)."""
+    return f"{d.isoformat()} до н.э." if is_bc else d.isoformat()
+
+
 def _row_to_draft(
     spec: schema.SheetSpec,
     sheet_title: str,
@@ -197,7 +208,13 @@ def _row_to_draft(
         if col.key in ("start_date", "end_date"):
             parsed = schema.parse_cell_date(value)
             if parsed is not None:
-                fields[col.key] = parsed
+                moment, is_bc = parsed
+                fields[col.key] = moment
+                # The era travels next to its date under the ORM field names
+                # (start_bc/end_bc — same kwargs the entity services take):
+                # the merge keeps the pair atomic, later non-empty wins both.
+                era_key_field = "start_bc" if col.key == "start_date" else "end_bc"
+                fields[era_key_field] = is_bc
             elif col.key == "start_date":
                 shown = "пусто" if _empty_cell(value) else f"значение «{value}» не является датой"
                 return None, RowIssue(sheet_title, row_number, f"дата начала: {shown}")
@@ -341,9 +358,15 @@ async def _build_name_index(plan: ImportPlan, session: AsyncSession) -> None:
 
 def _grow_ghost(plan: ImportPlan, ref: PlannedLink, row: PlannedRow) -> None:
     """Expand the ghost buffer with one reference (design D5: min start /
-    max end of the referring rows; a missing end date counts as its start)."""
+    max end of the referring rows; a missing end date counts as its start).
+    Bounds compare through the shared era key (design D2/D7): raw ``date``
+    objects would order BC years backwards and mix the eras wrongly."""
     start = row.fields["start_date"]
+    start_bc = bool(row.fields.get("start_bc"))
     end = row.fields.get("end_date") or start
+    end_bc = bool(row.fields.get("end_bc")) if row.fields.get("end_date") else start_bc
+    start_key = era_key(start, start_bc)
+    end_key = era_key(end, end_bc)
     ghost = plan.ghosts.get(ref.target_key)
     if ghost is None:
         plan.ghosts[ref.target_key] = PlannedGhost(
@@ -352,11 +375,15 @@ def _grow_ghost(plan: ImportPlan, ref: PlannedLink, row: PlannedRow) -> None:
             name=ref.name,  # first reference keeps its case
             min_start=start,
             max_end=end,
+            min_start_bc=start_bc,
+            max_end_bc=end_bc,
             referenced_by=[(row.sheet, ref.source_row_number)],
         )
         return
-    ghost.min_start = min(ghost.min_start, start)
-    ghost.max_end = max(ghost.max_end, end)
+    if start_key < era_key(ghost.min_start, ghost.min_start_bc):
+        ghost.min_start, ghost.min_start_bc = start, start_bc
+    if end_key > era_key(ghost.max_end, ghost.max_end_bc):
+        ghost.max_end, ghost.max_end_bc = end, end_bc
     source = (row.sheet, ref.source_row_number)
     if source not in ghost.referenced_by:
         ghost.referenced_by.append(source)
@@ -677,7 +704,9 @@ class XlsxImportService:
             obj = model(
                 name=ghost.name,
                 start_date=ghost.min_start,
+                start_bc=ghost.min_start_bc,
                 end_date=ghost.max_end,
+                end_bc=ghost.max_end_bc,
                 description=DescriptionModel(characteristics="", backstory=""),
             )
             session.add(obj)
@@ -689,7 +718,9 @@ class XlsxImportService:
             report.decisions.append(
                 f"Автосоздание: цель связи «{ghost.name}» не найдена ни в файле, ни в базе — "
                 f"создана как сущность листа «{sheet_name}» с датами "
-                f"{ghost.min_start}—{ghost.max_end} по ссылающимся строкам: {refs}"
+                f"{_era_text(ghost.min_start, ghost.min_start_bc)}—"
+                f"{_era_text(ghost.max_end, ghost.max_end_bc)} "
+                f"по ссылающимся строкам: {refs}"
             )
             tick()
         return instances, replaced_images

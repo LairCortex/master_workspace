@@ -155,3 +155,25 @@ async def test_only_result_rows_select_and_selection_hides_list():
     vm.select(1)
     assert selected == [("event", 42)]
     assert vm.listVisible is False
+
+
+async def test_result_date_carries_the_bc_era_suffix():
+    """Spec «Отображение эры» (add-era-aware-dates): search is one of the places
+    an entity's date is shown, so a BC start_date prints with the suffix."""
+    event = SimpleNamespace(
+        id=42, name="Battle", start_date=date(44, 3, 5), start_bc=True
+    )
+    vm, _ = _vm({
+        "events": [event],
+        "organizations": [],
+        "characters": [],
+        "items": [],
+        "locations": [],
+    })
+    vm.setQuery("Ba")
+
+    await vm.search("Ba")
+
+    result_row = next(row for row in vm.rows if row["kind"] == "result")
+    assert result_row["text"] == "Battle  [05 Март 44 г. до н.э.]"
+    assert result_row["dateText"] == "05 Март 44 г. до н.э."

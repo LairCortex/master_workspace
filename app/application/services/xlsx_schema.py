@@ -13,6 +13,7 @@ consumers share identical edge-case behavior.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, Iterator
@@ -100,11 +101,12 @@ COL_NAME = ColumnSpec(
 )
 COL_START_DATE = ColumnSpec(
     key="start_date", label="Дата начала", aliases=("start_date",), required=True,
-    description="Дата начала (YYYY-MM-DD или дата Excel)",
+    description="Начало: YYYY-MM-DD, дата Excel (наша эра), «5 марта 44 г. до н.э.» "
+                "или -0044-03-05",
 )
 COL_END_DATE = ColumnSpec(
     key="end_date", label="Дата конца", aliases=("end_date",),
-    description="Дата конца",
+    description="Конец: форматы те же, что у даты начала",
 )
 COL_CHARACTERISTICS = ColumnSpec(
     key="characteristics", label="Характеристики", aliases=("characteristics",),
@@ -322,26 +324,88 @@ def link_table(source_type: str, target_type: str) -> str:
 
 # ── Value parsing (shared edge-case semantics) ────────────────────────────
 
-def parse_cell_date(value: object) -> date | None:
-    """Native Excel date/datetime cell or text ``YYYY-MM-DD``; else None.
+def parse_cell_date(value: object) -> tuple[date, bool] | None:
+    """Native Excel cell or text date → ``(date, is_bc)``; else None.
 
-    Empty cells, blanks and unparsable text (e.g. "31.12.2025") all yield
-    None — callers treat None start_date as a row problem (spec "Битая дата
-    начала").
+    Era vocabulary of add-era-aware-dates (design D7): native Excel cells and
+    bare ISO ``YYYY-MM-DD`` are our era exactly as before; the added BC text
+    forms are the game-style «N г. до н.э.» with a mandatory month
+    («5 марта 44 г. до н.э.») and the signed ISO ``-YYYY-MM-DD`` with years
+    1…9999 (no year zero). Empty cells, blanks and unparsable text (e.g.
+    "31.12.2025" or a month-less "44 г. до н.э.") all yield None — callers
+    treat None start_date as a row problem (spec "Битая дата начала").
     """
     if isinstance(value, datetime):
-        return value.date()
+        return value.date(), False
     if isinstance(value, date):
-        return value
+        return value, False
     if isinstance(value, str):
         text = value.strip()
         if not text:
             return None
+        if text.startswith("-"):
+            return _parse_bc_iso(text)
         try:
-            return date.fromisoformat(text)
+            return date.fromisoformat(text), False
         except ValueError:
-            return None
+            pass
+        return _parse_bc_text(text)
     return None
+
+
+# «N г. до н.э.» — the Russian/game game-display wording with the mandatory
+# era suffix; month and day are required (spec: «месяц при этом обязателен»).
+# Both the genitive scenario spelling («5 марта …») and the nominative form
+# the display prints («05 Март …») are accepted, as well as the optional
+# punctuation dots of the era suffix.
+_BC_TEXT_RE = re.compile(
+    r"^(?P<day>\d{1,2})\s+(?P<month>[a-zа-яё]+)\s+(?P<year>\d{1,4})\s*"
+    r"г\.?\s*до\s*н\.?\s*э\.?$",
+    re.IGNORECASE,
+)
+
+# Signed ISO form of the BC era: -YYYY-MM-DD, years 1…9999.
+_BC_ISO_RE = re.compile(r"^-(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})$")
+
+# Default Russian month names in nominative + genitive (mirrors the game
+# display vocabulary; custom per-game month names are out of parse scope).
+_BC_MONTHS: dict[str, int] = {
+    name: number
+    for number, forms in (
+        (1, ("январь", "января")), (2, ("февраль", "февраля")),
+        (3, ("март", "марта")), (4, ("апрель", "апреля")),
+        (5, ("май", "мая")), (6, ("июнь", "июня")),
+        (7, ("июль", "июля")), (8, ("август", "августа")),
+        (9, ("сентябрь", "сентября")), (10, ("октябрь", "октября")),
+        (11, ("ноябрь", "ноября")), (12, ("декабрь", "декабря")),
+    )
+    for name in forms
+}
+
+
+def _parse_bc_iso(text: str) -> tuple[date, bool] | None:
+    match = _BC_ISO_RE.match(text)
+    if match is None:
+        return None
+    year, month, day = (int(match.group(name)) for name in ("year", "month", "day"))
+    try:
+        # date() enforces the shared 1…9999 year bounds of both eras.
+        return date(year, month, day), True
+    except ValueError:
+        return None  # year 0 / impossible month-day
+
+
+def _parse_bc_text(text: str) -> tuple[date, bool] | None:
+    match = _BC_TEXT_RE.match(text)
+    if match is None:
+        return None
+    month = _BC_MONTHS.get(match.group("month").lower())
+    if month is None:
+        return None  # month must be given in the Russian/game wording
+    try:
+        return date(int(match.group("year")), month, int(match.group("day"))), True
+    except ValueError:
+        return None
 
 
 def parse_cell_rating(value: object) -> int | None:

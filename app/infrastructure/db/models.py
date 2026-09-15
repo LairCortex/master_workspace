@@ -4,11 +4,40 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, String, Table, Text, UniqueConstraint
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from app.domain.date_era import era_key
 
 
 class Base(DeclarativeBase):
     pass
+
+
+# ── Era-aware date columns (add-era-aware-dates, design D3) ───────────────
+# Every dated table carries the era flags (INTEGER 0/1, DEFAULT 0 so
+# pre-era rows and old-version INSERTs mean «н.э.») plus nullable derived
+# keys. Keys stay NULLable on purpose: an old app version INSERTs without
+# them (compatibility requirement), and ``init_db()`` backfills them on the
+# next open (design D4). The hooks below keep keys in sync on every write
+# the new version itself performs.
+
+def _sync_era_keys(mapper, connection, target) -> None:
+    """Derive start_key/end_key from the stored (date, era) pairs (design D2).
+
+    Runs in before_insert/before_update for the six dated tables, so every
+    new-version write lands with keys equal to the app-side ``era_key`` (and
+    to the SQL backfill of design D4). An era flag not yet set on a new
+    instance reads as «н.э.» — exactly how ``DEFAULT 0`` reads pre-era and
+    old-version rows; repositories load full rows before mutating, so the
+    date/era attributes are always present on update.
+    """
+    if target.start_date is not None:
+        target.start_key = era_key(target.start_date, bool(target.start_bc))
+    if target.end_date is not None:
+        target.end_key = era_key(target.end_date, bool(target.end_bc))
+    else:
+        target.end_key = None
 
 
 # ── Association tables (M2M) ──────────────────────────────────────────────
@@ -144,6 +173,12 @@ class EventModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Era flags (0 = н.э.) + derived chronological keys (design D3); the keys
+    # are re-synced by the _sync_era_keys hooks below on every new-version write.
+    start_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    end_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    start_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    end_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     # Optional type (W4); deleting a type unlinks events (SET NULL).
     event_type_id: Mapped[int | None] = mapped_column(
         ForeignKey("event_types.id", ondelete="SET NULL"), nullable=True, default=None,
@@ -173,6 +208,12 @@ class OrganizationModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Era flags (0 = н.э.) + derived chronological keys (design D3); the keys
+    # are re-synced by the _sync_era_keys hooks below on every new-version write.
+    start_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    end_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    start_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    end_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     music_url: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)  # legacy base64; NULL after migration
@@ -207,6 +248,12 @@ class CharacterModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Era flags (0 = н.э.) + derived chronological keys (design D3); the keys
+    # are re-synced by the _sync_era_keys hooks below on every new-version write.
+    start_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    end_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    start_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    end_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     personality: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)  # legacy base64; NULL after migration
@@ -243,6 +290,12 @@ class ItemModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Era flags (0 = н.э.) + derived chronological keys (design D3); the keys
+    # are re-synced by the _sync_era_keys hooks below on every new-version write.
+    start_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    end_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    start_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    end_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     music_url: Mapped[str | None] = mapped_column(Text, default=None)
 
@@ -272,6 +325,12 @@ class LocationModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Era flags (0 = н.э.) + derived chronological keys (design D3); the keys
+    # are re-synced by the _sync_era_keys hooks below on every new-version write.
+    start_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    end_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    start_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    end_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     tasks: Mapped[str | None] = mapped_column(Text, default=None)
     image: Mapped[str | None] = mapped_column(Text, default=None)  # legacy base64; NULL after migration
     image_id: Mapped[int | None] = mapped_column(
@@ -313,6 +372,12 @@ class RatingModel(Base):
     description_id: Mapped[int | None] = mapped_column(ForeignKey("descriptions.id"))
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Era flags (0 = н.э.) + derived chronological keys (design D3); the keys
+    # are re-synced by the _sync_era_keys hooks below on every new-version write.
+    start_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    end_bc: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    start_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    end_key: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     level: Mapped[int] = mapped_column(Integer, nullable=False)
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
@@ -371,3 +436,20 @@ class CharacterSheetInstanceModel(Base):
     values: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+# ── Era-key sync hooks (design D2/D3) ─────────────────────────────────────
+# Keep the derived chronological keys of every new-version write consistent
+# with its (date, era) pair: inserts and date/era edits land with correct
+# keys, so ORDER BY/FILTER on start_key/end_key never depends on the
+# startup backfill having seen the row yet.
+for _dated_model in (
+    EventModel,
+    OrganizationModel,
+    CharacterModel,
+    ItemModel,
+    LocationModel,
+    RatingModel,
+):
+    sqlalchemy_event.listen(_dated_model, "before_insert", _sync_era_keys)
+    sqlalchemy_event.listen(_dated_model, "before_update", _sync_era_keys)

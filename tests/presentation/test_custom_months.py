@@ -38,6 +38,28 @@ class TestFormatGameDate:
         assert format_game_date(None) == "?"
         assert format_game_date(None, "∞") == "∞"
 
+    # ── add-era-aware-dates 3.1: the «до н.э.» year suffix ─────────────────
+
+    def test_bc_year_gets_the_suffix(self):
+        assert format_game_date(date(44, 3, 5), is_bc=True) == "05 Март 44 г. до н.э."
+
+    def test_bc_format_uses_custom_months_too(self):
+        set_custom_months({3: "Молнеград"})
+        assert format_game_date(date(500, 3, 9), is_bc=True) == "09 Молнеград 500 г. до н.э."
+
+    def test_our_era_format_is_unchanged(self):
+        assert format_game_date(date(2026, 3, 15), is_bc=False) == "15 Март 2026"
+
+    def test_empty_era_reads_as_our_era(self):
+        # Даты без заданной эры (пустой признак) — прежний формат, без суффикса.
+        assert format_game_date(date(2026, 3, 15), is_bc=None) == "15 Март 2026"
+        assert format_game_date(date(2026, 3, 15)) == "15 Март 2026"
+
+    def test_fallback_carries_no_era(self):
+        # Пометка открытого конца «∞» не зависит от эры.
+        assert format_game_date(None, "∞", is_bc=True) == "∞"
+        assert format_game_date(None, "∞", is_bc=False) == "∞"
+
     def test_month_name_default(self):
         set_custom_months(None)
         assert month_name(1) == "Январь"

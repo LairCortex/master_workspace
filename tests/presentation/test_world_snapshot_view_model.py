@@ -97,6 +97,32 @@ def test_populate_builds_render_ready_flat_rows_and_stats(qapp):
     assert vm.emptyText == ""
 
 
+def test_populate_prints_bc_event_dates_with_the_suffix(qapp):
+    """Spec «Отображение эры» (add-era-aware-dates): the snapshot event row is
+    another live display of the event date — BC bounds print the suffix, the
+    open end stays ``∞`` regardless of era."""
+    vm = WorldSnapshotViewModel()
+    closed = _event(event_id=1)
+    closed.start_date = date(44, 3, 5)
+    closed.end_date = date(40, 1, 1)
+    closed.start_bc = True
+    closed.end_bc = True
+    open_bc = _event(event_id=2)
+    open_bc.start_date = date(300, 6, 1)
+    open_bc.end_date = None
+    open_bc.start_bc = True
+    vm.populate([closed, open_bc], None)
+    vm.toggleSection("events")
+
+    event_rows = [
+        row for row in _rows(vm)
+        if row["rowKind"] == "entityRow" and row["type"] == "event"
+    ]
+    display = {row["id"]: row["displayText"] for row in event_rows}
+    assert display[1] == "05 Март 44 г. до н.э. — 01 Январь 40 г. до н.э.  |  Событие"
+    assert display[2] == "01 Июнь 300 г. до н.э. — ∞  |  Событие"
+
+
 def test_sections_keep_expansion_across_populate(qapp):
     vm = WorldSnapshotViewModel()
     event = _event(locations=[_entity(1, "Лес")])

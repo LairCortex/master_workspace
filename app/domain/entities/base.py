@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+from app.domain.date_era import cmp_era_dates
 from app.domain.entities.description import Description
 from app.domain.entities.rating import Rating
 
@@ -13,6 +14,8 @@ def _validate_base(
     description: Description | None,
     start_date: date | None,
     end_date: date | None,
+    start_bc: bool = False,
+    end_bc: bool = False,
 ) -> None:
     if not name:
         raise ValueError("name is required")
@@ -20,7 +23,9 @@ def _validate_base(
         raise ValueError("description is required")
     if start_date is None:
         raise ValueError("start_date is required")
-    if end_date is not None and end_date < start_date:
+    if end_date is not None and cmp_era_dates(
+        (end_date, end_bc), (start_date, start_bc)
+    ) < 0:
         raise ValueError("end_date must not be before start_date")
 
 
@@ -33,6 +38,15 @@ class BaseEntity:
     id: int | None = None
     music_url: str | None = None
     ratings: list[Rating] = field(default_factory=list)
+    start_bc: bool = False
+    end_bc: bool = False
 
     def __post_init__(self) -> None:
-        _validate_base(self.name, self.description, self.start_date, self.end_date)
+        _validate_base(
+            self.name,
+            self.description,
+            self.start_date,
+            self.end_date,
+            self.start_bc,
+            self.end_bc,
+        )

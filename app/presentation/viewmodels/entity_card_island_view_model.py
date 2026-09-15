@@ -40,8 +40,12 @@ class EntityCardIslandViewModel(QObject):
         self._related_configs = list(related_configs)
         self._name = ""
         self._rating = 1
+        # Date bridges carry (date, era) pairs (task 3.4); the default is
+        # «сегодня, н.э.» (design D6).
         self._start_date = date.today()
         self._end_date = date.today()
+        self._start_bc = False
+        self._end_bc = False
         self._no_end = False
         self._music_url = ""
         self._music_editing = True
@@ -107,11 +111,20 @@ class EntityCardIslandViewModel(QObject):
     startIso = Property(str, lambda self: self._start_date.isoformat(), notify=stateChanged)
     endIso = Property(str, lambda self: self._end_date.isoformat(), notify=stateChanged)
     startDisplay = Property(
-        str, lambda self: format_game_date(self._start_date), notify=stateChanged
+        str,
+        lambda self: format_game_date(self._start_date, is_bc=self._start_bc),
+        notify=stateChanged,
     )
     endDisplay = Property(
-        str, lambda self: format_game_date(self._end_date), notify=stateChanged
+        str,
+        lambda self: format_game_date(self._end_date, is_bc=self._end_bc),
+        notify=stateChanged,
     )
+    # Era facets (add-era-aware-dates, task 4.1 / design D6): the display
+    # strings already carry the «N г. до н.э.» suffix — QML mirrors these flags,
+    # it never computes the era itself.
+    startBc = Property(bool, lambda self: self._start_bc, notify=stateChanged)
+    endBc = Property(bool, lambda self: self._end_bc, notify=stateChanged)
     noEnd = Property(bool, lambda self: self._no_end, notify=stateChanged)
     musicUrl = Property(str, lambda self: self._music_url, notify=stateChanged)
     musicEditing = Property(bool, lambda self: self._music_editing, notify=stateChanged)
@@ -198,11 +211,21 @@ class EntityCardIslandViewModel(QObject):
             self._rating = value
             self.stateChanged.emit()
 
-    def set_dates(self, start: date | None = None, end: date | None = None) -> None:
+    def set_dates(
+        self,
+        start: date | None = None,
+        end: date | None = None,
+        start_bc: bool | None = None,
+        end_bc: bool | None = None,
+    ) -> None:
         if start is not None:
             self._start_date = start
         if end is not None:
             self._end_date = end
+        if start_bc is not None:
+            self._start_bc = bool(start_bc)
+        if end_bc is not None:
+            self._end_bc = bool(end_bc)
         self.stateChanged.emit()
 
     def set_no_end(self, value: bool) -> None:

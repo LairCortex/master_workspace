@@ -54,8 +54,11 @@ class TestHintFromRegistry:
             assert f"Лист «{sheet.sheet_name}»" in hint
             for column in xlsx_schema.all_headers(sheet):
                 assert column.label in hint
-        # Continuity of the old hint wording for the shared columns.
-        assert "Дата начала (YYYY-MM-DD или дата Excel)" in hint
+        # Continuity of the old hint wording for the shared columns; the
+        # date wording additionally names the BC forms (era-aware dates).
+        assert "Дата начала" in hint and "дата Excel" in hint
+        assert "5 марта 44 г. до н.э." in hint
+        assert "-0044-03-05" in hint
         assert "Ссылка на музыкальную тему" in hint
         assert "PNG, JPG, BMP, GIF, WebP" in hint
 

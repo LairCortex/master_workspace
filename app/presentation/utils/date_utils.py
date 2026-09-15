@@ -37,11 +37,44 @@ def month_name(month: int) -> str:
     return _current_months.get(month, str(month))
 
 
-def format_game_date(d: date | None, fallback: str = "?") -> str:
-    """Format a date using custom month names: 'dd MonthName yyyy'."""
+def format_game_date(
+    d: date | None, fallback: str = "?", is_bc: bool | None = False
+) -> str:
+    """Format a date using custom month names: 'dd MonthName yyyy'.
+
+    A date of the BC era (add-era-aware-dates, design D6) prints its year as
+    'dd MonthName yyyy г. до н.э.'; our-era dates keep the previous format.
+    An empty era (``None``) reads as «н.э.» — the open-end mark ``fallback``
+    never carries an era either way.
+    """
     if d is None:
         return fallback
-    return f"{d.day:02d} {month_name(d.month)} {d.year}"
+    era = " г. до н.э." if is_bc else ""
+    return f"{d.day:02d} {month_name(d.month)} {d.year}{era}"
+
+
+def split_date_era(value: date | tuple[date, bool] | None) -> tuple[date | None, bool | None]:
+    """Coerce a date-or-(date, era) value into a ``(date | None, era)`` pair.
+
+    The bridges between popups and dialogs pass (date, is_bc) tuples, while a
+    bare ``date`` stays a legal legacy input: it comes back with era ``None``
+    («era not stated — keep whatever the receiver holds»). ``None`` is
+    «no date» and reads as our era.
+    """
+    if value is None:
+        return None, False
+    if isinstance(value, tuple) and len(value) == 2:
+        return value[0], bool(value[1])
+    return value, None
+
+
+def era_flag(value: object) -> bool:
+    """Read an era flag stored on a row/dataclass (int 0/1 or bool).
+
+    Anything that is not an int/bool (e.g. an attribute-less stand-in) is
+    «н.э.» — the same default as the ``DEFAULT 0`` column of design D3.
+    """
+    return bool(value) if isinstance(value, (bool, int)) else False
 
 
 # ── Serialization for DB storage ──────────────────────────────────────────

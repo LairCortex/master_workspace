@@ -65,6 +65,25 @@ def test_root_has_deterministic_base_controls_and_no_type_branch():
     )
 
 
+def test_bc_era_facets_and_the_suffix_reach_the_qml_date_fields(qtbot):
+    """Task 4.1: the card exposes ready ``startBc``/``endBc`` facets and
+    pre-built display strings; the island's date fields paint the «до н.э.»
+    suffix straight from Python without deriving an era in QML."""
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    dialog.vm.set_dates(
+        start=date(44, 3, 5), end=date(44, 1, 1), start_bc=True, end_bc=True
+    )
+    assert dialog.vm.startBc is True
+    assert dialog.vm.endBc is True
+    assert dialog.vm.startDisplay.endswith("44 г. до н.э.")
+    start_field = find_item(dialog.quick, "entityStartDateField")
+    end_field = find_item(dialog.quick, "entityEndDateField")
+    assert start_field.property("display") == dialog.vm.startDisplay
+    assert start_field.property("display").endswith("44 г. до н.э.")
+    assert end_field.property("display").endswith("44 г. до н.э.")
+
+
 def test_stable_proxy_order_and_roundtrip_for_character(qtbot):
     dialog = EntityCardDialog(None, "character")
     qtbot.addWidget(dialog)
@@ -315,7 +334,8 @@ def test_save_guard_saving_close_and_date_routes(qtbot, monkeypatch):
         lambda anchor, current: opened.append((anchor, current)),
     )
     dialog._open_date_popup("end", 1, 2, 30, 40)
-    assert opened[-1][1] == dialog.vm._end_date
+    # The popup bridge is a (date, era) pair now (task 3.4).
+    assert opened[-1][1] == (dialog.vm._end_date, dialog.vm._end_bc)
     dialog._date_target = "start"
     dialog._set_selected_date(date(1300, 1, 1))
     dialog._date_target = "end"

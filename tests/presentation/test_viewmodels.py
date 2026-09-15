@@ -365,6 +365,63 @@ class TestTimelineViewModel:
         assert [e.id for e in vm.events] == [e1.id]
 
     @pytest.mark.asyncio
+    async def test_mixed_era_sample_orders_rows_by_chronological_moment(self):
+        """add-era-aware-dates 4.2: the VM projects rows through the shared era
+        key — 500 г. до н.э. precedes 1 г. н.э. and 2026, ties break by id."""
+        bc_early = _span(1, "Эллины", date(500, 1, 1), None)
+        bc_early.start_bc = True
+        bc_late = _span(2, "Римляне", date(1, 12, 31), None)
+        bc_late.start_bc = True
+        ce = _span(3, "Наши дни", date(2026, 1, 1), None)
+        same_moment_a = _span(5, "Дубль b", date(1, 12, 31), None)
+        same_moment_a.start_bc = True
+        service, vm = self._vm_with(ce, bc_late, bc_early, same_moment_a)
+
+        await vm.load_events()
+
+        assert [r.event_id for r in vm.rows] == [1, 2, 5, 3]
+
+    @pytest.mark.asyncio
+    async def test_window_across_the_era_border_cuts_both_eras(self):
+        """Spec «Границы окна через эпохи»: a (500 г. до н.э. … 100 г. н.э.)
+        window keeps the events of both eras inside it and drops the rest;
+        the pairs ride the ``window`` knob whole (the 4.2 channel)."""
+        inside_bc = _span(1, "Эллины", date(400, 1, 1), date(300, 1, 1))
+        inside_bc.start_bc = True
+        inside_bc.end_bc = True
+        crossing = _span(2, "Через границу", date(2, 1, 1), date(50, 1, 1))
+        outside_old = _span(3, "Слишком рано", date(700, 1, 1), date(600, 1, 1))
+        outside_old.start_bc = True
+        outside_old.end_bc = True
+        outside_new = _span(4, "Слишком поздно", date(150, 1, 1), None)
+        service, vm = self._vm_with(inside_bc, crossing, outside_old, outside_new)
+
+        await vm.load_events()
+        vm.window = ((date(500, 1, 1), True), (date(100, 12, 31), False))
+
+        assert vm.window == ((date(500, 1, 1), True), (date(100, 12, 31), False))
+        assert [e.id for e in vm.events] == [1, 2]
+        assert [r.event_id for r in vm.rows] == [1, 2]
+        assert vm.rows[0].caption.startswith("01 Январь 400 г. до н.э.")
+
+    @pytest.mark.asyncio
+    async def test_era_flip_alone_rebuilds_rows(self):
+        """The era flags join the rebuild memo: moving an event across the era
+        border without touching any date repaints the list."""
+        event = _span(1, "Храм", date(1, 1, 1), None)
+        service, vm = self._vm_with(event)
+        await vm.load_events()
+        rows_before = vm.rows
+        assert rows_before[0].caption == "01 Январь 1 — ∞ · Храм"
+
+        event.start_bc = True  # the same numbers, another era
+        await vm.load_events()
+
+        assert vm.rows is not rows_before
+        assert rows_before[0].start == vm.rows[0].start  # the date did not move
+        assert vm.rows[0].caption == "01 Январь 1 г. до н.э. — ∞ · Храм"
+
+    @pytest.mark.asyncio
     async def test_description_edit_rebuilds_rows(self):
         """Rows carry the description line, so editing ONLY the description must
         re-model the list: no date, name or type moved, yet the second line the
@@ -637,6 +694,19 @@ class TestEventDialogViewModel:
         vm.start_date = date(1200, 12, 31)
         vm.end_date = date(1200, 1, 1)
         assert vm.is_valid is False
+
+    def test_is_valid_equal_dates(self):
+        # The end-before-start check moved to cmp_era_dates (add-era-aware-dates):
+        # the boundary must keep the old `<` semantics — equal dates are a valid
+        # one-day range, the helper rejects only strictly-earlier ends.
+        service = AsyncMock()
+        vm = EventDialogViewModel(service)
+        vm.name = "Battle"
+        vm.characteristics = "Big"
+        vm.backstory = "Old"
+        vm.start_date = date(1200, 6, 1)
+        vm.end_date = date(1200, 6, 1)
+        assert vm.is_valid is True
 
 
 # ── EntityViewModel ──────────────────────────────────────────────────────

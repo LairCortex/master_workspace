@@ -4,6 +4,7 @@ from datetime import date
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.date_era import era_key
 from app.infrastructure.db.models import (
     DescriptionModel,
     EventModel,
@@ -274,6 +275,99 @@ class TestRatingModel:
 
         result = await async_session.get(RatingModel, rating.id)
         assert result.level == 5
+
+
+# --- Era-aware date columns (add-era-aware-dates, task 2.1) ---
+
+# (model, extra kwargs making it constructible) for every dated table.
+_DATED_MODELS = [
+    (EventModel, {"name": "E"}),
+    (OrganizationModel, {"name": "O"}),
+    (CharacterModel, {"name": "C"}),
+    (ItemModel, {"name": "I"}),
+    (LocationModel, {"name": "L"}),
+    (RatingModel, {"level": 3}),
+]
+
+
+class TestEraDateColumns:
+    """Round-trip save fills era flags and derived keys on all six tables."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model,extra", _DATED_MODELS)
+    async def test_bc_dates_round_trip_with_keys(
+        self, async_session: AsyncSession, model, extra
+    ):
+        desc = DescriptionModel(characteristics="c", backstory="b")
+        async_session.add(desc)
+        await async_session.flush()
+
+        obj = model(
+            description_id=desc.id,
+            start_date=date(44, 3, 5),
+            start_bc=1,
+            end_date=date(45, 4, 10),  # BC 45-й — раньше 44-го (зеркальный ход)
+            end_bc=1,
+            **extra,
+        )
+        async_session.add(obj)
+        await async_session.commit()
+
+        result = await async_session.get(model, obj.id)
+        assert result.start_bc == 1
+        assert result.end_bc == 1
+        assert result.start_date == date(44, 3, 5)
+        assert result.end_date == date(45, 4, 10)
+        # Ключи = общий помощник D2, а не ординалы дат
+        assert result.start_key == era_key(date(44, 3, 5), True)
+        assert result.end_key == era_key(date(45, 4, 10), True)
+        # BC-ключи строго negative: любая дата до н.э. раньше любой н.э.
+        assert result.start_key < 0 and result.end_key < 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model,extra", _DATED_MODELS)
+    async def test_ce_defaults_round_trip_with_keys(
+        self, async_session: AsyncSession, model, extra
+    ):
+        desc = DescriptionModel(characteristics="c", backstory="b")
+        async_session.add(desc)
+        await async_session.flush()
+
+        obj = model(
+            description_id=desc.id,
+            start_date=date(1200, 1, 1),
+            **extra,
+        )
+        async_session.add(obj)
+        await async_session.commit()
+
+        result = await async_session.get(model, obj.id)
+        # Эра по умолчанию — н.э.; ключ = ординал; открытый конец → без ключа
+        assert result.start_bc == 0
+        assert result.end_bc == 0
+        assert result.start_key == era_key(date(1200, 1, 1), False)
+        assert result.end_key is None
+
+    @pytest.mark.asyncio
+    async def test_date_update_resyncs_keys(self, async_session: AsyncSession):
+        # Переезд даты через эру должен переписать и ключ (D2 на записи).
+        desc = DescriptionModel(characteristics="c", backstory="b")
+        async_session.add(desc)
+        await async_session.flush()
+
+        event = EventModel(
+            name="E", description_id=desc.id, start_date=date(2026, 1, 1),
+        )
+        async_session.add(event)
+        await async_session.commit()
+
+        event.start_date = date(500, 1, 1)
+        event.start_bc = 1
+        await async_session.commit()
+
+        result = await async_session.get(EventModel, event.id)
+        assert result.start_bc == 1
+        assert result.start_key == era_key(date(500, 1, 1), True)
 
 
 # --- Description relationship ---
