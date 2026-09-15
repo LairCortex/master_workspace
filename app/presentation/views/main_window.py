@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenuBar, QSplitter, QVBoxLayout, QWidget,
 )
 
+from app.presentation.bundle_resources import bundle_resource_path
 from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog as _DocViewerDialog
@@ -32,21 +33,9 @@ def _app_root() -> Path:
 
 def _docs_dir() -> Path:
     """Return path to docs/ directory (works in dev and frozen builds)."""
-    if getattr(sys, "frozen", False):
-        exe = Path(sys.executable).resolve()
-        # Candidates: next to exe, _internal/ next to exe,
-        # macOS .app bundle: Contents/Resources/, Contents/Frameworks/
-        candidates = [
-            exe.parent / "_internal" / "docs",
-            exe.parent / "docs",
-            exe.parent.parent / "Resources" / "docs",
-            exe.parent.parent / "Frameworks" / "docs",
-        ]
-        for candidate in candidates:
-            if candidate.is_dir():
-                return candidate
-        return exe.parent / "_internal" / "docs"  # fallback
-    return Path(__file__).resolve().parent.parent.parent.parent / "docs"
+    # Shared resolver (also used by the import template, rework task 5.2):
+    # dev tree vs the datas layouts nri_manager.spec ships the bundle with.
+    return bundle_resource_path("docs")
 
 
 class MainWindow(QMainWindow):
@@ -112,17 +101,10 @@ class MainWindow(QMainWindow):
         settings_menu.addSeparator()
         self._sync_theme_action()
 
-        # Импорт из .xlsx
-        self.import_events_action = QAction("Импорт событий из .xlsx…", self)
-        settings_menu.addAction(self.import_events_action)
-        self.import_characters_action = QAction("Импорт персонажей из .xlsx…", self)
-        settings_menu.addAction(self.import_characters_action)
-        self.import_locations_action = QAction("Импорт локаций из .xlsx…", self)
-        settings_menu.addAction(self.import_locations_action)
-        self.import_organizations_action = QAction("Импорт организаций из .xlsx…", self)
-        settings_menu.addAction(self.import_organizations_action)
-        self.import_items_action = QAction("Импорт предметов из .xlsx…", self)
-        settings_menu.addAction(self.import_items_action)
+        # Импорт из .xlsx — один пункт вместо пяти по типам сущностей
+        # (rework-xlsx-import: единый файл пяти листов).
+        self.import_xlsx_action = QAction("Импорт из .xlsx…", self)
+        settings_menu.addAction(self.import_xlsx_action)
 
         # LLM
         llm_menu = menu_bar.addMenu("LLM")

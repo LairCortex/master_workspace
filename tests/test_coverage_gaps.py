@@ -15,7 +15,6 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QDialog
 
-from app.application.services.xlsx_import_service import XlsxImportService
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.llm_viewmodel import (
@@ -149,60 +148,6 @@ def test_main_window_path_helpers(tmp_path, monkeypatch):
     exe2 = tmp_path / "lonely" / "deeper" / "nri"
     monkeypatch.setattr(sys, "executable", str(exe2), raising=False)
     assert mw._docs_dir() == tmp_path / "lonely" / "deeper" / "_internal" / "docs"
-
-
-# ── xlsx import edge branches ─────────────────────────────────────────────
-
-class _FakeWs:
-    def __init__(self, rows) -> None:
-        self._rows = rows
-
-    def iter_rows(self, values_only=None):
-        return iter(self._rows)
-
-
-class _FakeWb:
-    def __init__(self, ws) -> None:
-        self.active = ws
-
-
-def _noop_service() -> XlsxImportService:
-    # Services are not touched on the paths under test
-    return XlsxImportService(None, None, None, None, None)  # type: ignore[arg-type]
-
-
-def test_xlsx_validate_no_active_sheet(tmp_path, monkeypatch):
-    import app.application.services.xlsx_import_service as xmod
-
-    xlsx = tmp_path / "empty.xlsx"
-    xlsx.write_bytes(b"")
-    monkeypatch.setattr(xmod, "load_workbook", lambda *a, **k: _FakeWb(None))
-    assert _noop_service().validate_file("event", str(xlsx)) == ["В книге нет активного листа."]
-
-
-async def test_xlsx_import_empty_body(tmp_path, monkeypatch):
-    import app.application.services.xlsx_import_service as xmod
-
-    xlsx = tmp_path / "header-only.xlsx"
-    xlsx.write_bytes(b"")
-    calls = {"n": 0}
-
-    def fake_load(*args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return _FakeWb(_FakeWs([("name", "start_date")]))  # validation passes
-        return _FakeWb(_FakeWs([]))  # import pass sees no rows at all
-
-    monkeypatch.setattr(xmod, "load_workbook", fake_load)
-    result = await _noop_service().import_file("event", str(xlsx))
-    assert result.errors == ["Файл пустой."]
-    assert (result.created, result.updated) == (0, 0)
-
-
-def test_xlsx_get_date_falls_through():
-    # Fewer than 3 dash parts: no match, falls through to the final return
-    assert XlsxImportService._get_date(("2021-02",), {"start_date": 0}, "start_date") is None
-    assert XlsxImportService._get_date((None,), {"start_date": 0}, "start_date") is None
 
 
 # ── schema migration edge branches ────────────────────────────────────────

@@ -753,6 +753,47 @@ class TestMainWindowExportAction:
         assert len(received) == 1
 
 
+class TestMainWindowImportAction:
+    """rework-xlsx-import 4.3: one «Импорт из .xlsx…» replaces the five."""
+
+    RETIRED = (
+        "import_events_action",
+        "import_characters_action",
+        "import_locations_action",
+        "import_organizations_action",
+        "import_items_action",
+    )
+
+    def _window(self, qtbot):
+        vm = MagicMock()
+        vm.events = []
+        w = MainWindow(timeline_vm=vm, detail_vm=vm, search_vm=vm)
+        qtbot.addWidget(w)
+        return w
+
+    def test_single_import_action_exists(self, qtbot):
+        w = self._window(qtbot)
+        assert w.import_xlsx_action.text() == "Импорт из .xlsx…"
+
+    def test_five_type_actions_removed(self, qtbot):
+        w = self._window(qtbot)
+        for name in self.RETIRED:
+            assert not hasattr(w, name)
+
+    def test_settings_menu_has_exactly_one_xlsx_item(self, qtbot):
+        from PySide6.QtWidgets import QMenu
+
+        w = self._window(qtbot)
+        # findChildren (not action.menu()): the QMenu wrappers of the menu
+        # bar actions are C++-owned and must not be reached through temporaries.
+        settings = next(
+            m for m in w.menuBar().findChildren(QMenu) if m.title() == "Настройки"
+        )
+        texts = [a.text() for a in settings.actions() if a.text()]
+        xlsx_items = [t for t in texts if ".xlsx" in t]
+        assert xlsx_items == ["Импорт из .xlsx…"]
+
+
 # ── DetailPanel ──────────────────────────────────────────────────────────
 
 class TestDetailPanel:

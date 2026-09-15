@@ -28,7 +28,7 @@ def test_month_settings_root_object_names(qtbot):
 
 
 def test_xlsx_import_root_object_names(qtbot):
-    dlg = XlsxImportDialog("event")
+    dlg = XlsxImportDialog()
     qtbot.addWidget(dlg)
     root = dlg.quick.rootObject()
     names = _names(root)
@@ -36,6 +36,7 @@ def test_xlsx_import_root_object_names(qtbot):
     assert find_item(dlg.quick, "formatArea").property("readOnly") is True
     assert "pathField" in names
     assert "browseButton" in names
+    assert "downloadButton" in names
     assert "progressBar" in names
     assert "importButton" in names
     assert root.property("defaultButton").objectName() == "importButton"
@@ -94,7 +95,7 @@ def test_xlsx_island_live_retheme(qtbot, tmp_path):
         prefs=UiPrefsManager(tmp_path / "ui.json"),
         tokens_path=tokens_file_path(),
     )
-    dlg = XlsxImportDialog("event", theme=runtime)
+    dlg = XlsxImportDialog(theme=runtime)
     qtbot.addWidget(dlg)
     root = dlg.quick.rootObject()
     assert runtime.toggle() is True
@@ -172,13 +173,16 @@ def test_xlsx_enter_and_import_signal(qtbot):
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QKeyEvent
 
-    dlg = XlsxImportDialog("event")
+    dlg = XlsxImportDialog()
     qtbot.addWidget(dlg)
+    received = []
+    dlg.analyze_requested.connect(received.append)
     dlg.vm.path = "/tmp/a.xlsx"
-    dlg._on_import_from_vm("/tmp/a.xlsx")
     assert dlg.get_path() == "/tmp/a.xlsx"
+    # Enter hits the default primary button → the analyze intent.
     event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
     dlg.keyPressEvent(event)
+    assert received == ["/tmp/a.xlsx"]
     event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
     dlg.keyPressEvent(event)
     dlg.done(0)

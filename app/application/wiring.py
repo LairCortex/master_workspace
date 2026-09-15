@@ -18,7 +18,7 @@ from app.infrastructure.db.models import DescriptionModel
 from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED_CONFIG
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
-from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
+from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
 
 
 class ApplicationWiring:
@@ -60,14 +60,9 @@ class ApplicationWiring:
         # entities created in its popups: flushed but not committed, so they
         # are explicitly deleted if the parent dialog is rejected.
         self._popup_created: dict[Any, list[tuple[str, int, int]]] = {}
-        self._xlsx_import = XlsxImportService(
-            event_service=event_service,
-            character_service=app._entity_services["character"],
-            location_service=app._entity_services["location"],
-            organization_service=app._entity_services["organization"],
-            item_service=app._entity_services["item"],
-            image_store=app._image_store,
-        )
+        # Unified five-sheet import (rework 4.3): writes through the session/
+        # ORM in apply_plan, only the image ingest pipeline is a dependency.
+        self._xlsx_import = XlsxImportService(image_store=app._image_store)
 
     def _spawn(self, coro: Coroutine) -> asyncio.Task:
         """Schedule ``coro`` as a task serialized against the shared session.
@@ -161,44 +156,56 @@ class ApplicationWiring:
 
         timeline_vm.selected_event_changed.connect(on_selected_event_changed)
 
-        # ── XLSX import actions ─────────────────────────────────────────────
-        async def _run_import(entity_type: str):
-            dlg = XlsxImportDialog(entity_type, window, theme=self._app._theme)
+        # ── XLSX import (rework 4.3): one menu entry, one flow ─────────────
+        # analyze → (problems in the dialog) → confirm → apply, every step a
+        # _spawn task so all of them serialize on the same _session_lock as
+        # every other session-touching task. The analyzed plan is carried on
+        # the dialog itself (design D2: the plan shown IS the plan applied —
+        # no second read, no window for the file to change in between).
+        # The result — report or failure reason — goes into the dialog panel,
+        # no QMessageBox report anymore.
+        def _run_import():
+            dlg = XlsxImportDialog(window, theme=self._app._theme)
+
+            async def _analyze(path: str):
+                try:
+                    plan = await self._xlsx_import.analyze_file(
+                        path, session=self._app._session
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Сбой чтения вне штатных фатальных ошибок плана —
+                    # причину показывает список проблем диалога.
+                    dlg.publish_analysis_failure(str(exc))
+                    return
+                dlg.publish_analysis(plan)
+
+            async def _confirm():
+                plan = dlg.plan
+                if plan is None or plan.has_fatal:
+                    return
+                try:
+                    report = await self._xlsx_import.apply_plan(
+                        plan, self._app._session, progress_callback=dlg.set_progress,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # apply_plan уже откатил транзакцию (design D6) —
+                    # причину принимает диалог (в т.ч. уже закрытый: publish_*
+                    # проверяют живость C++-стороны перед показом).
+                    dlg.publish_import_failure(str(exc))
+                    return
+                await timeline_vm.load_events()
+                window.timeline_widget.update_events(timeline_vm.events)
+                dlg.publish_report(report)
+
+            dlg.analyze_requested.connect(lambda path: self._spawn(_analyze(path)))
+            dlg.confirm_import.connect(lambda: self._spawn(_confirm()))
+            # «Скачать шаблон» (task 5.2): pure file flow — save--as dialog +
+            # byte copy of the bundled resource, no session involved.
+            dlg.download_template.connect(lambda: save_template_as(dlg))
+            dlg.finished.connect(lambda _: dlg.deleteLater())
             dlg.open()
 
-            async def _do_import(path: str):
-                try:
-                    result = await self._xlsx_import.import_file(
-                        entity_type, path, progress_callback=dlg.set_progress
-                    )
-                    await timeline_vm.load_events()
-                    window.timeline_widget.update_events(timeline_vm.events)
-                    msg = f"Создано записей: {result.created}"
-                    if result.errors:
-                        msg += "\n\nНекоторые строки пропущены:\n- " + "\n- ".join(result.errors[:10])
-                    QMessageBox.information(window, "Импорт завершён", msg)
-                except Exception as exc:  # noqa: BLE001
-                    QMessageBox.critical(window, "Ошибка импорта", str(exc))
-                finally:
-                    dlg.close()
-
-            dlg.import_requested.connect(lambda p: self._spawn(_do_import(p)))
-
-        window.import_events_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("event"))
-        )
-        window.import_characters_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("character"))
-        )
-        window.import_locations_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("location"))
-        )
-        window.import_organizations_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("organization"))
-        )
-        window.import_items_action.triggered.connect(
-            lambda: asyncio.ensure_future(_run_import("item"))
-        )
+        window.import_xlsx_action.triggered.connect(_run_import)
 
         # ── Helper: load available entities and set them on dialog sections ──
         async def _load_available_into_dialog(dialog):

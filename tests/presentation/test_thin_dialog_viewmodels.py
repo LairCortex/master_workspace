@@ -30,30 +30,42 @@ def test_month_settings_vm_twelve_names_reset_saved():
     assert result[2] == DEFAULT_MONTHS[2]
 
 
-def test_xlsx_import_vm_path_progress_import_requested():
+def test_xlsx_import_vm_state_machine_smoke():
     vm = XlsxImportViewModel("fmt")
     assert vm.formatText == "fmt"
+    assert vm.state == "idle"
     assert vm.path == ""
     assert vm.progress == 0
     assert vm.progressVisible is False
-    assert vm.importEnabled is True
+    assert vm.canImport is False  # no path yet
     vm.path = "/a.xlsx"
-    vm.path = "/a.xlsx"
-    browsed = []
-    imported = []
+    assert vm.canImport is True
+    browsed, analyzed, confirmed = [], [], []
     vm.browseRequested.connect(lambda: browsed.append(1))
-    vm.importRequested.connect(imported.append)
+    vm.analyze_requested.connect(analyzed.append)
+    vm.confirm_import.connect(lambda: confirmed.append(1))
     vm.requestBrowse()
-    vm.requestImport()
+    vm.requestAnalyze()
     assert browsed == [1]
-    assert imported == ["/a.xlsx"]
-    vm.begin_import()
-    assert vm.importEnabled is False
+    assert analyzed == ["/a.xlsx"]
+    assert vm.state == "analyzing"
+    vm.on_analyzed(_EmptyPlan())
+    assert vm.state == "problems"
+    vm.requestConfirmImport()
+    assert confirmed == [1]
     assert vm.progressVisible is True
     vm.set_progress(1, 4)
     assert vm.progress == 25
     vm.set_progress(0, 0)
     assert vm.progress == 0
+
+
+class _EmptyPlan:
+    """Minimal duck of ImportPlan for the sync-VM smoke test."""
+
+    fatal_errors: list[str] = []
+    skipped_rows: list = []
+    has_fatal = False
 
 
 def test_image_viewer_vm_source_key():

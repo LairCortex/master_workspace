@@ -248,15 +248,19 @@ async def test_create_and_xlsx_do_not_rewrite(async_session, tmp_path, monkeypat
     await char_svc.create_entity("Bob", "c", "b", D1, D2)
     await event_svc.create_event_with_relations("Skirmish", D1, D2, "c", "b", {})
 
+    # The unified five-sheet import (rework 6.x): the create path writes
+    # through the session/ORM — marker rewriting is a rename-only affair.
     wb = Workbook()
-    ws = wb.active
-    ws.append(["name", "start_date", "end_date", "characteristics", "backstory"])
+    wb.remove(wb.active)
+    ws = wb.create_sheet("Персонажи")
+    ws.append(["Имя", "Дата начала", "Дата конца", "Характеристики", "Предыстория"])
     ws.append(["Imported", D1, D2, "c", "b"])
     path = tmp_path / "in.xlsx"
     wb.save(path)
-    xlsx = XlsxImportService(event_svc, char_svc, loc_svc, org_svc, item_svc)
-    result = await xlsx.import_file("character", path)
-    assert result.created == 1
+    xlsx = XlsxImportService()
+    plan = await xlsx.analyze_file(path, async_session)
+    report = await xlsx.apply_plan(plan, async_session)
+    assert report.created == 1
     spy.assert_not_called()
     await async_session.refresh(holder)
     assert holder.personality == marker
