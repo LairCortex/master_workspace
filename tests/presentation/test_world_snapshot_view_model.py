@@ -231,6 +231,7 @@ def test_invalid_model_and_sync_inputs_are_ignored(qapp):
     vm.setDateIso(None)
     assert vm.dateIso == before_date
     vm.set_date(vm._date)
+    vm.set_date(None)  # «нет даты» не сдвигает выбранный день
     assert vm.dateIso == before_date
 
     rows = _rows(vm)
