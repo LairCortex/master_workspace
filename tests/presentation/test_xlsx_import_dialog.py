@@ -190,6 +190,20 @@ class TestProgress:
         dlg.set_progress(0, 0)
         assert dlg.progress_bar.value() == 0
 
+    def test_progress_visibility_mirrors_view_model(self, dlg):
+        assert dlg.progress_bar.isVisible() is False
+        dlg.path_edit.setText("/tmp/a.xlsx")
+        dlg.vm.on_analyzed(plan_with())
+        dlg.vm.requestConfirmImport()  # importing → полоса видима
+        assert dlg.progress_bar.isVisible() is True
+
+
+class TestPlanOwnership:
+    def test_set_plan_adopts_the_analyzed_plan(self, dlg):
+        plan = plan_with()
+        dlg.set_plan(plan)
+        assert dlg.plan is plan
+
 
 class TestReportPanel:
     @pytest.fixture

@@ -14,7 +14,6 @@ Covers ``XlsxImportService.analyze_file``:
 """
 from datetime import date
 
-import pytest
 from openpyxl import Workbook
 from sqlalchemy import func, select
 
@@ -79,6 +78,16 @@ class TestFatalBranches:
         assert "знакомого" in plan.fatal_errors[0]
         # The unknown sheet is additionally listed as a warning.
         assert any("Заметки" in w for w in plan.warnings)
+
+    async def test_known_sheets_with_headers_only_are_fatal(self, tmp_path):
+        # Spec scenario «Пустой файл»: знакомые листы есть, строк данных нет.
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", CHAR_HEADERS, [])
+        _sheet(wb, "События", EVENT_HEADERS, [])
+        plan = await _svc().analyze_file(_save(tmp_path, wb))
+        assert plan.has_fatal
+        assert "пустой" in plan.fatal_errors[0]
+        assert plan.entities == {} and not plan.skipped_rows
 
     async def test_default_empty_workbook_is_fatal(self, tmp_path):
         # Workbook() alone (single default "Sheet") — no known sheets at all.
@@ -210,7 +219,7 @@ class TestSheetMappingAndWarnings:
                [["Е", "2001-01-01", " Иван ; ; Мария "]])
         plan = await _svc().analyze_file(_save(tmp_path, wb))
         assert not plan.skipped_rows
-        targets = [l.name for l in plan.lookup_row("event", "Е").links["character"]]
+        targets = [link.name for link in plan.lookup_row("event", "Е").links["character"]]
         assert targets == ["Иван", "Мария"]
 
 
@@ -519,6 +528,8 @@ class TestNameIndex:
         assert plan.ambiguous_names["organization"] == {"цех"}
         reasons = [(i.sheet, i.row_number) for i in plan.skipped_rows]
         assert reasons == [("Персонажи", 2)]
+        # «Глеб»-ссылка события уцелевшего, ссылки пропущенной строки — вне плана.
+        assert [link.name for link in plan.iter_links()] == ["Глеб"]
 
     async def test_analyze_writes_nothing_to_the_db(self, tmp_path, async_session):
         await _seed_db(async_session)
@@ -546,7 +557,7 @@ class TestAnalysisWithoutSession:
         plan = await _svc().analyze_file(_save(tmp_path, wb))
         assert not plan.has_fatal
         links = plan.lookup_row("event", "Бал").links["character"]
-        assert [l.resolution for l in links] == [LINK_TO_FILE, LINK_TO_GHOST]
+        assert [link.resolution for link in links] == [LINK_TO_FILE, LINK_TO_GHOST]
         assert plan.ghosts[("character", "призрак")].min_start == date(1815, 1, 10)
 
     async def test_unverifiable_reference_without_db_is_fatal(self, tmp_path):

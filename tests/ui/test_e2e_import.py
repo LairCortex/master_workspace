@@ -142,6 +142,65 @@ async def test_unified_import_shows_problems_report_and_links(
     assert event_dialog.type_combo.findText("Война") >= 0
 
 
+async def test_analysis_crash_shows_reason_in_the_problem_list(
+    app, file_dialogs, wait_for, monkeypatch
+):
+    """Аварийный сбой чтения (не штатные фатальные ошибки плана) не роняет
+    приложение: причина попадает в список проблем диалога."""
+    application, window = app
+
+    async def boom(path, session=None):
+        raise RuntimeError("диск отвалился")
+    monkeypatch.setattr(application._wiring._xlsx_import, "analyze_file", boom)
+
+    file_dialogs["open"] = str(FIXTURE_XLSX)
+    window.import_xlsx_action.trigger()
+    await wait_for(lambda: _import_dialogs(window))
+    dialog = _import_dialogs(window)[0]
+    dialog.path_edit.setText(str(FIXTURE_XLSX))
+    dialog.import_btn.click()  # «Проверить…»
+    await wait_for(lambda: dialog.vm.state == "problems" and dialog.vm.hasFatal)
+    assert "диск отвалился" in dialog.vm.analysisIssues[0]["reason"]
+
+
+async def test_confirm_without_analyzed_plan_applies_nothing(
+    app, wait_for, monkeypatch
+):
+    """Сигнал подтверждения до анализа (плана нет) — безопасный no-op:
+    никакого применения, никакого падения."""
+    import asyncio
+
+    application, window = app
+
+    async def spy(plan, session, progress_callback=None):
+        raise AssertionError("apply_plan не должен вызываться без плана")
+    monkeypatch.setattr(application._wiring._xlsx_import, "apply_plan", spy)
+
+    window.import_xlsx_action.trigger()
+    await wait_for(lambda: _import_dialogs(window))
+    dialog = _import_dialogs(window)[0]
+    dialog.confirm_import.emit()
+    await asyncio.sleep(0.1)  # дать spawned-задаче дойти до выхода
+    assert dialog.vm.state == "idle"
+
+
+async def test_apply_crash_shows_reason_in_the_problem_list(
+    app, file_dialogs, wait_for, monkeypatch
+):
+    """Сбой применения после коммита-отката (design D6): причина — в список
+    проблем диалога, состояние — снова «с проблемами» с фаталом."""
+    application, window = app
+    dialog = await _import_fixture_through_dialog(window, file_dialogs, wait_for)
+
+    async def boom(plan, session, progress_callback=None):
+        raise RuntimeError("технический сбой прохода 2")
+    monkeypatch.setattr(application._wiring._xlsx_import, "apply_plan", boom)
+
+    dialog.import_btn.click()  # «Импортировать»
+    await wait_for(lambda: dialog.vm.state == "problems" and dialog.vm.hasFatal)
+    assert "сбой прохода 2" in dialog.vm.analysisIssues[0]["reason"]
+
+
 async def test_imported_world_persists_after_app_restart(app, file_dialogs, wait_for):
     """Spec «Данные сохраняются сразу»: import → explicit restart (shutdown →
     start on the same game file) → entities, links, ghost and types in the

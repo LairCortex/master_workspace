@@ -126,6 +126,7 @@ def test_english_headers_read_as_russian_columns():
     assert resolved.position("name") == 1
     assert resolved.position("start_date") == 0
     assert not resolved.unknown
+    assert resolved.position("backstory") is None  # нет такой колонки — нет позиции
     assert schema.missing_required_headers(sheet, ["name", "start_date"]) == []
 
 

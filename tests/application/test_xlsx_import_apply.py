@@ -26,7 +26,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 from sqlalchemy import func, select
 
-from app.application.services.xlsx_import_service import XlsxImportService
+from app.application.services.xlsx_import_service import LINK_TO_DB, XlsxImportService
 from app.infrastructure.db.database import create_engine, create_session_factory
 from app.infrastructure.db import models
 from app.infrastructure.db.models import (
@@ -151,7 +151,6 @@ class TestPass1Entities:
 
     async def test_upsert_updates_only_non_empty_fields(self, tmp_path, async_session):
         existing = CharacterModel(name="Уникал", start_date=date(1900, 1, 1))
-        from app.infrastructure.db.models import DescriptionModel
         existing.description = DescriptionModel(characteristics="старые", backstory="старая")
         async_session.add(existing)
         await async_session.flush()
@@ -169,6 +168,26 @@ class TestPass1Entities:
         assert char.description.characteristics == "новые"  # non-empty overrides
         assert char.description.backstory == "старая"       # empty never erases
         assert char.name == "Уникал"                        # upsert key is not renamed
+
+    async def test_update_of_entity_without_description_creates_it(
+        self, tmp_path, async_session
+    ):
+        # Старая запись может жить без строки описания — апдейт характеристик
+        # создаёт её, а не падает.
+        existing = CharacterModel(name="Уникал", start_date=date(1900, 1, 1))
+        async_session.add(existing)
+        await async_session.flush()
+
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", CHAR_HEADERS + ["Характеристики", "Предыстория"],
+               [["уникал", "1901-02-02", "новые", "новая"]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        report = await _svc().apply_plan(plan, async_session)
+
+        assert (report.created, report.updated) == (0, 1)
+        char = await async_session.get(CharacterModel, existing.id)
+        assert char.description.characteristics == "новые"
+        assert char.description.backstory == "новая"
 
     async def test_ambiguous_db_name_creates_new_entity(self, tmp_path, async_session):
         async_session.add_all([
@@ -427,6 +446,29 @@ class TestPass2Links:
         ball = await _one(async_session, EventModel, name="Бал")
         assert [i.id for i in ball.items] == [item.id]
 
+    async def test_db_target_deleted_after_analysis_warns_and_skips_link(
+        self, tmp_path, async_session
+    ):
+        # Цель LINK_TO_DB исчезла из базы между анализом и применением:
+        # связь не устанавливается, строка остаётся с предупреждением.
+        item = ItemModel(name="Фонарь", start_date=date(1900, 1, 1))
+        async_session.add(item)
+        await async_session.flush()
+        wb = _new_workbook()
+        _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами"],
+               [["Бал", "1820-05-01", "фонарь"]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        ref = plan.lookup_row("event", "Бал").links["item"][0]
+        assert ref.resolution == LINK_TO_DB and ref.db_id == item.id
+
+        await async_session.delete(item)
+        await async_session.flush()
+
+        report = await _svc().apply_plan(plan, async_session)
+        assert (report.created, report.links) == (1, 0)
+        warning, = report.warnings
+        assert "«фонарь»" in warning and "цель связи" in warning
+
     async def test_link_reference_of_skipped_row_is_not_applied(self, tmp_path, async_session):
         # A planned-skip row contributes neither an entity nor its links.
         wb = _new_workbook()
@@ -497,6 +539,26 @@ class TestTransaction:
         # База остаётся в состоянии до импорта (spec «Откат при сбое»).
         assert await _count(async_session, EventModel) == 0
         assert await _count(async_session, CharacterModel) == 0
+
+    async def test_update_of_row_deleted_between_analysis_and_apply_aborts(
+        self, tmp_path, async_session
+    ):
+        # План обещает update, а строки в базе уже нет — импорт падает целиком
+        # (транзакция откатана), а не пишет «в никуда».
+        existing = CharacterModel(name="Уникал", start_date=date(1900, 1, 1))
+        async_session.add(existing)
+        await async_session.flush()
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", CHAR_HEADERS, [["уникал", "1901-02-02"]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        assert plan.lookup_row("character", "уникал").is_update
+
+        await async_session.delete(existing)
+        await async_session.flush()
+        async_session.expunge_all()  # никаких ответов из identity map
+
+        with pytest.raises(ValueError, match="исчезла из базы"):
+            await _svc().apply_plan(plan, async_session)
 
     async def test_fatal_plan_is_refused_without_touching_the_database(
         self, tmp_path, async_session
@@ -615,6 +677,29 @@ class TestImages:
         assert char.image_id is None
         warning, = report.warnings
         assert "нет.png" in warning and "без изображения" in warning
+
+    async def test_image_column_without_configured_store_warns(
+        self, tmp_path, async_session, qapp
+    ):
+        (tmp_path / "p.png").write_bytes(_png_bytes())
+        svc = _svc()  # ImageStore не подключён — колонка «Изображение» не игнорируется молча
+        plan = await svc.analyze_file(_char_image_wb(tmp_path, "p.png"), async_session)
+        report = await svc.apply_plan(plan, async_session)
+        assert report.created == 1
+        assert (await _one(async_session, CharacterModel, name="Иван")).image_id is None
+        warning, = report.warnings
+        assert "p.png" in warning
+
+    async def test_unsupported_extension_keeps_row_and_warns(
+        self, tmp_path, async_session, qapp
+    ):
+        pic = tmp_path / "zametka.txt"
+        pic.write_bytes(b"not an image")
+        _, report, char = await self._apply(tmp_path, async_session, "zametka.txt")
+        assert report.created == 1
+        assert char.image_id is None
+        warning, = report.warnings
+        assert "zametka.txt" in warning
 
     async def test_undecodable_file_keeps_row_and_warns(self, tmp_path, async_session, qapp):
         pic = tmp_path / "broken.png"

@@ -249,7 +249,7 @@ class TestTemplateAnalyzeAndImport:
         assert {e.name for e in duel.characters} == {"Иван"}
         assert {o.name for o in ball.organizations} == {"Городская управа"}
         assert {i.name for i in ball.items} == {"Дневник"}
-        assert {l.name for l in ball.locations} == {"Особняк"}
+        assert {loc.name for loc in ball.locations} == {"Особняк"}
         # cross-sheet direction from the other side:
         assert {e.name for e in duel.locations} == {"Поляна"}
         mansion = (await async_session.execute(
