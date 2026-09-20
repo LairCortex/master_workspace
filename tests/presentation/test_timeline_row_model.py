@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QModelIndex, Qt
 
-from app.presentation.utils.date_utils import get_custom_months, set_custom_months
+from app.domain.game_calendar import current_calendar, reset_current_calendar, set_current_calendar
 from app.presentation.viewmodels.timeline_viewmodel import (
     TimelineRowModel,
     _RowEntry,
@@ -43,12 +43,13 @@ class _Event:
 
 @pytest.fixture(autouse=True)
 def _default_game_months():
-    """Captions are game-calendar text — pin the default month map around each
-    unit regardless of what other suites left in the shared module state."""
-    saved = get_custom_months()
-    set_custom_months(None)
+    """Captions are game-calendar text — pin the «Стандартный» preset around
+    each unit regardless of what other suites left in the shared process
+    state, then hand the previously active calendar object back."""
+    saved = current_calendar()
+    reset_current_calendar()
     yield
-    set_custom_months(saved)
+    set_current_calendar(saved)
 
 
 def _model_of(rows):

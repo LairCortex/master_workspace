@@ -27,7 +27,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from app.presentation.utils.date_utils import era_flag, get_custom_months
+from app.domain.game_calendar import current_calendar
+from app.presentation.utils.date_utils import era_flag
 from app.presentation.views.timeline_rows import Row, build_rows, row_detail
 
 # The «Выбор даты» window bounds travel as they arrive on the panel channels:
@@ -239,7 +240,7 @@ class TimelineViewModel(QObject):
         window: tuple | None,
     ) -> tuple:
         """The rebuild key: the ``(id, start, start_bc, end, end_bc, name,
-        color, detail)`` set plus the ``window`` and the live game-month map.
+        color, detail)`` set plus the ``window`` and the active calendar object.
 
         The window joins the key so a window change is never swallowed by the
         identical-sample fast path. The era flags join it because rows carry
@@ -248,10 +249,13 @@ class TimelineViewModel(QObject):
         rows carry captions and type-dot tokens, so the list must repaint even
         when no date moved. The description line joins it for the same reason
         — rows carry the bounded description text, so editing it alone must
-        re-model the rows with no date or name having moved. The month map
-        joins the key for the same reason as the captions: they are pre-built
-        with ``format_game_date``, so a settings-game rename must re-model the
-        rows (spec «Игровые месяцы»); identical maps keep the fast path intact.
+        re-model the rows with no date or name having moved. The active
+        calendar joins the key as of piece C2 (design D7) for the same reason
+        as the captions: they are pre-built with ``format_game_date`` from the
+        calendar's names, so installing another calendar object must re-model
+        the rows (spec «Игровые месяцы»). Calendars are immutable and compare
+        by identity, so re-laying out with the very same object keeps the fast
+        path intact — no name-map copy any more.
         """
         return (
             tuple(
@@ -265,7 +269,7 @@ class TimelineViewModel(QObject):
                 for e in events
             ),
             window,
-            tuple(sorted(get_custom_months().items())),
+            current_calendar(),
         )
 
     def _rebuild_rows(self) -> None:

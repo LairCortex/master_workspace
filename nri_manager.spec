@@ -81,8 +81,6 @@ a = Analysis(
          "app/presentation/qml"),
         ("app/presentation/qml/SheetPresetRoot.qml",
          "app/presentation/qml"),
-        ("app/presentation/qml/MonthSettingsRoot.qml",
-         "app/presentation/qml"),
         ("app/presentation/qml/XlsxImportRoot.qml",
          "app/presentation/qml"),
         ("app/presentation/qml/ImageViewerRoot.qml",

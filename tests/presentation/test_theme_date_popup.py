@@ -5,7 +5,11 @@ from datetime import date
 
 from PySide6.QtCore import QDate, QRect
 
-from app.presentation.utils.date_utils import get_custom_months, set_custom_months
+from app.domain.game_calendar import (
+    StandardCalendar,
+    current_calendar,
+    set_current_calendar,
+)
 from app.presentation.views.theme_date_popup import _CustomCalendar, ThemeDatePopup
 from app.presentation.views.timeline_date_popup import (
     _DateWindowPopup,
@@ -59,20 +63,21 @@ def test_bc_check_toggles_era_without_touching_the_selected_numbers(qtbot):
 
 
 def test_open_refreshes_months_and_prefills_date_and_era(qtbot):
-    saved = get_custom_months()
+    saved = current_calendar()
     popup = ThemeDatePopup()
     qtbot.addWidget(popup)
     try:
         months = {i: f"R4-{i}" for i in range(1, 13)}
-        set_custom_months(months)
-        # The lower bound moved from 100 to year 1 (task 3.2).
+        set_current_calendar(StandardCalendar(month_names=months))
+        # The lower bound moved from 100 to year 1 (task 3.2); the month
+        # combo re-reads the ACTIVE calendar on every open (piece C2, D7).
         popup.open_at(QRect(20, 30, 100, 20), (date(1, 2, 3), True))
         assert popup.calendar._month_combo.itemText(1) == "R4-2"
         assert popup.calendar.selectedDate() == QDate(1, 2, 3)
         assert popup.calendar.is_bc() is True
     finally:
         popup.close()
-        set_custom_months(saved)
+        set_current_calendar(saved)
 
 
 def test_open_without_pair_input_starts_in_our_era(qtbot):

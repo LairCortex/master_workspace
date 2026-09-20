@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.presentation.utils.date_utils import get_custom_months, split_date_era
+from app.presentation.utils.date_utils import month_name, split_date_era
 
 #: Both eras span years 1…9999 (add-era-aware-dates, design D6); the BC era
 #: is a mirror of these very dates behind the «до н.э.» checkbox, so the
@@ -84,11 +84,12 @@ class _CustomCalendar(QCalendarWidget):
         self._sync_nav(self.yearShown(), self.monthShown())
 
     def _populate_months(self) -> None:
+        # Piece C2 (design D7): the combo caption is the delegate to the
+        # active game calendar's month names, read fresh on every populate.
         self._month_combo.blockSignals(True)
         self._month_combo.clear()
-        months = get_custom_months()
         for number in range(1, 13):
-            self._month_combo.addItem(months.get(number, str(number)), number)
+            self._month_combo.addItem(month_name(number), number)
         self._month_combo.blockSignals(False)
 
     def _sync_nav(self, year: int, month: int) -> None:

@@ -18,16 +18,17 @@ class Base(DeclarativeBase):
 # Every dated table carries the era flags (INTEGER 0/1, DEFAULT 0 so
 # pre-era rows and old-version INSERTs mean «н.э.») plus nullable derived
 # keys. Keys stay NULLable on purpose: an old app version INSERTs without
-# them (compatibility requirement), and ``init_db()`` backfills them on the
-# next open (design D4). The hooks below keep keys in sync on every write
-# the new version itself performs.
+# them (compatibility requirement), and the python key reconcile run from
+# ``Application.start()`` recomputes them on the next open (C2, design D5).
+# The hooks below keep keys in sync on every write the new version itself
+# performs.
 
 def _sync_era_keys(mapper, connection, target) -> None:
     """Derive start_key/end_key from the stored (date, era) pairs (design D2).
 
     Runs in before_insert/before_update for the six dated tables, so every
     new-version write lands with keys equal to the app-side ``era_key`` (and
-    to the SQL backfill of design D4). An era flag not yet set on a new
+    to the startup key reconcile of design D5). An era flag not yet set on a new
     instance reads as «н.э.» — exactly how ``DEFAULT 0`` reads pre-era and
     old-version rows; repositories load full rows before mutating, so the
     date/era attributes are always present on update.
@@ -442,7 +443,7 @@ class CharacterSheetInstanceModel(Base):
 # Keep the derived chronological keys of every new-version write consistent
 # with its (date, era) pair: inserts and date/era edits land with correct
 # keys, so ORDER BY/FILTER on start_key/end_key never depends on the
-# startup backfill having seen the row yet.
+# startup key reconcile having seen the row yet.
 for _dated_model in (
     EventModel,
     OrganizationModel,

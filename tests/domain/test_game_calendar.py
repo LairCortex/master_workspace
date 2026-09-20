@@ -29,9 +29,16 @@ acceptance fuzz (design D9): a fixed-seed corpus of random valid specs is
 swept day by day for circular round-trip, key monotonicity and contiguity,
 gapless week-cycle continuity and intercalary neighbour invariance; the file
 closes with the task-8.3 scenario-to-test acceptance map of the delta spec.
+The final C2 section checks the month-name source of spec «Источник имён
+месяцев» (the protocol's ``month_names``, the preset's default/override, the
+custom names straight from the spec, captions-only) and the storage codec of
+spec «Календарь-настройки хранятся в базе игры» (design D1): ``{"v": 1,
+"kind": ...}`` payloads, lossless round-trips and machine-readable reasons
+for every corrupt stored value.
 """
 import calendar as gregorian
 import inspect
+import json
 import random
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date
@@ -41,9 +48,12 @@ import pytest
 
 from app.domain.date_era import _gregorian_key, era_key
 from app.domain.game_calendar import (
+    DEFAULT_MONTH_NAMES,
     MAX_YEAR,
     MAX_YEAR_LENGTH,
     MIN_YEAR,
+    CalendarCorrupted,
+    CalendarDecoded,
     CalendarSpec,
     CustomCalendar,
     DateField,
@@ -56,11 +66,14 @@ from app.domain.game_calendar import (
     ShiftReason,
     ShiftReport,
     ShiftReportEntry,
+    SpecProblem,
     StandardCalendar,
     StubCalendar,
     build_shift_report,
     classify,
     current_calendar,
+    decode_calendar,
+    encode_calendar,
     render_calendar_year,
     reset_current_calendar,
     set_current_calendar,
@@ -2361,3 +2374,333 @@ class TestShiftReportCarriesNoCaptionsOrNames:
 #         test_plate_after_second_month_and_next_month_weeks_unshifted,
 #         TestYearPreviewSnapshot::test_small_spec_with_two_intercalary_days_renders_exactly,
 #         TestYearPreviewMatchesArithmetic::test_weeks_after_the_host_month_continue_unshifted
+
+# ═════════════════════════════════════════════════════════════════════════
+# C2 (wire-game-calendar-settings) task group 1 — источник имён месяцев
+# (spec «Источник имён месяцев») и кодек хранения (spec
+# «Календарь-настройки хранятся в базе игры», design D1)
+# ═════════════════════════════════════════════════════════════════════════
+
+GREGORIAN_NAMES = {
+    1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+    5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+    9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
+}
+
+
+class TestMonthNamesSource:
+    """C2 task 1.1 / spec «Источник имён месяцев»: имена месяцев —
+    неотъемлемая часть календаря (дефолт и переопределение пресета, спека
+    кастома) и меняют только подписи дат, никогда — ключи."""
+
+    PROBE_COORDS = [
+        pytest.param(MonthDay(1, 1, 1), id="epoch"),
+        pytest.param(MonthDay(44, 6, 15), id="mid-era"),
+        pytest.param(MonthDay(2024, 2, 29), id="leap-feb-29"),
+        pytest.param(MonthDay(9999, 12, 31), id="last-day-of-era"),
+    ]
+
+    def test_default_names_are_the_gregorian_dictionary(self):
+        # перенесённый из date_utils словарь — теперь единоличная правда домена
+        assert dict(DEFAULT_MONTH_NAMES) == GREGORIAN_NAMES
+        assert dict(StandardCalendar().month_names) == GREGORIAN_NAMES
+
+    def test_name_tables_are_read_only(self):
+        with pytest.raises(TypeError):
+            DEFAULT_MONTH_NAMES[1] = "Снежень"                # type: ignore[index]
+        with pytest.raises(TypeError):
+            StandardCalendar().month_names[7] = "Грозень"     # type: ignore[index]
+        with pytest.raises(TypeError):
+            CustomCalendar(base_spec()).month_names[1] = "Снежень"  # type: ignore[index]
+
+    def test_preset_override_merges_over_the_defaults(self):
+        # сценарий «Пресет с переопределением имён», первая половина:
+        # переопределённый месяц отдаёт новое имя, забытые — григорианские
+        renamed = StandardCalendar(month_names={3: "Медвежарь"})
+        assert renamed.month_names[3] == "Медвежарь"
+        assert renamed.month_names[1] == "Январь"
+        assert renamed.month_names[12] == "Декабрь"
+
+    @pytest.mark.parametrize("coord", PROBE_COORDS)
+    @pytest.mark.parametrize("is_bc", [False, True], ids=["ad", "bc"])
+    def test_override_relabels_captions_and_leaves_every_key_intact(self, coord, is_bc):
+        # сценарий «Пресет с переопределением имён», вторая половина:
+        # ключи всех координат обеих эр побитово равны ключам пресета
+        # без переопределения (и обратный ход, и структура не тронуты)
+        plain = StandardCalendar()
+        renamed = StandardCalendar(month_names={3: "Медвежарь"})
+        key = plain.to_key(coord, is_bc)
+        assert renamed.to_key(coord, is_bc) == key
+        assert renamed.from_key(key, is_bc) == coord
+        assert renamed.month_length(coord.year, coord.month) == \
+            plain.month_length(coord.year, coord.month)
+        assert renamed.weekday(coord) == plain.weekday(coord)
+
+    def test_custom_names_come_from_the_spec_in_month_order(self):
+        # сценарий «Имена кастомного календаря — из спеки»
+        calendar = CustomCalendar(base_spec())
+        assert dict(calendar.month_names) == {
+            1: "Зимостой", 2: "Талолист", 3: "Сухочивень",
+        }
+
+    def test_custom_names_follow_spec_order_and_ignore_intercalary(self):
+        spec = base_spec(
+            months=make_months(("Первый", 3), ("Второй", 4), ("Третий", 5)),
+            intercalary=(IntercalarySpec("Гром", 2),),
+        )
+        calendar = CustomCalendar(spec)
+        assert dict(calendar.month_names) == {
+            1: "Первый", 2: "Второй", 3: "Третий",
+        }  # вставные имена — не месяцы, их здесь нет
+
+    def test_protocol_exposes_month_names_as_a_bodyless_property(self):
+        # протокол (D2) даёт только контракт: член C2 — безвредная заглушка
+        # наравне с методами протокола (строки-«тело-многоточие» считает
+        # CI-гейт построчного покрытия)
+        assert isinstance(GameCalendar.month_names, property)
+        assert GameCalendar.month_names.fget(object()) is None
+        assert isinstance(StandardCalendar(), GameCalendar)
+        assert isinstance(CustomCalendar(base_spec()), GameCalendar)
+
+    def test_namesless_calendar_no_longer_satisfies_the_runtime_protocol(self):
+        # заглушка-предшественник имён не знает — расширенный протокол её
+        # больше не пропускает (member проверяется isinstance'ом runtime)
+        assert not isinstance(StubCalendar(), GameCalendar)
+
+
+# ── кодек хранения: стандартный пресет (design D1) ──────────────────────
+
+
+class TestCodecStandardPreset:
+    """C2 task 1.2 / сценарий «Пресет с переименованными месяцами» +
+    дизайн-нормализация «пустой словарь имён → нет поля»."""
+
+    def test_plain_preset_encodes_without_any_payload_fields(self):
+        assert json.loads(encode_calendar(StandardCalendar())) == {
+            "v": 1, "kind": "standard",
+        }
+
+    def test_empty_or_default_equal_override_normalizes_to_no_field(self):
+        # «про запас» не пишем: пустое переопределение и переопределение,
+        # побайтово равное дефолту, не порождают поля month_names
+        all_default = {number: DEFAULT_MONTH_NAMES[number] for number in range(1, 13)}
+        for names in ({}, {5: "Май"}, all_default):
+            payload = json.loads(encode_calendar(StandardCalendar(month_names=names)))
+            assert "month_names" not in payload
+            assert payload == {"v": 1, "kind": "standard"}
+
+    def test_override_is_written_as_string_month_numbers(self):
+        raw = encode_calendar(StandardCalendar(month_names={3: "Медвежарь"}))
+        assert json.loads(raw) == {
+            "v": 1,
+            "kind": "standard",
+            "month_names": {"3": "Медвежарь"},
+        }
+        assert "\\u" not in raw  # ensure_ascii=False — кириллица ложится как есть
+
+    def test_plain_preset_round_trips_to_the_default_names(self):
+        decoded = decode_calendar(encode_calendar(StandardCalendar()))
+        assert isinstance(decoded, CalendarDecoded)
+        assert decoded.calendar.month_names == DEFAULT_MONTH_NAMES
+
+    def test_override_round_trip_keeps_names_and_keys(self):
+        original = StandardCalendar(month_names={3: "Медвежарь"})
+        decoded = decode_calendar(encode_calendar(original))
+        assert isinstance(decoded, CalendarDecoded)
+        restored = decoded.calendar
+        assert restored.month_names == original.month_names
+        for is_bc in (False, True):
+            for coord in (MonthDay(2024, 3, 9), MonthDay(1, 1, 1)):
+                assert restored.to_key(coord, is_bc) == original.to_key(coord, is_bc)
+
+
+# ── кодек хранения: кастомная спека, круговой проход ────────────────────
+
+
+CODEC_SPEC = base_spec(
+    months=make_months(("Зимостой", 30), ("Талолист", 50), ("Сухочивень", 20)),
+    week_names=BASE_WEEK,
+    intercalary=(
+        IntercalarySpec("Гром", 2),
+        IntercalarySpec("Эхо", 2),
+        IntercalarySpec("Тишина", 3),
+    ),
+)  # все три facet'а спеки сразу: месяцы разной длины, неделя, правила при хостах
+
+
+class TestCodecCustomRoundTrip:
+    """C2 task 1.2 / сценарий «Круговой проход через хранилище»: сохранённая
+    спека равна прочитанной, ключи совпадают побитово."""
+
+    def test_full_spec_fields_are_written_one_for_one(self):
+        raw = json.loads(encode_calendar(CustomCalendar(CODEC_SPEC)))
+        assert raw == {
+            "v": 1,
+            "kind": "custom",
+            "months": [
+                {"name": "Зимостой", "length": 30},
+                {"name": "Талолист", "length": 50},
+                {"name": "Сухочивень", "length": 20},
+            ],
+            "week_names": ["Восход", "Тень", "Полдень", "Закат"],
+            "intercalary": [
+                {"name": "Гром", "after_month": 2},
+                {"name": "Эхо", "after_month": 2},
+                {"name": "Тишина", "after_month": 3},
+            ],
+        }
+
+    def test_saved_spec_is_equal_to_the_read_one(self):
+        original = CustomCalendar(CODEC_SPEC)
+        decoded = decode_calendar(encode_calendar(original))
+        assert isinstance(decoded, CalendarDecoded)
+        restored = decoded.calendar
+        assert isinstance(restored, CustomCalendar)
+        assert restored.spec == original.spec == CODEC_SPEC
+
+    def test_restored_calendar_keys_are_bit_identical_in_both_eras(self):
+        original = CustomCalendar(CODEC_SPEC)
+        decoded = decode_calendar(encode_calendar(original))
+        restored = decoded.calendar
+        probes = [
+            MonthDay(1, 1, 1), MonthDay(44, 2, 50), MonthDay(9999, 3, 20),
+            IntercalaryDay(44, 0), IntercalaryDay(44, 1), IntercalaryDay(9999, 2),
+        ]
+        for coord in probes:
+            for is_bc in (False, True):
+                key = original.to_key(coord, is_bc)
+                assert restored.to_key(coord, is_bc) == key
+                assert restored.from_key(key, is_bc) == coord
+
+    def test_empty_intercalary_round_trips_as_empty(self):
+        original = CustomCalendar(base_spec())  # intercalary = ()
+        decoded = decode_calendar(encode_calendar(original))
+        assert decoded.calendar.spec.intercalary == ()
+
+    def test_encode_is_deterministic_across_a_decode_cycle(self):
+        raw_once = encode_calendar(CustomCalendar(CODEC_SPEC))
+        decoded = decode_calendar(raw_once)
+        assert encode_calendar(decoded.calendar) == raw_once
+
+
+# ── кодек хранения: повреждённые значения никогда не бросают ────────────
+
+CODEC_CORRUPT_CASES = [
+    # ── битый JSON ────────────────────────────────────────────────────────
+    pytest.param("{not json at all", {"corrupt_json"}, id="broken-json"),
+    pytest.param("", {"corrupt_json"}, id="empty-string"),
+    pytest.param(None, {"corrupt_json"}, id="value-is-not-a-string"),
+    # ── распарсилось, но это не объект-календаря ──────────────────────────
+    pytest.param("[1, 2]", {"corrupt_shape"}, id="json-array-not-object"),
+    pytest.param('"просто строка"', {"corrupt_shape"}, id="json-string-not-object"),
+    # ── версия формата ────────────────────────────────────────────────────
+    pytest.param('{"kind": "standard"}', {"unknown_version"}, id="missing-v"),
+    pytest.param('{"v": 2, "kind": "standard"}', {"unknown_version"}, id="future-v"),
+    pytest.param('{"v": 0, "kind": "custom"}', {"unknown_version"}, id="zero-v"),
+    # ── дискриминатор kind ────────────────────────────────────────────────
+    pytest.param('{"v": 1}', {"corrupt_shape"}, id="missing-kind"),
+    pytest.param('{"v": 1, "kind": "lunar"}', {"corrupt_shape"}, id="unknown-kind"),
+    # ── standard: битый month_names ───────────────────────────────────────
+    pytest.param(
+        '{"v": 1, "kind": "standard", "month_names": []}',
+        {"corrupt_shape"}, id="names-not-an-object",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "standard", "month_names": {"3": 7}}',
+        {"corrupt_shape"}, id="name-is-not-a-string",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "standard", "month_names": {"январь": "X"}}',
+        {"corrupt_shape"}, id="name-key-is-not-a-month-number",
+    ),
+    # ── custom: поля не списки ────────────────────────────────────────────
+    pytest.param(
+        '{"v": 1, "kind": "custom", "week_names": [], "intercalary": []}',
+        {"corrupt_shape"}, id="custom-without-months",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": {}, "week_names": [], "intercalary": []}',
+        {"corrupt_shape"}, id="months-is-not-a-list",
+    ),
+    # ── custom: битые записи month/week/intercalary ───────────────────────
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": [30],'
+        ' "week_names": ["a", "b"], "intercalary": []}',
+        {"corrupt_shape"}, id="month-entry-is-not-an-object",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": [{"name": 5, "length": 30}],'
+        ' "week_names": ["a", "b"], "intercalary": []}',
+        {"corrupt_shape"}, id="month-name-is-not-a-string",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": [{"name": "x", "length": true}],'
+        ' "week_names": ["a", "b"], "intercalary": []}',
+        {"corrupt_shape"}, id="month-length-is-a-bool",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": [{"name": "x", "length": 3}],'
+        ' "week_names": [1], "intercalary": []}',
+        {"corrupt_shape"}, id="week-name-is-not-a-string",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": [{"name": "x", "length": 3}],'
+        ' "week_names": ["a", "b"], "intercalary": [{"name": "Гром"}]}',
+        {"corrupt_shape"}, id="intercalary-entry-without-host",
+    ),
+    pytest.param(
+        '{"v": 1, "kind": "custom", "months": [{"name": "x", "length": 3}],'
+        ' "week_names": ["a", "b"], "intercalary": [3]}',
+        {"corrupt_shape"}, id="intercalary-entry-is-not-an-object",
+    ),
+]
+
+
+class TestCodecCorruptedValue:
+    """C2 task 1.2 / требование «Повреждённое значение календарь-ключа»,
+    часть кодека: битое значение никогда не бросает — оно отдаёт полный
+    список машинных причин (дальше их локализирует presentation, D4)."""
+
+    @pytest.mark.parametrize(("raw", "expected_codes"), CODEC_CORRUPT_CASES)
+    def test_broken_values_decode_to_corruption_not_exceptions(self, raw, expected_codes):
+        result = decode_calendar(raw)
+        assert isinstance(result, CalendarCorrupted)
+        assert codes_of(result.reasons) == expected_codes
+
+    def test_reasons_are_specproblem_shaped_machine_codes(self):
+        result = decode_calendar('{"v": 1}')
+        (reason,) = result.reasons
+        assert isinstance(reason, SpecProblem)
+        assert isinstance(reason.code, str) and reason.code
+        assert isinstance(reason.message, str) and reason.message  # всегда есть деталь
+
+    def test_broken_custom_spec_reports_kernel_validation_reason(self):
+        # сценарий «Битая кастомная спека»: вставной день ссылается на
+        # несуществующий месяц — причина из валидации ядра, не заглушка
+        result = decode_calendar(
+            '{"v": 1, "kind": "custom",'
+            ' "months": [{"name": "Короткий", "length": 5}],'
+            ' "week_names": ["а", "б"],'
+            ' "intercalary": [{"name": "Гром", "after_month": 2}]}'
+        )
+        assert isinstance(result, CalendarCorrupted)
+        assert codes_of(result.reasons) == {"intercalary_unknown_month"}
+
+    def test_kernel_reports_every_spec_reason_not_only_the_first(self):
+        # полный список причин D6 проходит через кодек без потерь
+        result = decode_calendar(
+            '{"v": 1, "kind": "custom",'
+            ' "months": [{"name": "", "length": 0}],'
+            ' "week_names": ["а"],'
+            ' "intercalary": []}'
+        )
+        assert isinstance(result, CalendarCorrupted)
+        assert codes_of(result.reasons) == {
+            "empty_month_name", "month_length_below_min", "week_too_short",
+        }
+
+    def test_encode_refuses_a_calendar_without_a_storage_shape(self):
+        # третий реализатор протокола храниться пока не умеет (D1: форма
+        # есть только у пресета и кастома; мастер — C4)
+        with pytest.raises(TypeError):
+            encode_calendar(StubCalendar())

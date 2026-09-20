@@ -84,7 +84,8 @@ _MIGRATIONS = [
     # Era-aware dates (design D3): flags default to 0 so pre-era rows and any
     # INSERT that predates the feature read as «н.э.»; the derived keys are
     # nullable on purpose — old app versions write dates without them, and
-    # the D4 backfill below completes them on the next open.
+    # the python reconcile started from Application.start() (design D5)
+    # recomputes them on the next open.
     *[(t, "start_bc", "INTEGER NOT NULL DEFAULT 0") for t in _ERA_TABLES],
     *[(t, "end_bc", "INTEGER NOT NULL DEFAULT 0") for t in _ERA_TABLES],
     *[(t, "start_key", "INTEGER") for t in _ERA_TABLES],
@@ -120,35 +121,6 @@ async def _backup_before_first_era_migration(conn, database: str | None) -> None
     backup = db_file.with_name(db_file.name + ".bak")
     if not backup.exists():
         shutil.copy2(db_file, backup)
-
-
-async def _backfill_era_keys(conn) -> None:
-    """Idempotent SQL backfill of start_key/end_key (design D4).
-
-    ``julianday(d) = toordinal(d) + 1721424.5`` for any stored date, CAST
-    truncates the ``.5`` tail identically, and ``strftime('%Y')`` gives the
-    year number — so both CASE branches are value-identical to the Python
-    ``era_key`` (D2, where BC keys step years by 732). ``WHERE key IS NULL``
-    makes the statement a no-op once keys are in place, which also closes
-    rows an old app version INSERTed without keys after the migration.
-    """
-    for table in _ERA_TABLES:
-        await conn.exec_driver_sql(
-            f"UPDATE {table} SET start_key = CASE"
-            " WHEN start_bc THEN"
-            "  (CAST(julianday(start_date) AS INTEGER) - 1721424)"
-            "  - 732 * CAST(strftime('%Y', start_date) AS INTEGER)"
-            " ELSE CAST(julianday(start_date) AS INTEGER) - 1721424 END"
-            " WHERE start_key IS NULL AND start_date IS NOT NULL"
-        )
-        await conn.exec_driver_sql(
-            f"UPDATE {table} SET end_key = CASE"
-            " WHEN end_bc THEN"
-            "  (CAST(julianday(end_date) AS INTEGER) - 1721424)"
-            "  - 732 * CAST(strftime('%Y', end_date) AS INTEGER)"
-            " ELSE CAST(julianday(end_date) AS INTEGER) - 1721424 END"
-            " WHERE end_key IS NULL AND end_date IS NOT NULL"
-        )
 
 
 async def _seed_default_event_types(conn) -> None:
@@ -204,10 +176,12 @@ async def _migrate_legacy_images(engine, image_dir: Path) -> None:
 async def init_db(engine, image_dir: Path | str | None = None) -> None:
     """Create tables if they don't exist, and migrate missing columns/data.
 
-    Era-aware dates (add-era-aware-dates): every open backfills missing
-    era keys (D4, idempotent), and a game file that is about to receive the
-    era columns for the first time is copied to ``<db>.bak`` beforehand
-    (D5).
+    Era-aware dates (add-era-aware-dates): a game file that is about to
+    receive the era columns for the first time is copied to ``<db>.bak``
+    beforehand (D5).  Era keys are NOT derived here anymore: the schema is
+    the only business left — key reconciliation is a pure-python pass over
+    the active calendar, run by ``CalendarSettingsService.reconcile_era_keys``
+    from ``Application.start()`` right after the calendar load (C2, design D5).
 
     ``image_dir`` is the game's ``images/`` directory (design D8); when
     omitted, legacy-base64 migration is skipped — used by schema-only tests
@@ -233,10 +207,6 @@ async def init_db(engine, image_dir: Path | str | None = None) -> None:
     # Migrate end_date NOT NULL → nullable
     async with engine.begin() as conn:
         await _migrate_nullable_end_dates(conn)
-
-    # Derive missing era keys (idempotent; also closes old-version rows, D4)
-    async with engine.begin() as conn:
-        await _backfill_era_keys(conn)
 
     # Seed the six default event types into an empty set (W4, idempotent)
     async with engine.begin() as conn:

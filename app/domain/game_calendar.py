@@ -24,14 +24,25 @@ coordinate each paired with its era, and a stable ``ShiftReason`` code)
 gathered into a ``ShiftReport`` by the pure :func:`build_shift_report` over
 caller-supplied coordinate checks — the domain never reads the database nor
 names the six tables, and never carries localized captions or entity names.
+Piece C2 (designs D1/D7) makes the calendar a stored setting: month display
+names become an integral part of the calendar itself — the protocol's
+``month_names`` member, the domain-owned ``DEFAULT_MONTH_NAMES`` the standard
+preset defaults to, and the pure :func:`encode_calendar` /
+:func:`decode_calendar` codec mapping calendars to the versioned
+``{"v": 1, "kind": ...}`` JSON value the ``game_settings`` row keeps and back;
+an unreadable stored value answers with machine-readable reasons
+(``CalendarCorrupted``) instead of raising, and a third calendar implementer
+has no storage shape until the C4 wizard gives it one.
 """
 from __future__ import annotations
 
 import bisect
-from collections.abc import Iterable
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
 from app.domain.date_era import BC_YEAR_STEP, _gregorian_key
@@ -260,6 +271,17 @@ class GameCalendar(Protocol):
         the spec, year within MIN_YEAR…MAX_YEAR)."""
         ...
 
+    @property
+    def month_names(self) -> Mapping[int, str]:
+        """Month display names by 1-based month number (piece C2, design
+        D7) — an integral part of the calendar itself: a custom calendar
+        names its months from its spec's order, the standard preset falls
+        back to ``DEFAULT_MONTH_NAMES`` and may be overridden at
+        construction.  Names never enter keys, orders or coordinate
+        arithmetic; overriding them relabels date captions only (spec
+        «Источник имён месяцев»)."""
+        ...
+
 
 class StubCalendar:
     """Placeholder for the future implementations: every method raises
@@ -300,6 +322,20 @@ def _gregorian_is_leap(year: int) -> bool:
     return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
 
 
+#: Month display names of the Gregorian calendar by 1-based month number —
+#: the app's single source of month names since piece C2 moved this
+#: dictionary out of ``presentation.utils.date_utils`` (and its process
+#: global) into the domain.  The «Стандартный» preset defaults to it; a name
+#: is a caption only and never touches keys or arithmetic (design D7).
+DEFAULT_MONTH_NAMES: Mapping[int, str] = MappingProxyType(
+    {
+        1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+        5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+        9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
+    }
+)
+
+
 class StandardCalendar:
     """The «Стандартный» preset — the real Gregorian calendar under ``era_key``.
 
@@ -316,8 +352,28 @@ class StandardCalendar:
     behavior.  The preset has no intercalary days whatsoever, so an
     ``IntercalaryDay`` coordinate never exists here and ``weekday`` never
     answers ``None`` for a valid coordinate.  Era stays a ``to_key``/
-    ``from_key`` argument (D3) and never changes the structure.
+    ``from_key`` argument (D3) and never changes the structure.  Since C2
+    the preset also carries its month names (design D7): the Gregorian
+    defaults, or an override merged over them at construction — captions
+    that leave every key of both eras bit-identical.
     """
+
+    def __init__(self, month_names: Mapping[int, str] | None = None) -> None:
+        """Build the preset, optionally overriding month display names.
+
+        The override merges over ``DEFAULT_MONTH_NAMES``, so a month left
+        out keeps its Gregorian name; per spec «Источник имён месяцев» the
+        same preset produced with or without an override keys every
+        coordinate of both eras bit-identically.
+        """
+        merged: dict[int, str] = dict(DEFAULT_MONTH_NAMES)
+        if month_names:
+            merged.update(month_names)
+        self._month_names: Mapping[int, str] = MappingProxyType(merged)
+
+    @property
+    def month_names(self) -> Mapping[int, str]:
+        return self._month_names
 
     def to_key(self, coord: GameCoord, is_bc: bool = False) -> int:
         if not self.is_valid(coord):
@@ -467,6 +523,12 @@ class CustomCalendar:
             raise ValueError(f"invalid calendar spec: {reasons}")
         self._spec = spec
         self._month_lengths = tuple(month.length for month in spec.months)
+        # Month display names straight from the spec (piece C2, design D7):
+        # month ``i + 1`` is called ``spec.months[i].name`` — captions only;
+        # intercalary rule names live outside this table by construction.
+        self._month_names: Mapping[int, str] = MappingProxyType(
+            {number: month.name for number, month in enumerate(spec.months, 1)}
+        )
 
         # Prefix tables (design D4): a month's slot starts after every
         # earlier month *and* the intercalary slots those earlier months
@@ -521,6 +583,12 @@ class CustomCalendar:
     @property
     def spec(self) -> CalendarSpec:
         return self._spec
+
+    @property
+    def month_names(self) -> Mapping[int, str]:
+        """Month names of the spec by 1-based month number (design D7):
+        the spec is the only source, so these stay in lockstep with it."""
+        return self._month_names
 
     @property
     def year_length(self) -> int:
@@ -921,3 +989,204 @@ def build_shift_report(checks: Iterable[ShiftCheck], calendar: GameCalendar) -> 
                 )
             )
     return ShiftReport(tuple(entries))
+
+
+# ── Storage codec (roadmap piece C2, design D1) ──────────────────────────
+
+#: JSON format version :func:`encode_calendar` writes and
+#: :func:`decode_calendar` reads; a value stamped with any other version is
+#: reported as ``unknown_version`` rather than silently misread (spec
+#: «Календарь-настройки хранятся в базе игры»).
+CALENDAR_STORAGE_VERSION = 1
+
+#: ``kind`` discriminators of the stored value (design D1).
+_KIND_STANDARD = "standard"
+_KIND_CUSTOM = "custom"
+
+
+@dataclass(frozen=True)
+class CalendarDecoded:
+    """Successful decode: the stored value describes this calendar."""
+
+    calendar: GameCalendar
+
+
+@dataclass(frozen=True)
+class CalendarCorrupted:
+    """Rejected decode: every reason the stored value could not be read.
+
+    The reasons are the machine-readable :class:`SpecProblem` codes design
+    D4 reserves for corruption — the codec's own ``corrupt_json``,
+    ``unknown_version`` and ``corrupt_shape`` plus the spec-validation
+    codes of a rejected custom spec (the full list, never just the first
+    hit).  Like ``validate`` these are never localized here; the
+    presentation renders the user-facing warning from these codes."""
+
+    reasons: tuple[SpecProblem, ...]
+
+
+def _corrupt_shape(detail: str) -> CalendarCorrupted:
+    """One malformed-payload problem as a decode result."""
+    return CalendarCorrupted((SpecProblem("corrupt_shape", detail),))
+
+
+def encode_calendar(calendar: GameCalendar) -> str:
+    """Serialize a calendar into the stored JSON value of design D1.
+
+    ``{"v": 1, "kind": "standard"}`` gains a ``month_names`` object only
+    when the preset's names actually differ from ``DEFAULT_MONTH_NAMES`` —
+    an empty (or all-default) override stays normalized into "no field", so
+    a setting is never stored "про запас" (spec «Календарь-настройки
+    хранятся в базе игры», design "Open Questions").  ``kind: "custom"``
+    writes the full spec fields one-for-one: ``months`` (name + length),
+    ``week_names`` and ``intercalary`` (name + after_month), list order
+    meaningful.  Only the two concrete calendars have a storage shape — a
+    third implementer of the protocol refuses here until the C4 wizard
+    gives it one.
+    """
+    if isinstance(calendar, CustomCalendar):
+        spec = calendar.spec
+        payload: dict = {
+            "v": CALENDAR_STORAGE_VERSION,
+            "kind": _KIND_CUSTOM,
+            "months": [{"name": month.name, "length": month.length} for month in spec.months],
+            "week_names": list(spec.week_names),
+            "intercalary": [
+                {"name": rule.name, "after_month": rule.after_month}
+                for rule in spec.intercalary
+            ],
+        }
+    elif isinstance(calendar, StandardCalendar):
+        payload = {"v": CALENDAR_STORAGE_VERSION, "kind": _KIND_STANDARD}
+        overrides = {
+            str(number): name
+            for number, name in calendar.month_names.items()
+            if DEFAULT_MONTH_NAMES.get(number) != name
+        }
+        if overrides:
+            payload["month_names"] = overrides
+    else:
+        raise TypeError(
+            "only StandardCalendar and CustomCalendar can be stored, not "
+            f"{type(calendar).__name__}"
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def decode_calendar(raw: str) -> CalendarDecoded | CalendarCorrupted:
+    """Read the stored JSON value back into a calendar (design D1).
+
+    A broken value never raises (design D4): the result is either a
+    ``CalendarDecoded`` calendar or a ``CalendarCorrupted`` carrying
+    machine-readable reasons — the caller chooses its warning phrasing from
+    those codes and leaves the corrupted row untouched.  A stored custom
+    spec is run through the core's ``validate`` first, so the full reason
+    list is reported and the ``CustomCalendar`` constructor — the same
+    gate, reached only with a pre-validated spec — cannot raise here.
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return CalendarCorrupted(
+            (SpecProblem("corrupt_json", "the stored calendar is not parseable JSON"),)
+        )
+    if not isinstance(data, dict):
+        return _corrupt_shape(
+            f"stored calendar must be a JSON object, got {type(data).__name__}"
+        )
+    version = data.get("v")
+    if version != CALENDAR_STORAGE_VERSION:
+        return CalendarCorrupted(
+            (
+                SpecProblem(
+                    "unknown_version",
+                    f"calendar format version {version!r} is not supported "
+                    f"(this app reads and writes version {CALENDAR_STORAGE_VERSION})",
+                ),
+            )
+        )
+    kind = data.get("kind")
+    if kind == _KIND_STANDARD:
+        return _decode_standard(data)
+    if kind == _KIND_CUSTOM:
+        return _decode_custom(data)
+    return _corrupt_shape(
+        f"unknown calendar kind {kind!r}, expected {_KIND_STANDARD!r} or {_KIND_CUSTOM!r}"
+    )
+
+
+def _decode_standard(data: dict) -> CalendarDecoded | CalendarCorrupted:
+    """``kind: standard`` — the preset plus an optional ``month_names``
+    override, whose keys are month numbers carried as JSON strings."""
+    raw_names = data.get("month_names")
+    if raw_names is None:
+        return CalendarDecoded(StandardCalendar())
+    if not isinstance(raw_names, dict):
+        return _corrupt_shape("month_names must be a JSON object")
+    month_names: dict[int, str] = {}
+    for number, name in raw_names.items():
+        if not isinstance(name, str):
+            return _corrupt_shape(f"month name for key {number!r} is not a string")
+        try:
+            month_names[int(number)] = name
+        except ValueError:
+            return _corrupt_shape(
+                f"month_names key {number!r} is not an integer month number"
+            )
+    return CalendarDecoded(StandardCalendar(month_names=month_names))
+
+
+def _is_stored_int(value: object) -> bool:
+    """An integer of the JSON world — ``bool`` is ``int`` in Python but is
+    never a length or a month number in this format."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _decode_custom(data: dict) -> CalendarDecoded | CalendarCorrupted:
+    """``kind: custom`` — the full spec, fields decoded one-for-one after a
+    shape pass (both ``validate`` and ``CustomCalendar`` assume plain ints
+    and strings) and the core's own validation of the rebuilt spec."""
+    months_raw = data.get("months")
+    week_raw = data.get("week_names")
+    intercalary_raw = data.get("intercalary")
+    if (
+        not isinstance(months_raw, list)
+        or not isinstance(week_raw, list)
+        or not isinstance(intercalary_raw, list)
+    ):
+        return _corrupt_shape(
+            "custom calendar fields months/week_names/intercalary must be JSON lists"
+        )
+    months: list[MonthSpec] = []
+    for entry in months_raw:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("name"), str)
+            or not _is_stored_int(entry.get("length"))
+        ):
+            return _corrupt_shape(
+                f"month entry {entry!r} needs a string name and an integer length"
+            )
+        months.append(MonthSpec(entry["name"], entry["length"]))
+    for name in week_raw:
+        if not isinstance(name, str):
+            return _corrupt_shape(f"week name {name!r} must be a string")
+    intercalary: list[IntercalarySpec] = []
+    for entry in intercalary_raw:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("name"), str)
+            or not _is_stored_int(entry.get("after_month"))
+        ):
+            return _corrupt_shape(
+                f"intercalary entry {entry!r} needs a string name "
+                f"and an integer after_month"
+            )
+        intercalary.append(IntercalarySpec(entry["name"], entry["after_month"]))
+    spec = CalendarSpec(
+        months=tuple(months), week_names=tuple(week_raw), intercalary=tuple(intercalary)
+    )
+    spec_problems = validate(spec)
+    if spec_problems:
+        return CalendarCorrupted(tuple(spec_problems))
+    return CalendarDecoded(CustomCalendar(spec))

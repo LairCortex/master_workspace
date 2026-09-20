@@ -2,9 +2,10 @@
 
 Base64-in-DB is gone (see openspec/changes/file-based-image-storage): images
 are addressed by sha256 on disk (``app.infrastructure.images``). ``set_image_dir``
-mirrors the per-game global-state pattern already used by
-``date_utils.set_custom_months`` — set once in ``Application.start()``, read
-by every view without DB/DI plumbing. Resolution needs an entity's
+is the per-game global-state pattern — set once in ``Application.start()``, read
+by every view without DB/DI plumbing (the former month-names global left
+``date_utils`` for the active calendar accessor, so this one stands alone).
+Resolution needs an entity's
 ``image_ref`` (the eager-loaded ``ImageModel`` row, see ``db/models.py``) —
 the view never assembles a path itself, only forwards the entity.
 """

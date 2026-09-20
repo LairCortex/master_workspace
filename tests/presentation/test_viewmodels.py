@@ -15,19 +15,24 @@ from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
-from app.presentation.utils.date_utils import get_custom_months, set_custom_months
+from app.domain.game_calendar import (
+    StandardCalendar,
+    current_calendar,
+    reset_current_calendar,
+    set_current_calendar,
+)
 from app.presentation.views.timeline_rows import build_rows
 
 
 @pytest.fixture(autouse=True)
 def _default_game_months():
-    """Rows now carry game-formatted captions — pin the default month map
+    """Rows now carry game-formatted captions — pin the «Стандартный» preset
     around every unit regardless of what other suites left in the shared
-    module state."""
-    saved = get_custom_months()
-    set_custom_months(None)
+    process state, then hand the previously active calendar object back."""
+    saved = current_calendar()
+    reset_current_calendar()
     yield
-    set_custom_months(saved)
+    set_current_calendar(saved)
 
 
 def _mock_event(id_=1, name="Battle"):
@@ -438,6 +443,30 @@ class TestTimelineViewModel:
 
         assert vm.rows is not rows_before
         assert [r.detail for r in vm.rows] == ["подписали перемирие"]
+
+    async def test_calendar_object_identity_moves_the_rebuild_memo(self):
+        """Piece C2 (design D7): the rebuild key holds the active calendar
+        OBJECT — installing a different calendar object re-models the rows
+        even with an identical sample and window, while re-laying out with
+        the very same object stays swallowed by the memo."""
+        event = _span(1, "Совет", date(1200, 1, 5), None)
+        service, vm = self._vm_with(event)
+        await vm.load_events()
+        rows_before = vm.rows
+        assert rows_before[0].caption == "05 Январь 1200 — ∞ · Совет"
+
+        await vm.load_events()  # same sample, same calendar object
+        assert vm.rows is rows_before  # memo intact: no re-model
+
+        set_current_calendar(StandardCalendar(month_names={1: "Январь-1"}))
+        await vm.load_events()  # a different calendar object → re-model
+
+        assert vm.rows is not rows_before
+        assert vm.rows[0].caption == "05 Январь-1 1200 — ∞ · Совет"
+        rows_moved = vm.rows
+
+        await vm.load_events()  # the same object again → memo swallows it
+        assert vm.rows is rows_moved
 
 
 # ── TimelineViewModel — QML island model & invokables (flat list) ─────────

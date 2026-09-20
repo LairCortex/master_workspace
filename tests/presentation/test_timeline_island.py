@@ -26,7 +26,7 @@ from PySide6.QtCore import QDate, QPoint
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QWidget
 
-from app.presentation.utils.date_utils import get_custom_months, set_custom_months
+from app.domain.game_calendar import current_calendar, reset_current_calendar, set_current_calendar
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views import timeline_island
 from app.presentation.views.timeline_date_popup import WINDOW_CHIP_ALL
@@ -67,11 +67,11 @@ Item {
 
 @pytest.fixture(autouse=True)
 def _default_months():
-    """Month names are process-global (date_utils); tests assert the default map."""
-    saved = get_custom_months()
-    set_custom_months(None)
+    """Month names come from the active calendar; tests assert the preset map."""
+    saved = current_calendar()
+    reset_current_calendar()
     yield
-    set_custom_months(saved)
+    set_current_calendar(saved)
 
 
 @pytest.fixture

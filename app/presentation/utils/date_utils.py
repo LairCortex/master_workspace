@@ -1,46 +1,37 @@
-"""Date formatting utilities with custom month names support."""
+"""Date formatting utilities reading the active game calendar.
+
+Since piece C2 (design D7) the month names are an integral part of the
+active :class:`~app.domain.game_calendar.GameCalendar` — the old process
+global (``_current_months``), its ``set/get_custom_months`` accessors and
+the ``custom_months`` serialization helpers are gone.  Formatting helpers
+here are thin delegates to ``current_calendar().month_names``; who sets and
+resets the active calendar is the application lifecycle's concern.
+"""
 from __future__ import annotations
 
-import json
 from datetime import date
-from typing import Dict
 
-# Default Russian month names (used when no custom mapping is set)
-DEFAULT_MONTHS: Dict[int, str] = {
-    1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
-    5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-    9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь",
-}
+from app.domain.game_calendar import DEFAULT_MONTH_NAMES, current_calendar
 
-# Shared mutable state — set once on game load, used everywhere
-_current_months: Dict[int, str] = dict(DEFAULT_MONTHS)
-
-
-def set_custom_months(months: Dict[int, str] | None) -> None:
-    """Set custom month names for the current game session.
-
-    Missing months fall back to defaults.
-    """
-    _current_months.clear()
-    _current_months.update(DEFAULT_MONTHS)
-    if months:
-        _current_months.update(months)
-
-
-def get_custom_months() -> Dict[int, str]:
-    """Return current month name mapping."""
-    return dict(_current_months)
+#: Re-export of the domain's Gregorian month names (piece C2, design D7) —
+#: the single source lives in ``app.domain.game_calendar``; this alias keeps
+#: existing display-side imports on one name (read-only mapping).
+DEFAULT_MONTHS = DEFAULT_MONTH_NAMES
 
 
 def month_name(month: int) -> str:
-    """Return the display name for a month number (1-12)."""
-    return _current_months.get(month, str(month))
+    """Return the display name for a month number in the active calendar.
+
+    A month the calendar does not name falls back to its number as text —
+    the same defensive caption the old global map gave.
+    """
+    return current_calendar().month_names.get(month, str(month))
 
 
 def format_game_date(
     d: date | None, fallback: str = "?", is_bc: bool | None = False
 ) -> str:
-    """Format a date using custom month names: 'dd MonthName yyyy'.
+    """Format a date using the active calendar's month names: 'dd MonthName yyyy'.
 
     A date of the BC era (add-era-aware-dates, design D6) prints its year as
     'dd MonthName yyyy г. до н.э.'; our-era dates keep the previous format.
@@ -75,24 +66,3 @@ def era_flag(value: object) -> bool:
     «н.э.» — the same default as the ``DEFAULT 0`` column of design D3.
     """
     return bool(value) if isinstance(value, (bool, int)) else False
-
-
-# ── Serialization for DB storage ──────────────────────────────────────────
-
-SETTINGS_KEY = "custom_months"
-
-
-def months_to_json(months: Dict[int, str]) -> str:
-    """Serialize month mapping to JSON for DB storage."""
-    return json.dumps({str(k): v for k, v in months.items()}, ensure_ascii=False)
-
-
-def months_from_json(raw: str | None) -> Dict[int, str] | None:
-    """Deserialize month mapping from JSON. Returns None if no customization."""
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-        return {int(k): v for k, v in data.items()}
-    except (json.JSONDecodeError, ValueError):
-        return None

@@ -58,7 +58,6 @@ EXPECTED_QML_ROOT_FILES = (
     "SheetCanvas.qml",
     "SheetEditorRoot.qml",
     "SheetFillRoot.qml",
-    "MonthSettingsRoot.qml",
     "XlsxImportRoot.qml",
     "ImageViewerRoot.qml",
     "DocViewerRoot.qml",

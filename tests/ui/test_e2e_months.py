@@ -1,18 +1,24 @@
-"""E2E scenario 8: custom month names are displayed on the timeline (and persist).
+"""E2E scenario 8: month names obtained by migrating the deprecated setting
+display on the timeline (ui-testing «Кастомные месяцы», piece C2).
 
-Spec «Игровые месяцы» (simplify-event-timeline-flat-list): the flat row
-captions and the «Выбор даты» chip use the game's month map, re-read live on
-every rebuild — the ladder's day headers are gone (REMOVED «Лента дней и
-карточки событий»), the flat list has one caption per event."""
+The month-settings dialog is deleted (roadmap C2): the game's names now come
+from the ``game_calendar`` key, and the legacy ``custom_months`` row is
+carried into it once when the game opens. This test boots the real app,
+creates an event across two months, closes the game, plants a legacy
+``custom_months`` row directly in the file (as a pre-C2 app version wrote it),
+reopens, and asserts both sides of the C2 contract on the UI and the data:
+the timeline captions and the «Выбор даты» chip speak the migrated names,
+``game_calendar`` appeared, and ``custom_months`` is gone.
+"""
 from __future__ import annotations
 
 import datetime
+import json
+import sqlite3
 from pathlib import Path
 
 from PySide6.QtCore import QDate
-from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 
-from tests.presentation import qml_helpers
 from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
 
@@ -24,7 +30,7 @@ def _row_captions(canvas) -> list[str]:
     return [row.caption for row in canvas.rows]
 
 
-async def test_custom_months_displayed_on_timeline(app, wait_for):
+async def test_migrated_month_names_display_on_timeline(app, wait_for):
     application, window = app
     db_path = Path(application._db_path)
 
@@ -43,9 +49,10 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     assert "01 Май 1200" in captions[0]
     assert "20 Июнь 1200" in captions[0]
 
-    # A window on the renamed month proves the chip caption reads the same
-    # live map (spec «Игровые месяцы»: the chip spells window bounds in game
-    # months); the event crosses it, so its row stays visible.
+    # A window on the month that will be renamed proves the chip caption
+    # reads the same live calendar (spec «Игровые месяцы»: the chip spells
+    # window bounds in game months); the event crosses it, so its row stays
+    # visible.
     window.timeline_widget.window_changed.emit(
         datetime.date(1200, 5, 1), datetime.date(1200, 5, 31)
     )
@@ -53,53 +60,45 @@ async def test_custom_months_displayed_on_timeline(app, wait_for):
     assert len(canvas.rows) == 1
     assert "01 Май 1200" in timeline_probe.chip_caption(window)
 
-    # Settings dialog (menu action) → rename May.
-    window.month_settings_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(MonthSettingsDialog)))
-    dialog = window.findChildren(MonthSettingsDialog)[0]
-    may_input = qml_helpers.find_item(dialog.quick, "monthField5")
-    may_input.setProperty("text", CUSTOM_MAY)
-    qml_helpers.click_item(dialog.quick, qml_helpers.find_item(dialog.quick, "saveButton"))
-    await helpers.wait_until_settled()  # the settings-save task owns the session
-
-    # The row caption and the chip re-read the live month map: the renamed
-    # month answers with the custom name (both on rows and on the chip, the
-    # rows rebuilt by the reload following the settings save).
-    await wait_for(
-        lambda: any(f"01 {CUSTOM_MAY} 1200" in cap for cap in _row_captions(canvas))
-    )
-    await wait_for(lambda: CUSTOM_MAY in timeline_probe.chip_caption(window))
-    assert any("20 Июнь 1200" in cap for cap in _row_captions(canvas))
-
-    # Stored in the game's game_settings (per-game key/value pattern).
-    row = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
-    assert row and CUSTOM_MAY in row[0][0]
-
-    # Second save: the game_settings row already exists → update-in-place path.
-    # Pick the VISIBLE dialog: the first one stayed in the child list after accept().
-    window.month_settings_action.trigger()
-    await wait_for(
-        lambda: any(d.isVisible() for d in window.findChildren(MonthSettingsDialog))
-    )
-    dialog2 = next(d for d in window.findChildren(MonthSettingsDialog) if d.isVisible())
-    may_input2 = qml_helpers.find_item(dialog2.quick, "monthField5")
-    may_input2.setProperty("text", f"{CUSTOM_MAY}-2")
-    qml_helpers.click_item(dialog2.quick, qml_helpers.find_item(dialog2.quick, "saveButton"))
-    await helpers.wait_until_settled()  # do not race the save task with shutdown
-    await wait_for(
-        lambda: any(f"01 {CUSTOM_MAY}-2 1200" in cap for cap in _row_captions(canvas))
-    )
-    row2 = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
-    assert row2 and f"{CUSTOM_MAY}-2" in row2[0][0]
-
-    # Persistence: a fresh start on the same DB shows the custom names again.
+    # A regular close hands the whole file back to the disk…
     await application.shutdown()
+
+    # …and an old-version month-names row is planted as the removed dialog
+    # used to write it (key ``custom_months``).
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO game_settings (key, value) VALUES ('custom_months', ?)",
+        (json.dumps({"5": CUSTOM_MAY}, ensure_ascii=False),),
+    )
+    conn.commit()
+    conn.close()
+
+    # Reopening migrates the key into ``game_calendar`` and activates the
+    # renamed preset (spec «Перенос устаревшей настройки названий месяцев»).
     window2 = await application.start(str(db_path))
     try:
         canvas2 = timeline_probe.tape(window2)
+        # The row caption re-reads the live calendar: the migrated month
+        # answers with the game's name while the untouched month stays
+        # Gregorian.
         await wait_for(
-            lambda: any(f"01 {CUSTOM_MAY}-2 1200" in cap for cap in _row_captions(canvas2))
+            lambda: any(f"01 {CUSTOM_MAY} 1200" in cap for cap in _row_captions(canvas2))
         )
+        assert any("20 Июнь 1200" in cap for cap in _row_captions(canvas2))
+
+        # The chip speaks the same calendar.
+        window2.timeline_widget.window_changed.emit(
+            datetime.date(1200, 5, 1), datetime.date(1200, 5, 31)
+        )
+        await helpers.wait_until_settled()
+        await wait_for(lambda: CUSTOM_MAY in timeline_probe.chip_caption(window2))
+
+        # Storage side of the migration (spec): the new key carries the
+        # override, the deprecated key is deleted — repeated opens do not
+        # migrate again.
+        new = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'game_calendar'")
+        assert new and CUSTOM_MAY in new[0][0]
+        old = query_db(db_path, "SELECT value FROM game_settings WHERE key = 'custom_months'")
+        assert not old
     finally:
-        window.close()  # already closed by start(); safe no-op
-        await application.shutdown()
+        window2.close()

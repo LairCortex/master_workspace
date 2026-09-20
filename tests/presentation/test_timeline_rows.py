@@ -13,7 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.presentation.utils.date_utils import get_custom_months, set_custom_months
+from app.domain.game_calendar import (
+    StandardCalendar,
+    current_calendar,
+    reset_current_calendar,
+    set_current_calendar,
+)
 from app.presentation.views.timeline_rows import (
     DETAIL_MAX_CHARS,
     OPEN_END_MARK,
@@ -57,12 +62,13 @@ def _description(characteristics="", backstory=""):
 
 @pytest.fixture(autouse=True)
 def _default_game_months():
-    """Captions are game-calendar text — pin the default month map around each
-    unit regardless of what other suites left in the shared module state."""
-    saved = get_custom_months()
-    set_custom_months(None)
+    """Captions are game-calendar text — pin the «Стандартный» preset around
+    each unit regardless of what other suites left in the shared process
+    state, then hand the previously active calendar object back."""
+    saved = current_calendar()
+    reset_current_calendar()
     yield
-    set_custom_months(saved)
+    set_current_calendar(saved)
 
 
 # ── module purity ─────────────────────────────────────────────────────────────
@@ -115,8 +121,8 @@ def test_open_event_caption_shows_the_infinity_mark_not_an_invented_end():
 
 
 def test_captions_follow_the_game_month_names():
-    """Spec «Игровые месяцы»: row text uses the live custom month map."""
-    set_custom_months({3: "Медвежарь"})
+    """Spec «Игровые месяцы»: row text uses the active calendar's names."""
+    set_current_calendar(StandardCalendar(month_names={3: "Медвежарь"}))
     row, = build_rows([_event(1, date(1200, 3, 5), date(1200, 3, 9), "Имя")])
     assert row.caption == "05 Медвежарь 1200 — 09 Медвежарь 1200 · Имя"
 

@@ -2,12 +2,15 @@
 
 Covers: fresh database, idempotency of a second run, the legacy
 `end_date NOT NULL` rebuild (hotfix 0.9.1 scenario) with data preserved, and
-the era-aware-date transfer (columns, `.bak` copy, D4 key backfill).
+the era-aware-date transfer (columns, `.bak` copy) whose keys are filled by
+the python reconcile (CalendarSettingsService.reconcile_era_keys) — the SQL
+era-key backfill removed in C2, design D5.
 """
 from datetime import date
 
 from sqlalchemy import text
 
+from app.application.services.calendar_settings_service import CalendarSettingsService
 from app.domain.date_era import era_key
 from app.infrastructure.db.database import create_engine, create_session_factory
 from app.infrastructure.db.migrations import init_db
@@ -159,11 +162,14 @@ async def test_legacy_migration_does_not_break_other_tables(tmp_path):
         await engine.dispose()
 
 
-# ── Era-aware dates: transfer, .bak, key backfill (tasks 2.2 / 2.4) ───────
+# ── Era-aware dates: transfer, .bak, python key reconcile (tasks 2.2 / 2.4, C2) ──
 
 # Pre-era ("old version") schema of the six dated tables: era columns absent,
 # end_date already nullable (post-0.9.1), other old-migration columns absent
-# — init_db has to re-add everything it knows.
+# — init_db has to re-add everything it knows.  The columns every app version
+# always had (tasks/personality/image, initial schema) stay in: the startup
+# key reconcile reads these tables through the ORM, so the synthetic table
+# must keep the column set a real pre-era game file has.
 _LEGACY_TABLE_SQL = {
     "events": """
         CREATE TABLE events (
@@ -180,7 +186,9 @@ _LEGACY_TABLE_SQL = {
             name VARCHAR(255) NOT NULL,
             description_id INTEGER,
             start_date DATE NOT NULL,
-            end_date DATE
+            end_date DATE,
+            tasks TEXT,
+            image TEXT
         )
     """,
     "characters": """
@@ -189,7 +197,10 @@ _LEGACY_TABLE_SQL = {
             name VARCHAR(255) NOT NULL,
             description_id INTEGER,
             start_date DATE NOT NULL,
-            end_date DATE
+            end_date DATE,
+            tasks TEXT,
+            personality TEXT,
+            image TEXT
         )
     """,
     "items": """
@@ -207,7 +218,9 @@ _LEGACY_TABLE_SQL = {
             name VARCHAR(255) NOT NULL,
             description_id INTEGER,
             start_date DATE NOT NULL,
-            end_date DATE
+            end_date DATE,
+            tasks TEXT,
+            image TEXT
         )
     """,
     "ratings": """
@@ -278,9 +291,19 @@ async def _era_state(engine, table: str) -> list:
         ).fetchall()
 
 
+async def _reconcile(engine) -> int:
+    """One startup python pass over the era keys (design D5) — the replacement
+    of the SQL backfill removed in C2; run by Application.start() after the
+    calendar load.  Returns the number of corrected rows."""
+    session_factory = create_session_factory(engine)
+    async with session_factory() as session:
+        return await CalendarSettingsService().reconcile_era_keys(session)
+
+
 async def test_old_game_transfers_to_ce_era_idempotently(tmp_path):
     """Spec «Перенос старых сохранений»: dates untouched, era «н.э.», keys
-    filled from D4, exactly one .bak copy, second run changes nothing."""
+    recomputed by the python reconcile from the active calendar (design D5),
+    exactly one .bak copy, second run changes nothing."""
     db_path = tmp_path / "game.db"
     engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
@@ -288,6 +311,9 @@ async def test_old_game_transfers_to_ce_era_idempotently(tmp_path):
         dates_before = await _date_snapshot(engine)
 
         await init_db(engine)
+        # Schema migration alone no longer derives keys — the python pass
+        # that start() runs after the calendar load does.
+        assert await _reconcile(engine) > 0
 
         # dates identical to the pre-transfer snapshot (no value drift)
         assert dates_before == await _date_snapshot(engine)
@@ -297,7 +323,8 @@ async def test_old_game_transfers_to_ce_era_idempotently(tmp_path):
                     await _era_state(engine, table):
                 # Everything transferred reads as our era...
                 assert (start_bc, end_bc) == (0, 0), table
-                # ...and the SQL backfill equals the Python era_key (D2/D4).
+                # ...and the python reconcile equals the era_key (D2/D5),
+                # i.e. the exact numbers the deleted SQL formula produced.
                 assert start_key == era_key(date.fromisoformat(start), False), table
                 if end is not None:
                     assert end_key == era_key(date.fromisoformat(end), False), table
@@ -309,8 +336,11 @@ async def test_old_game_transfers_to_ce_era_idempotently(tmp_path):
 
         # Second open: no data/key drift, no second copy, .bak untouched
         dates_after_first = await _date_snapshot(engine)
+        keys_after_first = {t: await _era_state(engine, t) for t in ERA_TABLES}
         bak_bytes = (tmp_path / "game.db.bak").read_bytes()
         await init_db(engine)
+        assert await _reconcile(engine) == 0  # idempotent: nothing rewritten
+        assert {t: await _era_state(engine, t) for t in ERA_TABLES} == keys_after_first
         assert await _date_snapshot(engine) == dates_after_first
         assert sorted(p.name for p in tmp_path.iterdir()) == ["game.db", "game.db.bak"]
         assert (tmp_path / "game.db.bak").read_bytes() == bak_bytes
@@ -330,10 +360,12 @@ async def test_fresh_new_version_game_gets_no_backup_copy(tmp_path):
         await engine.dispose()
 
 
-async def test_backfill_sql_matches_python_era_key_battery(tmp_path):
-    """Design D4 battery: the SQL expression equals era_key for 113 anchor
-    dates of both eras (226 keys: leap/non-leap years, era borders, 0001/9999
-    borders; the exhaustive all-dates check lives in design D4)."""
+async def test_reconcile_python_matches_era_key_battery(tmp_path):
+    """Design D5 battery: the python reconcile reproduces era_key at the same
+    113 anchor dates of both eras (226 keys: leap/non-leap years, era borders,
+    0001/9999 borders) where the deleted SQL formula was checked against the
+    old scheme; the numbers-equal-old-scheme scenario itself is covered by
+    tests/application/test_calendar_settings_service.py."""
     years = [1, 2, 3, 4, 5, 99, 100, 101, 1000, 1581, 1582, 1583, 1600,
              1700, 1800, 1900, 2000, 2023, 2024, 2025, 2026, 9998, 9999]
     md = [(1, 1), (2, 28), (2, 29), (3, 1), (7, 19), (12, 31)]
@@ -363,7 +395,8 @@ async def test_backfill_sql_matches_python_era_key_battery(tmp_path):
             )).scalar()
             assert nulls == 2 * len(samples)  # nothing keyed before the run
 
-        await init_db(engine)
+        await init_db(engine)  # schema work no longer derives keys…
+        assert await _reconcile(engine) == 2 * len(samples)  # …the python pass does
 
         async with engine.connect() as conn:
             rows = (await conn.execute(
@@ -378,7 +411,8 @@ async def test_backfill_sql_matches_python_era_key_battery(tmp_path):
 
 async def test_old_version_row_is_keyed_on_next_open(tmp_path):
     """Task 2.4: a row INSERTed without keys (old-version emulation) receives
-    its key from init_db and takes its correct chronological place."""
+    its key from the startup reconcile Application.start() runs and takes its
+    correct chronological place."""
     db_path = tmp_path / "game.db"
     engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
@@ -395,7 +429,8 @@ async def test_old_version_row_is_keyed_on_next_open(tmp_path):
                 "VALUES ('Modern', '2026-01-01', NULL)"
             )
 
-        await init_db(engine)  # «next open» closes the invariant
+        await init_db(engine)  # «next open»: schema pass, then the D5 pass
+        await _reconcile(engine)
 
         async with engine.connect() as conn:
             row = (await conn.execute(

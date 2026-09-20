@@ -1,33 +1,9 @@
 """Sync VMs for R3 pack 1 thin dialogs."""
 from __future__ import annotations
 
-from app.presentation.utils.date_utils import DEFAULT_MONTHS
 from app.presentation.viewmodels.doc_viewer_view_model import DocViewerViewModel
 from app.presentation.viewmodels.image_viewer_view_model import ImageViewerViewModel
-from app.presentation.viewmodels.month_settings_view_model import MonthSettingsViewModel
 from app.presentation.viewmodels.xlsx_import_view_model import XlsxImportViewModel
-
-
-def test_month_settings_vm_twelve_names_reset_saved():
-    vm = MonthSettingsViewModel({1: "Зимостой", 2: "Февраль"})
-    assert vm.nameAt(0) == "Зимостой"
-    assert vm.nameAt(1) == ""
-    assert vm.placeholderAt(0) == DEFAULT_MONTHS[1]
-    assert vm.nameAt(-1) == ""
-    assert vm.placeholderAt(99) == ""
-    vm.setName(0, "Зимостой")
-    vm.setName(0, "Новый")
-    assert vm.nameAt(0) == "Новый"
-    vm.setName(99, "x")
-    captured = []
-    vm.saved.connect(captured.append)
-    vm.reset()
-    assert vm.names == [""] * 12
-    vm.setName(0, "  ")
-    vm.save()
-    result = captured[0]
-    assert result[1] == DEFAULT_MONTHS[1]
-    assert result[2] == DEFAULT_MONTHS[2]
 
 
 def test_xlsx_import_vm_state_machine_smoke():

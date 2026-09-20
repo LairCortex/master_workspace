@@ -41,7 +41,6 @@ def _docs_dir() -> Path:
 class MainWindow(QMainWindow):
     switch_game_requested = Signal()
     export_requested = Signal()
-    month_settings_requested = Signal()
     llm_setup_requested = Signal()
     char_sheets_requested = Signal()
     table_host_requested = Signal()
@@ -85,11 +84,9 @@ class MainWindow(QMainWindow):
         self.table_host_action.triggered.connect(self.table_host_requested.emit)
         char_sheets_menu.addAction(self.table_host_action)
 
-        # Настройки
+        # Настройки — с кусочка C2 здесь только тема: диалог переименования
+        # месяцев удалён, настройки календаря вернутся мастером C4.
         settings_menu = menu_bar.addMenu("Настройки")
-        self.month_settings_action = QAction("Названия месяцев…", self)
-        self.month_settings_action.triggered.connect(self.month_settings_requested.emit)
-        settings_menu.addAction(self.month_settings_action)
 
         # Theme toggle (design D5): checkable state mirrors the current theme;
         # with invalid tokens the runtime toggle is a no-op and the check

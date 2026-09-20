@@ -29,6 +29,9 @@ from app.infrastructure.repositories.location_repository import LocationReposito
 from app.infrastructure.db.models import DescriptionModel
 
 from app.application.services.event_service import EventService
+from app.application.services.calendar_settings_service import (
+    CalendarSettingsService,
+)
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.application.services.llm_service import LlmService
@@ -55,8 +58,10 @@ from app.presentation.viewmodels.llm_viewmodel import (
     FIELD_PROMPTS_KEY, WORLD_PROMPT_KEY, LlmViewModel,
 )
 
-from app.presentation.utils.date_utils import (
-    SETTINGS_KEY, get_custom_months, months_from_json, months_to_json, set_custom_months,
+from app.domain.game_calendar import reset_current_calendar
+from app.presentation.utils.calendar_warnings import (
+    MONTH_WARNING_TITLE,
+    calendar_corruption_body,
 )
 from app.presentation.utils.image_utils import set_image_dir
 from app.infrastructure.http import AppHttpClient
@@ -64,7 +69,6 @@ from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
-from app.presentation.views.month_settings_dialog import MonthSettingsDialog
 from app.presentation.theme import ThemeRuntime, get_default_theme
 from app.presentation.qml import setup_qml_shell
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
@@ -121,6 +125,9 @@ class Application:
         self._llm_vm: LlmViewModel | None = None
         # Entity service catalog — built once per game in start()
         self._entity_services: dict[str, EntityService] = {}
+        # Game-calendar settings (C2, design D2): one stateless service per
+        # process; start() loads the calendar and reconciles era keys with it.
+        self._calendar_service: CalendarSettingsService | None = None
         self._wiring: ApplicationWiring | None = None
         # Character-sheet windows (D6/D4): at most one list + one editor + one fill
         self._sheet_service: CharacterSheetService | None = None
@@ -162,8 +169,25 @@ class Application:
 
         game_name = Path(db_path).parent.name
 
-        # Load custom month names
-        await self._load_month_settings()
+        # C2 (designs D2/D3): read the game's calendar setting, migrate the
+        # legacy ``custom_months`` key once, and make the decoded calendar
+        # active — before any view model or ``load_events`` touches month
+        # captions or chronological keys.  A damaged value leaves its row
+        # byte-identical and returns reasons (design D4); the caller shows
+        # exactly one warning per open, so the service stays free of Qt.
+        self._calendar_service = CalendarSettingsService()
+        outcome = await self._calendar_service.load_and_apply(self._session)
+        if outcome.reasons:
+            QMessageBox.warning(
+                None,
+                MONTH_WARNING_TITLE,
+                calendar_corruption_body(outcome.reasons),
+            )
+
+        # C2 (design D5): re-align stored era keys with the active calendar
+        # right after the calendar load — the python reconcile replaces the
+        # SQL era-key backfill that used to run inside init_db.
+        await self._calendar_service.reconcile_era_keys(self._session)
 
         # Repositories
         desc_repo = BaseRepository(self._session, DescriptionModel)
@@ -230,11 +254,6 @@ class Application:
 
         # Export game menu
         window.export_requested.connect(self._on_export_game)
-
-        # Month settings menu
-        window.month_settings_requested.connect(
-            lambda: asyncio.ensure_future(self._on_month_settings(window, timeline_vm))
-        )
 
         # LLM setup menu
         window.llm_setup_requested.connect(
@@ -789,53 +808,6 @@ class Application:
             )
         return services
 
-    async def _load_month_settings(self) -> None:
-        """Load custom month names from game_settings table."""
-        from sqlalchemy import select
-        try:
-            result = await self._session.execute(
-                select(GameSettingsModel).where(GameSettingsModel.key == SETTINGS_KEY)
-            )
-            row = result.scalars().first()
-            if row:
-                months = months_from_json(row.value)
-                set_custom_months(months)
-            else:
-                set_custom_months(None)
-        except Exception as exc:
-            logging.getLogger("app.main").warning(
-                "Failed to load month settings: %s", exc
-            )
-            set_custom_months(None)
-
-    async def _save_month_settings(self, months: dict) -> None:
-        """Save custom month names to game_settings table."""
-        from sqlalchemy import select
-        result = await self._session.execute(
-            select(GameSettingsModel).where(GameSettingsModel.key == SETTINGS_KEY)
-        )
-        row = result.scalars().first()
-        value = months_to_json(months)
-        if row:
-            row.value = value
-        else:
-            self._session.add(GameSettingsModel(key=SETTINGS_KEY, value=value))
-        await self._session.commit()
-
-    async def _on_month_settings(self, window, timeline_vm) -> None:
-        """Show month settings dialog and apply changes."""
-        dialog = MonthSettingsDialog(get_custom_months(), parent=window, theme=self._theme)
-
-        async def _on_saved(months):
-            set_custom_months(months)
-            await self._save_month_settings(months)
-            # Refresh all views with new month names
-            await timeline_vm.load_events()
-            window.timeline_widget.update_events(timeline_vm.events)
-
-        dialog.saved.connect(lambda m: asyncio.ensure_future(_on_saved(m)))
-        dialog.open()
-
     def _wire_ai_buttons(self, dialog) -> None:
         """Connect AI buttons in a dialog to the LLM ViewModel.
 
@@ -1141,6 +1113,10 @@ class Application:
         await self._session.commit()
 
     async def shutdown(self) -> None:
+        # C2 (spec «Активный календарь в жизненном цикле игры»): closing the
+        # game restores the «Стандартный» preset, so the next game can never
+        # inherit this one's calendar.
+        reset_current_calendar()
         if self._table_host is not None and self._table_host.is_running:
             await self._table_host.stop()
         self._close_sheet_windows()

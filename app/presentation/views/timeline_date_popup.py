@@ -145,8 +145,9 @@ class _DateWindowPopup(QWidget):
         flat list deleted the collapsed-gap pre-fill along with the gaps),
         without applying anything: only taps inside the popover mutate the
         window. Month names are re-read on every open
-        (``refresh_month_names`` reads the process-global map), so a rename
-        while the panel stood idle is visible without any wiring around it.
+        (``refresh_month_names`` reads the active game calendar's names), so a
+        rename while the panel stood idle is visible without any wiring around
+        it.
         """
         self._pending_start = None
         self.tip_label.setText(WINDOW_PICK_START)
