@@ -2,12 +2,18 @@
 
 Each game date is a pair (``datetime.date``, ``is_bc``). All comparisons,
 sorts and interval filters SHALL go through this module (design D2):
-``era_key(d, is_bc) = d.toordinal()`` for our era and
+``era_key(d, is_bc)`` is the single public ordering, and with the default
+«Стандартный» calendar it equals ``d.toordinal()`` for our era and
 ``d.toordinal() - 732 * d.year`` for BC, so every BC date precedes every CE
 date, BC years count down toward 1 г. до н.э. while months and days inside a
 BC year run forward. Both eras span years 1…9999; a year zero exists in
 neither era, and BC months / leap years mirror our calendar with the same
 year number.
+
+Since piece C1 ``era_key`` is a thin dispatcher on the active game calendar
+(design D1); the Gregorian formula itself lives in the private
+``_gregorian_key``, which the standard preset calls back directly (D2) so the
+dispatcher and its default calendar never recurse into each other.
 """
 from __future__ import annotations
 
@@ -22,11 +28,31 @@ MAX_YEAR = 9999
 BC_YEAR_STEP = 732
 
 
-def era_key(d: date, is_bc: bool = False) -> int:
-    """Chronological key of a (date, era) pair (design D2)."""
+def _gregorian_key(d: date, is_bc: bool = False) -> int:
+    """The live Gregorian key formula (design D2) behind the standard preset.
+
+    Private: it is the formula itself, while ``era_key`` is the public
+    dispatcher on the active calendar.  ``StandardCalendar`` calls this one
+    instead of ``era_key`` so the dispatcher never re-enters itself (D2).
+    """
     if is_bc:
         return d.toordinal() - BC_YEAR_STEP * d.year
     return d.toordinal()
+
+
+def era_key(d: date, is_bc: bool = False) -> int:
+    """Chronological key of a (date, era) pair through the active calendar.
+
+    Signature and numbers are unchanged from design D2 (design D1): the body
+    only delegates to ``current_calendar().to_key``, so the standard preset
+    keeps yielding ``_gregorian_key``'s values bit for bit.
+    """
+    # Lazy import breaks the load-order cycle: game_calendar imports this
+    # module at module level, so importing it back here is the one edge that
+    # must stay inside the function (documented in design D2).
+    from app.domain.game_calendar import MonthDay, current_calendar
+
+    return current_calendar().to_key(MonthDay(d.year, d.month, d.day), is_bc)
 
 
 def cmp_era_dates(left: tuple[date, bool], right: tuple[date, bool]) -> int:

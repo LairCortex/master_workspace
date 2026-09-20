@@ -33,28 +33,38 @@ closes with the task-8.3 scenario-to-test acceptance map of the delta spec.
 import calendar as gregorian
 import inspect
 import random
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import date
 from types import SimpleNamespace
 
 import pytest
 
-from app.domain.date_era import era_key
+from app.domain.date_era import _gregorian_key, era_key
 from app.domain.game_calendar import (
     MAX_YEAR,
     MAX_YEAR_LENGTH,
     MIN_YEAR,
     CalendarSpec,
     CustomCalendar,
+    DateField,
     GameCalendar,
     IntercalaryDay,
     IntercalarySpec,
     InvalidGameDateError,
     MonthDay,
     MonthSpec,
+    ShiftReason,
+    ShiftReport,
+    ShiftReportEntry,
     StandardCalendar,
     StubCalendar,
+    build_shift_report,
+    classify,
+    current_calendar,
     render_calendar_year,
+    reset_current_calendar,
+    set_current_calendar,
+    shift_invalid,
     validate,
 )
 
@@ -1828,3 +1838,526 @@ class TestProtocolStubSurfaceAndGuards:
             assert calendar.is_valid("Зимостой, 5") is False
             assert calendar.is_valid(None) is False
             assert calendar.is_valid((1, 1, 1)) is False
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# C1 (wire-game-calendar-key-binding) task group 2 — active calendar
+# accessor (design D3)
+# ═════════════════════════════════════════════════════════════════════════
+
+CUSTOM_ACCESSOR_SPEC = base_spec(
+    months=make_months(("Кратень", 5), ("Двоень", 7), ("Одиночек", 3)),
+)  # L = 15: каждый кастомный день месяц 1…3 × день 1…7 остаётся и
+# реальным datetime.date, поэтому публичный era_key (его аргумент — date)
+# проводит кастомную ветку сквозняком
+
+
+class TestActiveCalendarAccessor:
+    """C1 task 2.1: спека «Accessor активного игрового календаря» — дефолт
+    «Стандартный», явные установка и сброс одного общего значения — и
+    сценарий «Порядок следует за активным календарём»: era_key отдаёт ключи
+    активного календаря, а порядок «ключ ↔ дата» совпадает с обходом
+    кастомного года."""
+
+    STANDARD_GOLD = [
+        pytest.param(date(1, 1, 1), id="first-day-of-era"),
+        pytest.param(date(44, 3, 5), id="bc-mirror-year-44"),
+        pytest.param(date(2024, 2, 29), id="leap-feb-29"),
+        pytest.param(date(9999, 12, 31), id="last-day-of-era"),
+    ]
+
+    PROBE_DATES = [
+        date(44, 1, 1),
+        date(44, 1, 5),
+        date(44, 2, 1),
+        date(44, 3, 3),
+        date(500, 2, 6),
+        date(2024, 2, 7),
+    ]
+
+    @pytest.fixture(autouse=True)
+    def isolated_active_calendar(self):
+        # accessor — модульный глобал (D3): подмена ни в одну сторону
+        # не должна заражать ни эти тесты, ни соседей по прогону
+        reset_current_calendar()
+        yield
+        reset_current_calendar()
+
+    @pytest.mark.parametrize("real", STANDARD_GOLD)
+    def test_default_accessor_is_standard_and_reproduces_era_key(self, real):
+        # сценарий «Дефолт — Стандартный»: без явной установки accessor
+        # отдаёт пресет, а его ключ побитово равен действующей era_key
+        calendar = current_calendar()
+        assert isinstance(calendar, StandardCalendar)
+        coord = MonthDay(real.year, real.month, real.day)
+        for is_bc in (False, True):
+            assert calendar.to_key(coord, is_bc) == _gregorian_key(real, is_bc)
+            assert calendar.to_key(coord, is_bc) == era_key(real, is_bc)
+
+    def test_set_and_reset_share_the_one_active_calendar(self):
+        # сценарий «Явная смена и сброс»: между установкой и сбросом
+        # accessor отдаёт подставленный календарь, после сброса — пресет
+        custom = CustomCalendar(CUSTOM_ACCESSOR_SPEC)
+        set_current_calendar(custom)
+        assert current_calendar() is custom
+        reset_current_calendar()
+        restored = current_calendar()
+        assert isinstance(restored, StandardCalendar)
+
+    def test_active_custom_calendar_moves_every_probe_key(self):
+        # сценарий «Порядок следует за активным календарём» (первая половина:
+        # era_key возвращает ключи активного календаря) + «Явная смена и
+        # сброс» на уровне самих ключей
+        standard_snapshot = {
+            (real, is_bc): era_key(real, is_bc)
+            for real in self.PROBE_DATES
+            for is_bc in (False, True)
+        }
+        custom = CustomCalendar(CUSTOM_ACCESSOR_SPEC)
+        set_current_calendar(custom)
+        for (real, is_bc), standard_key in standard_snapshot.items():
+            coord = MonthDay(real.year, real.month, real.day)
+            key = era_key(real, is_bc)
+            assert key == custom.to_key(coord, is_bc)  # сверка с CustomCalendar напрямую
+            assert key != standard_key  # ключ реально уехал со стандартного числа
+        # день за коротким кастомным месяцем теперь не существует…
+        with pytest.raises(InvalidGameDateError):
+            era_key(date(44, 1, 6))
+        # …а после сброса Стандартный принимает его с прежним ключом
+        reset_current_calendar()
+        assert isinstance(current_calendar(), StandardCalendar)
+        for (real, is_bc), standard_key in standard_snapshot.items():
+            assert era_key(real, is_bc) == standard_key == _gregorian_key(real, is_bc)
+        assert era_key(date(44, 1, 6)) == _gregorian_key(date(44, 1, 6))
+
+    @pytest.mark.parametrize("is_bc", [False, True], ids=["ad", "bc"])
+    def test_key_order_follows_the_custom_year_sweep(self, is_bc):
+        # сценарий «Порядок следует за активным календарём» (вторая
+        # половина): обход кастомного года даёт строго растущие плотные
+        # ключи, а from_key активного календаря возвращает ту же дату
+        custom = CustomCalendar(CUSTOM_ACCESSOR_SPEC)
+        set_current_calendar(custom)
+        year = 44
+        sweep = [
+            date(year, month_number, day)
+            for month_number, length in ((1, 5), (2, 7), (3, 3))
+            for day in range(1, length + 1)
+        ]
+        assert len(sweep) == custom.year_length == 15
+
+        keys = [era_key(real, is_bc) for real in sweep]
+        assert all(left < right for left, right in zip(keys, keys[1:]))
+        assert keys == list(range(keys[0], keys[0] + len(keys)))
+        calendar = current_calendar()
+        for real, key in zip(sweep, keys):
+            assert calendar.from_key(key, is_bc) == MonthDay(
+                real.year, real.month, real.day
+            )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# C1 (wire-game-calendar-key-binding) task group 3 — чистый предикат и
+# сдвиг невалидных координат (design D4)
+# ═════════════════════════════════════════════════════════════════════════
+
+SHIFT_SPEC = base_spec(
+    months=make_months(("Коротень", 28), ("Двойной", 10)),
+    intercalary=(IntercalarySpec("Гром", 1), IntercalarySpec("Эхо", 2)),
+)  # ровно две вставные правила: индексы 0 и 1, крайнее — 1
+SHIFT_CUSTOM = CustomCalendar(SHIFT_SPEC)
+SHIFT_STANDARD = StandardCalendar()
+
+# Таблица D4: три причины, ожидаемая координата и ожидаемая координата +
+# код; валидная строка — None/None (пустые предикат и сдвиг).
+SHIFT_CASES = [
+    # ── «день_overflow»: день вне длины месяца → последний день того же ──
+    # сценарий спеки «Сдвиг переполненного дня»: месяц из 28 дней, 31-е число
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 1, 31), MonthDay(7, 1, 28),
+        ShiftReason.DAY_OVERFLOW, id="custom-day-31-of-28-day-month",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 1, 999), MonthDay(7, 1, 28),
+        ShiftReason.DAY_OVERFLOW, id="custom-day-far-past-month-end",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 2, 0), MonthDay(7, 2, 10),
+        ShiftReason.DAY_OVERFLOW, id="custom-day-below-one-to-month-end",
+    ),
+    pytest.param(
+        SHIFT_STANDARD, MonthDay(2024, 2, 30), MonthDay(2024, 2, 29),
+        ShiftReason.DAY_OVERFLOW, id="std-leap-feb-30",
+    ),
+    pytest.param(
+        SHIFT_STANDARD, MonthDay(2023, 2, 29), MonthDay(2023, 2, 28),
+        ShiftReason.DAY_OVERFLOW, id="std-common-feb-29",
+    ),
+    pytest.param(
+        SHIFT_STANDARD, MonthDay(2024, 4, 45), MonthDay(2024, 4, 30),
+        ShiftReason.DAY_OVERFLOW, id="std-april-45",
+    ),
+    # ── «месяц_вне_числа»: месяц вне числа месяцев → последний день ──────
+    # последнего существующего месяца того же года (день-компаньон игнорируется)
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 3, 1), MonthDay(7, 2, 10),
+        ShiftReason.MONTH_OUT_OF_RANGE, id="custom-month-past-last",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 0, 500), MonthDay(7, 2, 10),
+        ShiftReason.MONTH_OUT_OF_RANGE, id="custom-month-before-first-outranks-day",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 501, 17), MonthDay(7, 2, 10),
+        ShiftReason.MONTH_OUT_OF_RANGE, id="custom-month-far-past",
+    ),
+    pytest.param(
+        SHIFT_STANDARD, MonthDay(2024, 13, 1), MonthDay(2024, 12, 31),
+        ShiftReason.MONTH_OUT_OF_RANGE, id="std-month-13",
+    ),
+    pytest.param(
+        SHIFT_STANDARD, MonthDay(2024, 0, 7), MonthDay(2024, 12, 31),
+        ShiftReason.MONTH_OUT_OF_RANGE, id="std-month-0",
+    ),
+    # ── «индекс_вставного»: номер вне списка правил → крайнее ────────────
+    # существующее правило в порядке спецификации
+    pytest.param(
+        SHIFT_CUSTOM, IntercalaryDay(7, 2), IntercalaryDay(7, 1),
+        ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE, id="intercalary-index-past-list",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, IntercalaryDay(7, 10_000), IntercalaryDay(7, 1),
+        ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE, id="intercalary-index-far-past",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, IntercalaryDay(7, -1), IntercalaryDay(7, 1),
+        ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE, id="intercalary-index-below-zero",
+    ),
+    # ── валидная на входе координата: предикат молчит, сдвиг пуст ─────────
+    pytest.param(
+        SHIFT_CUSTOM, MonthDay(7, 1, 28), None, None, id="valid-custom-month-end",
+    ),
+    pytest.param(
+        SHIFT_CUSTOM, IntercalaryDay(7, 0), None, None, id="valid-intercalary-first",
+    ),
+    pytest.param(
+        SHIFT_STANDARD, MonthDay(2024, 2, 29), None, None,
+        id="valid-std-leap-feb-29",
+    ),
+]
+
+#: Только невалидные строки таблицы — для проверок, которым нужна причина.
+SHIFT_INVALID_CASES = [case for case in SHIFT_CASES if case.values[2] is not None]
+
+
+class TestShiftInvalidCoordinatesTable:
+    """C1 task 3.1: таблица предиката/сдвига ровно по трём причинам D4 —
+    переполнение дня, месяц вне числа месяцев, номер вставного дня вне
+    списка — с ожидаемой координатой и стабильным кодом причины."""
+
+    @pytest.mark.parametrize(
+        ("calendar", "coord", "expected_coord", "reason"), SHIFT_CASES
+    )
+    def test_classify_reports_exactly_the_reason_or_stays_none_for_valid(
+        self, calendar, coord, expected_coord, reason
+    ):
+        assert classify(coord, calendar) is reason
+
+    @pytest.mark.parametrize(
+        ("calendar", "coord", "expected_coord", "reason"), SHIFT_CASES
+    )
+    def test_shift_returns_coordinate_with_reason_or_none_for_valid(
+        self, calendar, coord, expected_coord, reason
+    ):
+        result = shift_invalid(coord, calendar)
+        if expected_coord is None:
+            assert result is None
+            return
+        shifted, shifted_reason = result
+        assert shifted == expected_coord
+        assert shifted_reason is reason
+        assert calendar.is_valid(shifted) is True
+        # сценарий «Сдвиг переполненного дня»: ключ сдвинутой координаты определён
+        for is_bc in (False, True):
+            key = calendar.to_key(shifted, is_bc)
+            assert calendar.from_key(key, is_bc) == shifted
+
+    @pytest.mark.parametrize(
+        ("calendar", "coord", "expected_coord", "reason"), SHIFT_CASES
+    )
+    def test_classify_agrees_with_the_calendar_own_is_valid(
+        self, calendar, coord, expected_coord, reason
+    ):
+        assert (classify(coord, calendar) is None) is calendar.is_valid(coord)
+
+    def test_reason_codes_are_the_stable_d5_strings(self):
+        # коды — контракт для отчёта переноса (D5): стабильные строки
+        assert ShiftReason.DAY_OVERFLOW.value == "день_overflow"
+        assert ShiftReason.MONTH_OUT_OF_RANGE.value == "месяц_вне_числа"
+        assert (
+            ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE.value == "индекс_вставного"
+        )
+
+    @pytest.mark.parametrize("coord", [
+        MonthDay(0, 1, 1),                       # нулевого года нет…
+        MonthDay(-5, 1, 5),
+        MonthDay(MAX_YEAR + 1, 12, 31),           # …как и 10000-го
+        MonthDay(10_000, 13, 99),                 # год первым: месяц/день не причина
+        IntercalaryDay(0, 0),
+        IntercalaryDay(MAX_YEAR + 1, 2),
+    ])
+    def test_year_outside_the_scale_stays_a_core_error_not_a_shift_reason(
+        self, coord
+    ):
+        # D4: год вне 1…9999 причиной сдвига НЕ является — остаётся
+        # InvalidGameDateError из ядра, ни classify, ни shift его не выдают
+        for calendar in (SHIFT_CUSTOM, SHIFT_STANDARD):
+            with pytest.raises(InvalidGameDateError):
+                classify(coord, calendar)
+            with pytest.raises(InvalidGameDateError):
+                shift_invalid(coord, calendar)
+
+    @pytest.mark.parametrize("junk", ["Зимостой, 5", None, (1, 1, 1)])
+    def test_not_a_coordinate_is_a_core_error_too(self, junk):
+        with pytest.raises(InvalidGameDateError):
+            classify(junk, SHIFT_CUSTOM)
+        with pytest.raises(InvalidGameDateError):
+            shift_invalid(junk, SHIFT_CUSTOM)
+
+    def test_index_reason_without_any_rule_refuses_the_shift_for_lack_of_target(self):
+        # причина «индекс_вставного» констатируется и на календаре без правил…
+        coord = IntercalaryDay(5, 0)
+        assert classify(coord, SHIFT_STANDARD) is (
+            ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE
+        )
+        # …но clamp не к чему: цели сдвига нет — отказ ядра (InvalidGameDateError)
+        with pytest.raises(InvalidGameDateError):
+            shift_invalid(coord, SHIFT_STANDARD)
+
+
+class TestShiftCoordinateProperties:
+    """C1 task 3.3: свойства сдвига — идемпотентность, допустимое
+    столкновение двух координат на одной дате, сохранность эры и её
+    независимость от результата (сценарии «Идемпотентность сдвига» и
+    «Эра не влияет на сдвиг»)."""
+
+    @pytest.mark.parametrize(
+        ("calendar", "coord", "expected_coord", "reason"), SHIFT_INVALID_CASES
+    )
+    def test_shift_is_idempotent_the_repeat_moves_nothing(
+        self, calendar, coord, expected_coord, reason
+    ):
+        first, _ = shift_invalid(coord, calendar)
+        assert first == expected_coord
+        # сценарий «Идемпотентность сдвига»: ставшая валидной координата
+        # не меняется, а повторный сдвиг и предикат пусты
+        assert classify(first, calendar) is None
+        assert calendar.is_valid(first) is True
+        assert shift_invalid(first, calendar) is None
+
+    def test_two_invalid_coordinates_colliding_on_one_day_are_tolerated(self):
+        # «Столкновение двух координат на одной дате допускается»: разъезда
+        # нет — обе приземляются ровно на последний день того же месяца
+        first, first_reason = shift_invalid(MonthDay(7, 1, 29), SHIFT_CUSTOM)
+        second, second_reason = shift_invalid(MonthDay(7, 1, 99), SHIFT_CUSTOM)
+        assert first == second == MonthDay(7, 1, 28)
+        assert first_reason is second_reason is ShiftReason.DAY_OVERFLOW
+        assert SHIFT_CUSTOM.to_key(first) == SHIFT_CUSTOM.to_key(second)
+
+    def test_the_shift_carries_no_era_argument_at_all(self):
+        # D3: эра — аргумент only у to_key/from_key; раз у classify/
+        # shift_invalid её нет физически, календарная часть результата не
+        # может зависеть от эры — она сохраняется тривиально
+        for func in (classify, shift_invalid):
+            assert "is_bc" not in inspect.signature(func).parameters
+
+    @pytest.mark.parametrize(
+        ("calendar", "coord", "expected_coord", "reason"), SHIFT_INVALID_CASES
+    )
+    def test_same_coordinate_shifts_identically_under_both_eras(
+        self, calendar, coord, expected_coord, reason
+    ):
+        # сценарий «Эра не влияет на сдвиг»: одна и та же координата
+        # сдвинута «в эрах н.э. и до н.э.» — календарная часть результата
+        # одинакова (сдвиг эру не знает) и эра сохранена: ключ каждой эры
+        # декодируется ровно в эту координату обратно
+        shifted, shift_reason = shift_invalid(coord, calendar)
+        assert shift_reason is reason
+        for is_bc in (False, True):
+            assert calendar.from_key(calendar.to_key(shifted, is_bc), is_bc) == shifted
+        assert shifted == expected_coord
+
+    def test_era_choice_never_moves_a_valid_coordinate(self):
+        # валидность/пустота сдвига тоже эра-независимы: предикат и сдвиг
+        # отдают None irrespective of the era the record will be keyed under
+        for coord in (MonthDay(7, 1, 28), IntercalaryDay(7, 1)):
+            assert classify(coord, SHIFT_CUSTOM) is None
+            assert shift_invalid(coord, SHIFT_CUSTOM) is None
+            for is_bc in (False, True):
+                assert SHIFT_CUSTOM.from_key(
+                    SHIFT_CUSTOM.to_key(coord, is_bc), is_bc
+                ) == coord
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# C1 (wire-game-calendar-key-binding) task group 4 — форма отчёта о переносе
+# невалидных координат (design D5): пустой отчёт, форма записи, отсутствие
+# локализованных подписей и имён сущностей.  Домен обход шести таблиц не
+# делает и БД не читает — чистый билдер получает готовые проверки с координатами
+# и календарь параметром (у чистых функций активный accessor не читается).
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestShiftReportOnValidData:
+    """Сценарий «Пустой отчёт на валидных данных»: когда все проверяемые
+    координаты валидны в переданном календаре, отчёт содержит ноль записей и
+    нулевой счётчик переносов валидации."""
+
+    VALID_CHECKS = [
+        # (таблица, id строки, поле, координата, эра) — все валидны в SHIFT_CUSTOM
+        ("campaign", 1, DateField.START, MonthDay(7, 1, 1), False),
+        ("campaign", 1, DateField.END, MonthDay(7, 2, 10), False),
+        ("world_date", 4, DateField.START, IntercalaryDay(7, 0), True),
+    ]
+
+    def test_all_valid_coordinates_give_an_empty_report(self):
+        report = build_shift_report(self.VALID_CHECKS, SHIFT_CUSTOM)
+        assert report.records == ()          # ноль записей
+        assert report.shift_count == 0       # и нулевой счётчик переносов
+
+    def test_no_checks_at_all_give_an_empty_report(self):
+        report = build_shift_report((), SHIFT_STANDARD)
+        assert report.records == ()
+        assert report.shift_count == 0
+
+
+class TestShiftReportRecordForm:
+    """Сценарий «Форма записи отчёта»: невалидная координата начала сдвинута —
+    отчёт содержит запись с полем ``start``, обеими координатами с эрами и кодом
+    причины, без имени сущности."""
+
+    def test_shifted_start_yields_one_record_with_both_coords_and_reason(self):
+        shift_invalid(MonthDay(7, 1, 31), SHIFT_CUSTOM)  # sanity: это невалидно
+        report = build_shift_report(
+            [("event", 42, DateField.START, MonthDay(7, 1, 31), True)], SHIFT_CUSTOM
+        )
+        assert report.shift_count == 1 == len(report.records)
+        (record,) = report.records
+        assert record.table == "event"
+        assert record.row_id == 42
+        assert record.field is DateField.START
+        assert record.old == (MonthDay(7, 1, 31), True)   # старая координата + эра
+        assert record.new == (MonthDay(7, 1, 28), True)   # новая координата + эра сохранена
+        assert record.reason is ShiftReason.DAY_OVERFLOW
+        # старая координата genuinely отсутствовала, новая — адресна (обе эры)
+        assert SHIFT_CUSTOM.is_valid(record.old[0]) is False
+        assert SHIFT_CUSTOM.is_valid(record.new[0]) is True
+        for is_bc in (False, True):
+            key = SHIFT_CUSTOM.to_key(record.new[0], is_bc)
+            assert SHIFT_CUSTOM.from_key(key, is_bc) == record.new[0]
+
+    def test_report_covers_all_three_reasons_and_valid_rows_are_skipped(self):
+        report = build_shift_report(
+            [
+                ("event", 1, DateField.START, MonthDay(7, 1, 31), False),  # день_overflow
+                ("event", 1, DateField.END, MonthDay(7, 3, 5), True),      # месяц_вне_числа
+                ("event", 2, DateField.END, IntercalaryDay(7, 9), False),  # индекс_вставного
+                ("event", 3, DateField.START, MonthDay(7, 1, 5), False),   # валид — пропускается
+            ],
+            SHIFT_CUSTOM,
+        )
+        assert [record.field for record in report.records] == [
+            DateField.START, DateField.END, DateField.END,
+        ]
+        assert [record.reason for record in report.records] == [
+            ShiftReason.DAY_OVERFLOW,
+            ShiftReason.MONTH_OUT_OF_RANGE,
+            ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE,
+        ]
+        assert [record.new for record in report.records] == [
+            (MonthDay(7, 1, 28), False),
+            (MonthDay(7, 2, 10), True),      # эра True сохранена на новой координате
+            (IntercalaryDay(7, 1), False),
+        ]
+        assert report.shift_count == len(report.records) == 3
+
+
+class TestShiftReportCarriesNoCaptionsOrNames:
+    """Требование «не содержать локализованных подписей и имён сущностей»:
+    запись — ровно шесть машинных полей D5, frozen, значения — машинные коды."""
+
+    SAMPLE = ShiftReportEntry(
+        "event", 1, DateField.START,
+        (MonthDay(7, 1, 31), False), (MonthDay(7, 1, 28), False),
+        ShiftReason.DAY_OVERFLOW,
+    )
+
+    def test_record_exposes_exactly_the_six_machine_fields(self):
+        assert {f.name for f in fields(ShiftReportEntry)} == {
+            "table", "row_id", "field", "old", "new", "reason",
+        }
+
+    def test_record_is_frozen(self):
+        with pytest.raises(FrozenInstanceError):
+            self.SAMPLE.field = DateField.END      # type: ignore[misc]
+
+    def test_field_and_reason_are_machine_codes_not_captions(self):
+        assert self.SAMPLE.field.value == "start"          # ∈ {start, end}
+        assert self.SAMPLE.reason.value == "день_overflow"  # стабильный код D5
+        assert isinstance(self.SAMPLE.table, str)          # машинный id таблицы обхода
+        assert isinstance(self.SAMPLE.row_id, int)         # машинный id строки
+
+    def test_report_of_entries_is_frozen_and_counts_shifts(self):
+        report = ShiftReport(records=(self.SAMPLE,))
+        assert report.shift_count == 1
+        with pytest.raises(FrozenInstanceError):
+            report.records = ()                  # type: ignore[misc]
+
+
+# ── Task 8.3 — приёмочная карта: сценарий delta-спека → зелёный тест ─────
+#
+# «Круговой обход всех видов дней»      → TestCeArithmeticRoundTrip::
+#         test_full_year_sweep_round_trips_and_is_strictly_monotonic,
+#         TestGiantSpecs::test_month_edges_and_intercalaries_round_trip,
+#         TestBcMirrorOrder::test_full_bc_scale_is_contiguous_under_zero_and_round_trips,
+#         TestFuzzCoreProperties::test_circular_sweep_round_trips_in_both_eras
+# «Один слот — одна дата»               → TestCeArithmeticRoundTrip::
+#         test_full_year_sweep_round_trips_and_is_strictly_monotonic (уникальность и
+#         непрерывность ключей года), TestBcMirrorOrder::test_every_bc_key_precedes_every_ad_key,
+#         TestFuzzCoreProperties::test_keys_are_strictly_monotonic_contiguous_and_era_separated
+# «Совпадение со старым ключом на границах» → TestStandardGoldMatchWithEraKey::
+#         test_boundary_keys_equal_live_era_key_in_both_eras,
+#         test_fixed_seed_random_sample_of_both_eras_matches_era_key,
+#         test_month_boundary_neighbours_stay_one_key_apart
+# «Неравномерные месяцы»                → TestScenarioUnevenMonths::
+#         test_three_lengths_hold_every_year_and_corner_sweep_round_trips
+#         (плюс произвольные гиганты TestGiantSpecs)
+# «Эра не меняет строение»              → TestEraDoesNotChangeStructure (все три теста)
+# «Соседи не сдвигаются»                → TestIntercalaryOutsideWeekCycle (все четыре теста),
+#         TestFuzzCoreProperties::test_intercalary_days_have_no_weekday_and_never_shift_neighbours
+# «Несколько вставных дней подряд»      → TestIntercalarySlots::
+#         test_slots_follow_host_in_list_order_with_round_trip,
+#         test_consecutive_after_same_host_get_consecutive_keys,
+#         test_every_intercalary_of_a_fat_year_round_trips
+# «Одиннадцатидневная неделя через границы» → TestWeekdayAnchorAndCycle::
+#         test_eleven_named_week_cycles_gaplessly_over_month_edges,
+#         test_eleven_named_week_continues_strictly_over_year_boundaries
+#         (требование целиком: якорь — test_anchor_first_day_of_first_month_of_first_year_is_index_zero,
+#         якорь не в ключе — TestAnchorNotInTheKey, std из григорианского —
+#         TestStandardWeekdayAndNoIntercalary::test_weekday_is_gregorian_of_the_mirrored_same_year_date)
+# «Строгость BC-зеркала»                → TestBcMirrorOrder::
+#         test_two_adjacent_bc_years_sweep_monotonically_and_contiguously,
+#         test_full_bc_scale_is_contiguous_under_zero_and_round_trips (вся шкала 1…9999),
+#         test_every_bc_key_precedes_every_ad_key
+# «Пустое имя — отказ»                  → TestSpecRejectionTable (id
+#         «empty-name-and-week-too-short-both-reported» — обе причины сразу),
+#         TestCustomCalendarConstructor::test_invalid_spec_raises_value_error_listing_every_reason
+# «Гибкость без продуктовых границ»     → TestFlexibleSpecsAccepted
+#         (ids «500-months-by-10-days», «single-month-99999-days»),
+#         TestInt64Guard (границы физической причины)
+# «День, которого нет»                  → TestInvalidCoordinates::
+#         test_month_day_outside_spec_is_invalid_and_refused (31-е в 30-дневном),
+#         test_wrong_day_is_never_silently_clamped (стандартный пресет —
+#         TestStandardInvalidCoordinates)
+# «Предпросмотр видит вставной день»    → TestScenarioPreviewSeesPlateAfterSecondMonth::
+#         test_plate_after_second_month_and_next_month_weeks_unshifted,
+#         TestYearPreviewSnapshot::test_small_spec_with_two_intercalary_days_renders_exactly,
+#         TestYearPreviewMatchesArithmetic::test_weeks_after_the_host_month_continue_unshifted

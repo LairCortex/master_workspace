@@ -7,20 +7,34 @@ zero exists in neither, and the BC scale is mirrored with a per-year step of
 2L (twice the game-year length), so every BC key stays below every CE key —
 the same scheme ``app.domain.date_era`` realizes for Gregorian dates.
 
-Pure domain code that nothing imports yet: piece C1 is what wires it into
-``era_key``/ORM hooks.  ``GameCalendar`` (design D2) is the only surface
-future consumers may depend on, the standard preset delegates to the existing
-``era_key`` formula (D1) and the custom calendar is built from a fixed
-``CalendarSpec`` of month lengths, week names and intercalary days (D4/D6).
+Pure domain code.  Since piece C1 ``app.domain.date_era.era_key`` lazily
+imports the active-calendar accessor from this module (design D1/D3), the
+app-wide chronological key follows the active game calendar; the import stays
+lazy because the ``GameCalendar`` protocol (design D2) is the only surface
+future consumers may depend on, the standard preset delegates to the private
+``_gregorian_key`` formula rather than to ``era_key`` (D2, no mutual
+recursion) and the custom calendar is built from a fixed ``CalendarSpec`` of
+month lengths, week names and intercalary days (D4/D6).  Also since C1 the
+module owns the pure invalid-coordinate policy: ``classify``/``shift_invalid``
+diagnose exactly three absence reasons and clamp such a coordinate to the
+nearest valid one through the protocol, without any storage access (D4/D5).
+Finally C1 adds the transfer-report form of design D5: a frozen
+``ShiftReportEntry`` (table, row id, ``start``/``end`` field, old and new
+coordinate each paired with its era, and a stable ``ShiftReason`` code)
+gathered into a ``ShiftReport`` by the pure :func:`build_shift_report` over
+caller-supplied coordinate checks — the domain never reads the database nor
+names the six tables, and never carries localized captions or entity names.
 """
 from __future__ import annotations
 
 import bisect
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from app.domain.date_era import BC_YEAR_STEP, era_key
+from app.domain.date_era import BC_YEAR_STEP, _gregorian_key
 
 #: Both eras span years MIN_YEAR…MAX_YEAR (same bound as ``date_era``).
 MIN_YEAR = 1
@@ -216,7 +230,7 @@ class GameCalendar(Protocol):
     """Structural interface the future C1/C3 consumers depend on only.
 
     Two implementations arrive in later task groups: ``StandardCalendar``
-    (delegates to ``era_key``/``datetime.date``, D1) and
+    (delegates to ``_gregorian_key``/``datetime.date``, D1/D2) and
     ``CustomCalendar`` (linear formula over ``CalendarSpec`` prefix tables, D4).
     """
 
@@ -286,23 +300,16 @@ def _gregorian_is_leap(year: int) -> bool:
     return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
 
 
-#: Ends of the standard AD key scale as the live ``era_key`` produces them for
-#: the allowed boundary years 1…9999 (``date(1, 1, 1)`` opens, ``date(9999,
-#: 12, 31)`` closes it contiguously) — the preset only delegates, it owns no
-#: copy of the formula (design D1).
-_AD_FIRST_KEY = era_key(date(MIN_YEAR, 1, 1))
-_AD_LAST_KEY = era_key(date(MAX_YEAR, 12, 31))
-
-
 class StandardCalendar:
     """The «Стандартный» preset — the real Gregorian calendar under ``era_key``.
 
-    Design D1 makes this class a delegation, not a re-implementation:
-    ``to_key`` IS a call to the live ``era_key`` (so bit-exact agreement with
-    the existing chronological key is a tautology and the gold tests only
-    probe the wiring), and
+    Design D1 makes this class a delegation, not a re-implementation, and D2
+    aims it at the private formula: ``to_key`` IS a call to ``_gregorian_key``
+    (so bit-exact agreement with the existing chronological key is a tautology
+    and the gold tests only probe the wiring, while the public ``era_key``
+    dispatcher never re-enters itself through its own default), and
     ``from_key`` inverts it with ``date.fromordinal``; BC years are located by
-    binary search over ``era_key`` itself rather than by a second copy
+    binary search over ``_gregorian_key`` itself rather than by a second copy
     of the 732-step formula.  ``weekday`` is the Gregorian
     ``date.weekday()`` (Mon=0): by design a BC coordinate IS the mirrored
     Gregorian date carrying the same year number — the current date widget's
@@ -317,7 +324,7 @@ class StandardCalendar:
             raise InvalidGameDateError(
                 f"coordinate {coord!r} does not exist in the standard calendar"
             )
-        return era_key(date(coord.year, coord.month, coord.day), is_bc)
+        return _gregorian_key(date(coord.year, coord.month, coord.day), is_bc)
 
     def from_key(self, key: int, is_bc: bool = False) -> GameCoord:
         if not is_bc:
@@ -328,21 +335,21 @@ class StandardCalendar:
                 )
             day = date.fromordinal(key)
             return MonthDay(day.year, day.month, day.day)
-        # BC: the last key of year ``y``, ``era_key(date(y, 12, 31), True)``,
+        # BC: the last key of year ``y``, ``_gregorian_key(date(y, 12, 31), True)``,
         # shrinks strictly as ``y`` grows (the 732 step dominates the
         # calendar jump), so scanning years downward with bisect finds the
         # first year whose last key reaches ``key``.  The intentional
         # blank slots between consecutive years and keys past either end of
         # the scale fail the year-start check below.  Only then the ordinal is
         # restored with ``date.fromordinal`` — the very formula
-        # ``era_key`` runs, never a copy of it (D1).
+        # ``_gregorian_key`` runs, never a copy of it (D1/D2).
         years = range(MAX_YEAR, MIN_YEAR - 1, -1)  # last BC keys ascend in this order
         position = bisect.bisect_left(
-            years, key, key=lambda year: era_key(date(year, 12, 31), True)
+            years, key, key=lambda year: _gregorian_key(date(year, 12, 31), True)
         )
         if position < len(years):
             year = years[position]
-            year_start = era_key(date(year, 1, 1), True)
+            year_start = _gregorian_key(date(year, 1, 1), True)
             if year_start <= key:
                 day = date.fromordinal(key + BC_YEAR_STEP * year)
                 return MonthDay(day.year, day.month, day.day)
@@ -389,6 +396,51 @@ class StandardCalendar:
         # The standard preset has no intercalary rules at all: no such
         # coordinate exists in it, at any index or year.
         return False
+
+
+# ── Active calendar accessor (roadmap piece C1, design D3) ───────────────
+
+#: The one active game calendar per process, defaulted to the «Стандартный»
+#: preset so every chronological key keeps its pre-C1 numbers until a future
+#: piece (C2) switches it.  No locks by design (D3): the whole app runs on the
+#: single qasync event loop and game switching is serialized (shutdown +
+#: start), so read/set/reset can never interleave.
+_current_calendar: GameCalendar = StandardCalendar()
+
+
+def current_calendar() -> GameCalendar:
+    """The active game calendar every chronological key dispatches through."""
+    return _current_calendar
+
+
+def set_current_calendar(calendar: GameCalendar) -> None:
+    """Make ``calendar`` the one active calendar of the process (design D3).
+
+    Explicit replacement of the old silent month-name global — the caller
+    owns the switch; wiring this to game startup/switching is piece C2 (D6).
+    No locking: everything runs on the one qasync event loop, so this plain
+    rebinding cannot race with a reader (``era_key`` and friends).
+    """
+    global _current_calendar
+    _current_calendar = calendar
+
+
+def reset_current_calendar() -> None:
+    """Restore the «Стандартный» preset as the active calendar (design D3),
+    returning every chronological key to its pre-C1 numbers.  Same
+    single-event-loop reasoning as ``set_current_calendar`` — no locks."""
+    global _current_calendar
+    _current_calendar = StandardCalendar()
+
+
+#: Ends of the standard AD key scale as ``_gregorian_key`` produces them for
+#: the allowed boundary years 1…9999 (``date(1, 1, 1)`` opens, ``date(9999,
+#: 12, 31)`` closes it contiguously).  Computed through the private formula,
+#: never the ``era_key`` dispatcher: dispatching at module import would come
+#: back through the lazy import into this partially initialized module
+#: (design D2).
+_AD_FIRST_KEY = _gregorian_key(date(MIN_YEAR, 1, 1))
+_AD_LAST_KEY = _gregorian_key(date(MAX_YEAR, 12, 31))
 
 
 # ── Custom calendar (designs D4/D7) ──────────────────────────────────────
@@ -664,3 +716,208 @@ def render_calendar_year(calendar: GameCalendar, year: int) -> str:
             if rule.after_month == month_number:
                 lines.append(f"— {rule.name} —")
     return "\n".join(lines)
+
+
+# ── Shifting invalid coordinates (roadmap piece C1, design D4) ───────────
+
+class ShiftReason(Enum):
+    """Reason a coordinate does not exist in a calendar — exactly the three
+    of design D4, nothing else (a year outside MIN_YEAR…MAX_YEAR is not a
+    shift reason but the core's ``InvalidGameDateError``).  The ``value``
+    strings are the stable machine-readable codes of the future migration
+    report (design D5: ``день_overflow``, ``месяц_вне_числа``,
+    ``индекс_вставного``); the domain never localizes them."""
+
+    DAY_OVERFLOW = "день_overflow"
+    MONTH_OUT_OF_RANGE = "месяц_вне_числа"
+    INTERCALARY_INDEX_OUT_OF_RANGE = "индекс_вставного"
+
+
+def _intercalary_rule_count(calendar: GameCalendar) -> int:
+    """Number of intercalary rules, read through the protocol only: the
+    valid indexes of one year are exactly ``0…count−1``, so probing
+    ``is_valid`` upward stops at the first missing slot (the standard preset
+    has no rules at all and stops at zero immediately)."""
+    count = 0
+    while calendar.is_valid(IntercalaryDay(MIN_YEAR, count)):
+        count += 1
+    return count
+
+
+def _last_month_number(calendar: GameCalendar, year: int) -> int:
+    """Number of the last existing month: ``month_length`` is the protocol's
+    own gate, so counting upward stops at the first month it refuses (a
+    calendar always has month 1 — ``validate`` rejects a monthless spec)."""
+    month = 1
+    while True:
+        try:
+            calendar.month_length(year, month + 1)
+        except InvalidGameDateError:
+            return month
+        month += 1
+
+
+def classify(coord: GameCoord, calendar: GameCalendar) -> ShiftReason | None:
+    """Predicate of design D4: ``None`` when the coordinate exists in
+    ``calendar``, otherwise the ``ShiftReason`` for its absence — read
+    through the protocol alone, with no storage and no active-calendar
+    global.  A year outside the scale or a value that is not a coordinate
+    refuses with the core's ``InvalidGameDateError`` instead: those are not
+    shift reasons (D4), no silent normalization.
+
+    The three reasons are mutually exclusive by construction: with the year
+    settled, the month probe (``month_length`` refusing) outranks the day
+    probe (the day of a nonexistent month has no length to overflow), and
+    intercalary indexes live in their own coordinate kind.
+    """
+    if not isinstance(coord, (MonthDay, IntercalaryDay)):
+        raise InvalidGameDateError(
+            f"{coord!r} is not a calendar coordinate"
+        )
+    if not MIN_YEAR <= coord.year <= MAX_YEAR:
+        raise InvalidGameDateError(
+            f"year {coord.year} is outside {MIN_YEAR}…{MAX_YEAR} — not a "
+            f"shift reason (design D4), the core's own error"
+        )
+    if isinstance(coord, IntercalaryDay):
+        if 0 <= coord.index < _intercalary_rule_count(calendar):
+            return None
+        return ShiftReason.INTERCALARY_INDEX_OUT_OF_RANGE
+    try:
+        month_length = calendar.month_length(coord.year, coord.month)
+    except InvalidGameDateError:
+        return ShiftReason.MONTH_OUT_OF_RANGE
+    if not 1 <= coord.day <= month_length:
+        return ShiftReason.DAY_OVERFLOW
+    return None
+
+
+def shift_invalid(
+    coord: GameCoord, calendar: GameCalendar
+) -> tuple[GameCoord, ShiftReason] | None:
+    """Turn an invalid coordinate into the nearest valid one of the same
+    year/era per design D4, returning ``(shifted, reason)`` — or ``None``
+    when ``classify`` finds nothing to shift, which makes the operation
+    idempotent (a shifted coordinate always answers ``None``).  Each reason
+    has one uniform clamp: an out-of-length day (either side) → the last day
+    of that very month; an out-of-count month → the last existing month's
+    last day; an out-of-list intercalary index → the last rule of the spec
+    list.  Era is not an argument anywhere, so the coordinate's era is
+    preserved trivially, and two coordinates may collide onto one date with
+    no separation attempt (the spec allows the collision).  Like
+    ``classify``, a year outside the scale or a non-coordinate refuses with
+    ``InvalidGameDateError``; a rule-less calendar additionally refuses the
+    intercalary clamp — there is genuinely no rule to clamp to."""
+    reason = classify(coord, calendar)
+    if reason is None:
+        return None
+    if reason is ShiftReason.DAY_OVERFLOW:
+        last_day = calendar.month_length(coord.year, coord.month)
+        return MonthDay(coord.year, coord.month, last_day), reason
+    if reason is ShiftReason.MONTH_OUT_OF_RANGE:
+        last_month = _last_month_number(calendar, coord.year)
+        return (
+            MonthDay(coord.year, last_month,
+                     calendar.month_length(coord.year, last_month)),
+            reason,
+        )
+    last_rule_index = _intercalary_rule_count(calendar) - 1
+    if last_rule_index < 0:
+        raise InvalidGameDateError(
+            f"{coord!r} cannot clamp to an intercalary rule: this calendar "
+            f"has no intercalary days whatsoever"
+        )
+    return IntercalaryDay(coord.year, last_rule_index), reason
+
+
+# ── Transfer report form (roadmap piece C1, design D5) ───────────────────
+
+class DateField(Enum):
+    """Which date slot of a record a report entry is about — the pair
+    ``{start, end}`` of design D5.  The ``value`` strings are stable ASCII
+    machine codes for the future master screen (C4); the domain never
+    localizes them and never carries an entity's display name here."""
+
+    START = "start"
+    END = "end"
+
+
+#: A coordinate paired with the era it is keyed under, mirroring the
+#: ``(coord, is_bc)`` shape both sides of a report entry hold (design D5).
+CoordWithEra = tuple[GameCoord, bool]
+
+
+@dataclass(frozen=True)
+class ShiftReportEntry:
+    """One shifted record of the transfer report (design D5).
+
+    Exactly the machine-readable fields the future master screen needs:
+    ``table`` and ``row_id`` locate the record in the caller's own traversal,
+    ``field`` says whether the ``start`` or the ``end`` coordinate moved, and
+    ``old``/``new`` each carry the coordinate together with its era (the era is
+    never altered by a shift).  ``reason`` is the stable ``ShiftReason`` code of
+    design D4.  Frozen and free of any localized caption or entity name — those
+    belong to the presentation layer (C4), never the domain.
+    """
+
+    table: str
+    row_id: int
+    field: DateField
+    old: CoordWithEra
+    new: CoordWithEra
+    reason: ShiftReason
+
+
+@dataclass(frozen=True)
+class ShiftReport:
+    """Frozen collection of :class:`ShiftReportEntry` for the C4 master screen.
+
+    The report is *empty* — no ``records`` and a zero ``shift_count`` — exactly
+    when no checked coordinate needed a shift (spec «Отчёт о переносе невалидных
+    координат», scenario «Пустой отчёт на валидных данных»).  ``shift_count`` is
+    the number of transfers, i.e. one per recorded entry.
+    """
+
+    records: tuple[ShiftReportEntry, ...] = ()
+
+    @property
+    def shift_count(self) -> int:
+        """Number of transferred coordinates the report accounts for."""
+        return len(self.records)
+
+
+#: One candidate coordinate of a record the caller wants checked: the record's
+#: ``table``/``row_id``, which ``field`` of it, the ``coord`` and its era.
+ShiftCheck = tuple[str, int, DateField, GameCoord, bool]
+
+
+def build_shift_report(checks: Iterable[ShiftCheck], calendar: GameCalendar) -> ShiftReport:
+    """Pure transfer-report builder of design D5: turn coordinate ``checks`` into
+    a :class:`ShiftReport` against ``calendar``.
+
+    The calendar is an explicit parameter because, like ``classify`` and
+    ``shift_invalid``, this pure function never reads the active-calendar global;
+    connecting it to the live accessor and iterating the six real tables is the
+    C2 traversal's job, not the domain's — no storage is touched here.  A
+    coordinate that exists in ``calendar`` (``shift_invalid`` answers ``None``)
+    contributes nothing; every invalid one is clamped by ``shift_invalid`` and
+    recorded with the same era on both sides.  The entry list preserves the
+    order of ``checks``, and the resulting ``shift_count`` is therefore the
+    number of genuinely invalid coordinates.
+    """
+    entries: list[ShiftReportEntry] = []
+    for table, row_id, field, coord, is_bc in checks:
+        shifted = shift_invalid(coord, calendar)
+        if shifted is not None:
+            new_coord, reason = shifted
+            entries.append(
+                ShiftReportEntry(
+                    table=table,
+                    row_id=row_id,
+                    field=field,
+                    old=(coord, is_bc),
+                    new=(new_coord, is_bc),
+                    reason=reason,
+                )
+            )
+    return ShiftReport(tuple(entries))
