@@ -21,7 +21,6 @@ the popover's theme, so keep them exactly as they are.
 """
 from __future__ import annotations
 
-from datetime import date
 from functools import partial
 
 from PySide6.QtCore import QDate, QPoint, QRect, Qt, Signal
@@ -30,7 +29,12 @@ from PySide6.QtWidgets import (
 )
 
 from app.domain.date_era import cmp_era_dates
-from app.presentation.utils.date_utils import format_game_date, split_date_era
+from app.domain.game_calendar import GameCoord, as_game_coord
+from app.presentation.utils.date_utils import (
+    format_game_date,
+    popup_prefill_date,
+    split_date_era,
+)
 from app.presentation.views.theme_date_popup import _CustomCalendar
 
 # ── «Выбор даты» chip + popover captions (W3b D9; migrated with the popover) ─
@@ -52,9 +56,11 @@ WINDOW_DOUBLE_HEIGHT_FACTOR = 2
 def window_chip_text(start, end) -> str:
     """Chip caption for the active window: «Все дни ▾» or game-formatted bounds.
 
-    Bounds ride as the popover applies them — a bare ``date`` (== «н.э.») or a
-    ``(date, is_bc)`` pair (add-era-aware-dates, task 4.2): a BC bound prints
-    with the «N г. до н.э.» suffix (spec «Границы окна через эпохи»)."""
+    Bounds ride as the popover applies them — a bare coordinate (== «н.э.»,
+    since piece C3a a plain ``date`` of the same numbers) or a
+    ``(coordinate, is_bc)`` pair (add-era-aware-dates, task 4.2): a BC bound
+    prints with the «N г. до н.э.» suffix, an intercalary bound with its rule
+    name (spec «Границы окна через эпохи» / «Отображение эры»)."""
     start_date, start_bc = split_date_era(start)
     end_date, end_bc = split_date_era(end)
     if start_date is None or end_date is None:
@@ -107,7 +113,7 @@ class _DateWindowPopup(QWidget):
         self.setObjectName("timelineDateWindowPopup")  # identifier, not style
         # A plain QWidget only paints the sheet's background with the flag on.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._pending_start: tuple[date, bool] | None = None
+        self._pending_start: tuple[GameCoord, bool] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -155,13 +161,20 @@ class _DateWindowPopup(QWidget):
         self.end_calendar.refresh_month_names()
         start, end = current or (None, None)
         for cal, value in ((self.start_calendar, start), (self.end_calendar, end)):
-            day, is_bc = split_date_era(value)
+            # Since piece C3a a bound may carry a game coordinate the Gregorian
+            # widget cannot paint (an intercalary day, a game-only month/day):
+            # it is clamped FOR THE PICTURE ONLY through the pure shift policy
+            # (grill Q19) — the window and the records it filters over stay
+            # untouched; the widget itself (QCalendarWidget) is unchanged until
+            # C3b emits coordinates from its own grid.
+            day = popup_prefill_date(value)
             if day is not None:
                 qday = QDate(day.year, day.month, day.day)
                 cal.setSelectedDate(qday)
                 cal.setCurrentPage(qday.year(), qday.month())
             # The era check box always mirrors the seeded bound (task 3.3):
             # its own calendar's checkbox, independent for start and end.
+            _seed, is_bc = split_date_era(value)
             cal.set_era(bool(is_bc))
         pos = QPoint(anchor_global.x(), anchor_global.y() + anchor_global.height() + 2)
         screen = QApplication.screenAt(pos)
@@ -185,8 +198,14 @@ class _DateWindowPopup(QWidget):
     # ── tap handling ────────────────────────────────────────────────────────
 
     def _on_day_clicked(self, calendar: _CustomCalendar, qdate: QDate) -> None:
-        # Each bound carries its own calendar's independent era flag (Q9).
-        chosen: tuple[date, bool] = (qdate.toPython(), calendar.is_bc())
+        # Each bound carries its own calendar's independent era flag (Q9);
+        # since piece C3a the tapped day enters the bridge as the equal
+        # month-day coordinate (design D4), so the backwards-check below
+        # already compares coordinate pairs.
+        chosen: tuple[GameCoord, bool] = (
+            as_game_coord(qdate.toPython()),
+            calendar.is_bc(),
+        )
         if self._pending_start is None or cmp_era_dates(chosen, self._pending_start) < 0:
             # First tap arms the start; a second tap *chronologically before*
             # it (across the eras, design D2) re-arms a new start rather than

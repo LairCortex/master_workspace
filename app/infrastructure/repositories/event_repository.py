@@ -7,12 +7,14 @@ from sqlalchemy import or_, select
 
 from app.infrastructure.db.models import EventModel
 from app.infrastructure.repositories.base_repository import BaseRepository
+from app.infrastructure.repositories.coord_mapping import CoordMappingMixin
 
 
-class EventRepository(BaseRepository[EventModel]):
+class EventRepository(CoordMappingMixin, BaseRepository[EventModel]):
     """Events ordered/filtered by the era key (design D2/D4), never by raw
     ``start_date``/``end_date`` text — across the era border the lexicographic
-    date order disagrees with chronology."""
+    date order disagrees with chronology.  Dated table since C3a: its dates
+    map through the coordinate resolver (design D3)."""
 
     def __init__(self, session) -> None:
         super().__init__(session, EventModel)

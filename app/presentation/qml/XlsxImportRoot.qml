@@ -241,6 +241,29 @@ Rectangle {
                         wrapMode: Text.WordWrap
                     }
                 }
+                // ── перенесённые в календаре игры даты (C3a): only shifted
+                // dates get a row, so the section hides on a standard game ──
+                Text {
+                    objectName: "reportDateShiftTitle"
+                    text: "Перенесённые даты: "
+                          + (xlsxImportVm.report ? xlsxImportVm.report.dateShifts.length : 0)
+                    font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
+                    color: root.fgColor
+                    visible: !!xlsxImportVm.report && xlsxImportVm.report.dateShifts.length > 0
+                }
+                Repeater {
+                    objectName: "reportDateShiftRepeater"
+                    model: xlsxImportVm.report ? xlsxImportVm.report.dateShifts : []
+                    delegate: HintText {
+                        required property var modelData
+                        objectName: "reportDateShiftText"
+                        text: "лист «" + modelData.sheet + "», строка " + modelData.row
+                              + ": «" + modelData.field + "» " + modelData.old
+                              + " → " + modelData.new
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                }
                 Repeater {
                     objectName: "reportDecisionRepeater"
                     model: xlsxImportVm.report ? xlsxImportVm.report.decisions : []

@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from app.application.services.xlsx_import_service import ImportPlan, ImportReport, RowIssue
+from app.application.services.xlsx_import_service import (
+    DateShiftRow,
+    ImportPlan,
+    ImportReport,
+    RowIssue,
+)
 from app.presentation.viewmodels.xlsx_import_view_model import (
     STATE_ANALYZING,
     STATE_DONE,
@@ -214,9 +219,30 @@ class TestDone:
             "updated": 2,
             "links": 5,
             "skipped": [{"sheet": "Персонажи", "row": 3, "reason": "пустое имя"}],
+            "dateShifts": [],
             "decisions": ["Автосоздание: тип события «Дуэль»"],
             "warnings": ["Неизвестный лист «Заметки»"],
         }
+
+    def test_date_shifts_get_their_own_report_section(self, vm):
+        # C3a task 4.2: the section is a separate report category, only with
+        # the фактически перенесённые dates in it.
+        report = ImportReport(
+            created=2,
+            date_shifts=[
+                DateShiftRow("Персонажи", 2, "Дата начала", "2026-08-31", "2026-08-30"),
+            ],
+        )
+        vm.path = "/a.xlsx"
+        vm.on_analyzed(plan_with())
+        vm.requestConfirmImport()
+        vm.on_report(report)
+        assert vm.report["dateShifts"] == [
+            {"sheet": "Персонажи", "row": 2, "field": "Дата начала",
+             "old": "2026-08-31", "new": "2026-08-30"},
+        ]
+        # Other sections stay empty/zero — the shifts are their own category.
+        assert vm.report["skipped"] == [] and vm.report["decisions"] == []
 
     def test_import_failure_returns_to_fatal_problems(self, vm):
         vm.path = "/a.xlsx"

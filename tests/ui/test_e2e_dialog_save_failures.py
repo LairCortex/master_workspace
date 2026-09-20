@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate
 
+from app.domain.game_calendar import MonthDay
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 
@@ -69,8 +70,8 @@ async def test_event_dialog_create_failure_shows_one_critical(
     await wait_for(lambda: len(loaded) == 4)
     dialog.name_input.setText("Doomed Event")
     dialog.characteristics_input.setContent("обречено")
-    dialog.start_date_input.setDate(QDate(1200, 1, 5))
-    dialog.end_date_input.setDate(QDate(1200, 1, 6))
+    dialog.start_date_input.setDate(MonthDay(1200, 1, 5))
+    dialog.end_date_input.setDate(MonthDay(1200, 1, 6))
     assert dialog.save_button.isEnabled()
     dialog.save_button.click()
     await helpers.wait_until_settled()

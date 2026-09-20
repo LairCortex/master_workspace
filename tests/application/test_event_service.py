@@ -312,7 +312,7 @@ class TestUpdateEventWithRelations:
         assert result is not None
         await async_session.refresh(
             result,
-            attribute_names=["name", "end_date", "description", "organizations", "characters"],
+            attribute_names=["name", "end_date_raw", "description", "organizations", "characters"],
         )
         assert result.name == "Brawl Redux"
         assert result.end_date is None

@@ -226,10 +226,10 @@ def test_invalid_model_and_sync_inputs_are_ignored(qapp):
 
     vm.populate([_event(locations=[_entity(1, "Лес")])], None)
     assert model.data(model.index(0, 0), Qt.ItemDataRole.DisplayRole) is None
+    # setDateIso is gone (piece C3a, design D6: QML never wrote the ISO slot
+    # back — the reverse contract was fictional); the bridge itself still
+    # ignores absent input.
     before_date = vm.dateIso
-    vm.setDateIso("not-a-date")
-    vm.setDateIso(None)
-    assert vm.dateIso == before_date
     vm.set_date(vm._date)
     vm.set_date(None)  # «нет даты» не сдвигает выбранный день
     assert vm.dateIso == before_date
@@ -256,7 +256,9 @@ def test_date_change_and_rating_color_refresh(qapp):
         add_listener=lambda callback: None,
     )
     vm = WorldSnapshotViewModel(runtime)
-    vm.setDateIso("1200-03-04")
+    # The deleted setDateIso slot is replaced by the bridge's own entry
+    # (piece C3a): the same day arrives as a plain date, ISO stays ISO.
+    vm.set_date(date(1200, 3, 4))
     assert vm.dateIso == "1200-03-04"
     vm.populate([_event(locations=[_entity(1, "Лес", 20)])], None)
     changed = []

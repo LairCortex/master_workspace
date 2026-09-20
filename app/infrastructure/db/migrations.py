@@ -90,6 +90,12 @@ _MIGRATIONS = [
     *[(t, "end_bc", "INTEGER NOT NULL DEFAULT 0") for t in _ERA_TABLES],
     *[(t, "start_key", "INTEGER") for t in _ERA_TABLES],
     *[(t, "end_key", "INTEGER") for t in _ERA_TABLES],
+    # Game-coordinate slots (piece C3a, design D1): nullable TEXT added with
+    # the same cheap ALTER as every other column — no table rebuild, and a
+    # pre-C3a game simply receives them empty ("the dates live in the date
+    # columns"), exactly like a fresh create_all game.
+    *[(t, "start_coord", "TEXT") for t in _ERA_TABLES],
+    *[(t, "end_coord", "TEXT") for t in _ERA_TABLES],
 ]
 
 # NRI defaults seeded once per game into an empty `event_types` set (W4).
@@ -194,15 +200,21 @@ async def init_db(engine, image_dir: Path | str | None = None) -> None:
     async with engine.begin() as conn:
         await _backup_before_first_era_migration(conn, engine.url.database)
 
-    # Migrate missing columns for existing databases
+    # Migrate missing columns for existing databases; idempotence is decided
+    # by PRAGMA table_info — already-present columns (fresh create_all schema
+    # included) are skipped instead of re-ALTERed-and-swallowed, and a second
+    # init_db over the same file can neither fail nor duplicate a column.
     async with engine.begin() as conn:
         for table, column, col_type in _MIGRATIONS:
-            try:
-                await conn.exec_driver_sql(
-                    f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
-                )
-            except Exception:
-                pass  # column already exists
+            existing = {
+                row[1]
+                for row in (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+            }
+            if column in existing:
+                continue
+            await conn.exec_driver_sql(
+                f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
+            )
 
     # Migrate end_date NOT NULL → nullable
     async with engine.begin() as conn:

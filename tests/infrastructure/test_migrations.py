@@ -451,3 +451,66 @@ async def test_old_version_row_is_keyed_on_next_open(tmp_path):
             assert "Written by the old app" in covered
     finally:
         await engine.dispose()
+
+
+# ── C3a coordinate columns (init_db migration, task 2.2) ────────────────────
+
+COORD_COLUMNS = ("start_coord", "end_coord")
+
+
+async def _column_names(engine, table: str) -> list:
+    async with engine.connect() as conn:
+        rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+    return [row[1] for row in rows]
+
+
+async def test_coord_columns_migrate_idempotently_without_duplicates():
+    """Second init_db neither fails nor duplicates the coordinate columns:
+    idempotence is decided by PRAGMA table_info, not by swallowing ALTER."""
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        await init_db(engine)
+        for table in ERA_TABLES:
+            columns = await _column_names(engine, table)
+            for column in COORD_COLUMNS:
+                assert columns.count(column) == 1, (table, column)
+            assert len(columns) == len(set(columns)), table
+
+        await init_db(engine)  # repeated open must stay a no-op
+        for table in ERA_TABLES:
+            columns = await _column_names(engine, table)
+            for column in COORD_COLUMNS:
+                assert columns.count(column) == 1, (table, column)
+            assert len(columns) == len(set(columns)), table
+    finally:
+        await engine.dispose()
+
+
+async def test_old_game_without_coord_columns_gets_them_empty(tmp_path):
+    """A pre-C3a file receives the coordinate columns empty (NULL — «dates
+    live in the date columns»), data intact, no rebuild."""
+    db_path = tmp_path / "game.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await _create_legacy_game_db(engine)
+        dates_before = await _date_snapshot(engine)
+
+        await init_db(engine)
+
+        for table in ERA_TABLES:
+            columns = await _column_names(engine, table)
+            for column in COORD_COLUMNS:
+                assert column in columns, (table, column)
+        async with engine.connect() as conn:
+            for table in ERA_TABLES:
+                values = (
+                    await conn.execute(
+                        text(f"SELECT start_coord, end_coord FROM {table}")
+                    )
+                ).fetchall()
+                assert values, table  # the fixture rows are still here
+                for start_coord, end_coord in values:
+                    assert start_coord is None and end_coord is None, table
+        assert await _date_snapshot(engine) == dates_before
+    finally:
+        await engine.dispose()

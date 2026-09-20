@@ -6,6 +6,7 @@ from datetime import date
 from PySide6.QtCore import QDate, QRect
 
 from app.domain.game_calendar import (
+    MonthDay,
     StandardCalendar,
     current_calendar,
     set_current_calendar,
@@ -185,7 +186,7 @@ def test_range_popup_mixed_era_window_returns_two_pairs(qtbot):
     popup.end_calendar.clicked.emit(QDate(100, 12, 31))
 
     assert received == [
-        ((date(500, 1, 1), True), (date(100, 12, 31), False)),
+        ((MonthDay(500, 1, 1), True), (MonthDay(100, 12, 31), False)),
     ]
     assert not popup.isVisible()
 
@@ -203,13 +204,13 @@ def test_range_popup_backwards_check_is_chronological_across_the_eras(qtbot):
 
     popup.start_calendar.set_era(True)
     popup.start_calendar.clicked.emit(QDate(100, 1, 1))  # 100 г. до н.э.
-    assert popup._pending_start == (date(100, 1, 1), True)
+    assert popup._pending_start == (MonthDay(100, 1, 1), True)
     popup.start_calendar.clicked.emit(QDate(500, 1, 1))  # 500 г. до н.э. — раньше
-    assert popup._pending_start == (date(500, 1, 1), True)  # re-armed
+    assert popup._pending_start == (MonthDay(500, 1, 1), True)  # re-armed
     assert received == []
     popup.end_calendar.set_era(True)
     popup.end_calendar.clicked.emit(QDate(50, 1, 1))  # 50 г. до н.э. — позже
-    assert received == [((date(500, 1, 1), True), (date(50, 1, 1), True))]
+    assert received == [((MonthDay(500, 1, 1), True), (MonthDay(50, 1, 1), True))]
 
 
 def test_range_open_prefills_pairs_without_moving_numbers_back(qtbot):
@@ -217,7 +218,7 @@ def test_range_open_prefills_pairs_without_moving_numbers_back(qtbot):
     qtbot.addWidget(popup)
     popup.open_at(
         QRect(0, 0, 10, 10),
-        ((date(500, 1, 1), True), (date(100, 12, 31), False)),
+        ((MonthDay(500, 1, 1), True), (MonthDay(100, 12, 31), False)),
     )
     assert popup.start_calendar.selectedDate() == QDate(500, 1, 1)
     assert popup.start_calendar.is_bc() is True

@@ -6,10 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QDate, QEvent, Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QPixmap
 from PySide6.QtWidgets import QDialog
 
+from app.domain.game_calendar import MonthDay
+from app.presentation.utils.date_utils import popup_prefill_date
 from app.presentation.qml.dialog_image_provider import dialog_image_provider
 from app.presentation.views.entity_card_dialog import (
     ROOT_QML,
@@ -289,10 +291,10 @@ def test_vm_invokable_edges_and_native_facade_ducks(qtbot, monkeypatch):
     with qtbot.waitSignal(vm.characterSheetRequested):
         vm.requestCharacterSheet()
 
-    dialog.start_date_input.setDate(QDate(1200, 1, 2))
-    dialog.end_date_input.setDate(QDate(1201, 2, 3))
-    assert dialog.start_date_input.date() == QDate(1200, 1, 2)
-    assert dialog.end_date_input.date() == QDate(1201, 2, 3)
+    dialog.start_date_input.setDate(MonthDay(1200, 1, 2))
+    dialog.end_date_input.setDate(MonthDay(1201, 2, 3))
+    assert dialog.start_date_input.date() == MonthDay(1200, 1, 2)
+    assert dialog.end_date_input.date() == MonthDay(1201, 2, 3)
     assert dialog.end_date_input.isHidden()
     assert dialog.music_input.isHidden() is False
     dialog.music_input.setFocus()
@@ -334,11 +336,13 @@ def test_save_guard_saving_close_and_date_routes(qtbot, monkeypatch):
         lambda anchor, current: opened.append((anchor, current)),
     )
     dialog._open_date_popup("end", 1, 2, 30, 40)
-    # The popup bridge is a (date, era) pair now (task 3.4).
-    assert opened[-1][1] == (dialog.vm._end_date, dialog.vm._end_bc)
+    # The popup bridge stays a (date, era) pair (task 3.4): the dialog's
+    # coordinate reaches the Gregorian widget through the picture-only clamp
+    # (piece C3a, design D6 — today's coordinate clamps to today's numbers).
+    assert opened[-1][1] == (popup_prefill_date(dialog.vm._end_date), dialog.vm._end_bc)
     dialog._date_target = "start"
     dialog._set_selected_date(date(1300, 1, 1))
     dialog._date_target = "end"
     dialog._set_selected_date(date(1301, 2, 2))
-    assert dialog.vm._start_date == date(1300, 1, 1)
-    assert dialog.vm._end_date == date(1301, 2, 2)
+    assert dialog.vm._start_date == MonthDay(1300, 1, 1)
+    assert dialog.vm._end_date == MonthDay(1301, 2, 2)

@@ -29,6 +29,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.services import xlsx_schema as schema
 from app.application.services.event_service import COLOR_INDEX_MAX, COLOR_INDEX_MIN
 from app.domain.date_era import era_key
+from app.domain.game_calendar import (
+    GameCoord,
+    MonthDay,
+    as_game_coord,
+    current_calendar,
+    encode_coord,
+    shift_invalid,
+)
 from app.infrastructure.db.models import (
     CharacterModel,
     DescriptionModel,
@@ -38,6 +46,7 @@ from app.infrastructure.db.models import (
     ItemModel,
     LocationModel,
     OrganizationModel,
+    assign_coord,
 )
 from app.infrastructure.images.store import ImageStore
 
@@ -69,6 +78,24 @@ class RowIssue:
     sheet: str
     row_number: int  # 1-based Excel row number (header row = 1)
     reason: str
+
+
+@dataclass(frozen=True)
+class DateShiftRow:
+    """One visible import transfer (piece C3a, design D7).
+
+    A parsed number existed as a coordinate of no calendar date, so the import
+    clamped it to the last valid day of the same month (or of the last existing
+    one) against the *active* calendar.  The row names the source (sheet,
+    1-based row number), the registry column label and the ``old``/``new``
+    display strings; the era marker of BC dates rides on both.
+    """
+
+    sheet: str
+    row_number: int
+    field: str
+    old: str
+    new: str
 
 
 @dataclass
@@ -119,6 +146,10 @@ class PlannedRow:
     first_row_number: int  # Excel row of the first contributing row
     fields: dict[str, Any] = field(default_factory=dict)
     links: dict[str, list[PlannedLink]] = field(default_factory=dict)
+    # Date columns this row actually changed into the calendar (C3a, D7): the
+    # merged field name → its visible transfer row.  A later write of the same
+    # slot replaces the entry, so a superseded transfer never reaches the report.
+    date_shifts: dict[str, DateShiftRow] = field(default_factory=dict)
     skipped: bool = False
     existing_id: int | None = None
 
@@ -142,8 +173,8 @@ class PlannedGhost:
     entity_type: str
     key: tuple[str, str]
     name: str  # original case of the first referring cell
-    min_start: date
-    max_end: date
+    min_start: GameCoord
+    max_end: GameCoord
     min_start_bc: bool = False  # era of min_start (add-era-aware-dates, D7)
     max_end_bc: bool = False  # era of max_end
     referenced_by: list[tuple[str, int]] = field(default_factory=list)  # (sheet, row)
@@ -193,6 +224,42 @@ def _era_text(d: date, is_bc: bool) -> str:
     return f"{d.isoformat()} до н.э." if is_bc else d.isoformat()
 
 
+def _coord_text(coord: GameCoord, is_bc: bool) -> str:
+    """Coordinate display for report lines (C3a, design D5's Iso rule):
+    the ISO form when the coordinate is representable as a real date, the
+    codec string otherwise; BC dates carry the «… до н.э.» marker."""
+    if isinstance(coord, MonthDay):
+        try:
+            text = date(coord.year, coord.month, coord.day).isoformat()
+        except ValueError:
+            text = encode_coord(coord)
+    else:
+        text = encode_coord(coord)
+    return f"{text} до н.э." if is_bc else text
+
+
+def _to_coord(moment: date, is_bc: bool, col, sheet_title: str, row_number: int) -> tuple[GameCoord, DateShiftRow | None]:
+    """Analyze-route date → active-calendar coordinate (C3a, design D7).
+
+    The parsed number is coerced to a coordinate and clamped against the
+    active calendar through the pure shift policy — the import never writes
+    a coordinate the calendar does not contain and never shifts in silence:
+    a clamp yields the visible :class:`DateShiftRow` alongside.
+    """
+    coord = as_game_coord(moment)
+    shifted = shift_invalid(coord, current_calendar())
+    if shifted is None:
+        return coord, None
+    coord, _reason = shifted
+    return coord, DateShiftRow(
+        sheet=sheet_title,
+        row_number=row_number,
+        field=col.label,
+        old=_era_text(moment, is_bc),
+        new=_coord_text(coord, is_bc),
+    )
+
+
 def _row_to_draft(
     spec: schema.SheetSpec,
     sheet_title: str,
@@ -202,6 +269,7 @@ def _row_to_draft(
 ) -> tuple[PlannedRow | None, RowIssue | None]:
     """Parse one data row into a merge candidate, or a planned-skip issue."""
     fields: dict[str, Any] = {}
+    date_shifts: dict[str, DateShiftRow] = {}
     for pos in sorted(resolved.scalars):
         col = resolved.scalars[pos]
         value = row[pos] if pos < len(row) else None
@@ -209,7 +277,13 @@ def _row_to_draft(
             parsed = schema.parse_cell_date(value)
             if parsed is not None:
                 moment, is_bc = parsed
-                fields[col.key] = moment
+                # C3a (D7): the parsed number becomes an active-calendar
+                # coordinate BEFORE any recording route (merging, ghosts,
+                # upsert) sees it — an absent day clamps with a visible row.
+                coord, shift = _to_coord(moment, is_bc, col, sheet_title, row_number)
+                fields[col.key] = coord
+                if shift is not None:
+                    date_shifts[col.key] = shift
                 # The era travels next to its date under the ORM field names
                 # (start_bc/end_bc — same kwargs the entity services take):
                 # the merge keeps the pair atomic, later non-empty wins both.
@@ -262,6 +336,7 @@ def _row_to_draft(
         first_row_number=row_number,
         fields=fields,
         links=links,
+        date_shifts=date_shifts,
     )
     return draft, None
 
@@ -299,6 +374,14 @@ def _parse_sheet(
         # Merge (type, lower(name)): later non-empty fields override, links
         # accumulate (order preserved, per-row dedup already applied).
         merged.fields.update(draft.fields)
+        # A transferred date slot travels with its visible report row: the
+        # winning contribution replaces the transfer (or clears it when the
+        # new value needed no shift) — the report lists only actual transfers.
+        for date_key in ("start_date", "end_date"):
+            if date_key in draft.fields:
+                merged.date_shifts.pop(date_key, None)
+                if date_key in draft.date_shifts:
+                    merged.date_shifts[date_key] = draft.date_shifts[date_key]
         for target_type, refs in draft.links.items():
             existing = merged.links.setdefault(target_type, [])
             seen = {link.target_key for link in existing}
@@ -484,19 +567,46 @@ RELATION_ATTRS_BY_TARGET: dict[str, str] = {
 #: row / event-type resolution / image pipeline) instead of plain setattr.
 _NON_SCALAR_KEYS = frozenset({"name", "characteristics", "backstory", "event_type", "image"})
 
+#: Date-slot field keys routed through the storage resolver (C3a, design D3)
+#: instead of a plain setattr — the field may hold a game coordinate.
+_DATE_SLOTS_BY_FIELD = {"start_date": "start", "end_date": "end"}
+
+#: Same rule as the repositories' ``CoordMappingMixin`` (C3a): the legacy
+#: ``start_date`` column is NOT NULL, so a fresh row whose coordinate the
+#: route put into the coordinate slot gets a schema-satisfying placeholder
+#: that nothing reads while the coordinate column holds the truth.
+_INSERT_DATE_PLACEHOLDER = date(1, 1, 1)
+
+
+def _route_insert_dates(obj: Any, fields: dict[str, Any]) -> None:
+    """Push the row's date fields through the routed resolver (C3a D3): a
+    coordinate never lands raw on a ``Date`` column — under the preset it
+    becomes its date, under a custom calendar it goes to the coordinate
+    columns and the NOT NULL legacy slot gets its placeholder."""
+    for key, slot in _DATE_SLOTS_BY_FIELD.items():
+        if key in fields:
+            assign_coord(obj, slot, fields[key])
+    if "start_date" in fields and getattr(obj, "start_date_raw", None) is None:
+        # Same rule as CoordMappingMixin: raw storage attribute directly —
+        # the coord-routed property already answers the coordinate itself.
+        obj.start_date_raw = _INSERT_DATE_PLACEHOLDER
+
 
 @dataclass
 class ImportReport:
     """Final import report (spec "Итоговый отчёт импорта"): created/updated
     entity counts, newly installed links, the planned skipped rows carried
     over from the analysis (sheet/row/reason), warnings (unknown sheets of
-    the plan plus unreadable images) and every automatic decision taken
-    (auto-created link targets and event types)."""
+    the plan plus unreadable images), the dates moved into the game calendar
+    during import (C3a: sheet/row/field/old → new, empty section under the
+    standard calendar) and every automatic decision taken (auto-created link
+    targets and event types)."""
 
     created: int = 0
     updated: int = 0
     links: int = 0
     skipped: list[RowIssue] = field(default_factory=list)
+    date_shifts: list[DateShiftRow] = field(default_factory=list)
     decisions: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -640,6 +750,15 @@ class XlsxImportService:
         report = ImportReport(
             skipped=list(plan.skipped_rows),
             warnings=list(plan.warnings),
+            # The dates the active calendar refused and the import clamped
+            # (C3a, spec «Итоговый отчёт импорта»): collected from the merged
+            # rows that will really be written, start slot before end slot.
+            date_shifts=[
+                shift
+                for row in self._ordered_rows(plan)
+                for slot in ("start_date", "end_date")
+                if (shift := row.date_shifts.get(slot)) is not None
+            ],
         )
         total = len(plan.planned_rows) + len(plan.ghosts) + sum(1 for _ in plan.iter_links())
         processed = 0
@@ -703,12 +822,14 @@ class XlsxImportService:
             model = _ORM_MODELS[ghost.entity_type]
             obj = model(
                 name=ghost.name,
-                start_date=ghost.min_start,
                 start_bc=ghost.min_start_bc,
-                end_date=ghost.max_end,
                 end_bc=ghost.max_end_bc,
                 description=DescriptionModel(characteristics="", backstory=""),
             )
+            # Coordinates reach the storage only through the routed resolver
+            # (C3a D3): date columns under the preset, coordinate columns
+            # under a custom calendar — the same route the upserted rows use.
+            _route_insert_dates(obj, {"start_date": ghost.min_start, "end_date": ghost.max_end})
             session.add(obj)
             await session.flush()
             instances[key] = obj
@@ -718,8 +839,8 @@ class XlsxImportService:
             report.decisions.append(
                 f"Автосоздание: цель связи «{ghost.name}» не найдена ни в файле, ни в базе — "
                 f"создана как сущность листа «{sheet_name}» с датами "
-                f"{_era_text(ghost.min_start, ghost.min_start_bc)}—"
-                f"{_era_text(ghost.max_end, ghost.max_end_bc)} "
+                f"{_coord_text(ghost.min_start, ghost.min_start_bc)}—"
+                f"{_coord_text(ghost.max_end, ghost.max_end_bc)} "
                 f"по ссылающимся строкам: {refs}"
             )
             tick()
@@ -773,8 +894,13 @@ class XlsxImportService:
         for key, value in row.fields.items():
             # An event's «Рейтинг» never reaches setattr below: EventModel has
             # no rating column, so it is silently dropped (carried contract).
-            if key not in _NON_SCALAR_KEYS and key in columns:
+            if key not in _NON_SCALAR_KEYS and key not in _DATE_SLOTS_BY_FIELD and key in columns:
                 setattr(obj, key, value)
+        # C3a D3: date slots are coordinates, never raw dates — they go to
+        # the routed resolver (date columns under the preset, coordinate
+        # columns plus a schema placeholder for the NOT NULL slot under a
+        # custom calendar), not to setattr.
+        _route_insert_dates(obj, row.fields)
 
         if row.entity_type == "event" and row.fields.get("event_type"):
             # The relationship (not the raw FK) is assigned: the entity may

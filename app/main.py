@@ -126,7 +126,8 @@ class Application:
         # Entity service catalog — built once per game in start()
         self._entity_services: dict[str, EntityService] = {}
         # Game-calendar settings (C2, design D2): one stateless service per
-        # process; start() loads the calendar and reconciles era keys with it.
+        # process; start() loads the calendar and sweeps the dated records
+        # with it (C3a, design D8 — repair, shift, key reconcile).
         self._calendar_service: CalendarSettingsService | None = None
         self._wiring: ApplicationWiring | None = None
         # Character-sheet windows (D6/D4): at most one list + one editor + one fill
@@ -184,10 +185,12 @@ class Application:
                 calendar_corruption_body(outcome.reasons),
             )
 
-        # C2 (design D5): re-align stored era keys with the active calendar
-        # right after the calendar load — the python reconcile replaces the
-        # SQL era-key backfill that used to run inside init_db.
-        await self._calendar_service.reconcile_era_keys(self._session)
+        # C3a (design D8): the game-open sweep of the six dated tables —
+        # repair corrupted coordinate texts, shift coordinates invalid in
+        # the just-activated calendar (every move logged), then re-align the
+        # stored era keys — all before any repository or view model reads
+        # dates.  Idempotent; a no-op on a standard game.
+        await self._calendar_service.sweep_dated_records(self._session)
 
         # Repositories
         desc_repo = BaseRepository(self._session, DescriptionModel)

@@ -8,7 +8,8 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
 from app.domain.date_era import era_key
-from app.presentation.utils.date_utils import format_game_date
+from app.domain.game_calendar import GameCoord, as_game_coord
+from app.presentation.utils.date_utils import format_game_date, iso_or_coord
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 AI_STATE_PROPERTY = "aiState"
 AI_STATE_ACTIVE = "active"
@@ -292,10 +293,11 @@ class EventDialogIslandViewModel(QObject):
         super().__init__(parent)
         self._owner = owner
         self._name = ""
-        # Date bridges carry (date, era) pairs (task 3.4); the default is
-        # «сегодня, н.э.» (design D6).
-        self._start_date = date.today()
-        self._end_date = date.today()
+        # Date bridges carry (GameCoord, era) pairs (piece C3a, designs D4/D6,
+        # since task 5.2); the default is «сегодня, н.э.» — today's numbers as
+        # the equal month-day coordinate.
+        self._start_date: GameCoord = as_game_coord(date.today())
+        self._end_date: GameCoord = as_game_coord(date.today())
         self._start_bc = False
         self._end_bc = False
         self._no_end = False
@@ -364,8 +366,11 @@ class EventDialogIslandViewModel(QObject):
             self.stateChanged.emit()
 
     name = Property(str, lambda self: self._name, _set_name, notify=stateChanged)
-    startIso = Property(str, lambda self: self._start_date.isoformat(), notify=stateChanged)
-    endIso = Property(str, lambda self: self._end_date.isoformat(), notify=stateChanged)
+    # ``Iso`` strings (piece C3a, design D5): ISO while the coordinate is
+    # representable as a real date (bit-for-bit the previous string), the
+    # domain codec text otherwise; QML reads them verbatim and parses none.
+    startIso = Property(str, lambda self: iso_or_coord(self._start_date), notify=stateChanged)
+    endIso = Property(str, lambda self: iso_or_coord(self._end_date), notify=stateChanged)
     startDisplay = Property(
         str,
         lambda self: format_game_date(self._start_date, is_bc=self._start_bc),
@@ -422,15 +427,17 @@ class EventDialogIslandViewModel(QObject):
 
     def set_dates(
         self,
-        start: date | None = None,
-        end: date | None = None,
+        start: GameCoord | date | None = None,
+        end: GameCoord | date | None = None,
         start_bc: bool | None = None,
         end_bc: bool | None = None,
     ) -> None:
+        # Design D4: a plain date arriving from the (unchanged) QCalendarWidget
+        # popups is the month-day coordinate of the same numbers.
         if start is not None:
-            self._start_date = start
+            self._start_date = as_game_coord(start)
         if end is not None:
-            self._end_date = end
+            self._end_date = as_game_coord(end)
         if start_bc is not None:
             self._start_bc = bool(start_bc)
         if end_bc is not None:

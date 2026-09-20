@@ -1,4 +1,6 @@
-"""Unit tests for era-aware date helpers — chronological key across the era border."""
+"""Unit tests for era-aware date helpers — chronological key across the era
+border, and (C3a task 1.2) the dispatcher's acceptance of game coordinates —
+``datetime.date`` stays a special case of a month-day coordinate."""
 from datetime import date
 from types import SimpleNamespace
 
@@ -8,9 +10,21 @@ from app.domain.date_era import (
     BC_YEAR_STEP,
     MAX_YEAR,
     MIN_YEAR,
+    _gregorian_key,
     assert_range,
     cmp_era_dates,
     era_key,
+)
+from app.domain.game_calendar import (
+    CalendarSpec,
+    CustomCalendar,
+    IntercalaryDay,
+    IntercalarySpec,
+    InvalidGameDateError,
+    MonthDay,
+    MonthSpec,
+    reset_current_calendar,
+    set_current_calendar,
 )
 
 
@@ -85,3 +99,91 @@ class TestEraRange:
     def test_datetime_itself_refuses_year_zero(self):
         with pytest.raises(ValueError):
             date(0, 1, 1)
+
+
+# --- C3a task 1.2: диспетчер принимает координату, date — её частный случай ---
+
+INTERCALARY_NEIGHBOUR_SPEC = CalendarSpec(
+    months=(
+        MonthSpec("Зимостой", 30),
+        MonthSpec("Талолист", 50),
+        MonthSpec("Сухочивень", 20),
+    ),
+    week_names=("Восход", "Тень", "Полдень", "Закат"),
+    intercalary=(IntercalarySpec("День Маски", 1),),
+)  # хост-месяц 1 не последний: у вставного дня есть сосед слева и справа
+
+
+class TestEraKeyAcceptsGameCoord:
+    """C3a task 1.2 / сценарий «Стандартные числа ключа сохранены»: координата
+    обычного дня проходит через тот же диспетчер и даёт побитово те же числа
+    пресета, что и прежний вызов с ``date`` (spec «Хронологический ключ…»)."""
+
+    GOLD_DATES = [
+        pytest.param(date(1, 1, 1), id="first-day-of-era"),
+        pytest.param(date(1, 12, 31), id="border-1-close"),
+        pytest.param(date(44, 3, 5), id="bc-mirror-year-44"),
+        pytest.param(date(44, 2, 29), id="bc-mirrored-leap-feb-29"),
+        pytest.param(date(2024, 2, 29), id="our-leap-feb-29"),
+        pytest.param(date(2023, 2, 28), id="common-year-feb-edge"),
+        pytest.param(date(9999, 1, 1), id="border-9999-open"),
+        pytest.param(date(9999, 12, 31), id="border-9999-close"),
+    ]
+
+    @pytest.mark.parametrize("real", GOLD_DATES)
+    @pytest.mark.parametrize("is_bc", [False, True], ids=["ad", "bc"])
+    def test_coord_key_is_bit_identical_with_the_date_key(self, real, is_bc):
+        coord = MonthDay(real.year, real.month, real.day)
+        assert era_key(coord, is_bc) == era_key(real, is_bc)
+        assert era_key(coord, is_bc) == _gregorian_key(real, is_bc)
+
+    def test_mixed_date_and_coord_pairs_compare_through_one_order(self):
+        assert cmp_era_dates((date(44, 3, 5), True), (MonthDay(44, 3, 5), True)) == 0
+        assert cmp_era_dates((MonthDay(44, 3, 4), True), (date(44, 3, 5), True)) == -1
+        # смешанная эра — единый хронологический порядок через границу
+        assert cmp_era_dates((MonthDay(1, 12, 31), True), (MonthDay(1, 1, 1), False)) == -1
+
+    def test_assert_range_accepts_coordinates_with_the_same_year_rule(self):
+        assert_range(MonthDay(MIN_YEAR, 1, 1))
+        assert_range(MonthDay(MAX_YEAR, 12, 31), True)
+        assert_range(IntercalaryDay(MAX_YEAR, 3))  # год — единственное поле проверки
+        with pytest.raises(ValueError):
+            assert_range(MonthDay(0, 1, 1))
+        with pytest.raises(ValueError):
+            assert_range(IntercalaryDay(MAX_YEAR + 1, 0), False)
+
+    def test_standard_preset_refuses_intercalary_coordinates_without_normalizing(self):
+        # D4/D6: координаты, которой нет в активном календаре, — отличимый
+        # отказ ядра, тихой нормализации нет
+        with pytest.raises(InvalidGameDateError):
+            era_key(IntercalaryDay(44, 0))
+
+
+class TestIntercalaryKeyInContinuousRow:
+    """C3a task 1.2 / сценарий «Ключ вставного дня в непрерывном ряду»: при
+    активном кастоме era_key(IntercalaryDay) лежит строго между последним
+    днём месяца-хозяина и первым днём следующего месяца — в обеих эрах."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_active_calendar(self):
+        # accessor — модульный глобал (D3): подмена не должна заражать соседей
+        reset_current_calendar()
+        yield
+        reset_current_calendar()
+
+    @pytest.mark.parametrize("is_bc", [False, True], ids=["ad", "bc"])
+    def test_intercalary_key_sits_strictly_between_host_month_neighbours(self, is_bc):
+        set_current_calendar(CustomCalendar(INTERCALARY_NEIGHBOUR_SPEC))
+        host_last = era_key(MonthDay(44, 1, 30), is_bc)
+        intercalary = era_key(IntercalaryDay(44, 0), is_bc)
+        next_first = era_key(MonthDay(44, 2, 1), is_bc)
+        assert host_last < intercalary < next_first
+
+    def test_intercalary_key_follows_the_calendar_swap_both_ways(self):
+        custom = CustomCalendar(INTERCALARY_NEIGHBOUR_SPEC)
+        set_current_calendar(custom)
+        keyed = era_key(IntercalaryDay(44, 0), True)
+        assert keyed == custom.to_key(IntercalaryDay(44, 0), True)
+        reset_current_calendar()
+        with pytest.raises(InvalidGameDateError):  # пресет вставных не знает
+            era_key(IntercalaryDay(44, 0), True)

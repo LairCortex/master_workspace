@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from PySide6.QtCore import QDate, QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtQml import QQmlComponent, QQmlContext
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -33,7 +33,12 @@ from app.presentation.utils.image_utils import load_entity_original, load_entity
 from app.presentation.viewmodels.entity_card_island_view_model import (
     EntityCardIslandViewModel,
 )
-from app.presentation.utils.date_utils import era_flag, split_date_era
+from app.domain.game_calendar import IntercalaryDay, MonthDay
+from app.presentation.utils.date_utils import (
+    era_flag,
+    popup_prefill_date,
+    split_date_era,
+)
 from app.presentation.views.event_dialog import (
     _CheckProxy,
     _ClickProxy,
@@ -44,6 +49,12 @@ from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EntityCardRoot.qml")
+
+#: Types carrying a readable date (C3a, design D4): a plain date or either
+#: kind of game coordinate.  Populate accepts a populated date slot only
+#: for these — a duck-typed stand-in holding something else stays exactly
+#: as unnoticed as a random string was for the pre-C3a ``isinstance`` gate.
+_GAME_DATE_CARRIERS = (date, MonthDay, IntercalaryDay)
 
 
 @dataclass(frozen=True)
@@ -124,23 +135,30 @@ class _ValueProxy:
 
 
 class _DateProxy:
+    """Coordinate-date duck for the card's date fields (piece C3a, D6).
+
+    The bridge currency is now the game calendar coordinate: ``date()`` hands
+    out the stored ``GameCoord`` and ``setDate`` takes a coordinate (a plain
+    ``date`` stays legal input, coerced by the ViewModel), so no QDate crosses
+    this proxy in either direction anymore.
+    """
+
     def __init__(self, dialog: "EntityCardDialog", which: str) -> None:
         self._dialog = dialog
         self._which = which
 
-    def date(self) -> QDate:
-        value = (
+    def date(self) -> Any:
+        return (
             self._dialog.vm._start_date
             if self._which == "start"
             else self._dialog.vm._end_date
         )
-        return QDate(value.year, value.month, value.day)
 
-    def setDate(self, value: QDate) -> None:
+    def setDate(self, value) -> None:
         if self._which == "start":
-            self._dialog.vm.set_dates(start=value.toPython())
+            self._dialog.vm.set_dates(start=value)
         else:
-            self._dialog.vm.set_dates(end=value.toPython())
+            self._dialog.vm.set_dates(end=value)
 
     def isVisible(self) -> bool:
         return self._which == "start" or not self._dialog.vm._no_end
@@ -506,11 +524,17 @@ class EntityCardDialog(QDialog):
             self.vm.set_rating(rating)
         start = getattr(entity, "start_date", None)
         end = getattr(entity, "end_date", None)
-        if isinstance(start, date):
+        # Since piece C3a the row attribute answers a game coordinate under
+        # a custom calendar (a plain ``date`` under the preset) — both are
+        # date carriers accepted by the bridge (mirror of
+        # ``EventDialog.populate``, piece C3a design D4); foreign payloads
+        # (duck-typed stand-ins carrying neither) stay as «date not stated»,
+        # exactly as the pre-C3a ``isinstance(d, date)`` gate treated them.
+        if isinstance(start, _GAME_DATE_CARRIERS):
             self.vm.set_dates(
                 start=start, start_bc=era_flag(getattr(entity, "start_bc", False))
             )
-        if isinstance(end, date):
+        if isinstance(end, _GAME_DATE_CARRIERS):
             self.vm.set_dates(
                 end=end, end_bc=era_flag(getattr(entity, "end_bc", False))
             )
@@ -652,11 +676,20 @@ class EntityCardDialog(QDialog):
         self._date_target = which
         top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
         anchor = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
-        # The popup bridge is a (date, era) pair (task 3.4).
+        # The popup bridge stays a (date, era) pair (task 3.4): the Gregorian
+        # widget is unchanged (design D6), so a bound the widget cannot paint
+        # is pre-filled through the picture-only clamp (piece C3a, grill Q19) —
+        # the dialog's own coordinate is not touched by the pre-fill.
         if which == "start":
-            current = (self.vm._start_date, self.vm._start_bc)
+            current = (
+                popup_prefill_date(self.vm._start_date),
+                self.vm._start_bc,
+            )
         else:
-            current = (self.vm._end_date, self.vm._end_bc)
+            current = (
+                popup_prefill_date(self.vm._end_date),
+                self.vm._end_bc,
+            )
         self.date_popup.open_at(anchor, current)
 
     def _set_selected_date(self, selected) -> None:

@@ -10,8 +10,9 @@ States (design D8): ``idle → analyzing → problems → importing → done``.
   Fatal entries (``hasFatal``) block ``canImport``; row-only problems allow
   the "import with skips" confirmation (spec «Пул проблем показан до записи»).
 * ``importing`` — apply pass runs; progress (0..100) is reported.
-* ``done`` — ``report`` (created/updated/links/skipped/decisions/warnings)
-  feeds the dialog's report panel; the primary button becomes «Закрыть».
+* ``done`` — ``report`` (created/updated/links/skipped/dateShifts/decisions/
+  warnings) feeds the dialog's report panel; the primary button becomes
+  «Закрыть».
 
 The VM never touches services or the session: the wiring calls the service
 and feeds results back through ``on_analyzed`` / ``on_analyze_failed`` /
@@ -225,6 +226,11 @@ class XlsxImportViewModel(QObject):
                 "skipped": [
                     {"sheet": row.sheet, "row": row.row_number, "reason": row.reason}
                     for row in report.skipped
+                ],
+                "dateShifts": [
+                    {"sheet": s.sheet, "row": s.row_number, "field": s.field,
+                     "old": s.old, "new": s.new}
+                    for s in report.date_shifts
                 ],
                 "decisions": list(report.decisions),
                 "warnings": list(report.warnings),

@@ -1,10 +1,14 @@
-"""DB tests for CalendarSettingsService (piece C2, tasks 2.1–2.4).
+"""DB tests for CalendarSettingsService (pieces C2 + C3a tasks 3.1–3.2).
 
 Cover the spec requirements «Перенос устаревшей настройки названий месяцев»,
 «Повреждённое значение календарь-ключа», «Ключи записей в согласии с активным
 календарём» and «Применение календаря к записям игры» on the in-memory
 aiosqlite fixtures — no Qt, no dialogs (design D4 keeps warning display in
-the caller).
+the caller).  Since C3a the service traversal goes through the storage
+resolver: the startup sweep repairs coordinate columns, shifts invalid
+coordinates through :func:`assign_coord` and reconciles keys (design D8),
+while ``apply_to_records`` migrates whole storages — custom fills the
+coordinate columns, the preset moves coordinates back to the date ones.
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ from app.domain.game_calendar import (
     StandardCalendar,
     current_calendar,
     encode_calendar,
+    encode_coord,
     reset_current_calendar,
 )
 from app.infrastructure.db.models import (
@@ -42,6 +47,7 @@ from app.infrastructure.db.models import (
     LocationModel,
     OrganizationModel,
     RatingModel,
+    resolve_coord,
 )
 
 # Three months of ten days each: any stored day > 10 overflows, any stored
@@ -55,6 +61,19 @@ _SPEC = CalendarSpec(
     week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
 )
 _CUSTOM = CustomCalendar(_SPEC)
+
+# Three months of 10 + 30 + 10 days: its second month holds days the real
+# February has never seen — the coordinate the storage migration of task 3.2
+# shifts on the way back to the «Стандартный» preset.
+_SPEC_B = CalendarSpec(
+    months=(
+        MonthSpec("Медвежарь", 10),
+        MonthSpec("Ледокол", 30),
+        MonthSpec("Травень", 10),
+    ),
+    week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
+)
+_CUSTOM_B = CustomCalendar(_SPEC_B)
 
 _ERA_TABLES = (
     EventModel,
@@ -88,19 +107,26 @@ async def _setting(session, key: str) -> str | None:
 
 
 async def _snapshot(session) -> dict[str, list[tuple]]:
-    """Raw stored state of every dated table, straight from SQL columns."""
+    """Raw stored state of every dated table, straight from SQL columns
+    (since C3a including the coordinate columns — they migrate too)."""
     tables = {}
     for model in _ERA_TABLES:
         rows = (
             await session.execute(
                 select(
                     model.id,
-                    model.start_date,
+                    # Raw physical columns via the table object: since C3a the
+                    # public ``start_date``/``end_date`` names are coord-aware
+                    # properties, while this snapshot deliberately compares the
+                    # stored bytes of both storages.
+                    model.__table__.c.start_date,
                     model.start_bc,
                     model.start_key,
-                    model.end_date,
+                    model.start_coord,
+                    model.__table__.c.end_date,
                     model.end_bc,
                     model.end_key,
+                    model.end_coord,
                 ).order_by(model.id)
             )
         ).all()
@@ -384,7 +410,174 @@ class TestReconcileEraKeys:
         assert await service.reconcile_era_keys(async_session) == 0
 
 
-# ── 2.4: apply_to_records (design D6) ─────────────────────────────────────
+# ── C3a 3.1: the startup sweep (design D8) ────────────────────────────────
+
+class TestStartupSweep:
+    """Spec «Ключи записей в согласии с активным календарём»: repair of the
+    coordinate columns → shift of the invalid coordinates through
+    ``assign_coord`` (logged) → key reconcile, one ordered and idempotent
+    pass running right after the calendar load."""
+
+    async def test_standard_game_sweep_is_a_no_op(self, async_session, caplog):
+        # A standard game never notices the sweep: valid month-day
+        # coordinates read from the date columns, empty coordinate columns,
+        # bit-identical keys — the whole pass changes nothing at all.
+        await _add_event(async_session, date(2023, 5, 17), date(2023, 6, 1))
+        bc_character = CharacterModel(
+            name="character", start_date=date(300, 3, 1), end_date=None,
+            start_bc=1,
+        )
+        async_session.add(bc_character)
+        await async_session.commit()
+        before = await _snapshot(async_session)
+        service = CalendarSettingsService()
+
+        with caplog.at_level(logging.INFO):
+            report = await service.sweep_dated_records(async_session)
+
+        assert report.shift_count == 0
+        assert caplog.records == []  # nothing to log: no moves, nothing corrupted
+        after = await _snapshot(async_session)
+        assert after == before
+        # The no-op reading of the untouched storage is still the preset
+        # truth: standard keys, coordinate columns empty.
+        (row,) = after["events"]
+        assert row[1] == date(2023, 5, 17) and row[3] == date(2023, 5, 17).toordinal()
+        assert row[4] is None and row[8] is None
+
+    async def test_manual_mismatch_is_cured_by_the_start(self, async_session, caplog):
+        # Spec scenario «Ручное рассогласование лечится стартом»: the
+        # setting was hand-set to a custom calendar while the rows still
+        # carry dates invalid in it (day past the month length, month past
+        # the month count).  The game opens without an error: every invalid
+        # coordinate is shifted to the last valid day, each move is logged,
+        # the keys become correct and the next start moves nothing.
+        await _put_setting(async_session, CALENDAR_SETTINGS_KEY, encode_calendar(_CUSTOM))
+        event = await _add_event(async_session, date(2023, 1, 15), date(2023, 6, 1))
+        service = CalendarSettingsService()
+
+        with caplog.at_level(logging.INFO):  # the full game-open sequence
+            await service.load_and_apply(async_session)
+            report = await service.sweep_dated_records(async_session)
+
+        assert [(e.table, e.row_id, e.field, e.reason) for e in report.records] == [
+            ("events", event.id, DateField.START, ShiftReason.DAY_OVERFLOW),
+            ("events", event.id, DateField.END, ShiftReason.MONTH_OUT_OF_RANGE),
+        ]
+        messages = " \n".join(record.getMessage() for record in caplog.records)
+        for old, new in (("M:2023:1:15", "M:2023:1:10"), ("M:2023:6:1", "M:2023:3:10")):
+            assert old in messages and new in messages
+        assert "events" in messages and str(event.id) in messages
+
+        (row,) = (
+            await async_session.execute(
+                select(
+                    EventModel.__table__.c.start_date, EventModel.start_coord, EventModel.start_key,
+                    EventModel.__table__.c.end_date, EventModel.end_coord, EventModel.end_key,
+                ).where(EventModel.id == event.id)
+            )
+        ).all()
+        # The active calendar is custom ⇒ the shifts were routed into the
+        # coordinate columns; the dead legacy date columns keep their values.
+        assert row.start_coord == encode_coord(MonthDay(2023, 1, 10))
+        assert row.end_coord == encode_coord(MonthDay(2023, 3, 10))
+        assert row.start_date == date(2023, 1, 15) and row.end_date == date(2023, 6, 1)
+        # Keys come from the shifted coordinates through the active calendar.
+        assert row.start_key == _CUSTOM.to_key(MonthDay(2023, 1, 10))
+        assert row.end_key == _CUSTOM.to_key(MonthDay(2023, 3, 10))
+        assert _CUSTOM.is_valid(resolve_coord(await async_session.get(EventModel, event.id), "start"))
+
+        before = await _snapshot(async_session)
+        await service.load_and_apply(async_session)
+        second = await service.sweep_dated_records(async_session)
+        assert second.records == ()  # «повторный старт переносов не порождает»
+        assert await _snapshot(async_session) == before
+
+    async def test_sweep_is_idempotent_after_repairs_and_shifts(
+        self, async_session, caplog
+    ):
+        # One row with corrupted coordinate text, one with a coordinate
+        # invalid in the active custom calendar: the first sweep repairs and
+        # shifts (both facts in the log), the second changes nothing.
+        await _put_setting(async_session, CALENDAR_SETTINGS_KEY, encode_calendar(_CUSTOM))
+        corrupt = EventModel(name="corrupt", start_date=date(2023, 2, 5), end_date=None)
+        moved = EventModel(name="moved", start_date=date(2023, 2, 9), end_date=None)
+        async_session.add_all([corrupt, moved])
+        await async_session.commit()
+        await async_session.execute(
+            update(EventModel).where(EventModel.id == corrupt.id)
+            .values(start_coord="44-03-05")
+        )
+        await async_session.execute(
+            update(EventModel).where(EventModel.id == moved.id)
+            .values(start_coord=encode_coord(MonthDay(2023, 2, 11)))
+        )
+        await async_session.commit()
+        async_session.expunge_all()
+        service = CalendarSettingsService()
+        await service.load_and_apply(async_session)
+
+        with caplog.at_level(logging.INFO):
+            first = await service.sweep_dated_records(async_session)
+
+        assert [(e.row_id, e.reason) for e in first.records] == [
+            (moved.id, ShiftReason.DAY_OVERFLOW),
+        ]
+        assert any(
+            "corrupt" not in record.getMessage()  # rows are addressed by table+id
+            and "events" in record.getMessage() and str(corrupt.id) in record.getMessage()
+            for record in caplog.records
+        )  # the corruption repair was itself logged (resolver line)
+        async_session.expunge_all()
+        reloaded_corrupt = await async_session.get(EventModel, corrupt.id)
+        assert reloaded_corrupt.start_coord is None  # repair survived the commit
+        assert resolve_coord(reloaded_corrupt, "start") == MonthDay(2023, 2, 5)
+        reloaded_moved = await async_session.get(EventModel, moved.id)
+        assert resolve_coord(reloaded_moved, "start") == MonthDay(2023, 2, 10)
+
+        # ── the second pass is the «Идемпотентный старт» scenario ──
+        before = await _snapshot(async_session)
+        second = await service.sweep_dated_records(async_session)
+        assert second.records == ()
+        assert await _snapshot(async_session) == before
+
+    async def test_sweep_clears_and_logs_corrupted_text_at_open(
+        self, async_session, caplog
+    ):
+        # Spec scenario «Битый текст колонки не ломает старт» on the service
+        # level: the game opens, the row reads through its date columns, the
+        # column is cleared and persisted, the log names table and id.
+        event = EventModel(name="hand-edited", start_date=date(1200, 1, 1))
+        async_session.add(event)
+        await async_session.commit()
+        await async_session.execute(
+            update(EventModel).where(EventModel.id == event.id)
+            .values(start_coord="не координата")
+        )
+        await async_session.commit()
+        async_session.expunge_all()
+        service = CalendarSettingsService()
+
+        with caplog.at_level(logging.WARNING):
+            report = await service.sweep_dated_records(async_session)
+
+        assert report.shift_count == 0
+        (row,) = (
+            await async_session.execute(
+                select(EventModel.start_coord, EventModel.__table__.c.start_date).where(
+                    EventModel.id == event.id
+                )
+            )
+        ).all()
+        assert row.start_coord is None
+        assert row.start_date == date(1200, 1, 1)
+        assert any(
+            "events" in record.getMessage() and str(event.id) in record.getMessage()
+            for record in caplog.records
+        )
+
+
+# ── C3a 3.2: apply_to_records on the coordinate traversal (design D8) ─────
 
 class _BoomCalendar:
     """Forwards the protocol but refuses ``to_key`` on one coordinate —
@@ -423,6 +616,7 @@ class TestApplyToRecords:
         self, async_session
     ):
         _valid, both_bad, character = await self._fixture_rows(async_session)
+        both_bad_id, character_id = both_bad.id, character.id
         before = await _snapshot(async_session)
         service = CalendarSettingsService()
 
@@ -430,9 +624,9 @@ class TestApplyToRecords:
 
         assert report.shift_count == 3
         assert [(e.table, e.row_id, e.field, e.reason) for e in report.records] == [
-            ("events", both_bad.id, DateField.START, ShiftReason.DAY_OVERFLOW),
-            ("events", both_bad.id, DateField.END, ShiftReason.MONTH_OUT_OF_RANGE),
-            ("characters", character.id, DateField.START, ShiftReason.DAY_OVERFLOW),
+            ("events", both_bad_id, DateField.START, ShiftReason.DAY_OVERFLOW),
+            ("events", both_bad_id, DateField.END, ShiftReason.MONTH_OUT_OF_RANGE),
+            ("characters", character_id, DateField.START, ShiftReason.DAY_OVERFLOW),
         ]
         assert report.records[0].old == (MonthDay(2023, 1, 15), False)
         assert report.records[0].new == (MonthDay(2023, 1, 10), False)
@@ -446,7 +640,13 @@ class TestApplyToRecords:
     async def test_apply_moves_exactly_what_preview_listed(
         self, async_session
     ):
-        _valid, both_bad, character = await self._fixture_rows(async_session)
+        # Spec scenario «Применение совпадает с проверкой», and since C3a
+        # the application goes to the coordinate columns: the applied moves
+        # are exactly the previewed ones, every stored coordinate is valid
+        # in ``calendar``, the keys are its own — and the legacy date
+        # columns are left exactly as they were.
+        valid, both_bad, character = await self._fixture_rows(async_session)
+        valid_id, both_bad_id, character_id = valid.id, both_bad.id, character.id
         service = CalendarSettingsService()
         preview = await service.apply_to_records(
             async_session, _CUSTOM, dry_run=True
@@ -458,64 +658,170 @@ class TestApplyToRecords:
 
         assert applied.records == preview.records
         rows = {
-            (event_id, start_date, start_bc, start_key)
-            for event_id, start_date, start_bc, start_key in (
+            r[0]: r
+            for r in (
                 await async_session.execute(
                     select(
                         EventModel.id,
-                        EventModel.start_date,
-                        EventModel.start_bc,
+                        EventModel.__table__.c.start_date,
+                        EventModel.start_coord,
                         EventModel.start_key,
+                        EventModel.__table__.c.end_date,
+                        EventModel.end_coord,
+                        EventModel.end_key,
                     )
                 )
             ).all()
         }
-        assert (both_bad.id, date(2023, 1, 10), 0, _CUSTOM.to_key(MonthDay(2023, 1, 10))) in rows
-        (end, end_key), = (
-            await async_session.execute(
-                select(EventModel.end_date, EventModel.end_key).where(
-                    EventModel.id == both_bad.id
-                )
-            )
-        ).all()
-        assert end == date(2023, 3, 10)
-        assert end_key == _CUSTOM.to_key(MonthDay(2023, 3, 10))
+        moved = rows[both_bad_id]
+        assert moved.start_coord == encode_coord(MonthDay(2023, 1, 10))
+        assert moved.end_coord == encode_coord(MonthDay(2023, 3, 10))
+        # «прежние колонки дат SHALL оставить как есть» — the invalid dates
+        # the shift moved away from are still sitting in the legacy columns.
+        assert moved.start_date == date(2023, 1, 15)
+        assert moved.end_date == date(2023, 6, 1)
+        assert moved.start_key == _CUSTOM.to_key(MonthDay(2023, 1, 10))
+        assert moved.end_key == _CUSTOM.to_key(MonthDay(2023, 3, 10))
+        # A valid record migrates its storage too (the whole game switches
+        # calendars), with the very same coordinate and a custom key.
+        stayed = rows[valid_id]
+        assert stayed.start_coord == encode_coord(MonthDay(2023, 2, 5))
+        assert stayed.start_date == date(2023, 2, 5)
+        assert stayed.start_key == _CUSTOM.to_key(MonthDay(2023, 2, 5))
         char_row = (
             await async_session.execute(
                 select(
-                    CharacterModel.start_date,
+                    CharacterModel.__table__.c.start_date,
+                    CharacterModel.start_coord,
                     CharacterModel.start_bc,
                     CharacterModel.start_key,
-                ).where(CharacterModel.id == character.id)
+                ).where(CharacterModel.id == character_id)
             )
         ).one()
         assert tuple(char_row) == (
-            date(2023, 2, 10),
+            date(2023, 2, 11),
+            encode_coord(MonthDay(2023, 2, 10)),
             1,
             _CUSTOM.to_key(MonthDay(2023, 2, 10), True),
         )
-        # Every stored coordinate is now valid in the new calendar.
-        stored = await async_session.execute(
-            select(EventModel.start_date, EventModel.end_date).union_all(
-                select(CharacterModel.start_date, CharacterModel.end_date)
-            )
-        )
-        for start, end in stored.all():
-            for value in (start, end):
-                if value is not None:
-                    assert _CUSTOM.is_valid(MonthDay(value.year, value.month, value.day))
+
+        # Every coordinate as the app now reads it is valid in the calendar.
+        async_session.expunge_all()
+        for model in (EventModel, CharacterModel):
+            for row in (await async_session.execute(select(model))).scalars():
+                for field in ("start", "end"):
+                    coord = resolve_coord(row, field)
+                    if coord is not None:
+                        assert _CUSTOM.is_valid(coord)
 
     async def test_error_midway_rolls_the_whole_application_back(
         self, async_session
     ):
         _valid, both_bad, character = await self._fixture_rows(async_session)
+        character_id = character.id
         before = await _snapshot(async_session)
-        # The second report entry keys MonthDay(2023, 3, 10) — blow up on it,
-        # i.e. after the first UPDATE has already reached the transaction.
+        # The traversal reaches the characters table only after both event
+        # rows were updated — the boom strikes mid-traversal (spec «Ошибка
+        # применения откатывает всё»).
         service = CalendarSettingsService()
-        boom = _BoomCalendar(_CUSTOM, MonthDay(2023, 3, 10))
+        boom = _BoomCalendar(_CUSTOM, MonthDay(2023, 2, 10))
 
         with pytest.raises(RuntimeError):
             await service.apply_to_records(async_session, boom, dry_run=False)
 
+        assert await _snapshot(async_session) == before
+        # The rolled-back row is re-readable exactly as it was stored.
+        async_session.expunge_all()
+        char_row = await async_session.get(CharacterModel, character_id)
+        assert char_row.start_coord is None
+
+
+class TestStorageMigrationAcrossCalendar:
+    """Spec scenario «Хранилища переезжают вместе с календарём» — both
+    phases: applying a custom calendar fills the coordinate columns (the
+    date columns stay as they were), returning to the preset moves the
+    coordinates into the date columns — shifting what the preset cannot
+    hold — and empties the coordinate columns."""
+
+    async def test_custom_apply_then_preset_return_move_the_storage(
+        self, async_session
+    ):
+        # Active-calendar state does not drive the migration — the applied
+        # calendar parameter does (C4 activates after saving; the traversal
+        # reads through the resolver either way).
+        event = await _add_event(async_session, date(2023, 2, 15), date(2023, 3, 25))
+        holdout = await _add_event(async_session, date(2023, 1, 1), None)
+        # A coordinate the custom calendar holds but February never did —
+        # hand-placed the way a long custom game would leave it.
+        await async_session.execute(
+            update(EventModel).where(EventModel.id == holdout.id)
+            .values(start_coord=encode_coord(MonthDay(2023, 2, 30)), start_key=None)
+        )
+        await async_session.commit()
+        async_session.expunge_all()
+        service = CalendarSettingsService()
+
+        # ── phase 1: apply the custom calendar ──
+        applied = await service.apply_to_records(
+            async_session, _CUSTOM_B, dry_run=False
+        )
+        assert [(e.field, e.reason, e.new) for e in applied.records] == [
+            (DateField.END, ShiftReason.DAY_OVERFLOW, (MonthDay(2023, 3, 10), False)),
+        ]
+        async_session.expunge_all()
+        first = await async_session.get(EventModel, event.id)
+        assert first.start_coord == encode_coord(MonthDay(2023, 2, 15))
+        assert first.end_coord == encode_coord(MonthDay(2023, 3, 10))
+        # «прежние колонки дат не изменены применением» — including the day
+        # the shifted end coordinate moved away from; the legacy columns are
+        # inspected on their storage slot, because the public attributes
+        # already read the coord truth (spec «Истина следует за
+        # заполненностью»).
+        assert first.start_date_raw == date(2023, 2, 15)
+        assert first.end_date_raw == date(2023, 3, 25)
+        assert first.start_date == MonthDay(2023, 2, 15)
+        assert first.end_date == MonthDay(2023, 3, 10)
+        assert first.start_key == _CUSTOM_B.to_key(MonthDay(2023, 2, 15))
+        assert first.end_key == _CUSTOM_B.to_key(MonthDay(2023, 3, 10))
+        holdout_row = await async_session.get(EventModel, holdout.id)
+        assert resolve_coord(holdout_row, "start") == MonthDay(2023, 2, 30)
+        assert holdout_row.start_key == _CUSTOM_B.to_key(MonthDay(2023, 2, 30))
+
+        # ── phase 2: return to the «Стандартный» preset ──
+        preview = await service.apply_to_records(
+            async_session, StandardCalendar(), dry_run=True
+        )
+        # Only the hand coordinate is invalid for February — exactly one
+        # move, and the preview still did not touch the storage.
+        assert [(e.row_id, e.field, e.reason) for e in preview.records] == [
+            (holdout.id, DateField.START, ShiftReason.DAY_OVERFLOW),
+        ]
+        assert preview.records[0].new == (MonthDay(2023, 2, 28), False)
+
+        applied_back = await service.apply_to_records(
+            async_session, StandardCalendar(), dry_run=False
+        )
+        assert applied_back.records == preview.records
+        async_session.expunge_all()
+        first = await async_session.get(EventModel, event.id)
+        # The coordinates — shifted ones included — now live in the date
+        # columns again, and the coordinate columns are empty.
+        assert first.start_date == date(2023, 2, 15)
+        assert first.end_date == date(2023, 3, 10)  # shifted back in phase 1
+        assert first.start_coord is None and first.end_coord is None
+        assert first.start_key == date(2023, 2, 15).toordinal()
+        assert first.end_key == date(2023, 3, 10).toordinal()
+        holdout_row = await async_session.get(EventModel, holdout.id)
+        # The impossible February day was shifted to its last real day.
+        assert holdout_row.start_date == date(2023, 2, 28)
+        assert holdout_row.start_coord is None
+        assert holdout_row.start_key == date(2023, 2, 28).toordinal()
+
+        # A third pass over the preset storage stays byte-identical — the
+        # migration is idempotent, the standard game is back to no-op.
+        before = await _snapshot(async_session)
+        third = await service.apply_to_records(
+            async_session, StandardCalendar(), dry_run=False
+        )
+        assert third.records == ()
         assert await _snapshot(async_session) == before

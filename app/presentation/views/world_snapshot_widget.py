@@ -1,7 +1,6 @@
 """World snapshot QML island behind the existing panel facade."""
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -19,6 +18,7 @@ from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.world_snapshot_view_model import (
     WorldSnapshotViewModel,
 )
+from app.presentation.utils.date_utils import popup_prefill_date
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 
@@ -80,7 +80,10 @@ class WorldSnapshotWidget(QWidget):
         self.vm.snapshotRequested.connect(self.snapshot_requested.emit)
         self.vm.entitySelected.connect(self.entity_clicked.emit)
 
-    def populate(self, events: Sequence[Any], for_date: date | None) -> None:
+    def populate(self, events: Sequence[Any], for_date: Any) -> None:
+        # ``for_date`` is the snapshot bridge payload: a (coordinate, era)
+        # pair since piece C3a (a bare date or None stay legal) — the ViewModel
+        # splits it.
         self.vm.populate(events, for_date)
 
     def _open_date_popup(
@@ -91,8 +94,15 @@ class WorldSnapshotWidget(QWidget):
             top_left,
             QSize(max(int(width), 0), max(int(height), 0)),
         )
-        # The popup bridge is a (date, era) pair (task 3.4).
-        self.date_popup.open_at(anchor, (self.vm._date, self.vm._date_bc))
+        # The popup bridge stays a (date, era) pair (task 3.4): the Gregorian
+        # widget is unchanged (design D6), so a coordinate it cannot paint —
+        # an intercalary day or a game-only month/day — is pre-filled through
+        # the picture-only clamp (piece C3a, grill Q19); the snapshot's own
+        # coordinate is never rewritten by the pre-fill.
+        self.date_popup.open_at(
+            anchor,
+            (popup_prefill_date(self.vm._date), self.vm._date_bc),
+        )
 
     def _on_clear(self) -> None:
         self.vm.clear()

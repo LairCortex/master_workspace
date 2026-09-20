@@ -33,6 +33,13 @@ preset defaults to, and the pure :func:`encode_calendar` /
 an unreadable stored value answers with machine-readable reasons
 (``CalendarCorrupted``) instead of raising, and a third calendar implementer
 has no storage shape until the C4 wizard gives it one.
+Piece C3a (design D2) adds the coordinate storage codec:
+:func:`encode_coord` / :func:`decode_coord` turn a single ``GameCoord`` into
+the discriminated text ``M:year:month:day`` / ``I:year:index`` and back —
+an injective, exactly reversible cycle whose unparseable texts answer with
+machine-readable reasons (``CoordCorrupted``) rather than raising; whether
+the coordinate exists in any calendar stays the shift policy's question,
+never the codec's.
 """
 from __future__ import annotations
 
@@ -232,6 +239,26 @@ class IntercalaryDay:
 
 #: Either kind of world date coordinate (design D3).
 GameCoord = MonthDay | IntercalaryDay
+
+
+def as_game_coord(value: GameCoord | date | None) -> GameCoord | None:
+    """Coerce a plain ``datetime.date`` into the equal ``MonthDay`` (piece
+    C3a, design D4): the Gregorian date stays a special case of a world
+    coordinate, so pre-C3a call sites keep their numbers.  ``None`` passes
+    through (an absent date stays absent — coercion is syntax, not a
+    default) and an already-game coordinate is returned untouched; anything
+    else is not a date carrier and refuses with a ``TypeError`` — like
+    ``encode_coord``, the helper never guesses a coordinate into existence.
+    Existence in any calendar is NOT checked here: that is the shift policy
+    (and the entity validation's ``era_key``) question, never this one.
+    """
+    if value is None or isinstance(value, (MonthDay, IntercalaryDay)):
+        return value
+    if isinstance(value, date):
+        return MonthDay(value.year, value.month, value.day)
+    raise TypeError(
+        f"{value!r} is neither a game calendar coordinate nor a calendar date"
+    )
 
 
 # ── Calendar protocol (design D2) ────────────────────────────────────────
@@ -1190,3 +1217,137 @@ def _decode_custom(data: dict) -> CalendarDecoded | CalendarCorrupted:
     if spec_problems:
         return CalendarCorrupted(tuple(spec_problems))
     return CalendarDecoded(CustomCalendar(spec))
+
+
+# ── Coordinate storage codec (roadmap piece C3a, design D2) ───────────────
+
+#: Kind discriminators of the stored coordinate text (design D2): the first
+#: field is always the kind, so a regular day and an intercalary day never
+#: share one representation and the reading is self-describing.
+_COORD_KIND_MONTH = "M"
+_COORD_KIND_INTERCALARY = "I"
+
+#: Field names per kind in text order — the stored text is exactly these
+#: colon-joined plain ``str()`` integers (no leading zeros written, none
+#: demanded on reading; canonicalness is pinned by the round trip).
+_COORD_FIELDS = MappingProxyType(
+    {
+        _COORD_KIND_MONTH: ("year", "month", "day"),
+        _COORD_KIND_INTERCALARY: ("year", "index"),
+    }
+)
+
+
+@dataclass(frozen=True)
+class CoordDecoded:
+    """Successful decode: the stored text describes this coordinate."""
+
+    coord: GameCoord
+
+
+@dataclass(frozen=True)
+class CoordCorrupted:
+    """Rejected decode: every machine-readable reason the text could not be
+    read, in the same :class:`SpecProblem` shape the calendar codec uses —
+    ``empty_coord``, ``not_a_string``, ``unknown_kind`` (missing or foreign
+    discriminator), ``incomplete_coord``, ``too_many_fields`` and
+    ``non_numeric_field`` (one per offending field).  Never localized; the
+    caller phrases its warning from these codes."""
+
+    reasons: tuple[SpecProblem, ...]
+
+
+def encode_coord(coord: GameCoord) -> str:
+    """Serialize one coordinate into its stored text (design D2).
+
+    ``"M:year:month:day"`` for a month day, ``"I:year:index"`` for an
+    intercalary day — plain ``str()`` digits, which makes the mapping
+    injective (distinct kinds differ in the discriminator; same-kind
+    coordinates differ in at least one colon-separated number and a number
+    cannot swallow the separator) and the cycle ``decode(encode(c)) == c``
+    exact.  Era is not part of a coordinate (D3), so it is not part of its
+    text either — the same text serves both eras.  Existence in any calendar
+    is deliberately NOT checked: the codec owns shape, while
+    ``classify``/``shift_invalid`` own existence.  A value that is not one of
+    the two D3 coordinate kinds has no storage shape and raises
+    ``TypeError`` (same refusal stance as ``encode_calendar``).
+    """
+    if isinstance(coord, MonthDay):
+        return f"{_COORD_KIND_MONTH}:{coord.year}:{coord.month}:{coord.day}"
+    if isinstance(coord, IntercalaryDay):
+        return f"{_COORD_KIND_INTERCALARY}:{coord.year}:{coord.index}"
+    raise TypeError(
+        "only MonthDay and IntercalaryDay coordinates can be stored, not "
+        f"{type(coord).__name__}"
+    )
+
+
+def decode_coord(raw: str) -> CoordDecoded | CoordCorrupted:
+    """Read a stored coordinate text back (design D2).
+
+    Like :func:`decode_calendar` next to it, an unreadable value never
+    raises: the answer is a :class:`CoordCorrupted` carrying the *full* list
+    of machine-readable reasons, and the storage resolver/C4 caller logs and
+    repairs from those codes.  The reader is deliberately more lenient than
+    the writer — a hand-edited ``M:044:03:05`` parses, and re-encoding the
+    result returns the canonical text — while the format itself stays an
+    opaque internal representation read only by this codec.  No number is
+    checked against any calendar here: an out-of-calendar coordinate decodes
+    exactly, because existence is the shift policy's question, not the
+    codec's.
+    """
+    if not isinstance(raw, str):
+        return CoordCorrupted(
+            (SpecProblem("not_a_string", f"stored coordinate {raw!r} is not text"),)
+        )
+    if not raw:
+        return CoordCorrupted(
+            (SpecProblem("empty_coord", "stored coordinate text is empty"),)
+        )
+    parts = raw.split(":")
+    kind = parts[0]
+    field_names = _COORD_FIELDS.get(kind)
+    if field_names is None:
+        return CoordCorrupted(
+            (
+                SpecProblem(
+                    "unknown_kind",
+                    f"coordinate kind {kind!r} is neither {_COORD_KIND_MONTH!r} "
+                    f"(month day) nor {_COORD_KIND_INTERCALARY!r} (intercalary day)",
+                ),
+            )
+        )
+    given = parts[1:]
+    problems: list[SpecProblem] = []
+    if len(given) < len(field_names):
+        problems.append(
+            SpecProblem(
+                "incomplete_coord",
+                f"coordinate text {raw!r}: kind {kind!r} needs {len(field_names)} "
+                f"numbers, found {len(given)}",
+            )
+        )
+    elif len(given) > len(field_names):
+        problems.append(
+            SpecProblem(
+                "too_many_fields",
+                f"coordinate text {raw!r}: kind {kind!r} has {len(field_names)} "
+                f"numbers, found {len(given)}",
+            )
+        )
+    numbers: list[int] = []
+    for name, text in zip(field_names, given):
+        try:
+            numbers.append(int(text))
+        except ValueError:
+            problems.append(
+                SpecProblem(
+                    "non_numeric_field",
+                    f"{kind} coordinate field {name} {text!r} is not an integer",
+                )
+            )
+    if problems:
+        return CoordCorrupted(tuple(problems))
+    if kind == _COORD_KIND_MONTH:
+        return CoordDecoded(MonthDay(*numbers))
+    return CoordDecoded(IntercalaryDay(*numbers))

@@ -11,7 +11,12 @@ import pytest
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from app.application.services import xlsx_schema
-from app.application.services.xlsx_import_service import ImportPlan, ImportReport, RowIssue
+from app.application.services.xlsx_import_service import (
+    DateShiftRow,
+    ImportPlan,
+    ImportReport,
+    RowIssue,
+)
 from app.presentation.views import xlsx_import_dialog
 from app.presentation.views.xlsx_import_dialog import (
     PRIMARY_TEXT_ANALYZE,
@@ -253,6 +258,31 @@ class TestReportPanel:
         d, _ = reported
         with qtbot.waitSignal(d.finished, timeout=2000):
             d.import_btn.click()
+
+    def test_date_shifts_section_hidden_when_empty(self, reported):
+        # C3a task 4.2: no actual transfers (standard game) — no section.
+        d, _ = reported
+        d.quick.grab()
+        title = find_item(d.quick, "reportDateShiftTitle")
+        assert title is not None and title.property("visible") is False
+        assert _texts(d.quick, "reportDateShiftText") == []
+
+    def test_date_shifts_section_lists_transfers(self, dlg):
+        dlg.path_edit.setText("/tmp/a.xlsx")
+        report = ImportReport(
+            created=1,
+            date_shifts=[
+                DateShiftRow("Персонажи", 2, "Дата начала", "2026-08-31", "2026-08-30"),
+            ],
+        )
+        dlg.vm.on_analyzed(plan_with())
+        dlg.vm.requestConfirmImport()
+        dlg.vm.on_report(report)
+        dlg.quick.grab()
+        assert _texts(dlg.quick, "reportDateShiftTitle") == ["Перенесённые даты: 1"]
+        assert _texts(dlg.quick, "reportDateShiftText") == [
+            "лист «Персонажи», строка 2: «Дата начала» 2026-08-31 → 2026-08-30"
+        ]
 
 
 class TestDownloadTemplate:

@@ -10,6 +10,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox, QSplitter
 
+from app.domain.game_calendar import MonthDay
 from app.presentation.views.main_window import MainWindow
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
@@ -1294,7 +1295,7 @@ class TestWorldSnapshotWidget:
         w.vm.requestShow()
         assert len(received) == 1
         # Task 3.4: the date bridge carries a (date, era) pair.
-        assert received[0] == (date(1200, 6, 15), False)
+        assert received[0] == (MonthDay(1200, 6, 15), False)
 
     def test_entity_clicked_signal(self, qtbot):
         loc = _mock_entity(1, "Замок", "location")

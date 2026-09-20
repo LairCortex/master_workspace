@@ -8,6 +8,7 @@ simulated.
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 from typing import Any, Callable
 
 from PySide6.QtCore import QDate
@@ -336,14 +337,17 @@ async def create_event_via_ui(
     name: str,
     characteristics: str = "Описание события",
     backstory: str = "",
-    start_date: QDate | None = None,
-    end_date: QDate | None = None,
+    start_date: QDate | date | None = None,
+    end_date: QDate | date | None = None,
     open_ended: bool = False,
 ) -> EventDialog:
     """Create an event through the timeline '+' button → EventDialog → save.
 
     Waits until the fire-and-forget available-entities load has finished and
-    the event is visible on the timeline.
+    the event is visible on the timeline. Since piece C3a the dialog date
+    proxies take game coordinates (a plain ``date`` is the same-numbers
+    ``MonthDay``), so a legacy QDate argument converts to its Python date
+    before entering the proxy.
     """
     timeline_probe.click_object(window, "addButton")
     # A dialog accepted earlier stays in the child list: resolve the visible one.
@@ -358,11 +362,15 @@ async def create_event_via_ui(
     if backstory:
         dialog.backstory_input.setContent(backstory)
     if start_date is not None:
-        dialog.start_date_input.setDate(start_date)
+        dialog.start_date_input.setDate(
+            start_date.toPython() if isinstance(start_date, QDate) else start_date
+        )
     if open_ended:
         dialog.no_end_date_cb.setChecked(True)
     elif end_date is not None:
-        dialog.end_date_input.setDate(end_date)
+        dialog.end_date_input.setDate(
+            end_date.toPython() if isinstance(end_date, QDate) else end_date
+        )
     assert dialog.save_button.isEnabled()
     dialog.save_button.click()
     await wait_for(lambda: has_event_named(window, name))

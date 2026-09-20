@@ -55,6 +55,8 @@ from app.domain.game_calendar import (
     CalendarCorrupted,
     CalendarDecoded,
     CalendarSpec,
+    CoordCorrupted,
+    CoordDecoded,
     CustomCalendar,
     DateField,
     GameCalendar,
@@ -73,7 +75,9 @@ from app.domain.game_calendar import (
     classify,
     current_calendar,
     decode_calendar,
+    decode_coord,
     encode_calendar,
+    encode_coord,
     render_calendar_year,
     reset_current_calendar,
     set_current_calendar,
@@ -2704,3 +2708,215 @@ class TestCodecCorruptedValue:
         # есть только у пресета и кастома; мастер — C4)
         with pytest.raises(TypeError):
             encode_calendar(StubCalendar())
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# C3a (wire-game-calendar-coordinates) task group 1.1 — доменный кодек
+# координаты: spec «Доменный кодек хранимого представления координаты»
+# и design D2: инъективный точный цикл "M:год:месяц:день" / "I:год:индекс",
+# машиночитаемые причины вместо исключений, существование проверяет не
+# кодек, а чистая политика сдвига
+# ═════════════════════════════════════════════════════════════════════════
+
+COORD_SWEEP_SPEC = base_spec(
+    intercalary=(IntercalarySpec("Гром", 2), IntercalarySpec("Маска", 3)),
+)  # 30+50+20 дней + два вставных: году есть и координаты рода M, и рода I
+
+
+class TestCoordCodecExactCycle:
+    """C3a task 1.1 / сценарий «Точный цикл координаты»: декодирование
+    результата возвращает ровно ту же координату обоих родов; эра в текст не
+    входит (D3), а ключ каждой эры переживает цикл побитово."""
+
+    ROUND_TRIP_COORDS = [
+        pytest.param(MonthDay(1, 1, 1), id="ad-epoch"),
+        pytest.param(MonthDay(44, 3, 5), id="bc-year-44"),
+        pytest.param(MonthDay(2024, 2, 29), id="leap-feb-29"),
+        pytest.param(MonthDay(9999, 12, 31), id="last-day-of-scale"),
+        pytest.param(IntercalaryDay(1, 0), id="first-intercalary"),
+        pytest.param(IntercalaryDay(44, 2), id="bc-intercalary"),
+        pytest.param(IntercalaryDay(9999, 12), id="far-index"),
+    ]
+
+    @pytest.mark.parametrize("coord", ROUND_TRIP_COORDS)
+    def test_cycle_returns_exactly_the_original_coordinate(self, coord):
+        text = encode_coord(coord)
+        decoded = decode_coord(text)
+        assert isinstance(decoded, CoordDecoded)
+        assert decoded.coord == coord
+        # канон без ведущих нулей и лишних полей фиксируется round-trip'ом
+        assert encode_coord(decoded.coord) == text
+
+    @pytest.mark.parametrize(
+        "coord",
+        [
+            pytest.param(MonthDay(1, 1, 1), id="ad-epoch"),
+            pytest.param(MonthDay(44, 3, 5), id="bc-year-44"),
+            pytest.param(MonthDay(2024, 2, 29), id="leap-feb-29"),
+            pytest.param(MonthDay(9999, 12, 31), id="last-day-of-scale"),
+        ],
+    )
+    @pytest.mark.parametrize("is_bc", [False, True], ids=["ad", "bc"])
+    def test_both_era_keys_survive_the_cycle_under_the_preset(self, coord, is_bc):
+        # текста на оба применения одинаков — эру различает только to_key
+        preset = StandardCalendar()
+        key = preset.to_key(coord, is_bc)
+        restored = decode_coord(encode_coord(coord)).coord
+        assert preset.to_key(restored, is_bc) == key
+        assert preset.from_key(key, is_bc) == restored
+
+    def test_intercalary_key_survives_the_cycle_under_custom(self):
+        custom = CustomCalendar(COORD_SWEEP_SPEC)
+        coord = IntercalaryDay(44, 1)
+        for is_bc in (False, True):
+            key = custom.to_key(coord, is_bc)
+            restored = decode_coord(encode_coord(coord)).coord
+            assert custom.to_key(restored, is_bc) == key
+            assert custom.from_key(key, is_bc) == restored
+
+    def test_text_is_the_discriminated_plain_number_format(self):
+        # design D2: дискриминатор рода + десятичные числа как есть
+        assert encode_coord(MonthDay(44, 3, 5)) == "M:44:3:5"
+        assert encode_coord(MonthDay(1, 1, 1)) == "M:1:1:1"
+        assert encode_coord(IntercalaryDay(44, 0)) == "I:44:0"
+        assert set(encode_coord(MonthDay(9999, 12, 31))) <= set(".-:0123456789M")
+        assert "is_bc" not in inspect.signature(encode_coord).parameters
+
+    def test_leading_zeros_parse_but_the_encoding_stays_canonical(self):
+        # рукописная правка базы переживёт чтение, а повторная запись
+        # вернётся каноническим текстом того же round-trip'а
+        decoded = decode_coord("M:044:03:05")
+        assert isinstance(decoded, CoordDecoded)
+        assert decoded.coord == MonthDay(44, 3, 5)
+        assert encode_coord(decoded.coord) == "M:44:3:5"
+
+
+class TestCoordCodecInjective:
+    """C3a task 1.1 / тот же сценарий, вторая половина: разные координаты
+    дают разные тексты — ловушки «цифры переехали между полями» и оба рода
+    сразу не сталкиваются."""
+
+    COLLISION_TRAPS = [
+        MonthDay(1, 11, 1), MonthDay(11, 1, 1), MonthDay(1, 1, 11),
+        MonthDay(2, 2, 2), MonthDay(22, 2, 2), MonthDay(2, 22, 2),
+        MonthDay(4, 4, 4), MonthDay(44, 4, 4), MonthDay(4, 44, 44),
+        IntercalaryDay(1, 0), IntercalaryDay(10, 0), IntercalaryDay(1, 10),
+        IntercalaryDay(11, 1), IntercalaryDay(111, 1),
+        MonthDay(1, 1, 1), MonthDay(11, 11, 11),
+    ]
+
+    def test_neighbours_by_digits_never_share_a_text(self):
+        # цифры, переехавшие между полями, и разные роды при равных числах
+        # обязаны давать разные тексты
+        unique_coords = list(dict.fromkeys(self.COLLISION_TRAPS))
+        texts = [encode_coord(coord) for coord in unique_coords]
+        assert len(set(texts)) == len(unique_coords)
+
+    def test_full_custom_year_sweep_is_pairwise_distinct_and_round_trips(self):
+        # весь год кастома разом: рow M-координат месяцами + все вставные слоты
+        custom = CustomCalendar(COORD_SWEEP_SPEC)
+        base = custom.to_key(MonthDay(44, 1, 1))
+        coords = [custom.from_key(base + offset) for offset in range(custom.year_length)]
+        assert len(coords) == custom.year_length == 102
+        assert len(set(coords)) == len(coords)
+        texts = [encode_coord(coord) for coord in coords]
+        assert len(set(texts)) == len(coords)  # сценарий: разные координаты → разные тексты
+        for coord, text in zip(coords, texts):
+            decoded = decode_coord(text)
+            assert isinstance(decoded, CoordDecoded)
+            assert decoded.coord == coord
+
+
+class TestCoordCodecCorruptedText:
+    """C3a task 1.1 / сценарий «Чужой текст отвечает причинами»: ни один
+    неразбираемый текст не бросает — только полный набор машинных причин по
+    образцу календарь-кодека (SpecProblem, не локалиzaция)."""
+
+    CORRUPT_CASES = [
+        pytest.param("", {"empty_coord"}, id="empty-text"),
+        pytest.param(None, {"not_a_string"}, id="value-is-not-a-string"),
+        pytest.param(404, {"not_a_string"}, id="value-is-a-number"),
+        # ── без дискриминатора рода / неизвестный дискриминатор ──────────
+        pytest.param("44:3:5", {"unknown_kind"}, id="missing-kind-discriminator"),
+        pytest.param("сорок четыре", {"unknown_kind"}, id="no-separator-at-all"),
+        pytest.param("L:44:3:5", {"unknown_kind"}, id="unknown-kind"),
+        pytest.param("m:44:3:5", {"unknown_kind"}, id="case-is-significant"),
+        pytest.param(":44:3:5", {"unknown_kind"}, id="empty-kind"),
+        # ── неполный текст ────────────────────────────────────────────────
+        pytest.param("M:44:3", {"incomplete_coord"}, id="month-day-missing-field"),
+        pytest.param("I:44", {"incomplete_coord"}, id="intercalary-missing-index"),
+        pytest.param("M:", {"incomplete_coord", "non_numeric_field"},
+                     id="incomplete-and-non-numeric-together"),
+        # ── нечисловые поля ───────────────────────────────────────────────
+        pytest.param("M:a:b:c", {"non_numeric_field"}, id="all-fields-non-numeric"),
+        pytest.param("M:44:x:5", {"non_numeric_field"}, id="month-is-not-a-number"),
+        pytest.param("I:44:второй", {"non_numeric_field"}, id="index-is-not-a-number"),
+        pytest.param("M:::", {"non_numeric_field"}, id="all-fields-empty"),
+        # ── лишние поля ───────────────────────────────────────────────────
+        pytest.param("M:44:3:5:9", {"too_many_fields"}, id="extra-field"),
+    ]
+
+    @pytest.mark.parametrize(("raw", "expected_codes"), CORRUPT_CASES)
+    def test_strange_texts_answer_reasons_not_exceptions(self, raw, expected_codes):
+        result = decode_coord(raw)
+        assert isinstance(result, CoordCorrupted)
+        assert codes_of(result.reasons) == expected_codes
+        assert all(isinstance(problem, SpecProblem) for problem in result.reasons)
+
+    @pytest.mark.parametrize(("raw", "expected_codes"), CORRUPT_CASES)
+    def test_every_reason_carries_a_detail_message(self, raw, expected_codes):
+        result = decode_coord(raw)
+        assert result.reasons  # причин хотя бы одна
+        for problem in result.reasons:
+            assert isinstance(problem.code, str) and problem.code
+            assert isinstance(problem.message, str) and problem.message
+
+    def test_encode_refuses_a_value_that_is_not_a_coordinate(self):
+        # вне двух D3-родов хранимой формы нет — по образцу encode_calendar
+        with pytest.raises(TypeError):
+            encode_coord(date(2026, 9, 20))
+        with pytest.raises(TypeError):
+            encode_coord("M:1:1:1")
+
+
+class TestCoordCodecResultShapes:
+    """Среза результатов кодекса — те же frozen-доменные формы, что у
+    календарь-кодека (design D2 «тот же контракт»)."""
+
+    def test_decoded_exposes_only_the_coordinate_and_is_frozen(self):
+        assert {f.name for f in fields(CoordDecoded)} == {"coord"}
+        result = CoordDecoded(MonthDay(1, 1, 1))
+        with pytest.raises(FrozenInstanceError):
+            result.coord = MonthDay(2, 1, 1)  # type: ignore[misc]
+
+    def test_corrupted_exposes_only_reasons_and_is_frozen(self):
+        assert {f.name for f in fields(CoordCorrupted)} == {"reasons"}
+        result = decode_coord("M:44:3")
+        assert isinstance(result, CoordCorrupted)
+        with pytest.raises(FrozenInstanceError):
+            result.reasons = ()  # type: ignore[misc]
+
+
+class TestCoordCodecNeverChecksExistence:
+    """C3a task 1.1: кодек отвечает за разбор и форму, существование — дело
+    чистой политики сдвига (spec «Доменный кодек…»)."""
+
+    NONEXISTENT_COORDS = [
+        pytest.param(MonthDay(2026, 13, 40), id="month-13-day-40"),
+        pytest.param(MonthDay(44, 0, 0), id="zero-month-and-day"),
+        pytest.param(IntercalaryDay(44, 99), id="index-beyond-any-spec"),
+        pytest.param(MonthDay(0, 99, 99), id="year-zero-absurd-fields"),
+    ]
+
+    @pytest.mark.parametrize("coord", NONEXISTENT_COORDS)
+    def test_absurd_coordinates_still_round_trip_exactly(self, coord):
+        # ни один календарь в декод не заглядывает: ровно та же координата
+        assert decode_coord(encode_coord(coord)).coord == coord
+
+    def test_existence_judges_the_policy_not_the_codec(self):
+        coord = MonthDay(2026, 13, 40)
+        assert decode_coord(encode_coord(coord)).coord == coord  # кодек принял
+        with pytest.raises(InvalidGameDateError):
+            StandardCalendar().to_key(coord)                     # ядро отказало
+        assert classify(coord, StandardCalendar()) is ShiftReason.MONTH_OUT_OF_RANGE
+        assert shift_invalid(coord, StandardCalendar())[0] == MonthDay(2026, 12, 31)

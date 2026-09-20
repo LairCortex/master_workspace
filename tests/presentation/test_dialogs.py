@@ -4,10 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QDate, QEvent, Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import QDialog
 
+from app.domain.game_calendar import MonthDay, as_game_coord
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     EntityGenerateProxy,
 )
@@ -52,8 +53,8 @@ class TestEventDialog:
         d.name_input.setText("Battle")
         d.characteristics_input.setPlainText("Big fight")
         d.backstory_input.setPlainText("Long ago")
-        d.start_date_input.setDate(QDate(1200, 1, 1))
-        d.end_date_input.setDate(QDate(1200, 12, 31))
+        d.start_date_input.setDate(MonthDay(1200, 1, 1))
+        d.end_date_input.setDate(MonthDay(1200, 12, 31))
         d._update_validity()
         assert d.save_button.isEnabled()
 
@@ -65,15 +66,15 @@ class TestEventDialog:
         d.name_input.setText("Battle")
         d.characteristics_input.setPlainText("Big fight")
         d.backstory_input.setPlainText("Long ago")
-        d.start_date_input.setDate(QDate(1200, 1, 1))
-        d.end_date_input.setDate(QDate(1200, 12, 31))
+        d.start_date_input.setDate(MonthDay(1200, 1, 1))
+        d.end_date_input.setDate(MonthDay(1200, 12, 31))
 
         data = d.get_data()
         assert data["name"] == "Battle"
         assert data["characteristics"] == "Big fight"
         assert data["backstory"] == "Long ago"
-        assert data["start_date"] == date(1200, 1, 1)
-        assert data["end_date"] == date(1200, 12, 31)
+        assert data["start_date"] == MonthDay(1200, 1, 1)
+        assert data["end_date"] == MonthDay(1200, 12, 31)
 
     def test_event_dialog_has_entity_sections(self, qtbot):
         vm = MagicMock()
@@ -187,8 +188,8 @@ class TestEntityCardDialog:
         d.name_input.setText("Sword")
         d.characteristics_input.setPlainText("Sharp")
         d.backstory_input.setPlainText("Forged")
-        d.start_date_input.setDate(QDate(500, 1, 1))
-        d.end_date_input.setDate(QDate(3000, 12, 31))
+        d.start_date_input.setDate(MonthDay(500, 1, 1))
+        d.end_date_input.setDate(MonthDay(3000, 12, 31))
         d.music_input.setText("https://example.com/sword-theme.mp3")
         data = d.get_data()
         assert data["name"] == "Sword"
@@ -483,8 +484,9 @@ class TestDialogDateEraBridges:
     def test_event_dialog_dates_default_to_today_our_era(self, qtbot):
         d = EventDialog(MagicMock())
         qtbot.addWidget(d)
-        assert d.vm._start_date == date.today()
-        assert d.vm._end_date == date.today()
+        today = date.today()
+        assert d.vm._start_date == as_game_coord(today)
+        assert d.vm._end_date == as_game_coord(today)
         data = d.get_data()
         assert data["start_bc"] is False
         assert data["end_bc"] is False
@@ -494,11 +496,11 @@ class TestDialogDateEraBridges:
         qtbot.addWidget(d)
         d._date_target = "start"
         d._set_selected_date((date(44, 3, 5), True))
-        assert d.vm._start_date == date(44, 3, 5)
+        assert d.vm._start_date == MonthDay(44, 3, 5)
         assert d.vm._start_bc is True
         assert "05 Март 44 г. до н.э." == d.vm.startDisplay
         data = d.get_data()
-        assert data["start_date"] == date(44, 3, 5)
+        assert data["start_date"] == MonthDay(44, 3, 5)
         assert data["start_bc"] is True
 
     def test_event_dialog_popup_answer_keeps_untouched_bound_era(self, qtbot):
@@ -561,7 +563,7 @@ class TestDialogDateEraBridges:
             description=None,
         )
         d.populate(event)
-        assert d.vm._start_date == date(44, 3, 5)
+        assert d.vm._start_date == MonthDay(44, 3, 5)
         assert d.vm._start_bc is True
         data = d.get_data()
         assert data["start_bc"] is True
@@ -570,7 +572,7 @@ class TestDialogDateEraBridges:
         d = EntityCardDialog(MagicMock(), entity_type="item")
         qtbot.addWidget(d)
         data = d.get_data()
-        assert data["start_date"] == date.today()
+        assert data["start_date"] == as_game_coord(date.today())
         assert data["start_bc"] is False
         assert data["end_bc"] is False
 
@@ -579,11 +581,11 @@ class TestDialogDateEraBridges:
         qtbot.addWidget(d)
         d._date_target = "start"
         d._set_selected_date((date(44, 3, 5), True))
-        assert d.vm._start_date == date(44, 3, 5)
+        assert d.vm._start_date == MonthDay(44, 3, 5)
         assert d.vm._start_bc is True
         assert d.vm.startDisplay == "05 Март 44 г. до н.э."
         data = d.get_data()
-        assert data["start_date"] == date(44, 3, 5)
+        assert data["start_date"] == MonthDay(44, 3, 5)
         assert data["start_bc"] is True  # ключи уезжают в сервис **kwargs'ом
 
     def test_entity_card_opens_popup_with_current_pair(self, qtbot, monkeypatch):
@@ -630,14 +632,15 @@ class TestDialogDateEraBridges:
         w = WorldSnapshotWidget()
         qtbot.addWidget(w)
         # Умолчание моста — «сегодня, н.э.» (design D6).
-        assert w.vm._date == date.today()
+        assert w.vm._date == as_game_coord(date.today())
         assert w.vm._date_bc is False
         # The popup answers with (date, era) through the connected bridge.
         w.date_popup.date_selected.emit((date(44, 3, 5), True))
-        assert w.vm._date == date(44, 3, 5)
+        assert w.vm._date == MonthDay(44, 3, 5)
         assert w.vm._date_bc is True
         assert w.vm.dateDisplay == "05 Март 44 г. до н.э."
         received: list = []
         w.snapshot_requested.connect(received.append)
         w.vm.requestShow()
-        assert received == [(date(44, 3, 5), True)]
+        # The bridge payload carries the coordinate pair since piece C3a.
+        assert received == [(MonthDay(44, 3, 5), True)]

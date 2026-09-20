@@ -12,11 +12,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 import app.presentation.views.detail_panel as _detail_panel_mod
+from app.domain.game_calendar import MonthDay
 import app.presentation.viewmodels.detail_panel_view_model as _detail_vm_mod
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -487,8 +488,8 @@ class TestEventDialogGaps:
         d.show()
         d.name_input.setText("E")
         d.characteristics_input.setPlainText("c")
-        d.start_date_input.setDate(QDate(1200, 6, 1))
-        d.end_date_input.setDate(QDate(1200, 1, 1))  # end < start
+        d.start_date_input.setDate(MonthDay(1200, 6, 1))
+        d.end_date_input.setDate(MonthDay(1200, 1, 1))  # end < start
         assert not d.save_button.isEnabled()  # invalid dates block saving
 
         d.no_end_date_cb.setChecked(True)  # endless → date constraint lifted

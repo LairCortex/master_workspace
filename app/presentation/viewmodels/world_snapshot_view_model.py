@@ -15,8 +15,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
+from app.domain.game_calendar import GameCoord, as_game_coord
 from app.presentation.theme.rating import rating_to_color
-from app.presentation.utils.date_utils import era_flag, format_game_date, split_date_era
+from app.presentation.utils.date_utils import (
+    era_flag,
+    format_game_date,
+    iso_or_coord,
+    split_date_era,
+)
 from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
 
 
@@ -142,9 +148,10 @@ class WorldSnapshotViewModel(QObject):
         self._empty_text = "Выберите дату и нажмите «Показать»"
         self._stats_text = ""
         self._clear_enabled = False
-        # The snapshot date bridge carries a (date, era) pair (task 3.4);
-        # the default is «сегодня, н.э.» (design D6).
-        self._date = date.today()
+        # The snapshot date bridge carries a (GameCoord, era) pair (piece C3a,
+        # designs D4/D9); the default is «сегодня, н.э.» — today's numbers as
+        # the equal month-day coordinate.
+        self._date: GameCoord = as_game_coord(date.today())
         self._date_bc = False
         if theme is not None:
             theme.add_listener(self._on_theme_changed)
@@ -154,7 +161,10 @@ class WorldSnapshotViewModel(QObject):
     emptyText = Property(str, lambda self: self._empty_text, notify=stateChanged)
     statsText = Property(str, lambda self: self._stats_text, notify=stateChanged)
     clearEnabled = Property(bool, lambda self: self._clear_enabled, notify=stateChanged)
-    dateIso = Property(str, lambda self: self._date.isoformat(), notify=dateChanged)
+    # ``Iso`` string (piece C3a, design D5): the previous ``isoformat()`` while
+    # the coordinate is a real-world date, the domain codec text otherwise;
+    # QML reads it verbatim (the reverse ISO slot went away as fictional).
+    dateIso = Property(str, lambda self: iso_or_coord(self._date), notify=dateChanged)
     dateDisplay = Property(
         str,
         lambda self: format_game_date(self._date, is_bc=self._date_bc),
@@ -229,24 +239,18 @@ class WorldSnapshotViewModel(QObject):
         self._clear_enabled = False
         self.stateChanged.emit()
 
-    @Slot(str)
-    def setDateIso(self, value: str) -> None:  # noqa: N802
-        try:
-            selected = date.fromisoformat(value)
-        except (TypeError, ValueError):
-            return
-        self.set_date(selected)
-
-    def set_date(self, value: date | tuple[date, bool]) -> None:
-        # Accepts the popup bridge's (date, era) pair; a bare date keeps the
-        # era the snapshot already shows (ISO input from QML carries none).
+    def set_date(self, value: GameCoord | date | tuple[GameCoord | date | None, bool] | None) -> None:
+        # Accepts the popup bridge's (coordinate, era) pair; a bare coordinate
+        # or date keeps the era the snapshot already shows (piece C3a, D4:
+        # a plain date is the month-day coordinate of the same numbers).
         selected, is_bc = split_date_era(value)
         if selected is None:  # the snapshot needs a concrete date
             return
+        coord = as_game_coord(selected)
         era = self._date_bc if is_bc is None else is_bc
-        if selected == self._date and bool(era) == self._date_bc:
+        if coord == self._date and bool(era) == self._date_bc:
             return
-        self._date = selected
+        self._date = coord
         self._date_bc = bool(era)
         self.dateChanged.emit()
 
@@ -399,8 +403,8 @@ class WorldSnapshotViewModel(QObject):
 
     @staticmethod
     def _stats(events, entities, for_date) -> str:
-        # ``for_date`` reaches here as the requested payload: a (date, era)
-        # pair from the date bridge or a bare legacy date (== «н.э.»).
+        # ``for_date`` reaches here as the requested payload: a (coordinate,
+        # era) pair from the date bridge or a bare legacy date (== «н.э.»).
         shown_date, is_bc = split_date_era(for_date)
         prefix = (
             "Показано: все события"

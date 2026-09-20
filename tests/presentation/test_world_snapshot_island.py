@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from PySide6.QtCore import QCoreApplication, QUrl
 from PySide6.QtQuickWidgets import QQuickWidget
 
+from app.domain.game_calendar import MonthDay
+from app.presentation.utils.date_utils import popup_prefill_date
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 from tests.presentation.qml_helpers import click_item, find_item, island_rows
 
@@ -79,7 +81,7 @@ def test_actions_keep_public_signal_semantics(qtbot):
     click_item(widget.quick, find_item(widget.quick, "snapshotShowAllButton"))
     # Task 3.4: the snapshot bridge transports a (date, era) pair; «Показать
     # всё» stays None.
-    assert emitted == [(date(1200, 6, 15), False), None]
+    assert emitted == [(MonthDay(1200, 6, 15), False), None]
 
     widget.populate([_event()], None)
     assert widget.vm.clearEnabled is True
@@ -126,7 +128,9 @@ def test_date_popup_and_deferred_release(qtbot, monkeypatch):
         lambda anchor, current: opened.append((anchor, current)),
     )
     widget.vm.requestDatePopup(3, 4, 120, 30)
-    assert opened and opened[0][1] == (widget.vm._date, False)
+    # The Gregorian popup receives the clamped picture of the VM's coordinate
+    # (piece C3a, design D6 — today's coordinate clamps to today's numbers).
+    assert opened and opened[0][1] == (popup_prefill_date(widget.vm._date), False)
 
     widget.close()
     QCoreApplication.processEvents()

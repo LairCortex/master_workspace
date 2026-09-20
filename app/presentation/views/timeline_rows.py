@@ -12,15 +12,17 @@ machinery (empty days, collapsed gaps, period cards, sticky/zoom/drill/jump/
 drop helpers) was deleted with the ladder itself.
 
 Input contract: event-like objects (anything exposing ``id``/``start_date``/
-``end_date``/``name``, e.g. domain ``Event`` instances), the navigation
-``window``. Era flags are duck-typed like the rest: optional ``start_bc``/
-``end_bc`` attributes (absent or non-``int``/``bool`` values read as «н.э.»,
-exactly like the ``DEFAULT 0`` columns of design D3). Window bounds stay
-flexible: a bare ``date`` is a legal our-era bound, a ``(date, is_bc)`` pair
-carries its own era. ``token_key`` carries the duck-typed ``"color.chart.N"``
-type-dot token (``None`` = untyped) so delegates paint the type mark without
-knowing about types. Captions are pre-built with the game calendar (live month
-names) and era, so the row text is display-ready. Every row also carries
+``end_date``/``name``, e.g. domain ``Event`` instances — since piece C3a their
+dates are game calendar coordinates, a plain ``date`` stays legal input), the
+navigation ``window``. Era flags are duck-typed like the rest: optional
+``start_bc``/``end_bc`` attributes (absent or non-``int``/``bool`` values read
+as «н.э.», exactly like the ``DEFAULT 0`` columns of design D3). Window bounds
+stay flexible: a bare coordinate (or legacy ``date``) is a legal «н.э.» bound,
+a ``(coordinate, is_bc)`` pair carries its own era. ``token_key`` carries the
+duck-typed ``"color.chart.N"`` type-dot token (``None`` = untyped) so
+delegates paint the type mark without knowing about types. Captions are
+pre-built with the game calendar (live month names, intercalary rule names)
+and era, so the row text is display-ready. Every row also carries
 ``detail`` — the event's own description as one collapsed, bounded line the
 delegate may wrap over two painted lines, so the list reads as a digest and
 not only as a date range. All of this is plain deterministic data, testable
@@ -29,10 +31,10 @@ without a QApplication.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
 from typing import Protocol, Sequence
 
 from app.domain.date_era import era_key
+from app.domain.game_calendar import GameCoord
 from app.presentation.utils.date_utils import (
     era_flag,
     format_game_date,
@@ -61,8 +63,8 @@ class _EventLike(Protocol):
     """
 
     id: int
-    start_date: date
-    end_date: date | None
+    start_date: GameCoord
+    end_date: GameCoord | None
     name: str
 
 
@@ -138,12 +140,12 @@ def row_detail(event: _EventLike) -> str:
     return ""
 
 
-def _bound_key(bound: date | tuple[date, bool] | None) -> int | None:
+def _bound_key(bound: GameCoord | tuple[GameCoord | None, bool] | None) -> int | None:
     """Era key of one window bound (design D2/D4).
 
-    A bound arrives either bare (a legacy ``date`` == «н.э.») or as the
-    ``(date, is_bc)`` pair the range popover applies; ``None`` is the unbounded
-    side of a partial pair.
+    A bound arrives either bare (a legacy ``date`` or plain coordinate ==
+    «н.э.», piece C3a) or as the ``(coordinate, is_bc)`` pair the range
+    popover applies; ``None`` is the unbounded side of a partial pair.
     """
     day, is_bc = split_date_era(bound)
     if day is None:
@@ -153,7 +155,13 @@ def _bound_key(bound: date | tuple[date, bool] | None) -> int | None:
 
 def _crosses_window(
     event: _EventLike,
-    window: tuple[date | tuple[date, bool] | None, date | tuple[date, bool] | None] | None,
+    window: (
+        tuple[
+            GameCoord | tuple[GameCoord | None, bool] | None,
+            GameCoord | tuple[GameCoord | None, bool] | None,
+        ]
+        | None
+    ),
 ) -> bool:
     """Whether ``event``'s interval intersects ``window`` (design D1).
 
@@ -186,7 +194,8 @@ def _crosses_window(
 class Row:
     """One event's single flat-list row.
 
-    ``start``/``end`` mirror the event's REAL bounds (``end is None`` = open),
+    ``start``/``end`` mirror the event's REAL bounds (game coordinates since
+    piece C3a; ``end is None`` = open),
     ``start_bc``/``end_bc`` mirror its era flags (absent/foreign values read as
     «н.э.», like the storage default); ``token_key`` is the duck-typed
     ``"color.chart.N"`` type-dot token (``None`` = untyped mark); ``caption`` is
@@ -197,8 +206,8 @@ class Row:
     """
 
     event_id: int
-    start: date
-    end: date | None
+    start: GameCoord
+    end: GameCoord | None
     name: str
     token_key: str | None
     caption: str
@@ -209,7 +218,13 @@ class Row:
 
 def build_rows(
     events: Sequence[_EventLike],
-    window: tuple[date | tuple[date, bool] | None, date | tuple[date, bool] | None] | None = None,
+    window: (
+        tuple[
+            GameCoord | tuple[GameCoord | None, bool] | None,
+            GameCoord | tuple[GameCoord | None, bool] | None,
+        ]
+        | None
+    ) = None,
 ) -> list[Row]:
     """Lay ``events`` out as the flat list's rows, filtered by ``window``.
 

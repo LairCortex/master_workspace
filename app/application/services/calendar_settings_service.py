@@ -12,12 +12,25 @@ active calendar and back:
 * :meth:`CalendarSettingsService.reconcile_era_keys` re-derives every stored
   ``start_key``/``end_key`` of the six dated tables from the *active* calendar
   — one formula, one commit, writes only on mismatch (design D5; it fully
-  replaces the deleted Gregorian SQL backfill, NULL keys included).
-* :meth:`CalendarSettingsService.apply_to_records` wraps the domain's pure
-  :func:`build_shift_report` over the same six tables: preview mode changes
-  nothing, apply mode shifts every reported invalid coordinate and recomputes
-  its key inside a single transaction that rolls back whole on any error
-  (design D6).  No production call site before the C4 master.
+  replaces the deleted Gregorian SQL backfill, NULL keys included).  Since
+  C3a the keyed truth per slot is what the storage resolver reads — the
+  coordinate column when filled, the date columns otherwise (design D3).
+* :meth:`CalendarSettingsService.sweep_dated_records` is the C3a game-open
+  traversal of design D8: unreadable coordinate texts are repaired, the
+  resolved coordinates run through :func:`build_shift_report` against the
+  active calendar, every invalid one is shifted through the routed
+  :func:`assign_coord` with the move logged, and :meth:`reconcile_era_keys`
+  closes the pass — all idempotent, a no-op on a standard game.
+* :meth:`CalendarSettingsService.apply_to_records` wraps the same pure
+  :func:`build_shift_report` over coordinates read through the resolver
+  (intercalary ones included): preview mode changes nothing, apply mode
+  shifts every reported coordinate, recomputes the keys of ``calendar`` and
+  migrates the storages — a custom calendar fills the coordinate columns
+  (the legacy date columns are left untouched), the «Стандартный» preset
+  moves coordinates back into the date columns (shifting what it cannot
+  hold) and empties the coordinate columns — inside a single transaction
+  that rolls back whole on any error (designs D6/D8).  No production call
+  site before the C4 master.
 
 The ``save(calendar)`` half of design D2 belongs to that C4 wizard and is
 deliberately absent here.
@@ -39,14 +52,17 @@ from app.domain.game_calendar import (
     CalendarDecoded,
     DateField,
     GameCalendar,
+    GameCoord,
     MonthDay,
     ShiftCheck,
     ShiftReport,
     SpecProblem,
     StandardCalendar,
     build_shift_report,
+    current_calendar,
     decode_calendar,
     encode_calendar,
+    encode_coord,
     set_current_calendar,
 )
 from app.infrastructure.db.models import (
@@ -57,6 +73,8 @@ from app.infrastructure.db.models import (
     LocationModel,
     OrganizationModel,
     RatingModel,
+    assign_coord,
+    resolve_coord,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +96,10 @@ _ERA_MODELS: dict[str, type] = {
     "locations": LocationModel,
     "ratings": RatingModel,
 }
+
+#: The two date slots of every dated row, with their column-name prefix
+#: (the resolver's own slot spelling, design D3).
+_DATE_SLOTS = ((DateField.START, "start"), (DateField.END, "end"))
 
 
 @dataclass(frozen=True)
@@ -214,27 +236,31 @@ class CalendarSettingsService:
         """Re-derive every stored key from the active calendar (design D5).
 
         Selects all dated rows of the six tables, recomputes ``start_key`` /
-        ``end_key`` with ``era_key`` (the dispatcher on the one active
-        calendar — the single formula, with the «Стандартный» preset giving
-        the exact pre-C2 numbers) and mutates only the rows that disagree;
-        a missing (NULL) key of a stored date simply recomputes too, which is
-        what closed old-version rows under the deleted SQL backfill.  Exactly
-        one commit covers every difference; ``session.commit()`` over a clean
-        session writes nothing, so an idempotent second pass leaves the
-        database byte-identical.  Returns the number of corrected rows.
+        ``end_key`` from the *resolved* coordinate of each slot (design D3:
+        filled coordinate column first, date columns otherwise — a plain
+        standard row reads as the ``MonthDay`` of its date, so the «Стандартный»
+        preset still gives the exact pre-C2 numbers) with ``era_key`` (the
+        dispatcher on the one active calendar — the single formula; it fully
+        replaces the deleted SQL Gregorian backfill, NULL keys included) and
+        mutates only the rows that disagree.  Exactly one commit covers every
+        difference; ``session.commit()`` over a clean session writes nothing,
+        so an idempotent second pass leaves the database byte-identical.
+        Returns the number of corrected rows.
         """
         changed_rows = 0
         for model in _ERA_MODELS.values():
             rows = (await session.execute(select(model))).scalars().all()
             for row in rows:
                 row_changed = False
-                if row.start_date is not None:
-                    start_key = era_key(row.start_date, bool(row.start_bc))
+                start = resolve_coord(row, DateField.START)
+                if start is not None:
+                    start_key = era_key(start, bool(row.start_bc))
                     if row.start_key != start_key:
                         row.start_key = start_key
                         row_changed = True
-                if row.end_date is not None:
-                    end_key = era_key(row.end_date, bool(row.end_bc))
+                end = resolve_coord(row, DateField.END)
+                if end is not None:
+                    end_key = era_key(end, bool(row.end_bc))
                     if row.end_key != end_key:
                         row.end_key = end_key
                         row_changed = True
@@ -246,73 +272,165 @@ class CalendarSettingsService:
         await session.commit()
         return changed_rows
 
+    async def sweep_dated_records(self, session: AsyncSession) -> ShiftReport:
+        """Game-open traversal of the six dated tables (C3a, design D8).
+
+        Runs right after :meth:`load_and_apply`, in its fixed three steps:
+
+        1. **repair** — the pass reads every slot through
+           :func:`resolve_coord`, which clears unreadable coordinate texts
+           and logs table + id (spec «Повреждённая координатная колонка»);
+        2. **shift** — the resolved (coordinate, era) pairs, intercalary
+           included, go through :func:`build_shift_report` against the
+           *active* calendar; every reported coordinate moves to its clamp
+           through the routed :func:`assign_coord` (coordinate slot under a
+           custom calendar, date columns under the preset — design D3) and
+           the move — old → new text plus reason code — goes to the log;
+        3. **reconcile** — :meth:`reconcile_era_keys` re-keys every row from
+           the now-consistent coordinates (external tampering included).
+
+        The whole pass is idempotent — shifted clamps are valid by
+        construction, repairs are one-shot, reconcile writes only mismatches
+        — and on a standard game a complete no-op (its date columns hold
+        valid Gregorian month-day coordinates, the coordinate columns stay
+        empty).  Returns the shift report of this open.
+        """
+        calendar = current_calendar()
+        checks, rows = await self._collect_checks(session)
+        report = build_shift_report(checks, calendar)
+        for entry in report.records:
+            row, _ = rows[(entry.table, entry.row_id)]
+            assign_coord(row, entry.field, entry.new[0])
+            _LOGGER.info(
+                "Startup sweep shifted %s id=%s %s: %s -> %s (%s)",
+                entry.table,
+                entry.row_id,
+                entry.field.value,
+                encode_coord(entry.old[0]),
+                encode_coord(entry.new[0]),
+                entry.reason.value,
+            )
+        await session.commit()
+        await self.reconcile_era_keys(session)
+        return report
+
     async def apply_to_records(
         self,
         session: AsyncSession,
         calendar: GameCalendar,
         dry_run: bool = True,
     ) -> ShiftReport:
-        """Check or apply ``calendar`` to all dated records (design D6).
+        """Check or apply ``calendar`` to all dated records (designs D6/D8).
 
         Both modes traverse the six tables in the fixed :data:`_ERA_MODELS`
-        order, turn every stored ``(date, era)`` pair into a domain
-        :data:`ShiftCheck` (only :class:`MonthDay` is expressible in the date
-        columns until C3) and hand the checks to the pure
-        :func:`build_shift_report`.  Preview returns that report having read
-        only; apply rewrites each reported coordinate together with the key
-        of ``calendar`` through the same transaction — any error anywhere
-        rolls the whole run back, leaving no half-shifted record — and then
-        the very same report is returned, so a preview stays valid for the
-        application it predicted.
+        order and read every stored slot through :func:`resolve_coord` — so
+        the traversal is over the game coordinates the app actually lives
+        on (intercalary included), whichever column holds them.  The checks
+        go to the pure :func:`build_shift_report` against ``calendar``.
+
+        *preview* returns that report having changed nothing: the resolver's
+        in-memory repair of corrupted coordinate texts is discarded, the base
+        stays byte-identical (spec «Проверка ничего не меняет»).
+
+        *apply* rewrites the whole storage of every dated row inside one
+        transaction — any error anywhere rolls the run back to exactly the
+        state the preview saw (spec «Ошибка применения откатывает всё»):
+        shifted coordinates, the keys of ``calendar``, and the storage
+        migration the calendar switch means: a custom calendar encodes every
+        coordinate into the coordinate column and never touches the legacy
+        date columns; the «Стандартный» preset moves each coordinate into
+        its date column (one already valid there by the shift policy of the
+        very same build) and empties the coordinate column (spec «Хранилища
+        переезжают вместе с календарём»).  The very same report the preview
+        produced is returned, so the preview stays valid for the application
+        it predicted (spec «Применение совпадает с проверкой»).
+
+        Writes go as straight ``UPDATE``s: derived keys must be exactly
+        ``calendar``'s own, independent of whichever calendar is active at
+        the moment of the call (C4 activates the saved calendar afterwards).
         """
-        checks = await self._collect_checks(session)
+        checks, rows = await self._collect_checks(session)
         report = build_shift_report(checks, calendar)
         if dry_run:
+            if session.dirty:
+                # Only the resolver's repair of corrupted coordinate texts can
+                # dirty a preview — the spec asks the base to stay untouched,
+                # so the in-memory clearing is discarded, not persisted.
+                await session.rollback()
             return report
+        shifted = {
+            (entry.table, entry.row_id, entry.field): entry.new[0]
+            for entry in report.records
+        }
+        preset = isinstance(calendar, StandardCalendar)
         try:
-            for entry in report.records:
-                new_coord, is_bc = entry.new
-                assert isinstance(new_coord, MonthDay)
-                model = _ERA_MODELS[entry.table]
-                field = entry.field.value
+            for (table, row_id), (row, resolved) in rows.items():
+                model = _ERA_MODELS[table]
+                values: dict[str, object] = {}
+                for field, slot in _DATE_SLOTS:
+                    coord = resolved.get(field)
+                    if coord is None:
+                        # An open slot keys nothing and holds no coordinate —
+                        # dangling key or debris text in it is cleared either
+                        # way; the legacy date column is already empty there.
+                        values[f"{slot}_key"] = None
+                        values[f"{slot}_coord"] = None
+                        continue
+                    is_bc = bool(getattr(row, f"{slot}_bc"))
+                    final = shifted.get((table, row_id, field), coord)
+                    values[f"{slot}_key"] = calendar.to_key(final, is_bc)
+                    if preset:
+                        # Valid in the preset already (the shift above ran
+                        # against it) ⇒ physically a Gregorian date.
+                        assert isinstance(final, MonthDay)
+                        values[f"{slot}_date"] = date(final.year, final.month, final.day)
+                        values[f"{slot}_coord"] = None
+                    else:
+                        values[f"{slot}_coord"] = encode_coord(final)
                 await session.execute(
-                    update(model)
-                    .where(model.id == entry.row_id)
-                    .values(
-                        **{
-                            f"{field}_date": date(new_coord.year, new_coord.month, new_coord.day),
-                            f"{field}_bc": int(is_bc),
-                            f"{field}_key": calendar.to_key(new_coord, is_bc),
-                        }
-                    )
+                    # The table object (not the model) keeps the statements
+                    # on column names: ``start_date`` is the coord-aware
+                    # property since C3a, while the physical columns keep
+                    # their legacy names (design D1/D3).
+                    model.__table__.update().where(model.__table__.c.id == row_id)
+                    .values(**values)
                 )
             await session.commit()
         except Exception:
             await session.rollback()
             raise
+        session.expire_all()  # the straight UPDATEs skipped the identity map
         return report
 
     @staticmethod
-    async def _collect_checks(session: AsyncSession) -> list[ShiftCheck]:
-        """Every stored dated coordinate of the six tables as ``ShiftCheck``."""
+    async def _collect_checks(
+        session: AsyncSession,
+    ) -> tuple[list[ShiftCheck], dict[tuple[str, int], tuple]]:
+        """Every stored dated coordinate of the six tables as ``ShiftCheck``s.
+
+        The single reading traversal of both the startup sweep and the
+        apply operation: each slot value comes from :func:`resolve_coord`
+        (which doubles as the design D8 repair step: corrupted coordinate
+        texts are cleared and logged while read), paired with the row's own
+        era flag.  Also returns the traversal order — ``{(table, id): (row,
+        {field: coordinate})}`` — so the writer applies shifts to the very
+        rows this pass has seen.
+        """
         checks: list[ShiftCheck] = []
+        rows: dict[tuple[str, int], tuple] = {}
         for table, model in _ERA_MODELS.items():
-            rows = (await session.execute(select(model))).scalars().all()
-            for row in rows:
-                if row.start_date is not None:
-                    checks.append((
-                        table,
-                        row.id,
-                        DateField.START,
-                        MonthDay(row.start_date.year, row.start_date.month, row.start_date.day),
-                        bool(row.start_bc),
-                    ))
-                if row.end_date is not None:
-                    checks.append((
-                        table,
-                        row.id,
-                        DateField.END,
-                        MonthDay(row.end_date.year, row.end_date.month, row.end_date.day),
-                        bool(row.end_bc),
-                    ))
-        return checks
+            for row in (await session.execute(select(model))).scalars().all():
+                resolved: dict[DateField, GameCoord] = {}
+                for field, slot in _DATE_SLOTS:
+                    coord = resolve_coord(row, field)
+                    if coord is not None:
+                        checks.append((
+                            table,
+                            row.id,
+                            field,
+                            coord,
+                            bool(getattr(row, f"{slot}_bc")),
+                        ))
+                        resolved[field] = coord
+                rows[(table, row.id)] = (row, resolved)
+        return checks, rows

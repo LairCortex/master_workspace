@@ -23,6 +23,7 @@ from app.application.services.xlsx_import_service import (
     LINK_TO_GHOST,
     XlsxImportService,
 )
+from app.domain.game_calendar import MonthDay
 from app.infrastructure.db.models import CharacterModel, ItemModel, OrganizationModel
 
 
@@ -186,7 +187,7 @@ class TestSheetMappingAndWarnings:
         assert not plan.has_fatal and not plan.skipped_rows
         row = plan.planned_rows[0]
         assert row.fields["name"] == "Battle"
-        assert row.fields["start_date"] == date(2001, 2, 3)
+        assert row.fields["start_date"] == MonthDay(2001, 2, 3)
         assert row.fields["characteristics"] == "Big"
         assert "image" not in row.fields
 
@@ -203,8 +204,8 @@ class TestSheetMappingAndWarnings:
         event = plan.lookup_row("event", "Бал")
         assert event.fields["event_type"] == "Дуэль"
         assert event.fields["rating"] == 3
-        assert event.fields["start_date"] == date(1815, 1, 10)
-        assert event.fields["end_date"] == date(1816, 6, 1)
+        assert event.fields["start_date"] == MonthDay(1815, 1, 10)
+        assert event.fields["end_date"] == MonthDay(1816, 6, 1)
         character = plan.lookup_row("character", "Иван")
         assert character.fields["image"] == "img.png"
         assert character.fields["personality"] == "Смелый"
@@ -237,10 +238,10 @@ class TestMerge:
         plan = await _svc().analyze_file(_save(tmp_path, wb))
         assert plan.planned_rows and not plan.skipped_rows
         merged = plan.lookup_row("character", "Иван")
-        assert merged.fields["start_date"] == date(2002, 2, 2)      # later wins
+        assert merged.fields["start_date"] == MonthDay(2002, 2, 2)      # later wins
         assert merged.fields["characteristics"] == "А2"             # later wins
         assert merged.fields["backstory"] == "БС1"                  # empty ≠ erase
-        assert merged.fields["end_date"] == date(2005, 1, 1)        # empty ≠ erase
+        assert merged.fields["end_date"] == MonthDay(2005, 1, 1)        # empty ≠ erase
         assert merged.fields["rating"] == 2                         # empty ≠ erase
         assert merged.first_row_number == 2
 
@@ -266,7 +267,7 @@ class TestMerge:
         refs = merged.links["character"]
         assert [r.name for r in refs] == ["Иван", "Мария"]  # accumulated, first-seen order
         assert [r.source_row_number for r in refs] == [2, 3]
-        assert merged.fields["start_date"] == date(1815, 2, 10)
+        assert merged.fields["start_date"] == MonthDay(1815, 2, 10)
 
     async def test_same_target_twice_in_one_cell_deduped(self, tmp_path):
         wb = _new_workbook()
@@ -333,8 +334,8 @@ class TestPlannedSkips:
                [["Е1", date(1200, 3, 4), date(1200, 4, 5)], ["Е2", "2001-02-03", None]])
         plan = await _svc().analyze_file(_save(tmp_path, wb))
         assert not plan.skipped_rows
-        assert plan.lookup_row("event", "Е1").fields["start_date"] == date(1200, 3, 4)
-        assert plan.lookup_row("event", "Е2").fields["start_date"] == date(2001, 2, 3)
+        assert plan.lookup_row("event", "Е1").fields["start_date"] == MonthDay(1200, 3, 4)
+        assert plan.lookup_row("event", "Е2").fields["start_date"] == MonthDay(2001, 2, 3)
 
     async def test_bc_dates_plan_with_era_flags(self, tmp_path):
         # add-era-aware-dates 5.1/5.2: both text BC forms land as (date, True)
@@ -349,13 +350,13 @@ class TestPlannedSkips:
         plan = await _svc().analyze_file(_save(tmp_path, wb))
         assert not plan.skipped_rows
         p1 = plan.lookup_row("character", "П1").fields
-        assert (p1["start_date"], p1["start_bc"]) == (date(44, 3, 5), True)
-        assert (p1["end_date"], p1["end_bc"]) == (date(1, 1, 1), True)
+        assert (p1["start_date"], p1["start_bc"]) == (MonthDay(44, 3, 5), True)
+        assert (p1["end_date"], p1["end_bc"]) == (MonthDay(1, 1, 1), True)
         p2 = plan.lookup_row("character", "П2").fields
-        assert (p2["start_date"], p2["start_bc"]) == (date(44, 3, 5), True)
+        assert (p2["start_date"], p2["start_bc"]) == (MonthDay(44, 3, 5), True)
         assert "end_date" not in p2 and "end_bc" not in p2
         p3 = plan.lookup_row("character", "П3").fields
-        assert (p3["start_date"], p3["start_bc"]) == (date(44, 3, 5), False)
+        assert (p3["start_date"], p3["start_bc"]) == (MonthDay(44, 3, 5), False)
 
     async def test_month_less_bc_text_is_a_row_problem(self, tmp_path):
         # Месяц обязателен (spec «Колонки листа»): «44 г. до н.э.» остаётся
@@ -378,8 +379,8 @@ class TestPlannedSkips:
         plan = await _svc().analyze_file(_save(tmp_path, wb))
         assert not plan.skipped_rows
         merged = plan.lookup_row("character", "Иван").fields
-        assert (merged["start_date"], merged["start_bc"]) == (date(99, 1, 1), True)
-        assert (merged["end_date"], merged["end_bc"]) == (date(50, 12, 31), True)
+        assert (merged["start_date"], merged["start_bc"]) == (MonthDay(99, 1, 1), True)
+        assert (merged["end_date"], merged["end_bc"]) == (MonthDay(50, 12, 31), True)
 
     async def test_rating_out_of_range_skips_row(self, tmp_path):
         wb = _new_workbook()
@@ -502,7 +503,7 @@ class TestNameIndex:
         link = plan.lookup_row("event", "Бал").links["item"][0]
         assert link.resolution == LINK_TO_GHOST and link.db_id is None
         ghost = plan.ghosts[("item", "амулет")]
-        assert (ghost.min_start, ghost.max_end) == (date(1820, 5, 1), date(1820, 5, 1))
+        assert (ghost.min_start, ghost.max_end) == (MonthDay(1820, 5, 1), MonthDay(1820, 5, 1))
         assert ghost.name == "Амулет"
         assert ghost.referenced_by == [("События", 2)]
 
@@ -519,8 +520,8 @@ class TestNameIndex:
                ])
         plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
         ghost = plan.ghosts[("item", "амулет")]
-        assert ghost.min_start == date(1815, 1, 10)
-        assert ghost.max_end == date(1820, 5, 1)
+        assert ghost.min_start == MonthDay(1815, 1, 10)
+        assert ghost.max_end == MonthDay(1820, 5, 1)
         assert ghost.referenced_by == [("События", 2), ("События", 3)]
 
     async def test_ghost_bounds_compare_through_the_era_key(self, tmp_path, async_session):
@@ -538,8 +539,8 @@ class TestNameIndex:
                ])
         plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
         ghost = plan.ghosts[("item", "амулет")]
-        assert (ghost.min_start, ghost.min_start_bc) == (date(500, 6, 1), True)
-        assert (ghost.max_end, ghost.max_end_bc) == (date(2026, 8, 1), False)
+        assert (ghost.min_start, ghost.min_start_bc) == (MonthDay(500, 6, 1), True)
+        assert (ghost.max_end, ghost.max_end_bc) == (MonthDay(2026, 8, 1), False)
 
     async def test_link_lookup_is_type_scoped_against_db(self, tmp_path, async_session):
         _, item = await _seed_db(async_session)  # «Фонарь» is an ITEM in DB
@@ -562,7 +563,7 @@ class TestNameIndex:
         plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
         assert not plan.has_fatal
         assert plan.name_index_built and plan.name_index == {}
-        assert plan.ghosts[("item", "фонарь")].min_start == date(1820, 5, 1)
+        assert plan.ghosts[("item", "фонарь")].min_start == MonthDay(1820, 5, 1)
 
     async def test_cascade_when_file_target_row_gets_skipped(self, tmp_path, async_session):
         # «Глеб» (character) links «Цех», which is ambiguous in DB and absent
@@ -587,7 +588,7 @@ class TestNameIndex:
         link = event.links["character"][0]
         assert link.resolution == LINK_TO_GHOST
         # No «Глеб» in DB → the ghost takes the event's dates.
-        assert plan.ghosts[("character", "глеб")].min_start == date(1815, 1, 10)
+        assert plan.ghosts[("character", "глеб")].min_start == MonthDay(1815, 1, 10)
         assert plan.ambiguous_names["organization"] == {"цех"}
         reasons = [(i.sheet, i.row_number) for i in plan.skipped_rows]
         assert reasons == [("Персонажи", 2)]
@@ -621,7 +622,7 @@ class TestAnalysisWithoutSession:
         assert not plan.has_fatal
         links = plan.lookup_row("event", "Бал").links["character"]
         assert [link.resolution for link in links] == [LINK_TO_FILE, LINK_TO_GHOST]
-        assert plan.ghosts[("character", "призрак")].min_start == date(1815, 1, 10)
+        assert plan.ghosts[("character", "призрак")].min_start == MonthDay(1815, 1, 10)
 
     async def test_unverifiable_reference_without_db_is_fatal(self, tmp_path):
         # Link column of a type the file never defines: without the DB the

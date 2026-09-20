@@ -26,7 +26,12 @@ from PySide6.QtCore import QDate, QPoint
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QWidget
 
-from app.domain.game_calendar import current_calendar, reset_current_calendar, set_current_calendar
+from app.domain.game_calendar import (
+    MonthDay,
+    current_calendar,
+    reset_current_calendar,
+    set_current_calendar,
+)
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views import timeline_island
 from app.presentation.views.timeline_date_popup import WINDOW_CHIP_ALL
@@ -435,7 +440,7 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.clicked.emit(QDate(1200, 1, 5))
         assert received == []  # start alone is not a window yet
         popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
-        assert received == [((date(1200, 1, 5), False), (date(1200, 1, 9), False))]
+        assert received == [((MonthDay(1200, 1, 5), False), (MonthDay(1200, 1, 9), False))]
         assert not popup.isVisible()
         assert panel._root.property("windowText") == (
             "05 Январь 1200 — 09 Январь 1200 ▾"
@@ -453,7 +458,7 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.set_era(True)  # «до н.э.» на начале
         popup.start_calendar.clicked.emit(QDate(500, 1, 1))
         popup.end_calendar.clicked.emit(QDate(100, 12, 31))
-        assert received == [((date(500, 1, 1), True), (date(100, 12, 31), False))]
+        assert received == [((MonthDay(500, 1, 1), True), (MonthDay(100, 12, 31), False))]
         assert panel._root.property("windowText") == (
             "01 Январь 500 г. до н.э. — 31 Декабрь 100 ▾"
         )
@@ -468,10 +473,10 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
         popup.start_calendar.clicked.emit(QDate(1200, 1, 3))  # earlier
         assert received == []
-        assert popup._pending_start == (date(1200, 1, 3), False)
+        assert popup._pending_start == (MonthDay(1200, 1, 3), False)
         popup.start_calendar.clicked.emit(QDate(1200, 1, 12))
         assert received == [
-            ((date(1200, 1, 3), False), (date(1200, 1, 12), False))
+            ((MonthDay(1200, 1, 3), False), (MonthDay(1200, 1, 12), False))
         ]
 
     def test_finish_may_land_on_the_second_calendar(self, qtbot, root_qml):
@@ -483,7 +488,7 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.clicked.emit(QDate(1200, 2, 1))
         popup.end_calendar.clicked.emit(QDate(1200, 2, 20))
         assert received == [
-            ((date(1200, 2, 1), False), (date(1200, 2, 20), False))
+            ((MonthDay(1200, 2, 1), False), (MonthDay(1200, 2, 20), False))
         ]
 
     def test_reset_restores_all_days_and_hides(self, qtbot, root_qml):
@@ -521,7 +526,7 @@ class TestDateWindowPopupEntry:
         popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
         popup.start_calendar.clicked.emit(QDate(1200, 1, 4))
         assert received == [
-            ((date(1200, 1, 1), False), (date(1200, 1, 4), False))
+            ((MonthDay(1200, 1, 1), False), (MonthDay(1200, 1, 4), False))
         ]
 
     def test_bare_dates_stay_legal_on_the_window_channel(self, qtbot, root_qml):

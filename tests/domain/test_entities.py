@@ -1,8 +1,14 @@
-"""Tests for domain entities — TDD: write tests first."""
+"""Tests for domain entities — TDD: write tests first.
+
+Since piece C3a (design D4) the entity dates are game-calendar coordinates:
+a plain ``datetime.date`` stays accepted and reads back as the equal
+``MonthDay``, and coordinates absent from the active calendar are refused
+with the distinguishable ``InvalidGameDateError``."""
 from datetime import date
 
 import pytest
 
+from app.domain.date_era import cmp_era_dates
 from app.domain.entities.base import BaseEntity
 from app.domain.entities.description import Description
 from app.domain.entities.event import Event
@@ -13,6 +19,11 @@ from app.domain.entities.item import Item
 from app.domain.entities.location import Location
 from app.domain.entities.rating import Rating
 from app.domain.enums.entity_type import EntityType
+from app.domain.game_calendar import (
+    IntercalaryDay,
+    InvalidGameDateError,
+    MonthDay,
+)
 
 
 # --- Description ---
@@ -41,8 +52,9 @@ class TestEvent:
             end_date=date(1200, 12, 31),
         )
         assert e.name == "Battle of the Plains"
-        assert e.start_date == date(1200, 1, 1)
-        assert e.end_date == date(1200, 12, 31)
+        # C3a (D4): input date reads back as the equal MonthDay coordinate
+        assert e.start_date == MonthDay(1200, 1, 1)
+        assert e.end_date == MonthDay(1200, 12, 31)
         assert e.description.characteristics == "Battle"
         assert e.organizations == []
         assert e.characters == []
@@ -393,7 +405,8 @@ class TestEraAwareDateValidation:
             start_bc=True,
             end_bc=True,
         )
-        assert ev.end_date > ev.start_date
+        # C3a: поля — координаты, порядок — общий хронологический ключ
+        assert cmp_era_dates((ev.end_date, True), (ev.start_date, True)) > 0
         with pytest.raises(ValueError, match="end_date.*start_date"):
             Event(
                 name="Reversed",
@@ -425,4 +438,104 @@ class TestEraAwareDateValidation:
                 start_bc=True,
                 end_bc=True,
             )
+
+
+# --- Game-calendar coordinates as the entity's date (C3a task 2.1) ---
+
+
+class TestEntityDateCoordinates:
+    """Spec «Дата с эрой» (C3a delta): дата сущности — координата календаря,
+    обычная дата — её частный случай, несуществующая координата отклоняется
+    отличимой ошибкой без тихой нормализации."""
+
+    def test_plain_date_coerces_to_the_equal_month_day(self):
+        """Сценарий «Обычная календарная дата — частный случай координаты»."""
+        ev = Event(
+            name="Coerced",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 6, 1),
+            end_date=date(1200, 12, 31),
+        )
+        assert isinstance(ev.start_date, MonthDay)
+        assert ev.start_date == MonthDay(1200, 6, 1)
+        assert ev.end_date == MonthDay(1200, 12, 31)
+
+    def test_rating_plain_date_coerces_to_the_equal_month_day(self):
+        r = Rating(
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 6, 1),
+            end_date=date(1200, 12, 31),
+            level=4,
+        )
+        assert r.start_date == MonthDay(1200, 6, 1)
+        assert r.end_date == MonthDay(1200, 12, 31)
+
+    def test_game_coordinates_pass_through_unchanged(self):
+        coord = MonthDay(1200, 6, 1)
+        ev = Event(
+            name="Native coord",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=coord,
+            end_date=None,
+        )
+        assert ev.start_date is coord
+
+    def test_nonexistent_start_coord_is_refused_with_distinguishable_error(self):
+        """Сценарий «Дня не существует в активном календаре»: 31 апреля нет —
+        отличимый отказ InvalidGameDateError, никакой подмены датой."""
+        with pytest.raises(InvalidGameDateError):
+            Event(
+                name="April 31st",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=MonthDay(2026, 4, 31),
+            )
+
+    def test_nonexistent_end_coord_is_refused_with_distinguishable_error(self):
+        with pytest.raises(InvalidGameDateError):
+            Event(
+                name="Bad end",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=MonthDay(2026, 1, 1),
+                end_date=MonthDay(2026, 2, 30),
+            )
+
+    def test_intercalary_coord_is_refused_under_the_standard_preset(self):
+        """Вставной день под пресетом «Стандартный» — та же отличимая ошибка."""
+        with pytest.raises(InvalidGameDateError):
+            Event(
+                name="Mask day",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=IntercalaryDay(44, 0),
+                start_bc=True,
+            )
+        with pytest.raises(InvalidGameDateError):
+            Rating(
+                description=Description(characteristics="x", backstory="y"),
+                start_date=IntercalaryDay(44, 0),
+                level=2,
+            )
+
+    def test_mixed_era_end_before_start_keeps_the_previous_error_text(self):
+        """Конец до н.э. при начале н.э. — «конец раньше начала» прежним
+        текстом, проверка через единый ключ через границу эр."""
+        with pytest.raises(ValueError, match="end_date must not be before start_date") as exc:
+            Event(
+                name="Back into BC",
+                description=Description(characteristics="x", backstory="y"),
+                start_date=MonthDay(1, 1, 1),
+                end_date=MonthDay(44, 3, 5),
+                end_bc=True,
+            )
+        assert str(exc.value) == "end_date must not be before start_date"
+
+    def test_rating_mixed_era_end_before_start_keeps_the_previous_error_text(self):
+        with pytest.raises(ValueError, match="end_date must not be before start_date") as exc:
+            Rating(
+                description=Description(characteristics="x", backstory="y"),
+                start_date=MonthDay(1, 1, 1),
+                end_date=MonthDay(300, 1, 1),
+                end_bc=True,
+                level=1,
+            )
+        assert str(exc.value) == "end_date must not be before start_date"
 

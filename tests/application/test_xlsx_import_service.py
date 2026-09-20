@@ -37,6 +37,7 @@ from app.application.services.xlsx_import_service import (
     XlsxImportService,
 )
 from app.domain.date_era import era_key
+from app.domain.game_calendar import MonthDay
 from app.infrastructure.db import models
 from app.infrastructure.db.models import (
     CharacterModel,
@@ -290,7 +291,7 @@ class TestPreAnalysis:
         merged = plan.lookup_row("character", "Старый Кузнец")
         assert merged.first_row_number == 4
         # later non-empty overrides, empty cells keep the earlier value
-        assert merged.fields["start_date"] == date(1161, 2, 2)
+        assert merged.fields["start_date"] == MonthDay(1161, 2, 2)
         assert merged.fields["characteristics"] == "Молчалив, знает все ходы"
         assert merged.fields["backstory"] == "Бывший капитан городской стражи"
         assert merged.fields["rating"] == 3
@@ -321,7 +322,7 @@ class TestPreAnalysis:
         # min start / max end из строк «Взятие…» (1200-05-01…1200-09-15) и
         # «Поход…» (1202-06-10…1203-01-20) — spec «Противоречивые даты»
         assert (ghost.min_start, ghost.max_end) == (
-            date(1200, 5, 1), date(1203, 1, 20),
+            MonthDay(1200, 5, 1), MonthDay(1203, 1, 20),
         )
         assert ghost.referenced_by == [("События", 2), ("События", 3)]
         # the same cell mixes a ghost with a file row → per-reference kind
@@ -484,8 +485,8 @@ class TestApplyEraAware:
 
         plan = await _svc().analyze_file(path, async_session)
         ghost_plan = plan.ghosts[("item", "амфора")]
-        assert (ghost_plan.min_start, ghost_plan.min_start_bc) == (date(44, 3, 15), True)
-        assert (ghost_plan.max_end, ghost_plan.max_end_bc) == (date(43, 3, 5), True)
+        assert (ghost_plan.min_start, ghost_plan.min_start_bc) == (MonthDay(44, 3, 15), True)
+        assert (ghost_plan.max_end, ghost_plan.max_end_bc) == (MonthDay(43, 3, 5), True)
 
         report = await _svc().apply_plan(plan, async_session)
 
