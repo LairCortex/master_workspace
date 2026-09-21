@@ -23,6 +23,7 @@ from app.domain.game_calendar import (
     CalendarSpec,
     CustomCalendar,
     IntercalaryDay,
+    IntercalarySpec,
     MonthDay,
     MonthSpec,
     encode_coord,
@@ -60,6 +61,22 @@ _WIDE_SPEC = CalendarSpec(
     week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
 )
 _WIDE = CustomCalendar(_WIDE_SPEC)
+
+# C5 task 2.2/2.3 — the same ten-month layout plus one declared intercalary
+# day: the game wording then routes an IntercalaryDay coordinate through the
+# exact shift/report pipeline the ISO forms already travel.
+_INTER_SPEC = CalendarSpec(
+    months=tuple(
+        MonthSpec(name, 30)
+        for name in (
+            "Медвежарь", "Ледокол", "Травень", "Цветень", "Жневень",
+            "Сенокос", "Гридень", "Листопад", "Хмурень", "Студень",
+        )
+    ),
+    week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
+    intercalary=(IntercalarySpec("Медожор", after_month=1),),
+)
+_INTER = CustomCalendar(_INTER_SPEC)
 
 
 @pytest.fixture(autouse=True)
@@ -261,6 +278,46 @@ class TestParsedDatesBecomeCoordinates:
         report = await _svc().apply_plan(plan, async_session)
 
         assert report.skipped and report.created == 0
+        assert report.date_shifts == []
+
+    async def test_game_form_day_beyond_month_shifts_like_iso(
+        self, tmp_path, async_session
+    ):
+        # C5 task 2.1–2.3, spec «Игровая дата с числом длиннее месяца
+        # переносится»: the game-form coordinate 31 (Листопад is month 8)
+        # clamps exactly like the ISO 31-е did, with the usual transfer row.
+        set_current_calendar(_CUSTOM)
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", FULL_HEADERS, [["Листопалый", "31 Листопад 2026", None]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        report = await _svc().apply_plan(plan, async_session)
+
+        char = await _one(async_session, CharacterModel, name="Листопалый")
+        assert resolve_coord(char, "start") == MonthDay(2026, 8, 30)
+
+        shift, = report.date_shifts
+        assert (shift.sheet, shift.row_number, shift.field) == (
+            "Персонажи", 2, "Дата начала",
+        )
+        assert (shift.old, shift.new) == ("2026-08-31", "2026-08-30")
+
+    async def test_named_intercalary_day_imports_as_intercalary_coordinate(
+        self, tmp_path, async_session
+    ):
+        # C5 task 2.2/2.3: a name declared in spec.intercalary lands the
+        # same-calendar IntercalaryDay coordinate (rule index 0) over the
+        # routed write — codec coordinate, era beside it, and no transfer.
+        set_current_calendar(_INTER)
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", FULL_HEADERS,
+               [["Медожин", "Медожор 44 г. до н.э.", None]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        report = await _svc().apply_plan(plan, async_session)
+
+        char = await _one(async_session, CharacterModel, name="Медожин")
+        assert char.start_coord == encode_coord(IntercalaryDay(44, 0))
+        assert bool(char.start_bc) is True
+        assert resolve_coord(char, "start") == IntercalaryDay(44, 0)
         assert report.date_shifts == []
 
 

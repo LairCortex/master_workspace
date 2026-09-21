@@ -203,8 +203,8 @@ class ApplicationWiring:
 
             dlg.analyze_requested.connect(lambda path: self._spawn(_analyze(path)))
             dlg.confirm_import.connect(lambda: self._spawn(_confirm()))
-            # «Скачать шаблон» (task 5.2): pure file flow — save--as dialog +
-            # byte copy of the bundled resource, no session involved.
+            # «Скачать шаблон» (C5): save--as dialog + the workbook generated
+            # under the active game calendar at save time, no session involved.
             dlg.download_template.connect(lambda: save_template_as(dlg))
             dlg.finished.connect(lambda _: dlg.deleteLater())
             dlg.open()

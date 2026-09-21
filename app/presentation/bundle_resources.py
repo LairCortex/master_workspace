@@ -1,11 +1,9 @@
 """Resolve read-only bundled resources in a dev checkout vs a PyInstaller bundle.
 
-One resolver behind every shipped data directory/file: ``docs/`` (the README /
-CHANGELOG viewers) and ``resources/import_template.xlsx`` (rework-xlsx-import
-task 5.2, design D9 — «путь тем же резолвером, что используется для показа
-README»). In development the resource lives under the repository root; in a
-frozen build it is looked up in the layouts ``nri_manager.spec`` datas deploy
-it into (next to the exe, under ``_internal/``, macOS .app
+One resolver behind every shipped data directory/file: ``docs/`` (the README
+/ CHANGELOG viewers). In development the resource lives under the repository
+root; in a frozen build it is looked up in the layouts ``nri_manager.spec``
+datas deploy it into (next to the exe, under ``_internal/``, macOS .app
 Contents/Resources|Frameworks).
 """
 from __future__ import annotations

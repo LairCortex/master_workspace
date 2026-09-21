@@ -32,7 +32,6 @@ from app.domain.date_era import era_key
 from app.domain.game_calendar import (
     GameCoord,
     MonthDay,
-    as_game_coord,
     current_calendar,
     encode_coord,
     shift_invalid,
@@ -219,11 +218,6 @@ def _empty_cell(value: object) -> bool:
     return value is None or (isinstance(value, str) and not value.strip())
 
 
-def _era_text(d: date, is_bc: bool) -> str:
-    """ISO date annotated with the era marker for BC («… до н.э.»)."""
-    return f"{d.isoformat()} до н.э." if is_bc else d.isoformat()
-
-
 def _coord_text(coord: GameCoord, is_bc: bool) -> str:
     """Coordinate display for report lines (C3a, design D5's Iso rule):
     the ISO form when the coordinate is representable as a real date, the
@@ -238,25 +232,48 @@ def _coord_text(coord: GameCoord, is_bc: bool) -> str:
     return f"{text} до н.э." if is_bc else text
 
 
-def _to_coord(moment: date, is_bc: bool, col, sheet_title: str, row_number: int) -> tuple[GameCoord, DateShiftRow | None]:
-    """Analyze-route date → active-calendar coordinate (C3a, design D7).
+#: RU captions of the pre-analysis date problems (design D4, task 2.4): the
+#: pure parser only carries the machine ``code`` plus the offending
+#: ``subject``, the row-skip caption is assembled here (the wizard's
+#: ``_CODE_PHRASES`` is the pattern).  A code missing from the dictionary is
+#: a defect of the parser, never a silent fallback — hence the direct index.
+_DATE_PROBLEM_PHRASES: dict[str, str] = {
+    "unknown_name": "месяц «{subject}» не найден в календаре игры",
+    "intercalary_with_day": "у вставного дня «{subject}» не бывает номера дня",
+    "month_without_day": "месяц «{subject}» без номера дня",
+    "out_of_range": "число «{subject}» вне границ игрового календаря",
+}
 
-    The parsed number is coerced to a coordinate and clamped against the
-    active calendar through the pure shift policy — the import never writes
-    a coordinate the calendar does not contain and never shifts in silence:
-    a clamp yields the visible :class:`DateShiftRow` alongside.
+
+def _era_text(coord: GameCoord, is_bc: bool) -> str:
+    """The report's *old* side (task C5 1.1): the coordinate exactly as it was
+    parsed, rendered by the same coordinate rule as the new side — so the
+    «Стандартный» preset keeps printing the plain ISO text it printed before,
+    era marker («… до н.э.») included."""
+    return _coord_text(coord, is_bc)
+
+
+def _to_coord(
+    coord: GameCoord, is_bc: bool, col, sheet_title: str, row_number: int
+) -> tuple[GameCoord, DateShiftRow | None]:
+    """Analyze-route coordinate → the active-calendar coordinate to write.
+
+    The parsed coordinate arrives from the parser already carried in the
+    active calendar's currency (task C5 1.1) and is clamped against that
+    calendar through the pure shift policy — the import never writes a
+    coordinate the calendar does not contain and never shifts in silence: a
+    clamp yields the visible :class:`DateShiftRow` alongside.
     """
-    coord = as_game_coord(moment)
     shifted = shift_invalid(coord, current_calendar())
     if shifted is None:
         return coord, None
-    coord, _reason = shifted
-    return coord, DateShiftRow(
+    clamped, _reason = shifted
+    return clamped, DateShiftRow(
         sheet=sheet_title,
         row_number=row_number,
         field=col.label,
-        old=_era_text(moment, is_bc),
-        new=_coord_text(coord, is_bc),
+        old=_era_text(coord, is_bc),
+        new=_coord_text(clamped, is_bc),
     )
 
 
@@ -275,12 +292,16 @@ def _row_to_draft(
         value = row[pos] if pos < len(row) else None
         if col.key in ("start_date", "end_date"):
             parsed = schema.parse_cell_date(value)
-            if parsed is not None:
-                moment, is_bc = parsed
-                # C3a (D7): the parsed number becomes an active-calendar
-                # coordinate BEFORE any recording route (merging, ghosts,
+            # A DateParse is a "coordinate XOR problem" pair (design D2): the
+            # draft consumes ``coord``, while ``problem`` — raised only by the
+            # custom grammar (D5) — surfaces as this row's subject caption
+            # (task 2.4, texts from _DATE_PROBLEM_PHRASES above).
+            coord = parsed.coord if parsed is not None else None
+            if coord is not None:
+                # C3a (D7): the parsed coordinate is clamped against the
+                # active calendar BEFORE any recording route (merging, ghosts,
                 # upsert) sees it — an absent day clamps with a visible row.
-                coord, shift = _to_coord(moment, is_bc, col, sheet_title, row_number)
+                coord, shift = _to_coord(coord, parsed.is_bc, col, sheet_title, row_number)
                 fields[col.key] = coord
                 if shift is not None:
                     date_shifts[col.key] = shift
@@ -288,12 +309,21 @@ def _row_to_draft(
                 # (start_bc/end_bc — same kwargs the entity services take):
                 # the merge keeps the pair atomic, later non-empty wins both.
                 era_key_field = "start_bc" if col.key == "start_date" else "end_bc"
-                fields[era_key_field] = is_bc
+                fields[era_key_field] = parsed.is_bc
             elif col.key == "start_date":
-                shown = "пусто" if _empty_cell(value) else f"значение «{value}» не является датой"
-                return None, RowIssue(sheet_title, row_number, f"дата начала: {shown}")
-            # An unparsable optional end date is simply not applied (the
-            # spec marks only the start date as a row problem).
+                if parsed is not None:  # coord None + DateParse XOR ⇒ a problem
+                    caption = _DATE_PROBLEM_PHRASES[parsed.problem.code].format(
+                        subject=parsed.problem.subject
+                    )
+                else:
+                    caption = (
+                        "пусто" if _empty_cell(value)
+                        else f"значение «{value}» не является датой"
+                    )
+                return None, RowIssue(sheet_title, row_number, f"дата начала: {caption}")
+            # An unparsable optional end date — refuse (None) or recognized
+            # problem alike — is simply not applied (the spec marks only the
+            # start date as a row problem).
             continue
         if col.key == "rating":
             try:

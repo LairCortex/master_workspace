@@ -31,11 +31,10 @@ a = Analysis(
     # with PresetCatalog.list() (checked by tests/test_spec_presets_bundle.py).
     datas=[
         ("docs", "docs"),
-        # Five-sheet import template (rework-xlsx-import task 5.2, design D9):
-        # «Скачать шаблон» copies this bundled file byte-for-byte; the dev-side
-        # resolver lives in app/presentation/bundle_resources.py (checked by
-        # tests/test_spec_template_bundle.py).
-        ("resources/import_template.xlsx", "resources"),
+        # The import template is NOT bundled: since piece C5 «Скачать шаблон»
+        # regenerates the workbook under the active game calendar at save time
+        # (app/application/services/xlsx_template.py; tests/test_spec_no_import_*
+        # forbids reintroducing a static one).
         ("app/resources/app_icon.png", "app/resources"),
         ("app/presentation/views/character_sheet/fonts",
          "app/presentation/views/character_sheet/fonts"),

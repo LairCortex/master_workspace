@@ -18,6 +18,17 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, Iterator
 
+from app.domain.game_calendar import (
+    MAX_YEAR,
+    MIN_YEAR,
+    GameCalendar,
+    GameCoord,
+    IntercalaryDay,
+    MonthDay,
+    as_game_coord,
+    current_calendar,
+)
+
 # Separator inside a link cell (spec: "список имён целей через `;`").
 LINK_SEPARATOR = ";"
 
@@ -324,16 +335,108 @@ def link_table(source_type: str, target_type: str) -> str:
 
 # ── Value parsing (shared edge-case semantics) ────────────────────────────
 
-def parse_cell_date(value: object) -> tuple[date, bool] | None:
-    """Native Excel cell or text date → ``(date, is_bc)``; else None.
+@dataclass(frozen=True)
+class DateProblem:
+    """One pre-analysis reason a date text was refused (design D4).
 
-    Era vocabulary of add-era-aware-dates (design D7): native Excel cells and
-    bare ISO ``YYYY-MM-DD`` are our era exactly as before; the added BC text
+    ``code`` is machine-readable (``unknown_name`` — neither a month nor an
+    intercalary day of the active calendar, ``intercalary_with_day`` — a day
+    number written next to an intercalary name, ``month_without_day`` — a
+    month name without its day number, ``out_of_range`` — a number the
+    coordinate constructor refuses) and ``subject`` echoes back the offending
+    fragment of the cell. Localization is the consumer's job (D4): the RU row
+    caption is built from ``code``/``subject`` in ``xlsx_import_service``, so
+    this pure parse never carries display text.
+    """
+
+    code: str
+    subject: str = ""
+
+
+def _date_parse_ok(coord: GameCoord, is_bc: bool) -> "DateParse":
+    """Build the "parsed" side of :class:`DateParse` (design D2)."""
+    return DateParse(coord=coord, is_bc=is_bc, problem=None)
+
+
+class _OkAttribute:
+    """Design D2 names both the ``DateParse.ok(coord, is_bc)`` factory and the
+    ``parsed.ok`` flag — so one descriptor answers the class with the factory
+    and an instance with whether a coordinate was parsed."""
+
+    def __get__(self, instance: "DateParse | None", owner: type | None = None):
+        if instance is None:
+            return _date_parse_ok
+        return instance.problem is None
+
+
+@dataclass(frozen=True)
+class DateParse:
+    """What one date cell parsed into (piece C5, design D2).
+
+    The invariant is "coordinate XOR problem": exactly one of ``coord`` /
+    ``problem`` is set, which ``__post_init__`` enforces, so both are built
+    only through ``DateParse.ok`` and ``DateParse.fail``. ``is_bc`` is the era
+    of ``coord`` (never of a problem). The coordinate belongs to the *active*
+    game calendar the parse was run against — an ``IntercalaryDay`` when the
+    cell named an intercalary day (task group 2).
+    """
+
+    coord: GameCoord | None
+    is_bc: bool
+    problem: DateProblem | None
+
+    ok = _OkAttribute()
+
+    def __post_init__(self) -> None:
+        if (self.coord is None) == (self.problem is None):
+            raise ValueError(
+                "DateParse carries either a coordinate or a problem, never both and never neither"
+            )
+
+    @classmethod
+    def fail(cls, problem: DateProblem) -> "DateParse":
+        """Build the "refused with a reason" side of :class:`DateParse`."""
+        return cls(coord=None, is_bc=False, problem=problem)
+
+
+def parse_cell_date(
+    value: object, calendar: GameCalendar | None = None
+) -> DateParse | None:
+    """Native Excel cell or text date → coordinate of ``calendar``; else None.
+
+    Era vocabulary of add-era-aware-dates (design D7) stays exactly as it was:
+    native Excel cells and bare ISO ``YYYY-MM-DD`` are our era; the BC text
     forms are the game-style «N г. до н.э.» with a mandatory month
     («5 марта 44 г. до н.э.») and the signed ISO ``-YYYY-MM-DD`` with years
     1…9999 (no year zero). Empty cells, blanks and unparsable text (e.g.
     "31.12.2025" or a month-less "44 г. до н.э.") all yield None — callers
     treat None start_date as a row problem (spec "Битая дата начала").
+
+    A parsable cell now pays out in world coordinates: the number is wrapped
+    by :func:`as_game_coord` into a :class:`DateParse` (design D2), the era
+    riding beside it. ``calendar`` defaults to :func:`current_calendar` and
+    decides the accepted grammar, exactly the structural test D1 uses for
+    custom calendars: the custom branch (a calendar carrying ``spec``) knows
+    the game-wording forms of the active calendar (D3) and pays out
+    :meth:`DateParse.fail` reasons for the game forms it recognizes but
+    refuses, while the standard branch accepts nothing beyond the forms above.
+    """
+    active = current_calendar() if calendar is None else calendar
+    if getattr(active, "spec", None) is not None:
+        return _parse_custom_date(value, active)
+    parsed = _parse_standard_date(value)
+    if parsed is None:
+        return None
+    moment, is_bc = parsed
+    return DateParse.ok(as_game_coord(moment), is_bc)
+
+
+def _parse_standard_date(value: object) -> tuple[date, bool] | None:
+    """The «Стандартный» grammar — unchanged number parsing (design D5).
+
+    Returns the plain ``(date, is_bc)`` pair, which ``parse_cell_date`` turns
+    into the coordinate currency; nothing here grows a new textual form, and
+    no rejected text ever reaches :meth:`DateParse.fail`.
     """
     if isinstance(value, datetime):
         return value.date(), False
@@ -353,6 +456,111 @@ def parse_cell_date(value: object) -> tuple[date, bool] | None:
     return None
 
 
+def _parse_custom_date(value: object, calendar: GameCalendar) -> DateParse | None:
+    """The custom branch of design D1's single branch point (grammar: D3).
+
+    The preset grammars stay accepted here exactly as the standard branch
+    runs them — native Excel cells, bare ISO and the signed ISO all pay out
+    the *same* calendar coordinate (task 2.3).  On top of them the branch
+    knows the game wording of ``calendar``: a text is normalized (stripped,
+    inner whitespace runs squashed), matched against the two flat forms, and a
+    recognized-but-refused form becomes a subject :class:`DateProblem` (D4)
+    instead of None, so the caller can tell the user *why* the row was skipped.
+    """
+    if isinstance(value, datetime):
+        return DateParse.ok(as_game_coord(value.date()), False)
+    if isinstance(value, date):
+        return DateParse.ok(as_game_coord(value), False)
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())
+    if not text:
+        return None
+    if text.startswith("-"):
+        iso = _parse_bc_iso(text)
+        return None if iso is None else DateParse.ok(as_game_coord(iso[0]), iso[1])
+    try:
+        moment = date.fromisoformat(text)
+    except ValueError:
+        return _parse_game_forms(text, calendar)
+    return DateParse.ok(as_game_coord(moment), False)
+
+
+def _game_name_tables(calendar: GameCalendar) -> tuple[dict[str, int], dict[str, int]]:
+    """casefold→number maps of the active calendar: month names (protocol) and
+    intercalary rule names keyed by their 0-based position in
+    ``spec.intercalary`` — the very index the coordinate codec uses (D10)."""
+    months = {name.casefold(): number for number, name in calendar.month_names.items()}
+    intercalary = {
+        rule.name.casefold(): index
+        for index, rule in enumerate(calendar.spec.intercalary)
+    }
+    return months, intercalary
+
+
+def _game_month_number(name: str, months: dict[str, int]) -> int | None:
+    """Month number of a calendar name, or of an old genitive reference word
+    whose *nominative* the calendar does name (D3 bridge — no ending guesses)."""
+    key = name.casefold()
+    number = months.get(key)
+    if number is None:
+        number = months.get(_GENITIVE_TO_NOMINATIVE.get(key, ""))
+    return number
+
+
+def _parse_game_forms(text: str, calendar: GameCalendar) -> DateParse | None:
+    """The two game-wording forms of design D3, plus their pre-analysis gates.
+
+    Day form first: only a month (direct or genitive bridge) resolves the
+    coordinate, an intercalary name behind a day number is the
+    ``intercalary_with_day`` problem, anything else is ``unknown_name``.  Then
+    the day-less form: an intercalary name wins (the same name in both lists
+    is split by the write form alone), a month name without its number is the
+    ``month_without_day`` problem.  Text no form recognizes is None — a
+    DateProblem is only ever born inside a recognized game form (D4).
+    """
+    months, intercalary = _game_name_tables(calendar)
+    match = _GAME_MONTH_RE.match(text)
+    if match is not None:
+        name = match.group("name")
+        month = _game_month_number(name, months)
+        if month is not None:
+            return _month_coord_or_problem(match, month)
+        if name.casefold() in intercalary:
+            return DateParse.fail(DateProblem("intercalary_with_day", name))
+        return DateParse.fail(DateProblem("unknown_name", name))
+
+    match = _GAME_INTERCALARY_RE.match(text)
+    if match is None:
+        return None
+    name = match.group("name")
+    index = intercalary.get(name.casefold())
+    if index is not None:
+        year_text = match.group("year")
+        year = int(year_text)
+        if not MIN_YEAR <= year <= MAX_YEAR:
+            return DateParse.fail(DateProblem("out_of_range", year_text))
+        return DateParse.ok(IntercalaryDay(year, index), match.group("bc") is not None)
+    if _game_month_number(name, months) is not None:
+        return DateParse.fail(DateProblem("month_without_day", name))
+    return DateParse.fail(DateProblem("unknown_name", name))
+
+
+def _month_coord_or_problem(match: "re.Match[str]", month: int) -> DateParse:
+    """A recognized day-form cell whose name resolved to ``month``: hand out
+    the ``MonthDay`` coordinate, or the ``out_of_range`` problem for the
+    numbers the coordinate constructor swallows neither (year outside
+    1…9999, a zero-th day — D4; a day beyond the month length is *not* here,
+    it is the shift policy's transfer, not a problem)."""
+    day_text, year_text = match.group("day"), match.group("year")
+    day, year = int(day_text), int(year_text)
+    if day < 1:
+        return DateParse.fail(DateProblem("out_of_range", day_text))
+    if not MIN_YEAR <= year <= MAX_YEAR:
+        return DateParse.fail(DateProblem("out_of_range", year_text))
+    return DateParse.ok(MonthDay(year, month, day), match.group("bc") is not None)
+
+
 # «N г. до н.э.» — the Russian/game game-display wording with the mandatory
 # era suffix; month and day are required (spec: «месяц при этом обязателен»).
 # Both the genitive scenario spelling («5 марта …») and the nominative form
@@ -368,18 +576,29 @@ _BC_TEXT_RE = re.compile(
 _BC_ISO_RE = re.compile(r"^-(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})$")
 
 # Default Russian month names in nominative + genitive (mirrors the game
-# display vocabulary; custom per-game month names are out of parse scope).
+# display vocabulary; the standard branch reads this, the custom branch only
+# borrows the genitive column as a bridge onto its own names, see below).
+_BC_MONTH_FORMS: tuple[tuple[int, str, str], ...] = (
+    (1, "январь", "января"), (2, "февраль", "февраля"),
+    (3, "март", "марта"), (4, "апрель", "апреля"),
+    (5, "май", "мая"), (6, "июнь", "июня"),
+    (7, "июль", "июля"), (8, "август", "августа"),
+    (9, "сентябрь", "сентября"), (10, "октябрь", "октября"),
+    (11, "ноябрь", "ноября"), (12, "декабрь", "декабря"),
+)
 _BC_MONTHS: dict[str, int] = {
     name: number
-    for number, forms in (
-        (1, ("январь", "января")), (2, ("февраль", "февраля")),
-        (3, ("март", "марта")), (4, ("апрель", "апреля")),
-        (5, ("май", "мая")), (6, ("июнь", "июня")),
-        (7, ("июль", "июля")), (8, ("август", "августа")),
-        (9, ("сентябрь", "сентября")), (10, ("октябрь", "октября")),
-        (11, ("ноябрь", "ноября")), (12, ("декабрь", "декабря")),
-    )
-    for name in forms
+    for number, nominative, genitive in _BC_MONTH_FORMS
+    for name in (nominative, genitive)
+}
+
+# The custom branch's genitive bridge (design D3): an old reference word such
+# as «марта» maps to its nominative («март») and is accepted only when the
+# active calendar names a month that — the calendar's own names always win,
+# and no inflected form is ever guessed (spec «Родительный справочник требует
+# имени в календаре»).
+_GENITIVE_TO_NOMINATIVE: dict[str, str] = {
+    genitive: nominative for _number, nominative, genitive in _BC_MONTH_FORMS
 }
 
 
@@ -406,6 +625,24 @@ def _parse_bc_text(text: str) -> tuple[date, bool] | None:
         return date(int(match.group("year")), month, int(match.group("day"))), True
     except ValueError:
         return None
+
+
+# The two flat game-wording forms of design D3 (task 2.1/2.2), run on text
+# already stripped and inner-whitespace-squashed by _parse_custom_date.  The
+# name is a non-numeric token — lazy so a multi-word calendar name still meets
+# its digit year first — and the era tail is the standard branch's own
+# sub-template, an optional «г.» optionally followed by «до н.э.» with the
+# dots freely absent.  The tail (or its absence) is the ONLY era source; the
+# intercalary form is the month form without the leading day number.
+_GAME_ERA_SUFFIX = r"(?:\s*г\.?(?P<bc>\s*до\s*н\.?\s*э\.?)?)?"
+_GAME_MONTH_RE = re.compile(
+    r"^(?P<day>\d{1,2})\s+(?P<name>\D.*?)\s+(?P<year>\d{1,4})" + _GAME_ERA_SUFFIX + r"$",
+    re.IGNORECASE,
+)
+_GAME_INTERCALARY_RE = re.compile(
+    r"^(?P<name>\D.*?)\s+(?P<year>\d{1,4})" + _GAME_ERA_SUFFIX + r"$",
+    re.IGNORECASE,
+)
 
 
 def parse_cell_rating(value: object) -> int | None:
@@ -465,6 +702,8 @@ __all__ = [
     "LINK_TABLES",
     "LINK_COLUMNS_BY_TARGET",
     "ColumnSpec",
+    "DateParse",
+    "DateProblem",
     "LinkColumnSpec",
     "ResolvedHeaders",
     "SheetSpec",

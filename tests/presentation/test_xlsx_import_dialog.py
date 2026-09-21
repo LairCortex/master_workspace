@@ -5,9 +5,10 @@ problem list (sheet/row/reason) with the primary button blocked on fatals,
 progress, the final report panel, the registry-generated hint, the «Скачать
 шаблон» button and the honest `.xlsx`-only file filter.
 """
-import sys
+from datetime import datetime
 
 import pytest
+from openpyxl import Workbook, load_workbook
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from app.application.services import xlsx_schema
@@ -16,6 +17,17 @@ from app.application.services.xlsx_import_service import (
     ImportPlan,
     ImportReport,
     RowIssue,
+)
+from app.application.services.xlsx_template import build_template_workbook
+from app.domain.game_calendar import (
+    CalendarSpec,
+    CustomCalendar,
+    IntercalarySpec,
+    MonthSpec,
+    StandardCalendar,
+    current_calendar,
+    reset_current_calendar,
+    set_current_calendar,
 )
 from app.presentation.views import xlsx_import_dialog
 from app.presentation.views.xlsx_import_dialog import (
@@ -26,10 +38,40 @@ from app.presentation.views.xlsx_import_dialog import (
     XLSX_FILTER,
     XlsxImportDialog,
     build_format_text,
-    import_template_source,
+    date_formats_hint,
     save_template_as,
 )
 from tests.presentation.qml_helpers import find_item, island_row_texts, walk_items
+
+
+def _cell_table(wb: Workbook, title: str) -> list[list[object]]:
+    """Cell values of one sheet with datetimes normalized to dates."""
+    return [
+        [value.date() if isinstance(value, datetime) else value for value in raw]
+        for raw in wb[title].iter_rows(values_only=True)
+    ]
+
+
+#: The «Даты» block of the preset hint, word-for-word (spec «Подсказка о
+#: колонках в диалоге» continuity, design D9) — the tests below forbid drift.
+PRESET_DATE_BLOCK = (
+    "Даты: нативная ячейка Excel или текст YYYY-MM-DD — это наша эра;\n"
+    "до н.э. — текст «5 марта 44 г. до н.э.» или знаковое ISO -0044-03-05."
+)
+
+
+def _hint_calendar(*, first_month_days: int = 30, intercalary: bool = True) -> CustomCalendar:
+    """Custom calendar for the hint tests: «Зимостой» opens the year, the
+    «Медожор» intercalary day rides after the second month when declared."""
+    return CustomCalendar(CalendarSpec(
+        months=(
+            MonthSpec("Зимостой", first_month_days),
+            MonthSpec("Вьюжень", 9),
+            MonthSpec("Травень", 12),
+        ),
+        week_names=("рысь", "волк", "лиса", "лось", "барс", "соня", "зверь", "ёж"),
+        intercalary=(IntercalarySpec("Медожор", after_month=2),) if intercalary else (),
+    ))
 
 
 def plan_with(*, fatal=(), rows=(), warnings=()) -> ImportPlan:
@@ -77,6 +119,100 @@ class TestHintFromRegistry:
     def test_dialog_hint_matches_registry_generation(self, dlg):
         assert dlg.format_text.toPlainText() == build_format_text()
         assert dlg.format_text.isReadOnly()
+
+
+class TestDateFormatsHint:
+    """C5 task 5.1 — the «Даты» helper: the preset answers the old two lines
+    word-for-word; a custom calendar keeps them and adds the game wording with
+    a valid example of ITS calendar (day = min(3, длина первого месяца)),
+    naming a declared intercalary day only when the calendar declares one."""
+
+    def test_preset_answer_is_the_two_old_lines_word_for_word(self):
+        assert date_formats_hint(StandardCalendar()) == PRESET_DATE_BLOCK
+
+    def test_custom_keeps_old_lines_and_adds_game_example(self):
+        calendar = _hint_calendar()
+        set_current_calendar(calendar)
+        try:
+            lines = date_formats_hint(calendar).splitlines()
+        finally:
+            reset_current_calendar()
+        assert lines[:2] == PRESET_DATE_BLOCK.splitlines()  # прежние строки дословно
+        assert "«03 Зимостой 44 г. до н.э.»" in lines[2]  # валидный пример активного календаря
+        assert "«Медожор 44 г. до н.э.»" in lines[2]  # имя объявленного вставного дня
+
+    def test_custom_day_clamps_to_short_first_month(self):
+        # min(3, длина первого месяца): a two-day «Зимостой» cannot advertise a third day.
+        calendar = _hint_calendar(first_month_days=2, intercalary=False)
+        set_current_calendar(calendar)
+        try:
+            hint = date_formats_hint(calendar)
+        finally:
+            reset_current_calendar()
+        assert "«02 Зимостой 44 г. до н.э.»" in hint
+
+    def test_custom_without_intercalary_omits_intercalary_day(self):
+        calendar = _hint_calendar(intercalary=False)
+        set_current_calendar(calendar)
+        try:
+            hint = date_formats_hint(calendar)
+        finally:
+            reset_current_calendar()
+        assert "«03 Зимостой 44 г. до н.э.»" in hint
+        assert "вставной" not in hint and "Медожор" not in hint
+
+
+class TestHintDateBlockIsCalendarAware:
+    """C5 task 5.2 — build_format_text substitutes the calendar-aware block and
+    the dialog overrides the date-column descriptions: preset stays word-for-word
+    (spec «Пользователь видит спецификацию» + continuity), a custom game sees the
+    «Зимостой» example alongside the ISO forms (spec «Подсказка кастомной игры
+    показывает игровые формы»)."""
+
+    def test_preset_hint_is_word_for_word(self):
+        hint = build_format_text()
+        assert (
+            "старые английские заголовки читаются как алиасы.\n\n"
+            + PRESET_DATE_BLOCK + "\nСвязи в ячейке"
+        ) in hint
+        assert (
+            "| да  | Начало: YYYY-MM-DD, дата Excel (наша эра), "
+            "«5 марта 44 г. до н.э.» или -0044-03-05 (алиасы: start_date)"
+        ) in hint
+        assert "| нет | Конец: форматы те же, что у даты начала" in hint
+
+    def test_custom_block_and_start_column_get_the_game_example(self):
+        calendar = _hint_calendar()
+        set_current_calendar(calendar)
+        try:
+            hint = build_format_text()
+        finally:
+            reset_current_calendar()
+        # Блок «Даты»: игровая форма наряду с ISO-формами прежних строк.
+        assert "«03 Зимостой 44 г. до н.э.»" in hint
+        assert "YYYY-MM-DD" in hint and "-0044-03-05" in hint
+        # Подпись «Дата начала» описывает тот же набор форм, что парсер ветки.
+        assert (
+            "| да  | Начало: YYYY-MM-DD, дата Excel (наша эра), "
+            "«5 марта 44 г. до н.э.» или -0044-03-05, игровая форма "
+            "«03 Зимостой 44 г. до н.э.» (вставной день — «Медожор 44 г. до н.э.»)"
+            " (алиасы: start_date)"
+        ) in hint
+        # «Дата конца» описана относительно — формулировка держится в обеих ветках.
+        assert "| нет | Конец: форматы те же, что у даты начала" in hint
+
+    def test_dialog_renders_the_custom_calendar_hint(self, qtbot):
+        # Диалог перенимает календарь-зависимый текст при конструировании.
+        calendar = _hint_calendar()
+        set_current_calendar(calendar)
+        try:
+            d = XlsxImportDialog()
+            qtbot.addWidget(d)
+            text = d.format_text.toPlainText()
+        finally:
+            reset_current_calendar()
+        assert "«03 Зимостой 44 г. до н.э.»" in text
+        assert "игровая форма" in text
 
 
 class TestConstruction:
@@ -293,22 +429,10 @@ class TestDownloadTemplate:
 
 
 class TestDownloadTemplateFlow:
-    """Task 5.2 — the save--as side of the «Скачать шаблон» seam."""
-
-    def test_dev_path_resolves_to_committed_resource(self):
-        source = import_template_source()
-        assert source.name == TEMPLATE_FILE_NAME
-        assert source.is_file()
-        assert source.read_bytes().startswith(b"PK")  # zip container = real xlsx
-
-    def test_frozen_path_uses_bundle_datas_layout(self, tmp_path, monkeypatch):
-        dist = (tmp_path / "dist").resolve()  # resolve(): macOS /var symlink
-        (dist / "_internal" / "resources").mkdir(parents=True)
-        target = dist / "_internal" / "resources" / TEMPLATE_FILE_NAME
-        target.write_bytes(b"bundled")
-        monkeypatch.setattr(sys, "frozen", True, raising=False)
-        monkeypatch.setattr(sys, "executable", str(dist / "nri_manager"))
-        assert import_template_source() == target
+    """C5 task 4.1 — the save--as side of the «Скачать шаблон» seam generates
+    the template (design D8): nothing is built while the user still decides,
+    and what lands on disk is the workbook of the calendar active at the very
+    moment of saving (no static bundle file anymore)."""
 
     def test_get_save_file_name_defaults_and_filter(self, mocker, tmp_path):
         out = tmp_path / "мой_шаблон.xlsx"
@@ -319,13 +443,57 @@ class TestDownloadTemplateFlow:
         assert spy.call_args.args[2] == TEMPLATE_FILE_NAME  # имя по умолчанию
         assert spy.call_args.args[3] == XLSX_FILTER  # честный .xlsx-фильтр
         assert written == out
-        assert out.read_bytes() == import_template_source().read_bytes()
+        generated = build_template_workbook(current_calendar())
+        downloaded = load_workbook(out, read_only=True)
+        try:
+            assert downloaded.sheetnames == generated.sheetnames
+            for title in generated.sheetnames:
+                assert _cell_table(downloaded, title) == _cell_table(generated, title)
+        finally:
+            downloaded.close()
+
+    def test_template_follows_the_active_calendar(self, mocker, tmp_path):
+        # The workbook answer the GAME calendar at save time (spec «Шаблон
+        # сохранён» + «Шаблон кастомной игры говорит на её календаре»): a
+        # custom calendar with an intercalary day puts its game wording into
+        # the downloaded file — cell content no static file could pre-bake.
+        out = tmp_path / "custom.xlsx"
+        mocker.patch.object(QFileDialog, "getSaveFileName", return_value=(str(out), ""))
+        calendar = CustomCalendar(CalendarSpec(
+            months=(
+                MonthSpec("Зимостой", 30), MonthSpec("Вьюжень", 9),
+                MonthSpec("Травень", 12), MonthSpec("Цветень", 28),
+                MonthSpec("Жневень", 20), MonthSpec("Сенокос", 33),
+                MonthSpec("Гридень", 31), MonthSpec("Листопад", 7),
+                MonthSpec("Хмурень", 25), MonthSpec("Студень", 44),
+                MonthSpec("Крещень", 11), MonthSpec("Медовик", 21),
+                MonthSpec("Чернолист", 30),
+            ),
+            week_names=("рысь", "волк", "лиса", "лось", "барс", "соня", "зверь", "ёж"),
+            intercalary=(IntercalarySpec("Медожор", after_month=10),),
+        ))
+        set_current_calendar(calendar)
+        try:
+            written = save_template_as(None)
+        finally:
+            reset_current_calendar()
+        assert written == out
+        wb = load_workbook(out, read_only=True)
+        try:
+            event_dates = [row[1] for row in _cell_table(wb, "События")[1:]]
+        finally:
+            wb.close()
+        assert "Медожор 44" in event_dates  # declared intercalary day
+        assert "12 Травень 44 г. до н.э." in event_dates  # clamped game-wording BC
+        assert "15 марта 44 г. до н.э." not in event_dates  # preset wording gone
 
     def test_cancellation_writes_nothing(self, mocker, tmp_path):
         spy = mocker.patch.object(QFileDialog, "getSaveFileName", return_value=("", ""))
+        build = mocker.spy(xlsx_import_dialog, "build_template_workbook")
         assert save_template_as(None) is None
         assert spy.called
         assert list(tmp_path.iterdir()) == []
+        assert not build.called  # отмена не должна порождать работу (D8)
 
     def test_missing_extension_gets_xlsx_appended(self, mocker, tmp_path):
         out = tmp_path / "template"  # пользователь не дописал расширение
@@ -334,29 +502,29 @@ class TestDownloadTemplateFlow:
         assert written == tmp_path / "template.xlsx"
         assert written.is_file()
 
-    def test_missing_resource_warns_and_writes_nothing(self, mocker, tmp_path):
-        mocker.patch.object(
-            xlsx_import_dialog, "import_template_source",
-            return_value=tmp_path / "absent" / TEMPLATE_FILE_NAME,
-        )
-        warn = mocker.patch.object(QMessageBox, "warning")
-        save = mocker.patch.object(QFileDialog, "getSaveFileName")
-        assert save_template_as(None) is None
-        assert warn.called
-        assert not save.called  # спросить негде — ресурса нет
-
-    def test_copy_failure_reports_to_user(self, mocker, tmp_path):
-        mocker.patch.object(
-            QFileDialog, "getSaveFileName",
-            return_value=(str(tmp_path / "copy" / "t.xlsx"), ""),
-        )
-        fail = mocker.patch(
-            "app.presentation.views.xlsx_import_dialog.shutil.copyfile",
-            side_effect=OSError("диск кончился"),
+    def test_generation_failure_reports_to_user(self, mocker, tmp_path):
+        # Broken generator (the old «resource missing» report role) — the user
+        # hears about it, and no half-written file is left behind.
+        out = tmp_path / "t.xlsx"
+        mocker.patch.object(QFileDialog, "getSaveFileName", return_value=(str(out), ""))
+        fail = mocker.patch.object(
+            xlsx_import_dialog, "build_template_workbook",
+            side_effect=RuntimeError("сборка упала"),
         )
         critical = mocker.patch.object(QMessageBox, "critical")
         assert save_template_as(None) is None
         assert fail.called and critical.called
+        assert not out.exists()
+
+    def test_write_failure_reports_to_user(self, mocker, tmp_path):
+        # Диск под недоступным путём (прежняя ветка OSError, без copyfile).
+        mocker.patch.object(
+            QFileDialog, "getSaveFileName",
+            return_value=(str(tmp_path / "copy" / "t.xlsx"), ""),
+        )
+        critical = mocker.patch.object(QMessageBox, "critical")
+        assert save_template_as(None) is None
+        assert critical.called
 
 
 class TestPathInvalidation:

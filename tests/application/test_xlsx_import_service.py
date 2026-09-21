@@ -36,6 +36,7 @@ from app.application.services.xlsx_import_service import (
     LINK_TO_GHOST,
     XlsxImportService,
 )
+from app.domain import game_calendar
 from app.domain.date_era import era_key
 from app.domain.game_calendar import MonthDay
 from app.infrastructure.db import models
@@ -48,7 +49,7 @@ from app.infrastructure.db.models import (
     LocationModel,
     OrganizationModel,
 )
-from tests.application.test_xlsx_import_template import (
+from app.application.services.xlsx_template import (
     template_headers as registry_headers,
     template_row_values as registry_row_values,
 )
@@ -505,6 +506,109 @@ class TestApplyEraAware:
 
         decision = next(d for d in report.decisions if "Амфора" in d)
         assert "Автосоздание" in decision and "до н.э." in decision
+
+
+# ── C5 task 2.4 — the subject caption of a refused custom-branch date ──────
+
+# A game calendar of the delta-spec vocabulary: «Зимостой» (30 days), the
+# intercalary «Медожор», no «Флорель» anywhere.  Row problems are only ever
+# produced by the custom grammar, so the whole class runs on this calendar.
+_CUSTOM_SPEC = game_calendar.CalendarSpec(
+    months=(
+        game_calendar.MonthSpec("Зимостой", 30),
+        game_calendar.MonthSpec("Ледокол", 15),
+    ),
+    week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
+    intercalary=(game_calendar.IntercalarySpec("Медожор", after_month=1),),
+)
+_CUSTOM = game_calendar.CustomCalendar(_CUSTOM_SPEC)
+
+
+class TestDateProblemReasons:
+    # Spec «Колонки листа»: a custom-branch form the grammar recognized but
+    # refuses surfaces as a planned skip whose caption names the subject —
+    # the display texts live in the service, not in the pure parser (D4).
+    @pytest.mark.parametrize(("cell", "reason"), [
+        ("3 Флорель 44", "дата начала: месяц «Флорель» не найден в календаре игры"),
+        ("3 Медожор 44", "дата начала: у вставного дня «Медожор» не бывает номера дня"),
+        ("Зимостой 44", "дата начала: месяц «Зимостой» без номера дня"),
+        ("3 Зимостой 0", "дата начала: число «0» вне границ игрового календаря"),
+        ("44 г. до н.э.", "дата начала: значение «44 г. до н.э.» не является датой"),
+    ])
+    async def test_every_refused_date_names_its_subject(self, tmp_path, cell, reason):
+        wb = Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet("Персонажи")
+        ws.append(["Имя", "Дата начала"])
+        ws.append(["Стражник", cell])
+        path = tmp_path / "problems.xlsx"
+        wb.save(path)
+
+        game_calendar.set_current_calendar(_CUSTOM)
+        try:
+            plan = await _svc().analyze_file(path)
+        finally:
+            game_calendar.reset_current_calendar()
+        assert [(i.sheet, i.row_number, i.reason) for i in plan.skipped_rows] == [
+            ("Персонажи", 2, reason)
+        ]
+        assert plan.planned_rows == []
+
+    async def test_game_form_row_imports_with_the_calendar_coordinate(self, tmp_path):
+        wb = Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet("Персонажи")
+        ws.append(["Имя", "Дата начала"])
+        ws.append(["Зимовик", "3 Зимостой 44"])
+        path = tmp_path / "game_form.xlsx"
+        wb.save(path)
+
+        game_calendar.set_current_calendar(_CUSTOM)
+        try:
+            plan = await _svc().analyze_file(path)
+        finally:
+            game_calendar.reset_current_calendar()
+        assert not plan.skipped_rows
+        row = plan.lookup_row("character", "Зимовик")
+        assert row.fields["start_date"] == game_calendar.MonthDay(44, 1, 3)
+        assert row.fields.get("start_bc") is False
+
+    async def test_refused_optional_end_date_never_skips_the_row(self, tmp_path):
+        # The optional «Дата конца» keeps its carried contract (spec: only the
+        # start date is a row problem) — a refused game form there simply
+        # leaves the slot unapplied, exactly like unparsable garbage did.
+        wb = Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet("Персонажи")
+        ws.append(["Имя", "Дата начала", "Дата конца"])
+        ws.append(["Долгострой", "2026-01-05", "3 Медожор 44"])
+        path = tmp_path / "end_problem.xlsx"
+        wb.save(path)
+
+        game_calendar.set_current_calendar(_CUSTOM)
+        try:
+            plan = await _svc().analyze_file(path)
+        finally:
+            game_calendar.reset_current_calendar()
+        assert not plan.skipped_rows
+        row = plan.lookup_row("character", "Долгострой")
+        assert "end_date" not in row.fields
+
+    async def test_preset_caption_is_untouched_by_the_problem_channel(self, tmp_path):
+        # The preset branch never fills DateParse.problem (D5): its skip
+        # caption stays the carried "не является датой" wording verbatim.
+        wb = Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet("Персонажи")
+        ws.append(["Имя", "Дата начала"])
+        ws.append(["Обычный", "3 Зимостой 44"])
+        path = tmp_path / "preset_refusal.xlsx"
+        wb.save(path)
+
+        plan = await _svc().analyze_file(path)
+        assert [i.reason for i in plan.skipped_rows] == [
+            "дата начала: значение «3 Зимостой 44» не является датой"
+        ]
 
 
 # ── 6.1 — transaction (spec «Транзакционность импорта») ────────────────────

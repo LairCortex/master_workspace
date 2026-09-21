@@ -9,14 +9,15 @@ longer drift from what is actually read.
 
 The «Скачать шаблон» button emits ``download_template`` (VM) and re-emits it
 as a dialog signal; the save--as flow itself is :func:`save_template_as`
-(task 5.2) — the wiring attaches it to that signal. The template is a static
-bundle resource (design D9): the bundled file is copied byte-for-byte, never
-regenerated at runtime, so what the user downloads is exactly what the tests
-validated.
+(task 5.2) — the wiring attaches it to that signal. Since piece C5 the
+template is no longer a static bundle resource (design D8): after the user
+confirms a name the workbook is assembled in memory under the game calendar
+active at that moment and written out, so the download always speaks the
+game's own calendar.
 """
 from __future__ import annotations
 
-import shutil
+import io
 from pathlib import Path
 
 import shiboken6
@@ -32,12 +33,19 @@ from PySide6.QtWidgets import (
 )
 
 from app.application.services import xlsx_schema
-from app.presentation.bundle_resources import bundle_resource_path
+from app.application.services.xlsx_template import build_template_workbook
+from app.domain.game_calendar import (
+    GameCalendar,
+    IntercalaryDay,
+    MonthDay,
+    current_calendar,
+)
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
 from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.utils.date_utils import format_game_date
 from app.presentation.viewmodels.xlsx_import_view_model import (
     STATE_DONE,
     STATE_PROBLEMS,
@@ -49,48 +57,35 @@ ROOT_QML = str(Path(QML_IMPORT_PATH) / "XlsxImportRoot.qml")
 #: Files the import reads (spec: .xls is out of the filter, honest .xlsx only).
 XLSX_FILTER = "Файл Excel (*.xlsx)"
 
-#: Bundled template resource (design D9): shipped by nri_manager.spec as
-#: ``resources/import_template.xlsx`` — also the default save-as name.
-TEMPLATE_DIR = "resources"
+#: Default save--as name of the downloaded template (C5 design D8: the name
+#: is unchanged from the static-resource era, the content is now generated).
 TEMPLATE_FILE_NAME = "import_template.xlsx"
 
 
-def import_template_source() -> Path:
-    """Path of the bundled template file (dev checkout or PyInstaller bundle).
-
-    Same dev-vs-frozen resolver as the docs viewers (design D9), pointed at
-    the ``resources/import_template.xlsx`` datas entry.
-    """
-    return bundle_resource_path(TEMPLATE_DIR, TEMPLATE_FILE_NAME)
-
-
 def save_template_as(parent) -> Path | None:
-    """Handle «Скачать шаблон»: save--as dialog + byte copy of the resource.
+    """Handle «Скачать шаблон»: save--as dialog + generated template (D8).
 
-    Cancelling the save dialog does nothing (the import dialog stays as it
-    was). A name without ``.xlsx`` gets the extension appended — the copy is
-    only ever a valid .xlsx. A missing resource or a failed copy is reported
-    to the user instead of failing silently. Returns the written path, or
-    None when nothing was written.
+    Cancelling the save dialog does nothing — and generates nothing (the
+    import dialog stays as it was).  After the name is confirmed the workbook
+    is built in memory under the calendar active at that moment and written
+    to disk; a name without ``.xlsx`` gets the extension appended — the file
+    is only ever a valid .xlsx.  A failed generation or write is reported to
+    the user instead of failing silently. Returns the written path, or None
+    when nothing was written.
     """
-    source = import_template_source()
-    if not source.is_file():
-        QMessageBox.warning(
-            parent, "Скачать шаблон",
-            f"Файл шаблона не найден в установе: {source}",
-        )
-        return None
     target, _selected_filter = QFileDialog.getSaveFileName(
         parent, "Сохранить шаблон", TEMPLATE_FILE_NAME, XLSX_FILTER,
     )
     if not target:
-        return None  # user cancelled — nothing is written
+        return None  # user cancelled — no generation work, nothing written
     dest = Path(target)
     if dest.suffix.lower() != ".xlsx":
         dest = dest.with_name(dest.name + ".xlsx")
     try:
-        shutil.copyfile(source, dest)
-    except OSError as exc:
+        buffer = io.BytesIO()
+        build_template_workbook(current_calendar()).save(buffer)
+        dest.write_bytes(buffer.getvalue())
+    except Exception as exc:  # disk failure or a broken generator — report, never crash the dialog
         QMessageBox.critical(
             parent, "Скачать шаблон", f"Не удалось сохранить шаблон: {exc}",
         )
@@ -103,22 +98,99 @@ PRIMARY_TEXT_IMPORT = "Импортировать"
 PRIMARY_TEXT_CLOSE = "Закрыть"
 
 
-def build_format_text() -> str:
+# ── Calendar-aware «Даты» hint (piece C5, design D9) ──────────────────────
+
+#: Year the custom-calendar examples carry — the same 44 the preset wording
+#: already quotes, so both branches of the hint tell the same story.
+_EXAMPLE_YEAR = 44
+
+#: The preset «Даты» block, kept verbatim from before C5 — the preset answer
+#: of the hint must stay word-for-word (spec «Подсказка о колонках в диалоге»).
+_PRESET_DATE_HINT = (
+    "Даты: нативная ячейка Excel или текст YYYY-MM-DD — это наша эра;",
+    "до н.э. — текст «5 марта 44 г. до н.э.» или знаковое ISO -0044-03-05.",
+)
+
+#: Registry keys of the two date columns — their hint descriptions are the
+#: only ones the dialog renders calendar-aware (the registry itself keeps the
+#: static preset constant; header matching reads ``label``, not ``description``).
+_DATE_COLUMN_KEYS = ("start_date", "end_date")
+
+
+def _game_date_examples(calendar: GameCalendar) -> tuple[str, str | None]:
+    """Game-wording examples for a custom calendar, both BC-captioned the way
+    every game date in the app is (``format_game_date`` — D9).  The month
+    example is a *valid* coordinate: the first month at day
+    ``min(3, его длина)``.  The second item is the first declared intercalary
+    rule's caption, or None when the calendar declares no intercalary day."""
+    day = min(3, calendar.month_length(_EXAMPLE_YEAR, 1))
+    month_example = format_game_date(MonthDay(_EXAMPLE_YEAR, 1, day), is_bc=True)
+    if not calendar.spec.intercalary:
+        return month_example, None
+    return month_example, format_game_date(IntercalaryDay(_EXAMPLE_YEAR, 0), is_bc=True)
+
+
+def date_formats_hint(calendar: GameCalendar) -> str:
+    """The «Даты» block of the dialog hint for one calendar (task 5.1).
+
+    The «Стандартный» preset answers with the two hint lines of before C5,
+    word for word (continuity, spec «Подсказка о колонках в диалоге»).  A
+    custom calendar keeps those lines and gains one naming the game wording
+    the parser branch accepts, spelled with the calendar's own names — and its
+    intercalary day when it declares one (both forms the C5 parser reads).
+    """
+    if getattr(calendar, "spec", None) is None:
+        return "\n".join(_PRESET_DATE_HINT)
+    month_example, intercalary_example = _game_date_examples(calendar)
+    game = (
+        "Календарь игры — игровая форма "
+        f"«{month_example}»; без хвоста «г. до н.э.» — та же дата нашей эры"
+    )
+    if intercalary_example is not None:
+        game += f"; вставной день — «{intercalary_example}»"
+    return "\n".join((*_PRESET_DATE_HINT, game + "."))
+
+
+def _date_column_description(column: xlsx_schema.ColumnSpec, calendar: GameCalendar) -> str:
+    """Hint description of one column, calendar-aware for the two date ones.
+
+    Under the preset every description is the registry constant as written.
+    Under a custom calendar the «Дата начала» line additionally names the game
+    wording with a valid example — the same form set that branch's parser
+    accepts (spec «подпись колонки „Дата начала“ описывает тот же набор форм,
+    что и парсер этой ветки»); «Дата конца» is phrased relatively, and
+    «форматы те же, что у даты начала» stays true in either branch.
+    """
+    # LinkColumnSpec has no ``key`` at all — only scalar columns can be dates.
+    if getattr(column, "key", None) not in _DATE_COLUMN_KEYS or getattr(calendar, "spec", None) is None:
+        return column.description
+    if column.key != "start_date":
+        return column.description
+    month_example, intercalary_example = _game_date_examples(calendar)
+    game = f", игровая форма «{month_example}»"
+    if intercalary_example is not None:
+        game += f" (вставной день — «{intercalary_example}»)"
+    return column.description + game
+
+
+def build_format_text(calendar: GameCalendar | None = None) -> str:
     """Full column hint for all five sheets from the schema registry (D1).
 
     Continuity of the old per-type hint texts lives on: the descriptions in
     the registry carry exactly those wordings («Ссылка на музыкальную тему»,
     the image-format note); the date-column wording additionally names the
-    BC forms accepted since add-era-aware-dates.
+    BC forms accepted since add-era-aware-dates.  Since C5 the «Даты» block
+    and the date-column descriptions are calendar-aware (D9): without an
+    explicit argument the hint speaks for the calendar active right now.
     """
+    active = current_calendar() if calendar is None else calendar
     lines = [
         "Один файл — все пять листов; импортируются только присутствующие",
         "знакомые листы (имена без учёта регистра). Заголовки ищутся по",
         "первой строке, порядок колонок произвольный, лишние колонки",
         "игнорируются; старые английские заголовки читаются как алиасы.",
         "",
-        "Даты: нативная ячейка Excel или текст YYYY-MM-DD — это наша эра;",
-        "до н.э. — текст «5 марта 44 г. до н.э.» или знаковое ISO -0044-03-05.",
+        *date_formats_hint(active).splitlines(),
         f"Связи в ячейке — имена через «{xlsx_schema.LINK_SEPARATOR}».",
         "Строки с проблемами пред-анализа пропускаются, остальные импортируются.",
     ]
@@ -134,8 +206,9 @@ def build_format_text() -> str:
                     if column.aliases else ""
                 )
             required = "да " if getattr(column, "required", False) else "нет"
+            description = _date_column_description(column, active)
             lines.append(
-                f"  {column.label:<22} | {required} | {column.description}{alias}"
+                f"  {column.label:<22} | {required} | {description}{alias}"
             )
     image_note = (
         "Для колонок «Изображение» допустимы форматы: PNG, JPG, BMP, GIF, WebP."
