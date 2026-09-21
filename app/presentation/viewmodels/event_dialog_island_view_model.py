@@ -432,8 +432,9 @@ class EventDialogIslandViewModel(QObject):
         start_bc: bool | None = None,
         end_bc: bool | None = None,
     ) -> None:
-        # Design D4: a plain date arriving from the (unchanged) QCalendarWidget
-        # popups is the month-day coordinate of the same numbers.
+        # Design D4/C3b: taps from the game-calendar grid arrive as coordinates
+        # already; a plain ``date`` stays legal legacy input, the month-day
+        # coordinate of the same numbers.
         if start is not None:
             self._start_date = as_game_coord(start)
         if end is not None:

@@ -227,7 +227,21 @@ def test_popup_sheet_covers_every_popup_category(tokens, theme):
     assert "QToolTip" in sheet               # tooltips
     assert "QMenu" in sheet                  # menus (menu-bar popups included)
     assert "QComboBox QAbstractItemView" in sheet   # combo dropdowns
-    assert "QCalendarWidget" in sheet        # the date picker
+    # the date pickers ride on the game-calendar grid's four named classes
+    # (piece C3b design D4): the field, day cells with their three states
+    # (normal / hover / the ``selected`` property), intercalary chips (which
+    # select like cells) and the weekday header…
+    assert "GameCalendarGrid {" in sheet
+    assert "GameCalendarCell {" in sheet
+    assert "GameCalendarCell:hover" in sheet
+    assert 'GameCalendarCell[selected="true"]' in sheet
+    assert "GameCalendarIntercalaryChip {" in sheet
+    assert 'GameCalendarIntercalaryChip[selected="true"]' in sheet
+    assert "GameCalendarDayName {" in sheet
+    # …while the Gregorian Qt calendar widget it replaced is gone from the sheet
+    assert "QCalendarWidget" not in sheet
+    # the cell/chip hover wash is the accent derivation, not a new token
+    assert accent_rgba(tokens, theme, 0.25) in sheet
     # the mention popup: container background *and* list items (both classes)
     assert "_MentionPopup {" in sheet
     assert "MentionPopupListView" in sheet
@@ -264,7 +278,9 @@ def test_chrome_and_popup_sheets_split_without_overlap(tokens, theme):
     chrome = compile_qss(tokens, theme)
     popup = compile_popup_qss(tokens, theme)
     for popup_only in ("QToolTip", "QComboBox QAbstractItemView",
-                       "QCalendarWidget", "MentionPopupListView"):
+                       "GameCalendarGrid", "GameCalendarCell",
+                       "GameCalendarIntercalaryChip", "GameCalendarDayName",
+                       "MentionPopupListView"):
         assert popup_only not in chrome
         assert popup_only in popup
     assert not re.search(r"\bQMenu\b(?!Bar)", chrome)  # only the QMenuBar widget stays

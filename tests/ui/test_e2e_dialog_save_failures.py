@@ -18,7 +18,8 @@ test_e2e_crud) — untouched here.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QDate
+from datetime import date
+
 
 from app.domain.game_calendar import MonthDay
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -70,8 +71,7 @@ async def test_event_dialog_create_failure_shows_one_critical(
     await wait_for(lambda: len(loaded) == 4)
     dialog.name_input.setText("Doomed Event")
     dialog.characteristics_input.setContent("обречено")
-    dialog.start_date_input.setDate(MonthDay(1200, 1, 5))
-    dialog.end_date_input.setDate(MonthDay(1200, 1, 6))
+    dialog.vm.set_dates(start=MonthDay(1200, 1, 5), end=MonthDay(1200, 1, 6))
     assert dialog.save_button.isEnabled()
     dialog.save_button.click()
     await helpers.wait_until_settled()
@@ -91,7 +91,7 @@ async def test_event_dialog_edit_failure_shows_one_critical(
     application, window = app
     await helpers.create_event_via_ui(
         window, wait_for, "Edit Fail",
-        start_date=QDate(1200, 6, 1), end_date=QDate(1200, 6, 3),
+        start_date=date(1200, 6, 1), end_date=date(1200, 6, 3),
     )
     helpers.double_click_timeline_event(window, "Edit Fail")
     await wait_for(lambda: [d for d in window.findChildren(EventDialog) if d.isVisible()])

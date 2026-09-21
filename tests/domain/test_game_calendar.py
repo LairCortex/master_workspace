@@ -34,7 +34,10 @@ The final C2 section checks the month-name source of spec «Источник и�
 custom names straight from the spec, captions-only) and the storage codec of
 spec «Календарь-настройки хранятся в базе игры» (design D1): ``{"v": 1,
 "kind": ...}`` payloads, lossless round-trips and machine-readable reasons
-for every corrupt stored value.
+for every corrupt stored value.  The closing C4 section checks the wizard
+draft codec of design D6: the ``{"v": 1, "spec": …, "stage": …}`` envelope
+reusing the main spec body, exact round-trips per stage, and "corrupt or
+invalid draft = no draft" — machine-readable reasons, never exceptions.
 """
 import calendar as gregorian
 import inspect
@@ -48,17 +51,27 @@ import pytest
 
 from app.domain.date_era import _gregorian_key, era_key
 from app.domain.game_calendar import (
+    CALENDAR_DRAFT_VERSION,
+    CALENDAR_STORAGE_VERSION,
     DEFAULT_MONTH_NAMES,
+    DRAFT_STAGE_MONTHS,
+    DRAFT_STAGE_PREVIEW,
+    DRAFT_STAGE_WEEK,
+    DRAFT_STAGES,
     MAX_YEAR,
     MAX_YEAR_LENGTH,
     MIN_YEAR,
     CalendarCorrupted,
     CalendarDecoded,
+    CalendarDraft,
     CalendarSpec,
     CoordCorrupted,
+    as_game_coord,
     CoordDecoded,
     CustomCalendar,
     DateField,
+    DraftCorrupted,
+    DraftDecoded,
     GameCalendar,
     IntercalaryDay,
     IntercalarySpec,
@@ -76,8 +89,10 @@ from app.domain.game_calendar import (
     current_calendar,
     decode_calendar,
     decode_coord,
+    decode_draft,
     encode_calendar,
     encode_coord,
+    encode_draft,
     render_calendar_year,
     reset_current_calendar,
     set_current_calendar,
@@ -2920,3 +2935,260 @@ class TestCoordCodecNeverChecksExistence:
             StandardCalendar().to_key(coord)                     # ядро отказало
         assert classify(coord, StandardCalendar()) is ShiftReason.MONTH_OUT_OF_RANGE
         assert shift_invalid(coord, StandardCalendar())[0] == MonthDay(2026, 12, 31)
+
+
+# ── C4: черновик мастера (task 4.1, design D6) ────────────────────────────
+
+
+#: Спека-сквозняк: та же форма, что пишет основной ключ kind=custom, но с
+#: вставным днём — черновик обязан нести все три facet'а без потерь.
+DRAFT_SPEC = base_spec(
+    months=make_months(("Черновершь", 12), ("Разливань", 18)),
+    week_names=("Буд", "Ведь", "Творец", "Грозник", "Светлай"),
+    intercalary=(IntercalarySpec("Гром", 1),),
+)
+
+
+def draft_body(spec: CalendarSpec, stage: str = DRAFT_STAGE_MONTHS, **envelope) -> dict:
+    """Собрать JSON-конверт черновика: тело спеки отдаёт основной кодек,
+    чтобы тесты битого черновика говорили на том же формате, что пишет app."""
+    payload = {
+        "v": CALENDAR_DRAFT_VERSION,
+        "spec": json.loads(encode_calendar(CustomCalendar(spec))),
+        "stage": stage,
+    }
+    payload.update(envelope)
+    return payload
+
+
+class TestDraftCodecRoundTrip:
+    """Круговой проход design D6: версия + спека + индекс ступени возвращаются
+    ровно теми же, а тело спеки побайтово совпадает с телом основного ключа."""
+
+    def test_envelope_shape_is_version_spec_and_stage(self):
+        raw = encode_draft(CalendarDraft(spec=DRAFT_SPEC, stage=DRAFT_STAGE_MONTHS))
+        payload = json.loads(raw)
+        assert payload == {
+            "v": CALENDAR_DRAFT_VERSION,
+            "spec": json.loads(encode_calendar(CustomCalendar(DRAFT_SPEC))),
+            "stage": DRAFT_STAGE_MONTHS,
+        }
+        assert "\\u" not in raw  # ensure_ascii=False — спека читается глазами
+
+    @pytest.mark.parametrize("stage", DRAFT_STAGES)
+    def test_every_stage_survives_the_cycle(self, stage):
+        draft = CalendarDraft(spec=DRAFT_SPEC, stage=stage)
+        decoded = decode_draft(encode_draft(draft))
+        assert isinstance(decoded, DraftDecoded)
+        assert decoded.draft == draft
+
+    def test_custom_body_rides_inside_the_draft_byte_identical(self):
+        # «то же тело, что у custom-значения game_calendar» — переиспользование
+        # encode_calendar/decode_calendar, а не второй формат хранения
+        draft = CalendarDraft(spec=DRAFT_SPEC, stage=DRAFT_STAGE_WEEK)
+        inner = json.loads(encode_draft(draft))["spec"]
+        assert encode_calendar(CustomCalendar(DRAFT_SPEC)) == json.dumps(
+            inner, ensure_ascii=False
+        )
+
+    def test_round_trip_keys_are_bit_identical_in_both_eras(self):
+        original = CustomCalendar(DRAFT_SPEC)
+        decoded = decode_draft(encode_draft(CalendarDraft(original.spec, DRAFT_STAGE_PREVIEW)))
+        assert isinstance(decoded, DraftDecoded)
+        restored = CustomCalendar(decoded.draft.spec)
+        for coord in (MonthDay(1, 1, 1), MonthDay(9999, 2, 18), IntercalaryDay(44, 0)):
+            for is_bc in (False, True):
+                key = original.to_key(coord, is_bc)
+                assert restored.to_key(coord, is_bc) == key
+                assert restored.from_key(key, is_bc) == coord
+
+    def test_encode_is_deterministic_across_a_decode_cycle(self):
+        raw_once = encode_draft(CalendarDraft(spec=DRAFT_SPEC, stage=DRAFT_STAGE_PREVIEW))
+        decoded = decode_draft(raw_once)
+        assert isinstance(decoded, DraftDecoded)
+        assert encode_draft(decoded.draft) == raw_once
+
+    def test_draft_and_main_key_are_the_separate_shapes(self):
+        # основной ключ не содержит stage, черновик не умеет kind=standard —
+        # перепутать их местами можно только написав JSON руками
+        assert "stage" not in json.loads(encode_calendar(StandardCalendar()))
+        draft = CalendarDraft(spec=base_spec(), stage=DRAFT_STAGE_WEEK)
+        assert json.loads(encode_draft(draft))["spec"]["kind"] == "custom"
+
+    def test_draft_form_is_a_frozen_pair_of_spec_and_stage(self):
+        assert {f.name for f in fields(CalendarDraft)} == {"spec", "stage"}
+        draft = CalendarDraft(spec=DRAFT_SPEC, stage=DRAFT_STAGE_WEEK)
+        with pytest.raises(FrozenInstanceError):
+            draft.spec = base_spec()  # type: ignore[misc]
+
+    def test_stage_is_not_interpreted_beyond_being_a_known_marker(self):
+        # индекс ступени — данные черновика, а не условие кодирования:
+        # предпросмотр собирается из той же спеки, что и месяцы
+        for stage in (DRAFT_STAGE_WEEK, DRAFT_STAGE_MONTHS, DRAFT_STAGE_PREVIEW):
+            assert decode_draft(
+                encode_draft(CalendarDraft(spec=base_spec(), stage=stage))
+            ).draft.stage == stage
+
+
+class TestDraftCodecWriteGuards:
+    """Писатель строже читателя: в хранилище не попадает ни битая спека,
+    ни неизвестная ступень — и то и другое拒绝 на глазах у мастера."""
+
+    def test_unknown_stage_refuses_to_be_written(self):
+        with pytest.raises(ValueError, match="unknown wizard draft stage"):
+            encode_draft(CalendarDraft(spec=base_spec(), stage="interstice"))
+
+    def test_invalid_spec_refuses_through_the_kernel_validation(self):
+        broken = base_spec(
+            months=make_months(("Первый", 5), ("Первый", 6)),
+        )  # дубликат имени месяца — ядро reject'ит спеку целиком
+        with pytest.raises(ValueError, match="duplicate month name"):
+            encode_draft(CalendarDraft(spec=broken, stage=DRAFT_STAGE_MONTHS))
+
+
+DRAFT_CORRUPT_CASES = [
+    # ── битый конверт ──────────────────────────────────────────────────────
+    pytest.param("{это не json", {"corrupt_json"}, id="broken-json"),
+    pytest.param("", {"corrupt_json"}, id="empty-string"),
+    pytest.param(None, {"corrupt_json"}, id="value-is-not-a-string"),
+    pytest.param("[1, 2]", {"corrupt_shape"}, id="json-array-not-object"),
+    pytest.param('"черновик"', {"corrupt_shape"}, id="json-string-not-object"),
+    # ── версия формата черновика ──────────────────────────────────────────
+    pytest.param(
+        {"spec": {}, "stage": DRAFT_STAGE_WEEK}, {"unknown_version"}, id="missing-v"
+    ),
+    pytest.param(
+        draft_body(base_spec(), v=2), {"unknown_version"}, id="future-v"
+    ),
+    # ── тело спеки ────────────────────────────────────────────────────────
+    pytest.param(
+        {"v": CALENDAR_DRAFT_VERSION, "stage": DRAFT_STAGE_WEEK},
+        {"corrupt_shape"},
+        id="no-spec-field",
+    ),
+    pytest.param(
+        {"v": CALENDAR_DRAFT_VERSION, "spec": [], "stage": DRAFT_STAGE_WEEK},
+        {"corrupt_shape"},
+        id="spec-not-an-object",
+    ),
+    pytest.param(
+        {"v": CALENDAR_DRAFT_VERSION, "spec": json.loads(encode_calendar(StandardCalendar())),
+         "stage": DRAFT_STAGE_WEEK},
+        {"corrupt_shape"},
+        id="spec-is-the-standard-preset",
+    ),
+    # ── ступень ───────────────────────────────────────────────────────────
+    pytest.param(
+        {"v": CALENDAR_DRAFT_VERSION, "spec": json.loads(
+            encode_calendar(CustomCalendar(base_spec())))},
+        {"corrupt_shape"},
+        id="no-stage-field",
+    ),
+    pytest.param(
+        draft_body(base_spec(), stage="interstice"),
+        {"corrupt_shape"},
+        id="unknown-stage",
+    ),
+    pytest.param(
+        draft_body(base_spec(), stage=3), {"corrupt_shape"}, id="stage-is-not-a-string"
+    ),
+]
+
+
+class TestDraftCodecCorruptedDraft:
+    """Требование «Битой черновик — как его нет»: кодекс никогда не бросает и
+    отдаёт машинные причины, из которых вызывающий делает вывод «черновика
+    нет» (сервис логирует, мастер начинает сызнова)."""
+
+    @pytest.mark.parametrize(("raw", "expected_codes"), DRAFT_CORRUPT_CASES)
+    def test_unreadable_values_answer_reasons_not_exceptions(self, raw, expected_codes):
+        # dict/list-параметры — это заготовки конвертов; строка (и None)
+        # уходит в кодекс как есть, ровно так, как их видит хранилище
+        stored = json.dumps(raw) if isinstance(raw, (dict, list)) else raw
+        result = decode_draft(stored)
+        assert isinstance(result, DraftCorrupted)
+        assert codes_of(result.reasons) == expected_codes
+        assert all(
+            isinstance(problem, SpecProblem)
+            and problem.code
+            and problem.message
+            for problem in result.reasons
+        )
+
+    def test_uncodable_value_type_never_reaches_the_caller_as_a_crash(self):
+        assert isinstance(decode_draft(None), DraftCorrupted)
+        assert codes_of(decode_draft(None).reasons) == {"corrupt_json"}
+
+    @pytest.mark.parametrize(
+        ("spec", "expected_codes"),
+        [
+            pytest.param(
+                base_spec(
+                    months=make_months(("Первый", 3)),
+                    intercalary=(IntercalarySpec("Гром", 2),),
+                ),
+                {"intercalary_unknown_month"},
+                id="kernel-rejects-the-half-built-spec",
+            ),
+            pytest.param(
+                base_spec(months=(), week_names=("а", "б")),
+                {"no_months"},
+                id="months-not-entered-yet",
+            ),
+            pytest.param(
+                base_spec(
+                    months=make_months(("", 5), ("Второй", -1)),
+                    week_names=("а",),
+                ),
+                {"empty_month_name", "month_length_below_min", "week_too_short"},
+                id="every-kernel-reason-survives",
+            ),
+        ],
+    )
+    def test_a_stored_but_invalid_spec_is_the_same_absence(self, spec, expected_codes):
+        # валидация тела идёт тем же _decode_calendar_data, что и у основного
+        # ключа: черновик не может «протащить» спеку, которую не принял бы он
+        body = {
+            "v": CALENDAR_DRAFT_VERSION,
+            "spec": {
+                "v": CALENDAR_STORAGE_VERSION,
+                "kind": "custom",
+                "months": [
+                    {"name": m.name, "length": m.length} for m in spec.months
+                ],
+                "week_names": list(spec.week_names),
+                "intercalary": [
+                    {"name": r.name, "after_month": r.after_month}
+                    for r in spec.intercalary
+                ],
+            },
+            "stage": DRAFT_STAGE_MONTHS,
+        }
+        result = decode_draft(json.dumps(body))
+        assert isinstance(result, DraftCorrupted)
+        assert codes_of(result.reasons) == expected_codes
+
+
+@pytest.fixture(params=[30, "M:44:3:5", object()], ids=["int", "coord-text", "object"])
+def any_non_coord(request):
+    """Anything that is neither a coordinate, nor a date, nor absence."""
+    return request.param
+
+
+class TestDraftCodecCorruptedValueBoundary:
+    """Кодек черновика стоит поверх D3-координатного контракта: координата в
+    спеке — не параметр, а часть тела, поэтому проверка рода координаты
+    живёт в `as_game_coord`, которую черновик обязан унаследовать без мягкости
+    (design D6: «spec — то же тело» ⇒ те же отказы)."""
+
+    def test_non_coordinate_values_refuse_rather_than_become_days(
+        self, any_non_coord
+    ):
+        with pytest.raises(TypeError):
+            as_game_coord(any_non_coord)
+
+    def test_dates_and_coordinates_pass_through_the_same_gate(self):
+        assert as_game_coord(date(2024, 3, 9)) == MonthDay(2024, 3, 9)
+        coord = MonthDay(44, 2, 1)
+        assert as_game_coord(coord) is coord
+        assert as_game_coord(None) is None  # absence is not a coordinate carrier

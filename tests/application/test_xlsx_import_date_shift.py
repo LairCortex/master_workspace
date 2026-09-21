@@ -18,10 +18,11 @@ from datetime import date
 import pytest
 from openpyxl import Workbook
 
-from app.application.services.xlsx_import_service import XlsxImportService
+from app.application.services.xlsx_import_service import _coord_text, XlsxImportService
 from app.domain.game_calendar import (
     CalendarSpec,
     CustomCalendar,
+    IntercalaryDay,
     MonthDay,
     MonthSpec,
     encode_coord,
@@ -44,6 +45,21 @@ _SPEC = CalendarSpec(
     week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
 )
 _CUSTOM = CustomCalendar(_SPEC)
+
+# Ten months of forty-five days: a day the clamp can land on that no Gregorian
+# month has — the transfer row then signs its new date with the codec string
+# instead of a fabricated ISO (the Iso rule of design D5, same as iso_or_coord).
+_WIDE_SPEC = CalendarSpec(
+    months=tuple(
+        MonthSpec(name, 45)
+        for name in (
+            "Медвежарь", "Ледокол", "Травень", "Цветень", "Жневень",
+            "Сенокос", "Гридень", "Листопад", "Хмурень", "Студень",
+        )
+    ),
+    week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
+)
+_WIDE = CustomCalendar(_WIDE_SPEC)
 
 
 @pytest.fixture(autouse=True)
@@ -209,6 +225,24 @@ class TestParsedDatesBecomeCoordinates:
         assert char.start_coord == encode_coord(MonthDay(2026, 7, 5))
         assert report.date_shifts == []
 
+    async def test_merge_shift_follows_a_later_row_that_shifts(
+        self, tmp_path, async_session
+    ):
+        # The mirror case: the earlier date needed no transfer, the winning
+        # later one does — the report lists the winner's transfer (the row
+        # number is the winning contribution's line).
+        set_current_calendar(_CUSTOM)
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", FULL_HEADERS,
+               [["Иван", "2026-07-05", None], ["Иван", "2026-08-31", None]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        report = await _svc().apply_plan(plan, async_session)
+
+        char = await _one(async_session, CharacterModel, name="Иван")
+        assert char.start_coord == encode_coord(MonthDay(2026, 8, 30))
+        shift, = report.date_shifts
+        assert (shift.row_number, shift.old, shift.new) == (3, "2026-08-31", "2026-08-30")
+
     async def test_skipped_row_transfer_never_reaches_the_report(
         self, tmp_path, async_session
     ):
@@ -260,3 +294,30 @@ class TestReportDateShiftSection:
         plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
         report = await _svc().apply_plan(plan, async_session)
         assert report.date_shifts == []
+
+
+# ── the transfer row's date signature (design D5's Iso rule) ───────────────
+
+class TestTransferDateSignature:
+    async def test_transfer_to_a_non_gregorian_day_is_signed_with_the_codec(
+        self, tmp_path, async_session
+    ):
+        # The 45th day of the last game month is a real game coordinate and no
+        # Gregorian date — the report prints the codec text, never a fabricated
+        # ISO (the same Iso rule iso_or_coord follows for display carriers).
+        set_current_calendar(_WIDE)
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", FULL_HEADERS, [["Широкий", "2026-11-05", None]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        report = await _svc().apply_plan(plan, async_session)
+
+        char = await _one(async_session, CharacterModel, name="Широкий")
+        assert char.start_coord == encode_coord(MonthDay(2026, 10, 45))
+        shift, = report.date_shifts
+        assert (shift.old, shift.new) == ("2026-11-05", "M:2026:10:45")
+
+    def test_intercalary_coordinate_is_signed_with_the_codec(self):
+        # The signer's generic coordinate contract: a day outside the months
+        # has no ISO form at all, its codec text stands in, era marker kept.
+        assert _coord_text(IntercalaryDay(44, 0), False) == "I:44:0"
+        assert _coord_text(IntercalaryDay(44, 0), True) == "I:44:0 до н.э."

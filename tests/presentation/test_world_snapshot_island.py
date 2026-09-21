@@ -7,7 +7,6 @@ from PySide6.QtCore import QCoreApplication, QUrl
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from app.domain.game_calendar import MonthDay
-from app.presentation.utils.date_utils import popup_prefill_date
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 from tests.presentation.qml_helpers import click_item, find_item, island_rows
 
@@ -128,9 +127,10 @@ def test_date_popup_and_deferred_release(qtbot, monkeypatch):
         lambda anchor, current: opened.append((anchor, current)),
     )
     widget.vm.requestDatePopup(3, 4, 120, 30)
-    # The Gregorian popup receives the clamped picture of the VM's coordinate
-    # (piece C3a, design D6 — today's coordinate clamps to today's numbers).
-    assert opened and opened[0][1] == (popup_prefill_date(widget.vm._date), False)
+    # Since piece C3b (design D3) the popup grid receives the snapshot's own
+    # coordinate pair — today's coordinate arrives as today's numbers painted
+    # by the grid itself, no picture-only clamp in between.
+    assert opened and opened[0][1] == (widget.vm._date, widget.vm._date_bc)
 
     widget.close()
     QCoreApplication.processEvents()

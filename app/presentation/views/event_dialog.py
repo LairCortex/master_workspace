@@ -21,11 +21,7 @@ from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
-from app.presentation.utils.date_utils import (
-    era_flag,
-    popup_prefill_date,
-    split_date_era,
-)
+from app.presentation.utils.date_utils import era_flag, split_date_era
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     EventDialogIslandViewModel,
     RelatedSectionState,
@@ -71,30 +67,18 @@ class _FieldProxy:
 
 
 class _DateProxy:
-    """Coordinate-date duck for the dialog's date fields (piece C3a, D6).
+    """Visibility duck for the dialog's date fields (piece C3a, D6).
 
-    The bridge currency is now the game calendar coordinate: ``date()`` hands
-    out the stored ``GameCoord`` and ``setDate`` takes a coordinate (a plain
-    ``date`` stays legal input, coerced by the ViewModel), so no QDate crosses
-    this proxy in either direction anymore.
+    The legacy ``date()``/``setDate()`` transit died with piece C3b (design
+    D12): the bridge currency is the coordinate pair the ViewModel owns, so
+    writers go through ``vm.set_dates`` and readers through ``vm._start_date``
+    / ``vm._end_date``; what remains here is the visibility half QML-side
+    layouts and Python wiring/tests still ask the field objects for.
     """
 
     def __init__(self, dialog: "EventDialog", which: str):
         self._dialog = dialog
         self._which = which
-
-    def date(self) -> Any:
-        return (
-            self._dialog.vm._start_date
-            if self._which == "start"
-            else self._dialog.vm._end_date
-        )
-
-    def setDate(self, value) -> None:
-        if self._which == "start":
-            self._dialog.vm.set_dates(start=value)
-        else:
-            self._dialog.vm.set_dates(end=value)
 
     def isVisible(self) -> bool:
         return self._which == "start" or not self._dialog.vm._no_end
@@ -458,20 +442,15 @@ class EventDialog(QDialog):
         self._date_target = which
         top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
         anchor = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
-        # The popup bridge stays a (date, era) pair (task 3.4): the Gregorian
-        # widget is unchanged (design D6), so a bound the widget cannot paint
-        # is pre-filled through the picture-only clamp (piece C3a, grill Q19) —
-        # the dialog's own coordinate is not touched by the pre-fill.
+        # Since piece C3b (design D3) the popup bridge carries the dialog's own
+        # coordinate pair — the game-calendar grid paints any valid coordinate
+        # itself (intercalary chip included), so the picture-only clamp of
+        # piece C3a is gone; an invalid stored coordinate, if any survived,
+        # just leaves the popup un-prefilled.
         if which == "start":
-            current = (
-                popup_prefill_date(self.vm._start_date),
-                self.vm._start_bc,
-            )
+            current = (self.vm._start_date, self.vm._start_bc)
         else:
-            current = (
-                popup_prefill_date(self.vm._end_date),
-                self.vm._end_bc,
-            )
+            current = (self.vm._end_date, self.vm._end_bc)
         self.date_popup.open_at(anchor, current)
 
     def _set_selected_date(self, selected) -> None:

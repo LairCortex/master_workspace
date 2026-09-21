@@ -11,13 +11,13 @@ import asyncio
 from datetime import date
 from typing import Any, Callable
 
-from PySide6.QtCore import QDate
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu, QListWidget, QWidget
 
 from PySide6.QtCore import Qt
 
+from app.domain.game_calendar import GameCoord
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from tests.presentation import qml_helpers as qml_h
@@ -337,17 +337,18 @@ async def create_event_via_ui(
     name: str,
     characteristics: str = "Описание события",
     backstory: str = "",
-    start_date: QDate | date | None = None,
-    end_date: QDate | date | None = None,
+    start_date: GameCoord | date | None = None,
+    end_date: GameCoord | date | None = None,
     open_ended: bool = False,
 ) -> EventDialog:
     """Create an event through the timeline '+' button → EventDialog → save.
 
     Waits until the fire-and-forget available-entities load has finished and
-    the event is visible on the timeline. Since piece C3a the dialog date
-    proxies take game coordinates (a plain ``date`` is the same-numbers
-    ``MonthDay``), so a legacy QDate argument converts to its Python date
-    before entering the proxy.
+    the event is visible on the timeline. Since piece C3a the dialog dates
+    travel as game coordinates (a plain ``date`` is the same-numbers
+    ``MonthDay``); since piece C3b (design D12) the legacy setDate/date proxies
+    are gone, so the dates are written through the ViewModel's coordinate API
+    directly.
     """
     timeline_probe.click_object(window, "addButton")
     # A dialog accepted earlier stays in the child list: resolve the visible one.
@@ -362,15 +363,11 @@ async def create_event_via_ui(
     if backstory:
         dialog.backstory_input.setContent(backstory)
     if start_date is not None:
-        dialog.start_date_input.setDate(
-            start_date.toPython() if isinstance(start_date, QDate) else start_date
-        )
+        dialog.vm.set_dates(start=start_date)
     if open_ended:
         dialog.no_end_date_cb.setChecked(True)
     elif end_date is not None:
-        dialog.end_date_input.setDate(
-            end_date.toPython() if isinstance(end_date, QDate) else end_date
-        )
+        dialog.vm.set_dates(end=end_date)
     assert dialog.save_button.isEnabled()
     dialog.save_button.click()
     await wait_for(lambda: has_event_named(window, name))

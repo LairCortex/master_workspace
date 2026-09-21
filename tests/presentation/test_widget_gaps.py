@@ -488,8 +488,7 @@ class TestEventDialogGaps:
         d.show()
         d.name_input.setText("E")
         d.characteristics_input.setPlainText("c")
-        d.start_date_input.setDate(MonthDay(1200, 6, 1))
-        d.end_date_input.setDate(MonthDay(1200, 1, 1))  # end < start
+        d.vm.set_dates(start=MonthDay(1200, 6, 1), end=MonthDay(1200, 1, 1))  # end < start
         assert not d.save_button.isEnabled()  # invalid dates block saving
 
         d.no_end_date_cb.setChecked(True)  # endless → date constraint lifted

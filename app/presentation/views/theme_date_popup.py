@@ -1,134 +1,35 @@
-"""Top-level single-date popup used by QML date fields."""
+"""Top-level single-date popup used by QML date fields.
+
+Since piece C3b (design D3) the popup hosts the game-calendar day grid
+(:class:`~app.presentation.views.calendar_grid.GameCalendarGrid`) instead of
+the Gregorian Qt calendar widget: the bridge currency is a game coordinate in
+both directions — pre-filling takes a coordinate (or a bare ``date`` of the
+same numbers, coerced by ``split_date_era``/``as_game_coord``) and a click
+hands the consumer a ``(GameCoord, is_bc)`` pair.  The old picture-only
+pre-fill clamp is gone: the grid paints any valid coordinate of the ACTIVE
+calendar itself — an intercalary day included as its chip highlight — and a
+coordinate the calendar does not contain (a year outside 1…9999 foremost)
+simply leaves the popup un-prefilled.  The era stays the grid's own «до н.э.»
+check box — a pure flag that never moves the page.
+"""
 from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QDate, QPoint, QRect, Qt, Signal
-from PySide6.QtWidgets import (
-    QApplication,
-    QCalendarWidget,
-    QCheckBox,
-    QComboBox,
-    QHBoxLayout,
-    QPushButton,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
-from app.presentation.utils.date_utils import month_name, split_date_era
-
-#: Both eras span years 1…9999 (add-era-aware-dates, design D6); the BC era
-#: is a mirror of these very dates behind the «до н.э.» checkbox, so the
-#: calendar widget itself only ever navigates this range.
-MIN_DATE = date(1, 1, 1)
-MAX_DATE = date(9999, 12, 31)
-
-
-class _CustomCalendar(QCalendarWidget):
-    """Native popup calendar with fantasy month navigation and an era flag.
-
-    The «до н.э.» check box (task 3.2) is a pure flag: toggling it NEVER
-    changes the selected date or the shown page — the BC year mirrors the
-    Gregorian year with the same number (design D2/Q11), so the very same
-    calendar paints the chosen day of either era.
-    """
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setNavigationBarVisible(False)
-        self.setVerticalHeaderFormat(
-            QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
-        )
-        self.setMinimumWidth(350)
-        self.setMinimumDate(QDate(1, 1, 1))
-        self.setMaximumDate(QDate(9999, 12, 31))
-        self._nav = QWidget(self)
-        nav = QHBoxLayout(self._nav)
-        nav.setContentsMargins(6, 4, 6, 4)
-        nav.setSpacing(2)
-        self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedSize(28, 28)
-        self._prev_btn.clicked.connect(self.showPreviousMonth)
-        self._month_combo = QComboBox()
-        self._month_combo.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToContents
-        )
-        self._populate_months()
-        self._month_combo.currentIndexChanged.connect(self._on_month_selected)
-        self._year_spin = QSpinBox()
-        self._year_spin.setRange(1, 9999)
-        self._year_spin.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
-        self._year_spin.setFixedWidth(80)
-        self._year_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._year_spin.valueChanged.connect(self._on_year_changed)
-        self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedSize(28, 28)
-        self._next_btn.clicked.connect(self.showNextMonth)
-        self._bc_check = QCheckBox("до н.э.")
-        nav.addWidget(self._prev_btn)
-        nav.addWidget(self._month_combo, 1)
-        nav.addSpacing(8)
-        nav.addWidget(self._year_spin)
-        nav.addWidget(self._next_btn)
-        nav.addSpacing(8)
-        nav.addWidget(self._bc_check)
-        layout = self.layout()
-        if layout is not None:
-            layout.insertWidget(0, self._nav)
-        self.currentPageChanged.connect(self._sync_nav)
-        self._sync_nav(self.yearShown(), self.monthShown())
-
-    def refresh_month_names(self) -> None:
-        self._populate_months()
-        self._sync_nav(self.yearShown(), self.monthShown())
-
-    def _populate_months(self) -> None:
-        # Piece C2 (design D7): the combo caption is the delegate to the
-        # active game calendar's month names, read fresh on every populate.
-        self._month_combo.blockSignals(True)
-        self._month_combo.clear()
-        for number in range(1, 13):
-            self._month_combo.addItem(month_name(number), number)
-        self._month_combo.blockSignals(False)
-
-    def _sync_nav(self, year: int, month: int) -> None:
-        self._month_combo.blockSignals(True)
-        self._month_combo.setCurrentIndex(month - 1)
-        self._month_combo.blockSignals(False)
-        self._year_spin.blockSignals(True)
-        self._year_spin.setValue(year)
-        self._year_spin.blockSignals(False)
-
-    def _on_month_selected(self, index: int) -> None:
-        if index < 0:
-            return
-        month = self._month_combo.itemData(index)
-        if month is not None:
-            self.setCurrentPage(self.yearShown(), month)
-
-    def _on_year_changed(self, year: int) -> None:
-        self.setCurrentPage(year, self.monthShown())
-
-    # ── era flag (task 3.2: mirror calendar, era is a pure flag) ────────────
-
-    def is_bc(self) -> bool:
-        """The chosen era: True = «до н.э.»."""
-        return self._bc_check.isChecked()
-
-    def set_era(self, is_bc: bool) -> None:
-        """Pre-fill the era check box without touching the selected date."""
-        self._bc_check.setChecked(bool(is_bc))
-
-
-def _clamp_date(value: date) -> date:
-    return max(MIN_DATE, min(value, MAX_DATE))
+from app.domain.game_calendar import GameCoord
+from app.presentation.utils.date_utils import split_date_era
+from app.presentation.views.calendar_grid import GameCalendarGrid
 
 
 class ThemeDatePopup(QWidget):
-    """One reusable calendar, positioned wholly inside available geometry."""
+    """One reusable game-calendar grid, positioned wholly inside available geometry."""
 
-    #: ``(date, is_bc)`` — the popup hands its bridge a (date, era) pair.
+    #: ``(GameCoord, is_bc)`` — the popup hands its bridge a (coordinate, era)
+    #: pair (design D3): the clicked cell or chip carries its pure game
+    #: coordinate, the era is read off the grid's own era flag at emit time.
     date_selected = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -136,26 +37,34 @@ class ThemeDatePopup(QWidget):
         self.setObjectName("themeDatePopup")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
-        self.calendar = _CustomCalendar(self)
+        self.calendar = GameCalendarGrid(self)
         layout.addWidget(self.calendar)
-        self.calendar.clicked.connect(self._on_date_clicked)
+        self.calendar.day_selected.connect(self._on_day_selected)
 
     def open_at(
-        self, anchor_global: QRect, current: date | tuple[date, bool] | None = None
+        self,
+        anchor_global: QRect,
+        current: GameCoord
+        | date
+        | tuple[GameCoord | date | None, bool]
+        | None = None,
     ) -> None:
         """Refresh, prefill and open below a global QML anchor rectangle.
 
-        ``current`` is the bridge's (date, era) pair (a bare date reads as
-        «н.э.»); the numbers are clamped to the calendar range regardless of
-        the era, and the check box takes the era without moving the date.
+        ``current`` is the bridge's (coordinate, era) pair — the month names
+        and the whole page set are re-read from the ACTIVE calendar on every
+        open (spec «Имена перечитываются при показе»).  Prefilling paints the
+        coordinate's real cell or intercalary chip without substituting any
+        number for the picture; a coordinate outside the calendar's validity
+        (or no coordinate at all) leaves the grid un-prefilled, and the check
+        box takes the era without moving the page (spec «Переключатель эры —
+        чистый флаг»).
         """
-        self.calendar.refresh_month_names()
-        prefilled, prefilled_bc = split_date_era(current)
-        selected = _clamp_date(prefilled or QDate.currentDate().toPython())
-        self.calendar.set_era(bool(prefilled_bc))
-        qdate = QDate(selected.year, selected.month, selected.day)
-        self.calendar.setSelectedDate(qdate)
-        self.calendar.setCurrentPage(qdate.year(), qdate.month())
+        # refresh() reads the active calendar first (its page-month clamp runs
+        # before the pre-fill can navigate anywhere).
+        self.calendar.refresh()
+        coord, is_bc = split_date_era(current)
+        self.calendar.set_selection(coord, bool(is_bc))
 
         position = QPoint(
             anchor_global.x(),
@@ -188,7 +97,6 @@ class ThemeDatePopup(QWidget):
             if dx or dy:
                 self.move(self.pos() + QPoint(dx, dy))
 
-    def _on_date_clicked(self, value: QDate) -> None:
-        selected = _clamp_date(value.toPython())
-        self.date_selected.emit((selected, self.calendar.is_bc()))
+    def _on_day_selected(self, coord: GameCoord) -> None:
+        self.date_selected.emit((coord, self.calendar.is_bc()))
         self.close()

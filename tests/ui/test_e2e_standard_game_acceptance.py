@@ -26,8 +26,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 
-from PySide6.QtCore import QDate
 
+from app.domain.game_calendar import MonthDay
 from app.main import Application
 from app.presentation.theme import ThemeRuntime
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -105,7 +105,7 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
     await wait_for(lambda: [d for d in window.findChildren(EventDialog) if d.isVisible()])
     edit_dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     assert edit_dialog.windowTitle() == "Редактировать событие"
-    edit_dialog.end_date_input.setDate(date(1200, 3, 20))
+    edit_dialog.vm.set_dates(end=date(1200, 3, 20))
     edit_dialog.save_button.click()
     await wait_for(lambda: query_db(
         db_path, "SELECT COUNT(*) FROM events WHERE name = ? AND end_date = ?",
@@ -211,8 +211,9 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
     timeline_probe.click_object(window, "windowChip")
     popup = window.timeline_widget.window_popup
     await wait_for(lambda: popup.isVisible())
-    popup.start_calendar.clicked.emit(QDate(1200, 3, 5))
-    popup.start_calendar.clicked.emit(QDate(1200, 3, 25))
+    # The game-calendar grid taps answer with coordinates (piece C3b, D3).
+    popup.start_calendar.day_selected.emit(MonthDay(1200, 3, 5))
+    popup.start_calendar.day_selected.emit(MonthDay(1200, 3, 25))
     await helpers.wait_until_settled()
     assert timeline_probe.chip_caption(window) == "05 Март 1200 — 25 Март 1200 ▾"
     # Intersection rule: «До зимы» closed before the window, the open-ended

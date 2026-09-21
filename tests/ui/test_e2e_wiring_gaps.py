@@ -7,9 +7,10 @@ and the AI-button error paths.
 """
 from __future__ import annotations
 
+from datetime import date
+
 import datetime
 
-from PySide6.QtCore import QDate
 
 from app.infrastructure.llm.config import LlmConfig
 from app.infrastructure.llm.errors import LlmHttpError
@@ -50,8 +51,8 @@ async def test_window_and_unknown_type_guards(app, wait_for):
     # A closed 1300 event: a window whose interval does not cross it excludes
     # it (the flat window rule; an open end would reach into 1400).
     await helpers.create_event_via_ui(
-        window, wait_for, "Лето-Битва", start_date=QDate(1300, 7, 1),
-        end_date=QDate(1300, 7, 1),
+        window, wait_for, "Лето-Битва", start_date=date(1300, 7, 1),
+        end_date=date(1300, 7, 1),
     )
     canvas = timeline_probe.tape(window)
     await wait_for(lambda: len(canvas.events) == 1)
@@ -96,8 +97,8 @@ async def test_window_out_of_the_selected_event_clears_every_layer(app, wait_for
     # Closed event: the 1400 window excludes it (no interval crossing); an
     # open end would cross the window and keep it visible (flat window rule).
     await helpers.create_event_via_ui(
-        window, wait_for, "Война", start_date=QDate(1300, 7, 1),
-        end_date=QDate(1300, 7, 1),
+        window, wait_for, "Война", start_date=date(1300, 7, 1),
+        end_date=date(1300, 7, 1),
     )
     canvas = timeline_probe.tape(window)
     await wait_for(lambda: len(canvas.events) == 1)
@@ -226,11 +227,11 @@ async def test_search_result_resets_an_excluding_window(app, wait_for):
     view = timeline_probe.tape(window)
     await helpers.create_event_via_ui(
         window, wait_for, "Ранний",
-        start_date=QDate(1200, 3, 1), end_date=QDate(1200, 3, 1),
+        start_date=date(1200, 3, 1), end_date=date(1200, 3, 1),
     )
     await helpers.create_event_via_ui(
         window, wait_for, "Поздний",
-        start_date=QDate(1200, 6, 1), end_date=QDate(1200, 6, 1),
+        start_date=date(1200, 6, 1), end_date=date(1200, 6, 1),
     )
     await helpers.wait_until_settled()
     early_id = helpers.find_event_id(window, "Ранний")
@@ -328,7 +329,7 @@ async def test_create_related_entity_from_card(app, wait_for, menu_qmenu, modal_
 async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):
     application, window = app
     await helpers.create_event_via_ui(
-        window, wait_for, "МоментВремени", start_date=QDate(1300, 5, 15)
+        window, wait_for, "МоментВремени", start_date=date(1300, 5, 15)
     )
     calls: list = []
     monkeypatch.setattr(

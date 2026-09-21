@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -26,10 +27,19 @@ from app.application.services.calendar_settings_service import (
 )
 from app.domain.date_era import BC_YEAR_STEP
 from app.domain.game_calendar import (
+    CALENDAR_DRAFT_KEY,
+    CALENDAR_DRAFT_VERSION,
+    CALENDAR_STORAGE_VERSION,
+    CALENDAR_WIZARD_SEEN_KEY,
+    CALENDAR_WIZARD_SEEN_NO,
     DEFAULT_MONTH_NAMES,
+    DRAFT_STAGE_INTERCALARY,
+    DRAFT_STAGE_MONTHS,
+    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
     DateField,
+    IntercalarySpec,
     MonthDay,
     MonthSpec,
     ShiftReason,
@@ -37,6 +47,7 @@ from app.domain.game_calendar import (
     current_calendar,
     encode_calendar,
     encode_coord,
+    encode_draft,
     reset_current_calendar,
 )
 from app.infrastructure.db.models import (
@@ -454,6 +465,7 @@ class TestStartupSweep:
         # the keys become correct and the next start moves nothing.
         await _put_setting(async_session, CALENDAR_SETTINGS_KEY, encode_calendar(_CUSTOM))
         event = await _add_event(async_session, date(2023, 1, 15), date(2023, 6, 1))
+        event_id = event.id
         service = CalendarSettingsService()
 
         with caplog.at_level(logging.INFO):  # the full game-open sequence
@@ -825,3 +837,300 @@ class TestStorageMigrationAcrossCalendar:
         )
         assert third.records == ()
         assert await _snapshot(async_session) == before
+
+
+# ── C4 4.2/4.5: wizard draft storage (design D6) ──────────────────────────
+
+_DRAFT = CalendarDraft(
+    spec=CalendarSpec(
+        months=(MonthSpec("Черновершь", 12), MonthSpec("Разливань", 18)),
+        week_names=("Буд", "Ведь", "Творец", "Грозник", "Светлай"),
+        intercalary=(IntercalarySpec("Гром", 1),),
+    ),
+    stage=DRAFT_STAGE_MONTHS,
+)
+
+
+async def _seeded_draft(session) -> None:
+    """Store the module draft through the service so a test sees exactly the
+    row the wizard would have written."""
+    await CalendarSettingsService().save_draft(session, _DRAFT)
+
+
+def _draft_envelope(months: list, intercalary: list) -> str:
+    """A draft envelope whose spec body the kernel itself rejects — built by
+    hand because the encoder refuses to write what it cannot re-read."""
+    return json.dumps(
+        {
+            "v": CALENDAR_DRAFT_VERSION,
+            "spec": {
+                "v": CALENDAR_STORAGE_VERSION,
+                "kind": "custom",
+                "months": months,
+                "week_names": ["а", "б", "в", "г", "д", "е", "ё"],
+                "intercalary": intercalary,
+            },
+            "stage": "months",
+        },
+        ensure_ascii=False,
+    )
+
+
+class TestCalendarDraftStorage:
+    """Key ``game_calendar_draft`` round-trips through the service, a damaged
+    value reads as «no draft» with a log line while the row stays (spec
+    «Битой черновик — как его нет»), and neither reading nor opening a game
+    ever lets the draft warm the active calendar."""
+
+    async def test_missing_draft_reads_as_none(self, async_session):
+        service = CalendarSettingsService()
+        assert await service.load_draft(async_session) is None
+
+    async def test_save_then_load_round_trips_and_overwrites(self, async_session):
+        service = CalendarSettingsService()
+        await service.save_draft(async_session, _DRAFT)
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) == encode_draft(_DRAFT)
+
+        newer = replace(_DRAFT, stage=DRAFT_STAGE_INTERCALARY)
+        await service.save_draft(async_session, newer)
+
+        assert await service.load_draft(async_session) == newer
+        rows = (
+            await async_session.execute(
+                select(GameSettingsModel.value).where(
+                    GameSettingsModel.key == CALENDAR_DRAFT_KEY
+                )
+            )
+        ).scalars().all()
+        assert list(rows) == [encode_draft(newer)]  # one row, not one per save
+
+    async def test_broken_draft_json_reads_as_absent_with_a_log(
+        self, async_session, caplog
+    ):
+        raw = '{этого нет, "stage": "week"}'
+        await _put_setting(async_session, CALENDAR_DRAFT_KEY, raw)
+        service = CalendarSettingsService()
+
+        with caplog.at_level(logging.WARNING):
+            assert await service.load_draft(async_session) is None
+
+        # the fact is logged under the key…
+        assert any(
+            CALENDAR_DRAFT_KEY in record.message and "corrupt_json" in record.message
+            for record in caplog.records
+        )
+        # …while the row itself is left for inspection, like the C2 rule
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) == raw
+
+    async def test_spec_the_kernel_rejects_is_the_same_absence(
+        self, async_session, caplog
+    ):
+        # version and envelope are readable; the body names a host month the
+        # spec does not have — «invalid draft = no draft», same branch
+        raw = _draft_envelope(
+            [{"name": "А", "length": 10}], [{"name": "В", "after_month": 5}]
+        )
+        await _put_setting(async_session, CALENDAR_DRAFT_KEY, raw)
+        service = CalendarSettingsService()
+
+        with caplog.at_level(logging.WARNING):
+            assert await service.load_draft(async_session) is None
+
+        assert any(
+            "intercalary_unknown_month" in record.message
+            for record in caplog.records
+        )
+
+    async def test_draft_never_warms_the_active_calendar(self, async_session):
+        # spec scenario «Черновик не греет активный календарь»: the game opens
+        # on the «Стандартный» preset, the draft keeps its bytes, no key of
+        # the open (or of any record) was touched by it
+        service = CalendarSettingsService()
+        await service.save_draft(async_session, _DRAFT)
+
+        outcome = await service.load_and_apply(async_session)
+
+        assert isinstance(outcome.calendar, StandardCalendar)
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) == encode_draft(_DRAFT)
+        assert await _setting(async_session, CALENDAR_SETTINGS_KEY) is None
+
+    async def test_discard_removes_the_row_and_tolerates_its_absence(
+        self, async_session
+    ):
+        await _put_setting(async_session, CALENDAR_SETTINGS_KEY, "что-то")
+        service = CalendarSettingsService()
+        await service.save_draft(async_session, _DRAFT)
+
+        await service.discard_draft(async_session)
+
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) is None
+        assert await _setting(async_session, CALENDAR_SETTINGS_KEY) == "что-то"
+        await service.discard_draft(async_session)  # second pass: silent no-op
+
+    async def test_load_wizard_seen_exposes_the_raw_flag_text(self, async_session):
+        service = CalendarSettingsService()
+        # a game without the key is an old game (absence, not "0")
+        assert await service.load_wizard_seen(async_session) is None
+        await _put_setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
+        )
+        assert await service.load_wizard_seen(async_session) == CALENDAR_WIZARD_SEEN_NO
+
+
+# ── C4 4.3: promote_draft — one atomic transaction (design D9) ────────────
+
+class TestPromoteDraft:
+    """Spec «Поднятие черновик чистит черновик» / «Перезапись вместо
+    ремонта» + design D9: the C2 record transfer, the settings overwrite, the
+    draft deletion and the optional seen-flag commit as one unit; the applied
+    calendar becomes active only after that commit."""
+
+    async def test_promotion_writes_the_key_and_frees_the_draft(
+        self, async_session
+    ):
+        # settings as the C2 open saw them: damaged main key, a live draft
+        await _put_setting(async_session, CALENDAR_SETTINGS_KEY, "{ повреждённая строка")
+        await _seeded_draft(async_session)
+        service = CalendarSettingsService()
+
+        report = await service.promote_draft(async_session, _CUSTOM)
+
+        assert report.records == ()  # no dated rows here — apply part trivial
+        # main key overwritten with the readable encoding of the same spec
+        assert await _setting(
+            async_session, CALENDAR_SETTINGS_KEY
+        ) == encode_calendar(_CUSTOM)
+        # the draft is gone — one truth remains
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) is None
+        # activation only after the commit succeeded (D9)
+        assert isinstance(current_calendar(), CustomCalendar)
+        assert current_calendar().spec == _SPEC
+
+    async def test_promotion_applies_records_and_matches_the_preview(
+        self, async_session
+    ):
+        event = await _add_event(async_session, date(2023, 1, 15), date(2023, 6, 1))
+        event_id = event.id
+        service = CalendarSettingsService()
+        await service.save_draft(async_session, _DRAFT)
+        preview = await service.apply_to_records(async_session, _CUSTOM, dry_run=True)
+        assert preview.shift_count == 2
+
+        applied = await service.promote_draft(async_session, _CUSTOM)
+
+        assert applied.records == preview.records  # «Применение совпадает с проверкой»
+        # the promotion expired the identity map — re-read from the base
+        row = await async_session.get(EventModel, event_id)
+        assert row.start_coord == encode_coord(MonthDay(2023, 1, 10))
+        assert row.end_coord == encode_coord(MonthDay(2023, 3, 10))
+        assert row.start_key == _CUSTOM.to_key(MonthDay(2023, 1, 10))
+        assert row.end_key == _CUSTOM.to_key(MonthDay(2023, 3, 10))
+        assert await _setting(
+            async_session, CALENDAR_SETTINGS_KEY
+        ) == encode_calendar(_CUSTOM)
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) is None
+
+    async def test_flag_is_set_only_when_asked(self, async_session):
+        service = CalendarSettingsService()
+
+        await service.promote_draft(async_session, _CUSTOM)
+        # without the mark the first-entry flow keeps its own decision pending
+        assert await service.load_wizard_seen(async_session) is None
+
+        await service.promote_draft(
+            async_session, _CUSTOM_B, mark_wizard_seen=True
+        )
+        assert await service.load_wizard_seen(async_session) == "1"
+
+    async def test_promotion_of_the_preset_needs_no_draft_or_records(
+        self, async_session
+    ):
+        # design D8 branch «крест первого входа»: promote the preset over a
+        # seeded standard game without any draft — trivial transaction
+        service = CalendarSettingsService()
+        await _put_setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
+        )
+
+        report = await service.promote_draft(
+            async_session, StandardCalendar(), mark_wizard_seen=True
+        )
+
+        assert report.records == ()
+        assert await _setting(
+            async_session, CALENDAR_SETTINGS_KEY
+        ) == encode_calendar(StandardCalendar())
+        assert await service.load_wizard_seen(async_session) == "1"
+        assert isinstance(current_calendar(), StandardCalendar)
+
+    async def test_preview_discards_the_repair_and_apply_persists_it(
+        self, async_session
+    ):
+        # The resolver repairs a corrupted coordinate text while reading; the
+        # preview must discard that write, the application must keep it (spec
+        # «Проверка ничего не меняет»).  The corrupted row goes into ratings —
+        # the fixed traversal reads tables in order, and only the table read
+        # last still holds the repair un-autoflushed at the dirty-check.
+        rating = RatingModel(start_date=date(1200, 1, 1), level=1)
+        async_session.add(rating)
+        await async_session.commit()
+        rating_id = rating.id
+        await async_session.execute(
+            update(RatingModel).where(RatingModel.id == rating_id)
+            .values(start_coord="не координата")
+        )
+        await async_session.commit()
+        async_session.expunge_all()
+        service = CalendarSettingsService()
+        preset = StandardCalendar()
+
+        preview = await service.apply_to_records(async_session, preset, dry_run=True)
+
+        # the unreadable text resolves to nothing ⇒ nothing to list, and the
+        # in-memory clearing went back with the rollback
+        assert preview.records == ()
+        async_session.expunge_all()
+        assert (await async_session.get(RatingModel, rating_id)).start_coord == \
+            "не координата"
+
+        applied = await service.apply_to_records(async_session, preset, dry_run=False)
+
+        # the same reading pass, now committing, keeps the cure and re-keys
+        # the row straight from its readable date column
+        assert applied.records == ()
+        async_session.expunge_all()
+        row = await async_session.get(RatingModel, rating_id)
+        assert row.start_coord is None
+        assert row.start_key == date(1200, 1, 1).toordinal()
+
+    async def test_error_midway_rolls_back_records_settings_and_draft(
+        self, async_session
+    ):
+        event = await _add_event(async_session, date(2023, 1, 15), None)
+        await _put_setting(async_session, CALENDAR_SETTINGS_KEY, '{"v": 1, "kind": "standard"}')
+        await _put_setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
+        )
+        service = CalendarSettingsService()
+        await service.save_draft(async_session, _DRAFT)
+        snapshot_before = await _snapshot(async_session)
+        draft_before = await _setting(async_session, CALENDAR_DRAFT_KEY)
+        # the boom strikes at the very custom key of the shifted start, i.e.
+        # after some rows were already updated — mid-transaction
+        boom = _BoomCalendar(_CUSTOM, MonthDay(2023, 1, 10))
+
+        with pytest.raises(RuntimeError):
+            await service.promote_draft(
+                async_session, boom, mark_wizard_seen=True
+            )
+
+        # nothing survived: not the shifted rows, not the settings, not the
+        # draft deletion, not the flag (spec «запись нового ключа … SHALL
+        # пережить ту же атомарность, что и перенос записей»)
+        assert await _snapshot(async_session) == snapshot_before
+        assert await _setting(
+            async_session, CALENDAR_SETTINGS_KEY
+        ) == '{"v": 1, "kind": "standard"}'
+        assert await _setting(async_session, CALENDAR_DRAFT_KEY) == draft_before
+        assert await service.load_wizard_seen(async_session) == CALENDAR_WIZARD_SEEN_NO
+        assert not isinstance(current_calendar(), CustomCalendar)

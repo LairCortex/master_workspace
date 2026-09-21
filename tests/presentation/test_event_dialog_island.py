@@ -223,8 +223,8 @@ def test_facade_compatibility_ducks_and_date_routes(qtbot, monkeypatch):
     assert dialog.type_combo.findData(99) == -1
     assert dialog.type_combo.findText("missing") == -1
 
-    dialog.start_date_input.setDate(dialog.start_date_input.date())
-    dialog.end_date_input.setDate(dialog.end_date_input.date())
+    # The coordinate round trip rides the ViewModel directly (piece C3b).
+    dialog.vm.set_dates(start=dialog.vm._start_date, end=dialog.vm._end_date)
     assert dialog.start_date_input.isVisible()
     assert not dialog.start_date_input.isHidden()
     dialog.no_end_date_cb.setChecked(True)

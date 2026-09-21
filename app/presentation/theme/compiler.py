@@ -307,12 +307,12 @@ QWidget[uiRole="chrome"] QPlainTextEdit {{
 def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     """Application-wide sheet for top-level popups only (W2a D2).
 
-    Tooltips, menus, combo/calendar dropdowns and the mention list are
-    separate top-level windows: an attached-root stylesheet cannot reach them,
-    so this sheet is set on ``QApplication``. It deliberately contains *no*
-    generic chrome rules — anything with a class selector (``QLineEdit`` etc.)
-    would leak onto widgets outside the themed catalog (the sheet's proxy
-    field editors back in W2a; that paint layer is a QML island since Q3b).
+    Tooltips, menus, combo dropdowns and the mention list are separate
+    top-level windows: an attached-root stylesheet cannot reach them, so this
+    sheet is set on ``QApplication``. It deliberately contains *no* generic
+    chrome rules — anything with a class selector (``QLineEdit`` etc.) would
+    leak onto widgets outside the themed catalog (the sheet's proxy field
+    editors back in W2a; that paint layer is a QML island since Q3b).
 
     Menu items have no ``:hover`` rule on purpose: a hovered ``QMenu`` item is
     already ``:selected`` for Qt, so an extra alpha-hover would only wash the
@@ -327,10 +327,20 @@ def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     same recipe: the ``_DateWindowPopup`` container and its
     ``_DateWindowResetButton`` are named
     classes (a generic ``QPushButton`` rule must never enter this sheet — the
-    canvas proxies would pick it up), the embedded ``_CustomCalendar``s are
-    already covered by the ``QCalendarWidget`` rules above.
+    canvas proxies would pick it up).  The game-calendar grids both date popups
+    embed are skinned here through their own named classes (piece C3b,
+    design D4): ``GameCalendarGrid`` is the field, ``GameCalendarCell`` has the
+    three states of spec «Минимализм оформления сетки» — normal, ``:hover`` and
+    the ``selected`` property (``[selected="true"]``, mirrored by the grid on
+    every selection flip) — ``GameCalendarIntercalaryChip`` selects like a
+    cell and gets the same trio, and ``GameCalendarDayName`` is the week
+    header.  These four names are STYLE-FACING exactly like
+    ``_DateWindowPopup``: renaming a class silently drops the grid's theme, so
+    rename only together with the rules below.  The Gregorian calendar-widget
+    rules retired together with that widget.
     """
     t = {key: values[theme] for key, values in tokens.items()}
+    cell_hover = accent_rgba(tokens, theme, 0.25)
     return f"""
 QToolTip {{
     background: {t['color.bg.surface']};
@@ -357,19 +367,43 @@ QComboBox QAbstractItemView {{
     selection-background-color: {t['color.accent']};
     selection-color: {t['color.accent.fg']};
 }}
-QCalendarWidget {{
+GameCalendarGrid {{
     background: {t['color.bg.surface']};
-    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
 }}
-QCalendarWidget QToolButton {{
-    background: {t['color.bg.surface']};
-    color: {t['color.fg.primary']};
+GameCalendarDayName {{
+    background: transparent;
+    color: {t['color.fg.muted']};
+    font-weight: {t['font.weight.bold']};
 }}
-QCalendarWidget QAbstractItemView {{
-    background: {t['color.bg.surface']};
+GameCalendarCell {{
+    background: transparent;
     color: {t['color.fg.primary']};
-    selection-background-color: {t['color.accent']};
-    selection-color: {t['color.accent.fg']};
+    border: 1px solid transparent;
+    border-radius: {t['radius.sm']};
+    padding: {t['space.xs']};
+}}
+GameCalendarCell:hover {{
+    background: {cell_hover};
+}}
+GameCalendarCell[selected="true"] {{
+    background: {t['color.accent']};
+    color: {t['color.accent.fg']};
+}}
+GameCalendarIntercalaryChip {{
+    background: {t['color.bg.canvas']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    padding: {t['space.xs']} {t['space.sm']};
+}}
+GameCalendarIntercalaryChip:hover {{
+    background: {cell_hover};
+}}
+GameCalendarIntercalaryChip[selected="true"] {{
+    background: {t['color.accent']};
+    color: {t['color.accent.fg']};
 }}
 _MentionPopup {{
     background: {t['color.bg.surface']};

@@ -12,12 +12,13 @@ the timeline captions and the «Выбор даты» chip speak the migrated na
 """
 from __future__ import annotations
 
+from datetime import date
+
 import datetime
 import json
 import sqlite3
 from pathlib import Path
 
-from PySide6.QtCore import QDate
 
 from tests.ui import helpers, timeline_probe
 from tests.ui.conftest import query_db
@@ -38,7 +39,7 @@ async def test_migrated_month_names_display_on_timeline(app, wait_for):
     # and running into June: its single row caption carries both month names.
     await helpers.create_event_via_ui(
         window, wait_for, "Фестиваль",
-        start_date=QDate(1200, 5, 1), end_date=QDate(1200, 6, 20),
+        start_date=date(1200, 5, 1), end_date=date(1200, 6, 20),
     )
     canvas = timeline_probe.tape(window)
     await wait_for(lambda: helpers.has_event_named(window, "Фестиваль"))
@@ -64,8 +65,12 @@ async def test_migrated_month_names_display_on_timeline(app, wait_for):
     await application.shutdown()
 
     # …and an old-version month-names row is planted as the removed dialog
-    # used to write it (key ``custom_months``).
+    # used to write it (key ``custom_months``).  The calendar keys the first
+    # open seeded are cleared first: the file is re-played as one created by
+    # a pre-C4 app version, which never had them (spec «Старая игра без
+    # ключа» stays the migration scenario the C2 keys follow).
     conn = sqlite3.connect(str(db_path))
+    conn.execute("DELETE FROM game_settings")
     conn.execute(
         "INSERT INTO game_settings (key, value) VALUES ('custom_months', ?)",
         (json.dumps({"5": CUSTOM_MAY}, ensure_ascii=False),),

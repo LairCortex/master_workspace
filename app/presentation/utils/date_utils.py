@@ -12,28 +12,46 @@ calendar coordinates: a plain ``datetime.date`` is still accepted on input
 previous 'dd MonthName yyyy[ г. до н.э.]' caption bit-for-bit, and an
 intercalary coordinate is captioned by its rule name and year with no day
 number (spec «Отображение эры», scenario «Вставной день в строке»).
+Since piece C3b (design D3) the picture-only popup pre-fill clamp and its
+intercalary display helper are gone as well: the game-calendar grid paints
+every valid coordinate itself, so no display-side number substitution
+remains anywhere downstream of a stored coordinate.
 """
 from __future__ import annotations
 
-import calendar as real_calendar
 from datetime import date
 
 from app.domain.game_calendar import (
     DEFAULT_MONTH_NAMES,
     GameCoord,
     IntercalaryDay,
-    InvalidGameDateError,
     MonthDay,
     as_game_coord,
     current_calendar,
     encode_coord,
-    shift_invalid,
 )
 
 #: Re-export of the domain's Gregorian month names (piece C2, design D7) —
 #: the single source lives in ``app.domain.game_calendar``; this alias keeps
 #: existing display-side imports on one name (read-only mapping).
 DEFAULT_MONTHS = DEFAULT_MONTH_NAMES
+
+#: Russian weekday names of the «Стандартный» preset week, Monday first
+#: (piece C3b, design D2) — a PRESENTATION-side preset constant: the domain
+#: never localizes (piece C0 principle), and the preset calendar exposes no
+#: week-name view, so the grid subscribes these names to its columns
+#: (column 0 = ``Понедельник``, fixing the Monday-first order grill chose over
+#: the old locale-dependent Qt calendar widget header).  A custom calendar
+#: never reads this constant: its columns come from ``spec.week_names``.
+STANDARD_WEEK_NAMES: tuple[str, ...] = (
+    "Понедельник",
+    "Вторник",
+    "Среда",
+    "Четверг",
+    "Пятница",
+    "Суббота",
+    "Воскресенье",
+)
 
 
 def month_name(month: int) -> str:
@@ -105,77 +123,6 @@ def iso_or_coord(coord: GameCoord | date) -> str:
         except ValueError:
             pass
     return encode_coord(coord)
-
-
-def popup_prefill_date(
-    value: GameCoord | date | tuple[GameCoord | date | None, bool] | None,
-) -> date | None:
-    """The ``QCalendarWidget``-representable date a popup pre-fills from a bridge value.
-
-    The popup calendars stay Gregorian widgets until piece C3b (design D6):
-    an intercalary or otherwise widget-unrepresentable coordinate is clamped
-    FOR THE PICTURE ONLY — the touched record is never written back (grill
-    Q19). First the pure shift policy clamps a coordinate the active calendar
-    does not contain (same clamp the start pass and the import use), then the
-    era-less widget grid cuts the view down to its own 1…12 month columns and
-    real month lengths, and the era stays a separate flag the caller mirrors
-    onto the check box. A coordinate that cannot be clamped at all (a year
-    outside the scale, an intercalary day under a rule-less calendar) leaves
-    the popup un-prefilled.
-    """
-    day, _era = split_date_era(value)
-    if day is None:
-        return None
-    coord = as_game_coord(day)
-    if isinstance(coord, IntercalaryDay):
-        try:
-            coord = _display_day_of_intercalary(coord)
-        except InvalidGameDateError:  # e.g. a year outside the scale
-            return None
-        if coord is None:
-            return None
-    try:
-        shifted = shift_invalid(coord, current_calendar())
-    except InvalidGameDateError:
-        return None
-    if shifted is not None:
-        coord = shifted[0]
-    # The widget navigates 1…12 month columns of real lengths only (C3b will
-    # replace the whole grid); clamp the picture into that grid. The year is
-    # already inside 1…9999 — ``shift_invalid`` refused anything outside it.
-    month = min(coord.month, 12)
-    last_real_day = real_calendar.monthrange(coord.year, month)[1]
-    return date(coord.year, month, min(coord.day, last_real_day))
-
-
-def _display_day_of_intercalary(coord: IntercalaryDay) -> MonthDay | None:
-    """Day a calendar's widget grid shows in place of an intercalary one:
-    the host month's last day (the slot sits right after it, design D4).
-    A coordinate the active calendar does not contain first passes through
-    the shift policy's clamp (same kind, last rule of the spec list) — and a
-    rule-less calendar has nothing to clamp to, so that refusal reaches the
-    caller as ``InvalidGameDateError``. ``None`` when no host month is
-    resolvable: a clamped index the spec moved past, or a year the calendar
-    gives no month lengths for."""
-    calendar = current_calendar()
-    if not calendar.is_valid(coord):
-        shifted = shift_invalid(coord, calendar)  # may refuse (no rules at all)
-        if shifted is not None:
-            coord = shifted[0]  # the intercalary clamp keeps the coordinate kind
-    spec = getattr(calendar, "spec", None)
-    if spec is not None:
-        rules = tuple(spec.intercalary)
-        if not 0 <= coord.index < len(rules):
-            return None
-        host = rules[coord.index].after_month
-        try:
-            length = calendar.month_length(coord.year, host)
-        except InvalidGameDateError:  # a year the calendar does not span
-            return None
-        return MonthDay(coord.year, host, length)
-    # A protocol implementer with no spec view has no host table to read;
-    # the day 1 of its month 1 is the safest picture its grid can paint.
-    return MonthDay(coord.year, 1, 1)
 
 
 def split_date_era(

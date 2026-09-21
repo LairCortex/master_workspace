@@ -253,6 +253,19 @@ class TestAssignCoordRouting:
         with pytest.raises(InvalidGameDateError):
             assign_coord(row, "start", MonthDay(2026, 4, 31))
 
+    def test_attribute_writes_route_by_value_type(self, custom_calendar):
+        # The public ``start_date``/``end_date`` properties are the routed
+        # entry themselves (design D3): assigning a GameCoord — from anywhere
+        # above the repositories — physically lands where ``assign_coord``
+        # sends it, while a plain ``date`` keeps the legacy direct write.
+        row = EventModel(name="probe", start_date=date(1200, 1, 1))
+        row.start_date = MonthDay(44, 2, 7)
+        row.end_date = IntercalaryDay(44, 0)
+        assert row.start_coord == "M:44:2:7"
+        assert row.start_date_raw == date(1200, 1, 1)  # наследие не тронуто
+        assert row.end_coord == "I:44:0"
+        assert row.end_date == IntercalaryDay(44, 0)
+
 
 # ── the key hook keys from the resolved coordinate truth ──────────────────
 

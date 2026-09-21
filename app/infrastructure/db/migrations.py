@@ -14,6 +14,13 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.domain.game_calendar import (
+    CALENDAR_SETTINGS_KEY,
+    CALENDAR_WIZARD_SEEN_KEY,
+    CALENDAR_WIZARD_SEEN_NO,
+    StandardCalendar,
+    encode_calendar,
+)
 from app.infrastructure.db.models import Base, CharacterModel, LocationModel, OrganizationModel
 from app.infrastructure.images.store import ImageStore
 
@@ -145,6 +152,46 @@ async def _seed_default_event_types(conn) -> None:
         )
 
 
+# ── C4 seeding: the two calendar keys of a brand-new game (design D7) ─────
+
+async def _database_is_fresh(conn) -> bool:
+    """Whether ``conn``'s database has no user tables yet — the "we are about
+    to build the schema" fact that separates a new game from a migration.
+
+    The launcher's ``create_game`` leaves an empty file behind and never opens
+    a database, so "fresh" covers exactly the games whose schema this version
+    creates (spec «Новая игра рождается с посевом»); a game that already has
+    tables was built by some earlier version and must stay keyless.
+    """
+    rows = (
+        await conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1"
+        )
+    ).fetchall()
+    return not rows
+
+
+async def _seed_new_game_calendar_keys(conn) -> None:
+    """Seed the two C4 keys into a freshly created schema (design D7).
+
+    Written straight through SQL because the game session layers are not
+    wired yet while ``init_db`` runs.  The preset value is produced by the
+    domain codec, not hand-written JSON, so a future storage-version bump
+    cannot leave new games behind on the stale shape.  Guard is "fresh
+    schema", not "empty key row": an old game never gets here, and a second
+    ``init_db`` over the same file is a migration pass — no re-seed, no
+    overwritten user choice (spec «Старую игру посев не догоняет»).
+    """
+    await conn.exec_driver_sql(
+        "INSERT OR IGNORE INTO game_settings (key, value) VALUES (?, ?)",
+        (CALENDAR_SETTINGS_KEY, encode_calendar(StandardCalendar())),
+    )
+    await conn.exec_driver_sql(
+        "INSERT OR IGNORE INTO game_settings (key, value) VALUES (?, ?)",
+        (CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO),
+    )
+
+
 async def _migrate_legacy_images(engine, image_dir: Path) -> None:
     """Move legacy base64 images (`image` column) into file storage (design D8).
 
@@ -192,8 +239,13 @@ async def init_db(engine, image_dir: Path | str | None = None) -> None:
     ``image_dir`` is the game's ``images/`` directory (design D8); when
     omitted, legacy-base64 migration is skipped — used by schema-only tests
     and callers with no on-disk game directory to migrate into.
+
+    A database whose tables are created right here is a *new* game, so the
+    two calendar keys (preset + «мастер не показан») are seeded into it, and
+    never into a game that already had a schema (C4, design D7).
     """
     async with engine.begin() as conn:
+        is_new_database = await _database_is_fresh(conn)
         await conn.run_sync(Base.metadata.create_all)
 
     # Era-aware dates: snapshot the file before the very first era transfer (D5)
@@ -223,6 +275,14 @@ async def init_db(engine, image_dir: Path | str | None = None) -> None:
     # Seed the six default event types into an empty set (W4, idempotent)
     async with engine.begin() as conn:
         await _seed_default_event_types(conn)
+
+    # Seed the two calendar keys of a newly created game (C4, design D7).
+    # The freshness fact was captured before ``create_all``: only the very
+    # first pass over the file counts as a new game, so both the migration
+    # path and any repeated ``init_db`` stay untouched by the seeding.
+    if is_new_database:
+        async with engine.begin() as conn:
+            await _seed_new_game_calendar_keys(conn)
 
     if image_dir is not None:
         await _migrate_legacy_images(engine, Path(image_dir))

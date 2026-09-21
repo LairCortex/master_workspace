@@ -11,11 +11,25 @@ import logging
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
-from PySide6.QtWidgets import QMessageBox
+import pytest
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from app.domain.game_calendar import DEFAULT_MONTH_NAMES, current_calendar
 from app.main import Application
 from app.presentation.utils.calendar_warnings import MONTH_WARNING_TITLE
+from app.presentation.views.calendar_wizard import CalendarWizardDialog
+
+
+@pytest.fixture(autouse=True)
+def autoaccept_calendar_wizard(monkeypatch):
+    """The ``fail.db`` games started here are freshly seeded, so the C4
+    first-entry wizard opens modally inside ``start()``; offscreen must not
+    block on a real modal loop (tests/ui conftest convention, local copy)."""
+    monkeypatch.setattr(
+        CalendarWizardDialog,
+        "exec",
+        lambda self, *args: QDialog.DialogCode.Rejected,
+    )
 
 
 async def test_corrupted_calendar_setting_opens_on_preset_with_one_warning(

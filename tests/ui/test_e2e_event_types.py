@@ -18,9 +18,11 @@ write-through semantics under test are unchanged.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import Qt
 
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
@@ -139,7 +141,7 @@ async def test_types_menu_entry_edits_apply_to_running_game(
     # назначении»), and the row re-tints without reopening anything.
     await helpers.create_event_via_ui(
         window, wait_for, "Дракон у мельницы",
-        start_date=QDate(1200, 3, 10), end_date=QDate(1200, 3, 12),
+        start_date=date(1200, 3, 10), end_date=date(1200, 3, 12),
     )
     await _assign_type_via_edit_dialog(window, wait_for, "Дракон у мельницы", "Примета")
 
@@ -213,7 +215,7 @@ async def test_assigning_type_marks_scale_row_in_token_hex(app, wait_for):
     theme = window.timeline_widget._theme
     await helpers.create_event_via_ui(
         window, wait_for, "Слух у костра",
-        start_date=QDate(1200, 1, 20), end_date=QDate(1200, 1, 20),
+        start_date=date(1200, 1, 20), end_date=date(1200, 1, 20),
     )
     # Untyped: the dot is the muted token already (spec «Событие без типа»).
     await wait_for(lambda: (

@@ -58,7 +58,12 @@ from app.presentation.viewmodels.llm_viewmodel import (
     FIELD_PROMPTS_KEY, WORLD_PROMPT_KEY, LlmViewModel,
 )
 
-from app.domain.game_calendar import reset_current_calendar
+from app.domain.game_calendar import (
+    CALENDAR_WIZARD_SEEN_NO,
+    CALENDAR_WIZARD_SEEN_YES,
+    StandardCalendar,
+    reset_current_calendar,
+)
 from app.presentation.utils.calendar_warnings import (
     MONTH_WARNING_TITLE,
     calendar_corruption_body,
@@ -68,6 +73,10 @@ from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
+from app.presentation.viewmodels.calendar_wizard_viewmodel import (
+    CalendarWizardViewModel,
+)
+from app.presentation.views.calendar_wizard import CalendarWizardDialog
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.theme import ThemeRuntime, get_default_theme
 from app.presentation.qml import setup_qml_shell
@@ -129,6 +138,10 @@ class Application:
         # process; start() loads the calendar and sweeps the dated records
         # with it (C3a, design D8 — repair, shift, key reconcile).
         self._calendar_service: CalendarSettingsService | None = None
+        # Calendar wizard (C4, task 7.1): the one menu dialog at a time;
+        # the first-entry modal (task 7.2) is transient and never stored
+        # here — it dies inside start().
+        self._calendar_wizard: CalendarWizardDialog | None = None
         self._wiring: ApplicationWiring | None = None
         # Character-sheet windows (D6/D4): at most one list + one editor + one fill
         self._sheet_service: CharacterSheetService | None = None
@@ -291,6 +304,16 @@ class Application:
         window.char_sheets_requested.connect(self._on_char_sheets)
         window.table_host_requested.connect(self._on_table_host)
 
+        # Calendar wizard (C4, task 7.1): the «Настройки → Календарь…» menu
+        # entry, built over the live session by _wire_calendar_menu below.
+        self._wire_calendar_menu(window)
+
+        # First entry of a new game (C4, design D8): the seeded
+        # «calendar_wizard_seen == "0"» runs the wizard modally after the
+        # startup sweep and BEFORE the window is shown, so every surface's
+        # first paint already speaks the calendar the open settled on.
+        await self._maybe_show_calendar_wizard()
+
         # Initial load
         await timeline_vm.load_events()
         window.timeline_widget.update_events(timeline_vm.events)
@@ -365,6 +388,121 @@ class Application:
         self._close_sheet_windows()
         await self.shutdown()
         await self.start(path)
+
+    # ── Calendar wizard (C4, tasks 7.1–7.3) ──────────────────────────────────
+
+    def _wire_calendar_menu(self, window: MainWindow) -> None:
+        """Connect the single «Настройки → Календарь…» wizard entry (task 7.1)."""
+        window.calendar_wizard_requested.connect(self._on_calendar_wizard)
+
+    def _on_calendar_wizard(self) -> None:
+        """Open the wizard modally over the CURRENT session.
+
+        The view model preselects the kind of the current calendar key
+        (spec «Вход из меню доступен всегда»), and the «seen» flag is never
+        touched from here — only a first-entry application marks it (design
+        D6). The flow keeps its draft through the dialog by contract of the
+        spec «Черновик мастера», so closing needs no extra handling.
+        """
+        if self._calendar_service is None or self._session is None:
+            return
+        if self._calendar_wizard is not None:
+            self._calendar_wizard.raise_()
+            self._calendar_wizard.activateWindow()
+            return
+        wizard_vm = CalendarWizardViewModel(self._session, self._calendar_service)
+        dialog = CalendarWizardDialog(
+            wizard_vm,
+            parent=self._window,
+            theme=self._theme,
+            # Intents touch the shared session — serialize them on the wiring
+            # lock exactly like every other signal-spawned task.
+            run=self._wiring.run_locked,
+        )
+        # Propagation (design D11): a successful application repaints the
+        # surfaces that are showing dates right now.
+        wizard_vm.apply_succeeded.connect(
+            lambda: self._wiring._spawn(self._reload_after_calendar_change())
+        )
+        dialog.finished.connect(
+            lambda _r, _d=dialog: self._forget_calendar_wizard(_d)
+        )
+        self._calendar_wizard = dialog
+        dialog.open()
+        # Draft continuation (spec «Черновик мастера») reads the session —
+        # a locked spawn; its state_changed repaints the already-visible
+        # dialog onto the saved stage.
+        self._wiring._spawn(dialog.begin())
+
+    def _forget_calendar_wizard(self, dialog: CalendarWizardDialog) -> None:
+        """Drop the closed wizard and queue its C++ teardown."""
+        if self._calendar_wizard is dialog:
+            self._calendar_wizard = None
+        dialog.deleteLater()
+
+    async def _reload_after_calendar_change(self) -> None:
+        """Design D11: repaint everything that shows dates, no restart.
+
+        A freshly applied calendar is already active (promote_draft installed
+        it after its commit) — here the timeline feed and the «Выбор даты»
+        chip re-model through the ViewModel's load, the detail panel (which
+        hosts the dated record's own header) rebuilds when one is open, and
+        the table host panel refreshes when it is on screen. Popups and the
+        dialogs' date captions read the calendar again at their next opening
+        (the grids refresh on open_at), so they need nothing here.
+        """
+        window = self._window
+        wiring = self._wiring
+        if window is None or wiring is None:
+            return
+        timeline_vm = wiring._timeline_vm
+        detail_vm = wiring._detail_vm
+        await timeline_vm.load_events()
+        window.timeline_widget.update_events(timeline_vm.events)
+        if detail_vm.event is not None:
+            await detail_vm.load_details(detail_vm.event.id)
+            window.detail_panel.show_event(detail_vm.event)
+        if self._table_host_panel is not None:
+            await self._refresh_table_host_panel()
+
+    async def _maybe_show_calendar_wizard(self) -> None:
+        """First entry of a new game (task 7.2, design D8).
+
+        Only the seeded «не показан» flag brings the wizard here — an old
+        keyless game opens without it (spec «Старая игра не видит мастера»).
+        The modal runs before ``MainWindow.show()``; its prefilled kind is
+        «Стандартный» because a freshly seeded game lives on the preset.
+        Closing (the X or «Отменить») without a draft means «Стандартный»
+        with application and writes the «показан» flag; a live draft keeps
+        the flag at «не показан» so the next open calls the wizard back as a
+        flow continuation (spec «Брошенный черновик зовёт обратно»).
+        """
+        seen = await self._calendar_service.load_wizard_seen(self._session)
+        if seen != CALENDAR_WIZARD_SEEN_NO:
+            return
+        wizard_vm = CalendarWizardViewModel(
+            self._session, self._calendar_service, first_entry=True,
+        )
+        dialog = CalendarWizardDialog(
+            wizard_vm, theme=self._theme, run=self._wiring.run_locked,
+        )
+        # The draft decides the opening position, so it is read out before
+        # the modal loop starts; no other session user exists yet — the
+        # window is unshown and the startup coroutine still owns the session.
+        await dialog.begin()
+        dialog.exec()
+        dialog.deleteLater()
+        if await self._calendar_service.load_draft(self._session) is not None:
+            return  # abandoned draft: the flag stays «не показан»
+        if (
+            await self._calendar_service.load_wizard_seen(self._session)
+            != CALENDAR_WIZARD_SEEN_YES
+        ):
+            # Nothing was applied inside the modal: the close itself is the
+            # preset application (trivial transaction over a new game).
+            await self._calendar_service.promote_draft(
+                self._session, StandardCalendar(), mark_wizard_seen=True,
+            )
 
     # -- character sheets (D6) ------------------------------------------------
 
@@ -1123,6 +1261,11 @@ class Application:
         if self._table_host is not None and self._table_host.is_running:
             await self._table_host.stop()
         self._close_sheet_windows()
+        # A wizard left open on a closing game must not outlive its session:
+        # its view model is bound to exactly this AsyncSession.
+        if self._calendar_wizard is not None:
+            self._calendar_wizard.close()
+            self._calendar_wizard = None
         self._table_host = None
         if self._session:
             await self._session.close()

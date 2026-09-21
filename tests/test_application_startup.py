@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QImage
 from sqlalchemy import text
@@ -17,6 +18,22 @@ from app.infrastructure.db.migrations import init_db as raw_init_db
 from app.infrastructure.images.paths import original_path, preview_path
 from app.infrastructure.images.store import ImageStore
 from app.main import Application
+from app.presentation.views.calendar_wizard import CalendarWizardDialog
+from PySide6.QtWidgets import QDialog
+
+
+@pytest.fixture(autouse=True)
+def autoaccept_calendar_wizard(monkeypatch):
+    """The games started here are freshly seeded, so the C4 first-entry
+    wizard opens modally inside ``start()``; offscreen must not block on a
+    real modal loop. Only ``exec`` is replaced — the close semantics (apply
+    the preset, write the «seen» flag) still run, the startup order under
+    test is untouched."""
+    monkeypatch.setattr(
+        CalendarWizardDialog,
+        "exec",
+        lambda self, *args: QDialog.DialogCode.Rejected,
+    )
 
 
 def _png_b64() -> str:

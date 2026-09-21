@@ -49,9 +49,15 @@ async def _make_custom_game_db(db_path: Path) -> None:
     """Create a game file whose ``game_calendar`` holds the custom spec.
 
     The setting is written straight into the database («настройки записаны
-    напрямую»): the C4 wizard is the only in-app writer of custom specs."""
+    напрямую»): the C4 wizard is the only in-app writer of custom specs.
+    The pre-existing ``game_settings`` table marks the file as one created
+    BEFORE the C4 seeding existed (a schema-less blank would be a new game
+    and would arrive pre-seeded): exactly the old games the wizard must not
+    ever see.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     (db_path.parent / "images").mkdir(exist_ok=True)
+    _mark_as_pre_c4_game(db_path)
     engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
     try:
         await init_db(engine)
@@ -62,6 +68,18 @@ async def _make_custom_game_db(db_path: Path) -> None:
             )
     finally:
         await engine.dispose()
+
+
+def _mark_as_pre_c4_game(db_path: Path) -> None:
+    """Write the ``game_settings`` table into a blank file, so init_db reads
+    this file as an old game (its schema predates the C4 seeding) instead of
+    a new game born pre-seeded with the calendar keys."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE game_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    conn.commit()
+    conn.close()
 
 
 def _game_settings_rows(db_path: Path) -> list[tuple[str, str]]:
@@ -107,6 +125,9 @@ async def test_two_games_keep_own_calendars_close_to_preset(
     standard_db = tmp_path / "Std" / "game.db"
     standard_db.parent.mkdir(parents=True)
     (standard_db.parent / "images").mkdir()
+    # an old game without either calendar key: pre-C4 schema on disk keeps
+    # init_db (and so the open) off the new-game seeding path
+    _mark_as_pre_c4_game(standard_db)
     custom_db = tmp_path / "Custom" / "game.db"
     await _make_custom_game_db(custom_db)
 

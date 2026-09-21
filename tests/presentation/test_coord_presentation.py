@@ -1,12 +1,12 @@
-"""Piece C3a task group 5: coordinates in the presentation layer.
+"""Piece C3a task group 5 + C3b popup migration: coordinates in the presentation layer.
 
 Covers the coordinate-aware caption (spec date-eras «Отображение эры», both
 scenarios), the ``Iso`` string contract (design D5), the dialog/snapshot
-round-trip with an intercalary day under a substituted calendar, the picture-only
-pre-fill clamp of the date popups (grill Q19, the record untouched) and the
-mixed-era window still judging bounds through the single chronological key.
-The ``QCalendarWidget`` popup widgets themselves stay unchanged until C3b — the
-last test locks that in.
+round-trip with an intercalary day under a substituted calendar, the
+coordinate pre-fill of the date popups (piece C3b, design D3 — the grid paints
+the real coordinate, the record is never rewritten) and the mixed-era window
+still judging bounds through the single chronological key. Since C3b the
+popups own ``GameCalendarGrid``s, not the old Gregorian ``QCalendarWidget``s.
 """
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QDate, QRect
-from PySide6.QtWidgets import QCalendarWidget
+from PySide6.QtCore import QRect
 
 from app.domain.entities.description import Description
 from app.domain.entities.event import Event
@@ -34,7 +33,6 @@ from app.domain.game_calendar import (
 from app.presentation.utils.date_utils import (
     format_game_date,
     iso_or_coord,
-    popup_prefill_date,
 )
 from app.presentation.viewmodels.detail_panel_view_model import (
     DetailPanelViewModel,
@@ -48,6 +46,10 @@ from app.presentation.viewmodels.event_dialog_island_view_model import (
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.world_snapshot_view_model import (
     WorldSnapshotViewModel,
+)
+from app.presentation.views.calendar_grid import (
+    GameCalendarGrid,
+    GameCalendarIntercalaryChip,
 )
 from app.presentation.views.timeline_date_popup import (
     _DateWindowPopup,
@@ -86,7 +88,7 @@ def _custom():
 
 class _NoSpecCalendar:
     """Protocol implementer without the structural ``spec`` view: exercises
-    the defensive caption/probe paths the real calendars never hit."""
+    the defensive caption paths the real calendars never hit."""
 
     def __init__(self) -> None:
         self._month_names = {1: "Первомес", 2: "Второмес"}
@@ -104,40 +106,6 @@ class _NoSpecCalendar:
 
     def is_valid(self, coord) -> bool:
         return isinstance(coord, IntercalaryDay) and 0 <= coord.index < 2
-
-
-class _MismatchedSpecCalendar(_NoSpecCalendar):
-    """Validity admits indexes 0…4 while the spec lists a single rule —
-    the state a hand-edited settings value could leave before the start-shift
-    pass; the pre-fill then refuses instead of guessing a host."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.spec = CalendarSpec(
-            months=(MonthSpec("Первомес", 30),),
-            week_names=("Пн", "Вт"),
-            intercalary=(IntercalarySpec("День Маски", 1),),
-        )
-
-    def is_valid(self, coord) -> bool:
-        return isinstance(coord, IntercalaryDay) and 0 <= coord.index < 5
-
-
-class _HollowYearCalendar(_NoSpecCalendar):
-    """Admits any coordinate, but its host month has no length outside year 1 —
-    the pre-fill refuses rather than inventing a date."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.spec = _MismatchedSpecCalendar().spec
-
-    def is_valid(self, coord) -> bool:
-        return isinstance(coord, IntercalaryDay) and 0 <= coord.index < 2
-
-    def month_length(self, year: int, month: int) -> int:
-        from app.domain.game_calendar import InvalidGameDateError
-
-        raise InvalidGameDateError("this year has no month lengths")
 
 
 # ── 5.1: format_game_date under coordinates ────────────────────────────────
@@ -439,91 +407,17 @@ class TestWorldSnapshotViewModelCarriesCoordinates:
         assert not hasattr(vm, "setDateIso")
 
 
-# ── 5.2: pre-fill clamp (picture only — the records are never touched) ─────
+# ── 5.2: pre-fill is the grid's own coordinate picture (no substitution) ─────
 
 
-class TestPopupPrefillClamp:
-    def test_plain_and_representable_values_pass_through(self):
-        assert popup_prefill_date(date(44, 3, 5)) == date(44, 3, 5)
-        assert popup_prefill_date(MonthDay(44, 3, 5)) == date(44, 3, 5)
-        # The era is a separate flag and never rewrites the picture day.
-        assert popup_prefill_date((MonthDay(44, 3, 5), True)) == date(44, 3, 5)
+class TestDateWindowPopupCoordinatePrefill:
+    """Since piece C3b (design D3) the range popover seeds its grids with the
+    window's real coordinates — an intercalary bound shows its host page with
+    the chip marked, an out-of-calendar coordinate (a year outside 1…9999, a
+    day the active month does not have) simply leaves its grid un-prefilled,
+    and no bound of the stored window is ever rewritten."""
 
-    def test_none_leaves_the_popup_unprefilled(self):
-        assert popup_prefill_date(None) is None
-
-    def test_day_overflow_clamps_through_the_shift_policy(self):
-        _custom()
-        # 31-е число в 30-дневном Первомесе — clamp к последнему дню месяца.
-        assert popup_prefill_date(MonthDay(47, 1, 31)) == date(47, 1, 30)
-
-    def test_month_outside_the_count_clamps_to_the_last_month(self):
-        calendar = CustomCalendar(
-            CalendarSpec(
-                months=(
-                    MonthSpec("Первомес", 30),
-                    MonthSpec("Второмес", 20),
-                    MonthSpec("Третьемес", 10),
-                    MonthSpec("Четвертомес", 29),
-                )
-                + tuple(
-                    MonthSpec(f"Десет{i}", 20) for i in range(5, 14)
-                ),  # months 5…13 exist in the calendar
-                week_names=("Пн", "Вт"),
-            )
-        )
-        set_current_calendar(calendar)
-        # 13-й месяц календаря валиден, но виджет рисует только 12 колонок:
-        # предзаполнение доезжает до 12-го месяца своей же картинки.
-        assert popup_prefill_date(MonthDay(44, 13, 15)) == date(44, 12, 15)
-        from app.domain.game_calendar import InvalidGameDateError as _E
-
-        with pytest.raises(_E):
-            calendar.month_length(44, 14)
-        # Незначный для календаря месяц 14 сдвигается в последний (13-й),
-        # затем сетка виджета режет его до 12-го.
-        assert popup_prefill_date(MonthDay(44, 14, 15)) == date(44, 12, 20)
-
-    def test_intercalary_day_pictures_at_the_host_month_end(self):
-        _custom()
-        # «День Маски» сидит после Первомеса — картинка на его последнем дне.
-        assert popup_prefill_date(IntercalaryDay(44, 0)) == date(44, 1, 30)
-        assert popup_prefill_date((IntercalaryDay(44, 0), True)) == date(44, 1, 30)
-
-    def test_intercalary_year_outside_the_scale_leaves_unprefilled(self):
-        _custom()
-        assert popup_prefill_date(IntercalaryDay(0, 0)) is None
-
-    def test_year_outside_the_scale_leaves_unprefilled(self):
-        # The shift policy's own refusal for a bare month-day bound.
-        assert popup_prefill_date(MonthDay(10000, 5, 5)) is None
-
-    def test_intercalary_under_a_rule_less_calendar_leaves_unprefilled(self):
-        # Стандартный пресет вставных дней не содержит — картинка невозможна.
-        assert popup_prefill_date(IntercalaryDay(44, 0)) is None
-
-    def test_no_spec_calendar_pictures_its_host_month_one(self):
-        set_current_calendar(_NoSpecCalendar())
-        # No spec view ⇒ no host table: the picture is month 1, day 1, and an
-        # out-of-list index first clamps to the last rule of the probe count.
-        assert popup_prefill_date(IntercalaryDay(44, 0)) == date(44, 1, 1)
-        assert popup_prefill_date(IntercalaryDay(44, 5)) == date(44, 1, 1)
-
-    def test_spec_moved_past_the_index_leaves_unprefilled(self):
-        # Defensive: a calendar whose validity says "rule exists" while its
-        # spec no longer lists the index has no host to picture.
-        set_current_calendar(_MismatchedSpecCalendar())
-        assert popup_prefill_date(IntercalaryDay(44, 3)) is None
-
-    def test_year_without_month_lengths_leaves_unprefilled(self):
-        # Defensive: the host month exists but this year has no lengths —
-        # there is no date to put on the grid.
-        set_current_calendar(_HollowYearCalendar())
-        assert popup_prefill_date(IntercalaryDay(44, 0)) is None
-
-
-class TestDateWindowPopupPrefillClamp:
-    def test_open_at_clamps_intercalary_and_invalid_bounds_without_touching_them(
+    def test_open_at_paints_intercalary_and_invalid_bounds_without_touching_them(
         self, qtbot
     ):
         _custom()
@@ -531,16 +425,21 @@ class TestDateWindowPopupPrefillClamp:
         qtbot.addWidget(popup)
         current = (
             (IntercalaryDay(44, 0), True),
-            (MonthDay(47, 1, 31), False),
+            (MonthDay(47, 1, 31), False),  # Первомес is 30 days — unpaintable
         )
         popup.open_at(QRect(0, 0, 10, 10), current)
-        # The calendars stand on the clamped PICTURE…
-        assert popup.start_calendar.selectedDate() == QDate(44, 1, 30)
-        assert popup.end_calendar.selectedDate() == QDate(47, 1, 30)
-        # …the era check boxes still mirror the seeded bounds…
+        # The intercalary bound shows its own chip on the host month page…
+        assert popup.start_calendar.selection() == IntercalaryDay(44, 0)
+        chips = popup.start_calendar.findChildren(GameCalendarIntercalaryChip)
+        assert chips[0].selected
+        # …the era check boxes mirror the seeded bounds independently…
         assert popup.start_calendar.is_bc() is True
         assert popup.end_calendar.is_bc() is False
-        # …and the window itself (the «запись» of the bounds) is unchanged.
+        # …and the out-of-calendar bound leaves its grid un-prefilled rather
+        # than clamping a number into the picture (spec «Сетка говорит
+        # координатами»).
+        assert popup.end_calendar.selection() is None
+        # …the window itself (the «запись» of the bounds) is unchanged.
         assert current == ((IntercalaryDay(44, 0), True), (MonthDay(47, 1, 31), False))
         assert popup._pending_start is None
 
@@ -548,25 +447,33 @@ class TestDateWindowPopupPrefillClamp:
         popup = _DateWindowPopup()
         qtbot.addWidget(popup)
         popup.open_at(
-            QRect(0, 0, 10, 10), ((MonthDay(500, 1, 1), True), (date(100, 12, 31), False))
+            QRect(0, 0, 10, 10),
+            ((MonthDay(500, 1, 1), True), (date(100, 12, 31), False)),
         )
-        assert popup.start_calendar.selectedDate() == QDate(500, 1, 1)
+        assert popup.start_calendar.selection() == MonthDay(500, 1, 1)
         assert popup.start_calendar.is_bc() is True
-        assert popup.end_calendar.selectedDate() == QDate(100, 12, 31)
+        # A bare date arrives as its equal month-day coordinate.
+        assert popup.end_calendar.selection() == MonthDay(100, 12, 31)
         assert popup.end_calendar.is_bc() is False
 
     def test_open_at_partial_window_pictures_one_bound_only(self, qtbot):
         popup = _DateWindowPopup()
         qtbot.addWidget(popup)
-        before = popup.start_calendar.selectedDate()
         popup.open_at(QRect(0, 0, 10, 10), (None, (MonthDay(100, 6, 1), True)))
-        assert popup.start_calendar.selectedDate() == before  # unprefilled side
-        assert popup.end_calendar.selectedDate() == QDate(100, 6, 1)
+        # An absent bound leaves its grid un-prefilled with the era reset…
+        assert popup.start_calendar.selection() is None
+        assert popup.start_calendar.is_bc() is False
+        # …while the other grid paints its coordinate and era.
+        assert popup.end_calendar.selection() == MonthDay(100, 6, 1)
         assert popup.end_calendar.is_bc() is True
 
 
-class TestDialogPopupPrefillClamp:
-    def test_event_dialog_opens_the_popup_at_the_clamped_picture(self, qtbot, monkeypatch):
+class TestDialogPopupCoordinatePrefill:
+    """The dialogs hand the popup the coordinate pair they hold; the grid
+    paints it, so there is no picture-only clamp and the stored coordinate
+    survives the open byte-for-byte."""
+
+    def test_event_dialog_opens_the_popup_at_the_coordinate_pair(self, qtbot, monkeypatch):
         from unittest.mock import MagicMock
 
         from app.presentation.views.event_dialog import EventDialog
@@ -582,12 +489,11 @@ class TestDialogPopupPrefillClamp:
             lambda anchor, current: opened.append(current),
         )
         dialog._open_date_popup("start", 1, 2, 3, 4)
-        # The Gregorian bridge receives the host-month picture, the dialog's
-        # own coordinate stays the intercalary one (record untouched).
-        assert opened == [(date(44, 1, 30), True)]
+        # The pair reaches the popup verbatim — the coordinate, not a picture.
+        assert opened == [(IntercalaryDay(44, 0), True)]
         assert dialog.vm._start_date == IntercalaryDay(44, 0)
 
-    def test_entity_card_opens_the_popup_at_the_clamped_picture(self, qtbot, monkeypatch):
+    def test_entity_card_opens_the_popup_at_the_coordinate_pair(self, qtbot, monkeypatch):
         from unittest.mock import MagicMock
 
         from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -603,10 +509,10 @@ class TestDialogPopupPrefillClamp:
             lambda anchor, current: opened.append(current),
         )
         dialog._open_date_popup("end", 1, 2, 3, 4)
-        assert opened == [(date(44, 1, 30), True)]
+        assert opened == [(IntercalaryDay(44, 0), True)]
         assert dialog.vm._end_date == IntercalaryDay(44, 0)
 
-    def test_world_snapshot_opens_the_popup_at_the_clamped_picture(
+    def test_world_snapshot_opens_the_popup_at_the_coordinate_pair(
         self, qtbot, monkeypatch
     ):
         from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
@@ -622,9 +528,8 @@ class TestDialogPopupPrefillClamp:
             lambda anchor, current: opened.append(current),
         )
         widget.vm.requestDatePopup(1, 2, 3, 4)
-        # Same picture-only clamp as the dialogs: the Gregorian bridge never
-        # sees a coordinate, the snapshot's own date stays the intercalary one.
-        assert opened == [(date(44, 1, 30), True)]
+        # The snapshot's own coordinate reaches the grid un-substituted.
+        assert opened == [(IntercalaryDay(44, 0), True)]
         assert widget.vm._date == IntercalaryDay(44, 0)
 
 
@@ -678,15 +583,18 @@ class TestMixedEraWindowOnTheSingleKey:
         assert chip == "День Маски 500 г. до н.э. — 10 Второмес 100 ▾"
 
 
-class TestPopupWidgetsUnchanged:
-    def test_both_popups_still_own_q_calendar_widgets(self, qtbot):
+class TestPopupWidgetsUseTheGameCalendarGrid:
+    def test_both_popups_own_game_calendar_grids(self, qtbot):
+        """Since piece C3b (design D3) the popups draw game-calendar grids —
+        their year spin now spans the whole 1…9999 scale of BOTH eras."""
         single = ThemeDatePopup()
         qtbot.addWidget(single)
         window = _DateWindowPopup()
         qtbot.addWidget(window)
-        assert isinstance(single.calendar, QCalendarWidget)
-        assert isinstance(window.start_calendar, QCalendarWidget)
-        assert isinstance(window.end_calendar, QCalendarWidget)
-        # The Gregorian grid keeps its real-month range until C3b.
-        assert single.calendar.minimumDate() == QDate(1, 1, 1)
-        assert single.calendar.maximumDate() == QDate(9999, 12, 31)
+        assert isinstance(single.calendar, GameCalendarGrid)
+        assert isinstance(window.start_calendar, GameCalendarGrid)
+        assert isinstance(window.end_calendar, GameCalendarGrid)
+        assert (
+            single.calendar._year_spin.minimum(),
+            single.calendar._year_spin.maximum(),
+        ) == (1, 9999)

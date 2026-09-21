@@ -53,8 +53,7 @@ class TestEventDialog:
         d.name_input.setText("Battle")
         d.characteristics_input.setPlainText("Big fight")
         d.backstory_input.setPlainText("Long ago")
-        d.start_date_input.setDate(MonthDay(1200, 1, 1))
-        d.end_date_input.setDate(MonthDay(1200, 12, 31))
+        d.vm.set_dates(start=MonthDay(1200, 1, 1), end=MonthDay(1200, 12, 31))
         d._update_validity()
         assert d.save_button.isEnabled()
 
@@ -66,8 +65,7 @@ class TestEventDialog:
         d.name_input.setText("Battle")
         d.characteristics_input.setPlainText("Big fight")
         d.backstory_input.setPlainText("Long ago")
-        d.start_date_input.setDate(MonthDay(1200, 1, 1))
-        d.end_date_input.setDate(MonthDay(1200, 12, 31))
+        d.vm.set_dates(start=MonthDay(1200, 1, 1), end=MonthDay(1200, 12, 31))
 
         data = d.get_data()
         assert data["name"] == "Battle"
@@ -188,8 +186,7 @@ class TestEntityCardDialog:
         d.name_input.setText("Sword")
         d.characteristics_input.setPlainText("Sharp")
         d.backstory_input.setPlainText("Forged")
-        d.start_date_input.setDate(MonthDay(500, 1, 1))
-        d.end_date_input.setDate(MonthDay(3000, 12, 31))
+        d.vm.set_dates(start=MonthDay(500, 1, 1), end=MonthDay(3000, 12, 31))
         d.music_input.setText("https://example.com/sword-theme.mp3")
         data = d.get_data()
         assert data["name"] == "Sword"
@@ -526,8 +523,10 @@ class TestDialogDateEraBridges:
         d._set_selected_date((date(44, 3, 5), True))
         d._open_date_popup("start", 1, 2, 3, 4)
         d._open_date_popup("end", 1, 2, 3, 4)
-        assert opened[0] == (date(44, 3, 5), True)
-        assert opened[1] == (date.today(), False)
+        # Since piece C3b (design D3) the grid receives the stored coordinate
+        # pair verbatim — no Gregorian picture in between.
+        assert opened[0] == (MonthDay(44, 3, 5), True)
+        assert opened[1] == (as_game_coord(date.today()), False)
 
     def test_event_dialog_validity_is_chronological_across_eras(self, qtbot):
         d = EventDialog(MagicMock())
@@ -600,8 +599,9 @@ class TestDialogDateEraBridges:
         d._set_selected_date((date(500, 1, 1), True))
         d._open_date_popup("start", 1, 2, 3, 4)
         d._open_date_popup("end", 1, 2, 3, 4)
-        assert opened[0] == (date.today(), False)
-        assert opened[1] == (date(500, 1, 1), True)
+        # The coordinate pair reaches the grid popup as stored (C3b, D3).
+        assert opened[0] == (as_game_coord(date.today()), False)
+        assert opened[1] == (MonthDay(500, 1, 1), True)
 
     def test_entity_card_populate_reads_era_flags(self, qtbot):
         d = EntityCardDialog(MagicMock(), entity_type="item")

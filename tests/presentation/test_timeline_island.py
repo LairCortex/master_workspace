@@ -22,7 +22,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QDate, QPoint
+from PySide6.QtCore import QPoint
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -420,7 +420,7 @@ class TestDateWindowPopupEntry:
         panel.window_popup.move = lambda p: (moves.append(QPoint(p)), real_move(p))[1]
         popup = _open_via_chip(panel)
         assert popup.isVisible()
-        assert popup.start_calendar.selectedDate() == QDate(1200, 4, 3)
+        assert popup.start_calendar.selection() == MonthDay(1200, 4, 3)
         # The move target is anchored under the chip's reported bottom-left
         # (+2px), exactly where the native-button anchor put it; X is clamped
         # into the screen, Y travels untouched (the old mechanics verbatim).
@@ -437,9 +437,9 @@ class TestDateWindowPopupEntry:
         received: list = []
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
         popup = _open_via_chip(panel)
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 5))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 5))
         assert received == []  # start alone is not a window yet
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 9))
         assert received == [((MonthDay(1200, 1, 5), False), (MonthDay(1200, 1, 9), False))]
         assert not popup.isVisible()
         assert panel._root.property("windowText") == (
@@ -456,8 +456,8 @@ class TestDateWindowPopupEntry:
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
         popup = _open_via_chip(panel)
         popup.start_calendar.set_era(True)  # «до н.э.» на начале
-        popup.start_calendar.clicked.emit(QDate(500, 1, 1))
-        popup.end_calendar.clicked.emit(QDate(100, 12, 31))
+        popup.start_calendar.day_selected.emit(MonthDay(500, 1, 1))
+        popup.end_calendar.day_selected.emit(MonthDay(100, 12, 31))
         assert received == [((MonthDay(500, 1, 1), True), (MonthDay(100, 12, 31), False))]
         assert panel._root.property("windowText") == (
             "01 Январь 500 г. до н.э. — 31 Декабрь 100 ▾"
@@ -470,11 +470,11 @@ class TestDateWindowPopupEntry:
         received: list = []
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
         popup = _open_via_chip(panel)
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 3))  # earlier
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 9))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 3))  # earlier
         assert received == []
         assert popup._pending_start == (MonthDay(1200, 1, 3), False)
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 12))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 12))
         assert received == [
             ((MonthDay(1200, 1, 3), False), (MonthDay(1200, 1, 12), False))
         ]
@@ -485,16 +485,16 @@ class TestDateWindowPopupEntry:
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
         popup = _open_via_chip(panel)
         popup._fit_low_screen(10_000)  # keep both calendars regardless of room
-        popup.start_calendar.clicked.emit(QDate(1200, 2, 1))
-        popup.end_calendar.clicked.emit(QDate(1200, 2, 20))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 2, 1))
+        popup.end_calendar.day_selected.emit(MonthDay(1200, 2, 20))
         assert received == [
             ((MonthDay(1200, 2, 1), False), (MonthDay(1200, 2, 20), False))
         ]
 
     def test_reset_restores_all_days_and_hides(self, qtbot, root_qml):
         panel = _island(qtbot, _StubVM(), root_qml)
-        _open_via_chip(panel).start_calendar.clicked.emit(QDate(1200, 1, 5))
-        panel.window_popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
+        _open_via_chip(panel).start_calendar.day_selected.emit(MonthDay(1200, 1, 5))
+        panel.window_popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 9))
         received: list = []
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
         _open_via_chip(panel)
@@ -507,8 +507,8 @@ class TestDateWindowPopupEntry:
         """open_at re-seeds the pick state through the chip entry too."""
         panel = _island(qtbot, _StubVM(), root_qml)
         popup = _open_via_chip(panel)
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 5))
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 9))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 5))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 9))
         _open_via_chip(panel)
         assert popup._pending_start is None
         popup.close()
@@ -523,8 +523,8 @@ class TestDateWindowPopupEntry:
         assert popup.end_calendar.isHidden()
         received: list = []
         panel.window_changed.connect(lambda s, e: received.append((s, e)))
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 1))
-        popup.start_calendar.clicked.emit(QDate(1200, 1, 4))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 1))
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 4))
         assert received == [
             ((MonthDay(1200, 1, 1), False), (MonthDay(1200, 1, 4), False))
         ]

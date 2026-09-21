@@ -21,8 +21,11 @@ and a click past every row dropping the selection in every layer.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QPointF, Qt
+from datetime import date
 
+from PySide6.QtCore import QPointF, Qt
+
+from app.domain.game_calendar import MonthDay
 from app.presentation.views.event_dialog import EventDialog
 
 from tests.ui import helpers, timeline_probe
@@ -59,11 +62,11 @@ async def test_flat_list_one_row_per_event_with_captions(app, wait_for):
     game-formatted ``start — end · name`` the delegate paints."""
     application, window = app
     await _create(window, wait_for, "Долгая зима",
-                  start=QDate(1200, 3, 3), end=QDate(1200, 3, 10))
+                  start=date(1200, 3, 3), end=date(1200, 3, 10))
     await _create(window, wait_for, "Совет первый",
-                  start=QDate(1200, 5, 5), end=QDate(1200, 5, 5))
+                  start=date(1200, 5, 5), end=date(1200, 5, 5))
     await _create(window, wait_for, "Совет второй",
-                  start=QDate(1200, 5, 5), end=QDate(1200, 5, 5))
+                  start=date(1200, 5, 5), end=date(1200, 5, 5))
     await helpers.wait_until_settled()
 
     tape = timeline_probe.tape(window)
@@ -88,7 +91,7 @@ async def test_open_ended_row_shows_infinity(app, wait_for):
     no closing date invented anywhere on the scale."""
     application, window = app
     await _create(window, wait_for, "Вечный лес",
-                  start=QDate(1200, 6, 1), open_ended=True)
+                  start=date(1200, 6, 1), open_ended=True)
     await helpers.wait_until_settled()
 
     tape = timeline_probe.tape(window)
@@ -110,11 +113,11 @@ async def test_window_chip_filters_by_intersection_and_resets(app, wait_for):
     earlier are in, a closed earlier event is out), «Сбросить» returns all."""
     application, window = app
     await _create(window, wait_for, "Через окно",
-                  start=QDate(1200, 7, 1), end=QDate(1200, 9, 5))
+                  start=date(1200, 7, 1), end=date(1200, 9, 5))
     await _create(window, wait_for, "До окна",
-                  start=QDate(1200, 6, 1), end=QDate(1200, 6, 20))
+                  start=date(1200, 6, 1), end=date(1200, 6, 20))
     await _create(window, wait_for, "Открытый раньше",
-                  start=QDate(1200, 5, 1), open_ended=True)
+                  start=date(1200, 5, 1), open_ended=True)
     await helpers.wait_until_settled()
     tape = timeline_probe.tape(window)
     assert len(tape.events) == 3
@@ -125,8 +128,9 @@ async def test_window_chip_filters_by_intersection_and_resets(app, wait_for):
     await wait_for(lambda: popup.isVisible())
 
     # Two taps in the popover: start arms, finish applies live (no «Применить»).
-    popup.start_calendar.clicked.emit(QDate(1200, 8, 10))
-    popup.start_calendar.clicked.emit(QDate(1200, 8, 20))
+    # The game-calendar grid taps answer with coordinates (piece C3b, D3).
+    popup.start_calendar.day_selected.emit(MonthDay(1200, 8, 10))
+    popup.start_calendar.day_selected.emit(MonthDay(1200, 8, 20))
     await helpers.wait_until_settled()
 
     visible = {event.name for event in tape.events}
@@ -161,7 +165,7 @@ async def test_row_tooltip_carries_name_and_range(app, wait_for):
     fits — and the island's bridge reports exactly that text on hover."""
     application, window = app
     await _create(window, wait_for, "Совет теней",
-                  start=QDate(1200, 4, 1), end=QDate(1200, 4, 9))
+                  start=date(1200, 4, 1), end=date(1200, 4, 9))
     await helpers.wait_until_settled()
 
     tape = timeline_probe.tape(window)
@@ -201,7 +205,7 @@ async def test_click_past_every_row_clears_every_layer(app, wait_for):
     and the detail panel — and is not an id-contract selection."""
     application, window = app
     await _create(window, wait_for, "Один день",
-                  start=QDate(1200, 2, 2), end=QDate(1200, 2, 2))
+                  start=date(1200, 2, 2), end=date(1200, 2, 2))
     await helpers.wait_until_settled()
     tape = timeline_probe.tape(window)
 
@@ -230,10 +234,10 @@ async def test_row_paints_the_description_line_under_the_caption(app, wait_for):
     application, window = app
     await _create(window, wait_for, "Зимний поход",
                   characteristics="Снег укрыл перевалы",
-                  start=QDate(1200, 11, 1), end=QDate(1200, 12, 20))
+                  start=date(1200, 11, 1), end=date(1200, 12, 20))
     await _create(window, wait_for, "Летопись",
                   characteristics="", backstory="летописи молчат",
-                  start=QDate(1200, 11, 2), end=QDate(1200, 11, 2))
+                  start=date(1200, 11, 2), end=date(1200, 11, 2))
     await helpers.wait_until_settled()
 
     tape = timeline_probe.tape(window)
@@ -262,7 +266,7 @@ async def test_list_rows_are_tied_to_the_column_field(app, wait_for):
     loose text on the window background."""
     application, window = app
     await _create(window, wait_for, "Один день",
-                  start=QDate(1200, 2, 2), end=QDate(1200, 2, 2))
+                  start=date(1200, 2, 2), end=date(1200, 2, 2))
     await helpers.wait_until_settled()
 
     card = timeline_probe.item(window, "timelineListCard")

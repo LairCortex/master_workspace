@@ -36,10 +36,17 @@ has no storage shape until the C4 wizard gives it one.
 Piece C3a (design D2) adds the coordinate storage codec:
 :func:`encode_coord` / :func:`decode_coord` turn a single ``GameCoord`` into
 the discriminated text ``M:year:month:day`` / ``I:year:index`` and back —
-an injective, exactly reversible cycle whose unparseable texts answer with
+ an injective, exactly reversible cycle whose unparseable texts answer with
 machine-readable reasons (``CoordCorrupted``) rather than raising; whether
 the coordinate exists in any calendar stays the shift policy's question,
 never the codec's.
+Piece C4 (design D6) adds the wizard draft codec: :func:`encode_draft` /
+:func:`decode_draft` wrap the same versioned custom-spec body together with
+the first unclosed wizard stage into the ``game_calendar_draft`` value — an
+unreadable or invalid draft is the caller's "no draft", never an exception —
+and the module now owns the three ``game_settings`` keys (``game_calendar``,
+``game_calendar_draft``, ``calendar_wizard_seen``) shared by the service and
+the fresh-schema seeding.
 """
 from __future__ import annotations
 
@@ -1018,6 +1025,31 @@ def build_shift_report(checks: Iterable[ShiftCheck], calendar: GameCalendar) -> 
     return ShiftReport(tuple(entries))
 
 
+# ── ``game_settings`` storage keys (roadmap pieces C2/C4, designs D1/D6) ──
+
+#: Key under which the game's active calendar setting lives in the per-game
+#: ``game_settings`` key/value table.
+CALENDAR_SETTINGS_KEY = "game_calendar"
+
+#: Key under which the calendar wizard keeps its work-in-progress draft
+#: (piece C4, design D6): the same versioned spec body as the main key, lined
+#: with a stage marker.  Never consulted on game open — a draft warms the
+#: wizard flow only, never the active calendar (spec «Черновик мастера
+#: календаря»).
+CALENDAR_DRAFT_KEY = "game_calendar_draft"
+
+#: Key of the binary «wizard seen» flag (C4): a game created by this version
+#: is seeded with :data:`CALENDAR_WIZARD_SEEN_NO`, a keyless game reads as an
+#: old one that never sees the wizard automatically, and the flag influences
+#: nothing but the wizard's auto-show (spec «Флаг просмотра мастера
+#: календаря»).
+CALENDAR_WIZARD_SEEN_KEY = "calendar_wizard_seen"
+
+#: The two stored texts of the flag.
+CALENDAR_WIZARD_SEEN_NO = "0"
+CALENDAR_WIZARD_SEEN_YES = "1"
+
+
 # ── Storage codec (roadmap piece C2, design D1) ──────────────────────────
 
 #: JSON format version :func:`encode_calendar` writes and
@@ -1117,6 +1149,14 @@ def decode_calendar(raw: str) -> CalendarDecoded | CalendarCorrupted:
         return CalendarCorrupted(
             (SpecProblem("corrupt_json", "the stored calendar is not parseable JSON"),)
         )
+    return _decode_calendar_data(data)
+
+
+def _decode_calendar_data(data: object) -> CalendarDecoded | CalendarCorrupted:
+    """Decode an already-parsed calendar payload — shared by
+    :func:`decode_calendar` and the wizard-draft reader below, so a draft's
+    ``spec`` body really goes through the very same validation path as the
+    main key (design D6: "переиспользует decode_calendar для тела спеки")."""
     if not isinstance(data, dict):
         return _corrupt_shape(
             f"stored calendar must be a JSON object, got {type(data).__name__}"
@@ -1217,6 +1257,149 @@ def _decode_custom(data: dict) -> CalendarDecoded | CalendarCorrupted:
     if spec_problems:
         return CalendarCorrupted(tuple(spec_problems))
     return CalendarDecoded(CustomCalendar(spec))
+
+
+# ── Wizard draft codec (roadmap piece C4, design D6) ──────────────────────
+
+#: JSON format version :func:`encode_draft` writes and :func:`decode_draft`
+#: reads; a draft stamped with any other version reads as corruption rather
+#: than being silently misread — mirroring :data:`CALENDAR_STORAGE_VERSION`.
+CALENDAR_DRAFT_VERSION = 1
+
+#: Machine codes of the wizard's build stages.  The stage stored in a draft is
+#: the first screen the assembly has NOT closed yet (design D6: "stage =
+#: следующая незакрытая"); the completed part of the form is already inside
+#: ``spec`` with defaults standing in for the unclosed stages.
+DRAFT_STAGE_WEEK = "week"
+DRAFT_STAGE_MONTHS = "months"
+DRAFT_STAGE_INTERCALARY = "intercalary"
+DRAFT_STAGE_PREVIEW = "preview"
+
+#: All stage codes a stored draft may carry.
+DRAFT_STAGES: tuple[str, ...] = (
+    DRAFT_STAGE_WEEK,
+    DRAFT_STAGE_MONTHS,
+    DRAFT_STAGE_INTERCALARY,
+    DRAFT_STAGE_PREVIEW,
+)
+
+
+@dataclass(frozen=True)
+class CalendarDraft:
+    """The wizard's half-built custom calendar: the spec assembled so far
+    (unclosed stages keep their defaults) plus the next open ``stage`` — the
+    two fields of design D6, with no behavior of its own.  A draft is data
+    only: it never touches the active calendar, captions or keys until
+    :meth:`CalendarSettingsService.promote_draft` raises it to the main key."""
+
+    spec: CalendarSpec
+    stage: str
+
+
+@dataclass(frozen=True)
+class DraftDecoded:
+    """Successful decode: the stored draft value describes this draft."""
+
+    draft: CalendarDraft
+
+
+@dataclass(frozen=True)
+class DraftCorrupted:
+    """Rejected decode: machine-readable reasons in the same
+    :class:`SpecProblem` shape as the calendar codec — ``corrupt_json``,
+    ``unknown_version``, ``corrupt_shape`` (draft envelope problems) plus the
+    spec-validation codes of a rejected spec body, which the shared payload
+    reader passes through verbatim.  A rejected draft simply means "no
+    draft" (spec «Битой черновик — как его нет»); the caller logs and starts
+    the flow fresh."""
+
+    reasons: tuple[SpecProblem, ...]
+
+
+def _draft_corrupt_shape(detail: str) -> DraftCorrupted:
+    """One malformed-envelope problem as a draft decode result."""
+    return DraftCorrupted((SpecProblem("corrupt_shape", detail),))
+
+
+def encode_draft(draft: CalendarDraft) -> str:
+    """Serialize a wizard draft into its stored JSON value (design D6).
+
+    ``{"v": 1, "spec": <custom value of the main codec>, "stage": "months"}``
+    — the spec body is produced by :func:`encode_calendar` itself, so the
+    draft and the main key share one spec representation and one evolution
+    rhythm.  Writing is the read's strict gate: the spec goes through the
+    ``CustomCalendar`` constructor (the same gate as the main key — a draft
+    half the wizard would consider validated must actually validate), and an
+    unknown stage has no storage shape and refuses with ``ValueError`` —
+    like ``encode_calendar``, this function never invents data.
+    """
+    if draft.stage not in DRAFT_STAGES:
+        raise ValueError(
+            f"unknown wizard draft stage {draft.stage!r}, "
+            f"expected one of {', '.join(repr(s) for s in DRAFT_STAGES)}"
+        )
+    inner = json.loads(encode_calendar(CustomCalendar(draft.spec)))
+    payload = {
+        "v": CALENDAR_DRAFT_VERSION,
+        "spec": inner,
+        "stage": draft.stage,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def decode_draft(raw: str) -> DraftDecoded | DraftCorrupted:
+    """Read a stored draft value back — never raising, exactly like
+    :func:`decode_calendar` beside it.
+
+    Every failure shape answers with reasons, and the service then reads the
+    draft as absent (spec «Битой черновик — как его нет»): an unparsable
+    envelope, a foreign format version, a ``spec`` that is not an object or
+    not a custom calendar value, an unknown stage, or a spec body the core
+    itself rejects (full reason list from ``validate``).  The spec body is
+    read through the shared payload decoder, so a draft cannot smuggle a
+    spec the main key would refuse; the «Стандартный» preset is not a draft
+    (the wizard assembles custom calendars only — design D6)."""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return DraftCorrupted(
+            (SpecProblem("corrupt_json", "the stored calendar draft is not parseable JSON"),)
+        )
+    if not isinstance(data, dict):
+        return _draft_corrupt_shape(
+            f"stored draft must be a JSON object, got {type(data).__name__}"
+        )
+    version = data.get("v")
+    if version != CALENDAR_DRAFT_VERSION:
+        return DraftCorrupted(
+            (
+                SpecProblem(
+                    "unknown_version",
+                    f"calendar draft format version {version!r} is not supported "
+                    f"(this app reads and writes version {CALENDAR_DRAFT_VERSION})",
+                ),
+            )
+        )
+    spec_raw = data.get("spec")
+    if not isinstance(spec_raw, dict):
+        return _draft_corrupt_shape(
+            f"draft spec must be a JSON object, got {type(spec_raw).__name__}"
+        )
+    stage = data.get("stage")
+    if stage not in DRAFT_STAGES:
+        return _draft_corrupt_shape(
+            f"unknown wizard stage {stage!r}, expected one of "
+            f"{', '.join(repr(s) for s in DRAFT_STAGES)}"
+        )
+    decoded = _decode_calendar_data(spec_raw)
+    if isinstance(decoded, CalendarCorrupted):
+        return DraftCorrupted(decoded.reasons)
+    assert isinstance(decoded, CalendarDecoded)
+    if not isinstance(decoded.calendar, CustomCalendar):
+        return _draft_corrupt_shape(
+            "a wizard draft wraps a custom calendar spec, not the standard preset"
+        )
+    return DraftDecoded(CalendarDraft(spec=decoded.calendar.spec, stage=stage))
 
 
 # ── Coordinate storage codec (roadmap piece C3a, design D2) ───────────────

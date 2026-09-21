@@ -44,6 +44,7 @@ class MainWindow(QMainWindow):
     llm_setup_requested = Signal()
     char_sheets_requested = Signal()
     table_host_requested = Signal()
+    calendar_wizard_requested = Signal()
 
     def __init__(
         self,
@@ -84,8 +85,9 @@ class MainWindow(QMainWindow):
         self.table_host_action.triggered.connect(self.table_host_requested.emit)
         char_sheets_menu.addAction(self.table_host_action)
 
-        # Настройки — с кусочка C2 здесь только тема: диалог переименования
-        # месяцев удалён, настройки календаря вернутся мастером C4.
+        # Настройки — from piece C4 on this carries the calendar wizard:
+        # «Календарь…» is its single manual entry (the wiring in
+        # ``Application`` builds the modal over the live game session).
         settings_menu = menu_bar.addMenu("Настройки")
 
         # Theme toggle (design D5): checkable state mirrors the current theme;
@@ -97,6 +99,14 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(self.theme_toggle_action)
         settings_menu.addSeparator()
         self._sync_theme_action()
+
+        # Calendar wizard entry (C4, spec calendar-wizard «Точки входа
+        # мастера»): available in every game, preset or custom, old or new.
+        self.calendar_wizard_action = QAction("Календарь…", self)
+        self.calendar_wizard_action.triggered.connect(
+            self.calendar_wizard_requested.emit
+        )
+        settings_menu.addAction(self.calendar_wizard_action)
 
         # Импорт из .xlsx — один пункт вместо пяти по типам сущностей
         # (rework-xlsx-import: единый файл пяти листов).

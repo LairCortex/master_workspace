@@ -1,9 +1,10 @@
 """E2E launcher scenarios: new game (1), open existing game (2), switch game (10)."""
 from __future__ import annotations
 
+from datetime import date
+
 import shutil
 
-from PySide6.QtCore import QDate
 
 from app.main import Application
 from app.presentation.views.game_launcher_dialog import GameLauncherDialog
@@ -48,7 +49,7 @@ async def test_launcher_open_existing_game_with_data(app, tmp_games_dir, wait_fo
     # Prepare the game's data through the real user path.
     await helpers.create_event_via_ui(
         window, wait_for, "Взятие Штурмграда",
-        characteristics="Осада", start_date=QDate(1200, 5, 1),
+        characteristics="Осада", start_date=date(1200, 5, 1),
     )
 
     # Copy the game into the (temporary) games dir — where the launcher looks.

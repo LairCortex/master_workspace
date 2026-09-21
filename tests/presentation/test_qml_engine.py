@@ -19,12 +19,29 @@ from pathlib import Path
 import app as app_package
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtQuickControls2 import QQuickStyle
+from PySide6.QtWidgets import QDialog
+import pytest
 import pytest_asyncio
 
 from app.main import Application
 from app.presentation import qml as qml_shell
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.views.calendar_wizard import CalendarWizardDialog
+
+
+@pytest.fixture(autouse=True)
+def autoaccept_calendar_wizard(monkeypatch):
+    """Games booted here are freshly created, so the C4 first-entry wizard
+    opens modally inside ``start()``; offscreen tests must never block on a
+    real modal loop. The stub only replaces ``exec`` — the dialog is still
+    constructed and the start() close semantics (preset + «seen» flag) still
+    run, so the engine contract under test is untouched."""
+    monkeypatch.setattr(
+        CalendarWizardDialog,
+        "exec",
+        lambda self, *args: QDialog.DialogCode.Rejected,
+    )
 
 
 def shell_engines(qapp) -> list[QQmlEngine]:
