@@ -48,7 +48,7 @@ from app.application.services.table_host_service import (
     PortBusyError,
     TableHostService,
 )
-from app.application.wiring import ApplicationWiring
+from app.presentation.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel

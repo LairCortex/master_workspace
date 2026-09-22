@@ -157,7 +157,7 @@ async def test_entity_dialog_construction_failure_rolls_back(app, wait_for, menu
     await helpers.wait_until_settled()
     char_id = query_db(db_path, "SELECT id FROM characters WHERE name = 'Целевой'")[0][0]
 
-    import app.application.wiring as wiring_mod
+    import app.presentation.wiring as wiring_mod
 
     class _BoomDialog:
         def __init__(self, *args, **kwargs):
