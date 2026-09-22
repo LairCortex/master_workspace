@@ -32,7 +32,6 @@ from app.domain.game_calendar import (
 )
 from app.infrastructure.db.database import create_session_factory
 from app.domain.game_calendar import DateField
-from app.infrastructure.db.models import resolve_coord
 from app.infrastructure.repositories.character_repository import (
     CharacterRepository,
 )

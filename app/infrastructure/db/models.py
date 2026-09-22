@@ -13,7 +13,6 @@ from app.domain.game_calendar import (
     CoordDecoded,
     DateField,
     GameCoord,
-    IntercalaryDay,
     InvalidGameDateError,
     MonthDay,
     StandardCalendar,

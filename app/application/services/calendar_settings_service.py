@@ -50,7 +50,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.date_era import era_key

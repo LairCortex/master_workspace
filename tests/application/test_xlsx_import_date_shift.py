@@ -215,7 +215,8 @@ class TestParsedDatesBecomeCoordinates:
         wb = _new_workbook()
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "2026-08-31", "Парк"]])
         plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        # the report is not asserted here — the ghost target dates are checked below
+        await _svc().apply_plan(plan, async_session)
 
         ghost = plan.ghosts[("location", "парк")]
         assert ghost.min_start == MonthDay(2026, 8, 30)

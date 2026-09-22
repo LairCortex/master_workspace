@@ -465,7 +465,6 @@ class TestStartupSweep:
         # the keys become correct and the next start moves nothing.
         await _put_setting(async_session, CALENDAR_SETTINGS_KEY, encode_calendar(_CUSTOM))
         event = await _add_event(async_session, date(2023, 1, 15), date(2023, 6, 1))
-        event_id = event.id
         service = CalendarSettingsService()
 
         with caplog.at_level(logging.INFO):  # the full game-open sequence
@@ -1106,7 +1105,8 @@ class TestPromoteDraft:
     async def test_error_midway_rolls_back_records_settings_and_draft(
         self, async_session
     ):
-        event = await _add_event(async_session, date(2023, 1, 15), None)
+        # the event is seeding only — the rollback check reads rows, not the ORM object
+        await _add_event(async_session, date(2023, 1, 15), None)
         await _put_setting(async_session, CALENDAR_SETTINGS_KEY, '{"v": 1, "kind": "standard"}')
         await _put_setting(
             async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
