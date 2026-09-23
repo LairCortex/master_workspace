@@ -13,7 +13,7 @@ import json
 
 import pytest
 from PySide6.QtCore import QPointF
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QAccessible, QKeySequence
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app.application.services.character_sheet_service import CharacterSheetService
@@ -585,3 +585,94 @@ async def test_page_remove_bridge_keeps_the_retired_rail_rules(
     confirm["answer"] = QMessageBox.StandardButton.Yes
     root.pageRemoveRequested.emit(1)
     assert len(dlg.view_model.template.pages) == 1
+
+
+# ── accessibility (change nri-0012-qml-accessibility, task 3.3) ─────────────
+
+def _iface(dlg, name: str) -> QAccessible:
+    iface = QAccessible.queryAccessibleInterface(_item(dlg, name))
+    assert iface is not None, f"no accessibility interface on {name!r}"
+    return iface
+
+
+async def test_chrome_controls_carry_map_names_via_interface(dlg):
+    # orientation combo, glyph rail buttons and the inline rename field are
+    # named by purpose; the roles are the unchanged stock ones.
+    orientation = _iface(dlg, "orientationCombo")
+    assert orientation.role() == QAccessible.Role.ComboBox
+    assert orientation.text(QAccessible.Name) == "Ориентация страницы"
+
+    rename = _iface(dlg, "railPageRenameField")
+    assert rename.role() == QAccessible.Role.EditableText
+    assert rename.text(QAccessible.Name) == "Переименование страницы"
+
+    for name, expected in (
+        ("railUpButton", "Вверх"),
+        ("railDownButton", "Вниз"),
+        ("railDeleteButton", "Удалить страницу"),
+        ("railAddButton", "Добавить страницу"),
+    ):
+        iface = _iface(dlg, name)
+        assert iface.role() == QAccessible.Role.Button
+        assert iface.text(QAccessible.Name) == expected
+
+
+async def test_geometry_fields_carry_map_names_when_panel_selected(dlg, qtbot):
+    vm = dlg.view_model
+    fid = vm.place(FieldType.TEXT, 10.0, 20.0)
+    vm.select(fid)
+    _pump(qtbot)
+
+    for name, expected in (
+        ("xField", "Позиция X"),
+        ("yField", "Позиция Y"),
+        ("wField", "Ширина"),
+        ("hField", "Высота"),
+        ("fontField", "Кегль"),
+        ("contentField", "Текст поля"),
+    ):
+        iface = _iface(dlg, name)
+        assert iface.role() == QAccessible.Role.EditableText
+        assert iface.text(QAccessible.Name) == expected
+
+
+async def test_branch_controls_carry_map_names(dlg, qtbot):
+    vm = dlg.view_model
+
+    number_fid = vm.place(FieldType.NUMBER, 10.0, 20.0)
+    vm.select(number_fid)
+    _pump(qtbot)
+    number = _iface(dlg, "numberField")
+    assert number.role() == QAccessible.Role.EditableText
+    assert number.text(QAccessible.Name) == "Число"
+    assert _iface(dlg, "minField").text(QAccessible.Name) == "Минимум"
+    assert _iface(dlg, "maxField").text(QAccessible.Name) == "Максимум"
+
+    dropdown_fid = vm.place(FieldType.DROPDOWN, 40.0, 50.0)
+    vm.select(dropdown_fid)
+    _pump(qtbot)
+    option = _iface(dlg, "optionInput")
+    assert option.role() == QAccessible.Role.EditableText
+    assert option.text(QAccessible.Name) == "Новая опция"
+    up = _iface(dlg, "optionUpButton")
+    assert up.role() == QAccessible.Role.Button
+    assert up.text(QAccessible.Name) == "Поднять опцию"
+    down = _iface(dlg, "optionDownButton")
+    assert down.role() == QAccessible.Role.Button
+    assert down.text(QAccessible.Name) == "Опустить опцию"
+    default = _iface(dlg, "defaultCombo")
+    assert default.role() == QAccessible.Role.ComboBox
+    assert default.text(QAccessible.Name) == "Значение по умолчанию"
+
+
+async def test_save_and_export_keep_their_stock_text_names(dlg):
+    # text buttons are NOT annotated (design D9 / map): offscreen the name slot
+    # stays empty while text carries the caption.
+    for name, caption in (("saveButton", "Сохранить"),
+                          ("exportPdfButton", "Экспорт в PDF…")):
+        item = _item(dlg, name)
+        iface = QAccessible.queryAccessibleInterface(item)
+        assert iface is not None
+        assert iface.role() == QAccessible.Role.Button
+        assert iface.text(QAccessible.Name) == ""
+        assert item.property("text") == caption

@@ -55,6 +55,10 @@ Rectangle {
                 objectName: "searchInput"
                 Layout.fillWidth: true
                 placeholderText: "Поиск по всем сущностям (от 2 символов)..."
+                // nri-0012 task 3.1 (usage-site name, design map): the typed
+                // query lives in the tree's value slot — the name slot carries
+                // the field's purpose.
+                Accessible.name: "Поиск по всем сущностям"
                 onTextChanged: searchBarVm.setQuery(text)
                 onAccepted: searchBarVm.requestSearch()
             }

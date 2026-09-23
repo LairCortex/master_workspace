@@ -27,6 +27,7 @@ import time
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAccessible
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -281,3 +282,18 @@ async def test_ok_blank_name_shows_warning_and_creates_nothing(dlg, service, box
 
     assert dlg.isVisible()
     assert len(await service.list_sheets()) == 0
+
+
+# ── accessibility (change nri-0012-qml-accessibility, task 3.4) ──────────────
+
+def test_license_and_name_zones_carry_map_names(dlg):
+    license_view = QAccessible.queryAccessibleInterface(
+        find_item(dlg.quick, "licenseView"))
+    assert license_view is not None
+    assert license_view.role() == QAccessible.Role.EditableText
+    assert license_view.text(QAccessible.Name) == "Текст лицензии"
+
+    name = QAccessible.queryAccessibleInterface(find_item(dlg.quick, "nameField"))
+    assert name is not None
+    assert name.role() == QAccessible.Role.EditableText
+    assert name.text(QAccessible.Name) == "Имя листа"

@@ -145,6 +145,9 @@ Rectangle {
                     selectByMouse: true
                     wrapMode: Text.WordWrap
                     text: sheetPresetVm.licenseText
+                    // nri-0012 task 3.4 (usage-site name, design map): the
+                    // license block is content without a caption above it.
+                    Accessible.name: "Текст лицензии"
                     color: root.fgColor
                     // The migrated dialog showed the license at the dialog's
                     // font size — never smaller than the captions (spec).
@@ -168,6 +171,9 @@ Rectangle {
             id: nameField
             objectName: "nameField"
             Layout.fillWidth: true
+            // nri-0012 task 3.4: the «Имя:» caption is paint; the tree name
+            // spells what the field renames (map).
+            Accessible.name: "Имя листа"
             text: sheetPresetVm.nameText
             onTextChanged: sheetPresetVm.setNameText(text)
         }

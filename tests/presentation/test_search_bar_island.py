@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from PySide6.QtGui import QAccessible
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from app.presentation import qml as qml_shell
@@ -64,6 +65,25 @@ def test_root_exists_and_all_interactive_controls_have_object_names(qtbot, tmp_p
     names = _all_object_names(bar)
     for name in OBJECT_NAMES:
         assert name in names
+
+
+def test_search_input_accessibility_name_other_controls_untouched(qtbot, tmp_path):
+    """nri-0012 task 3.1: the search field is named «Поиск по всем сущностям»
+    through the accessibility interface; the neighbouring text button keeps
+    the stock face (offscreen: empty name slot, caption in ``text``)."""
+    bar = _bar(qtbot, tmp_path)
+
+    field = QAccessible.queryAccessibleInterface(find_item(bar.quick, "searchInput"))
+    assert field is not None
+    assert field.role() == QAccessible.Role.EditableText
+    assert field.text(QAccessible.Name) == "Поиск по всем сущностям"
+
+    button_item = find_item(bar.quick, "searchButton")
+    button = QAccessible.queryAccessibleInterface(button_item)
+    assert button is not None
+    assert button.role() == QAccessible.Role.Button
+    assert button.text(QAccessible.Name) == ""
+    assert button_item.property("text") == "Найти"
 
 
 def test_facade_uses_child_context_with_only_vm_and_palette(qtbot, tmp_path):

@@ -127,6 +127,9 @@ Rectangle {
                 objectName: "orientationCombo"
                 Layout.preferredWidth: 160
                 model: ["Книжная", "Альбомная"]
+                // nri-0012 task 3.3 (usage-site name, design map): the combo
+                // shows data values only — the name slot carries the purpose.
+                Accessible.name: "Ориентация страницы"
                 // the template owns the orientation (D4); pagesLayout mirrors
                 // it into the combo (the migrated _sync_orientation direction,
                 // push only while the popup is not open)
@@ -291,6 +294,9 @@ Rectangle {
                                 objectName: "railPageRenameField"
                                 visible: railDelegate.editing
                                 anchors.fill: parent
+                                // nri-0012 task 3.3: the inline rename editor
+                                // of a rail page (label-less by design).
+                                Accessible.name: "Переименование страницы"
                                 onAccepted: commit()
                                 Keys.onEscapePressed: (event) => {
                                     // Esc reverts to the stored name (old
@@ -326,6 +332,9 @@ Rectangle {
                         objectName: "railUpButton"
                         Layout.fillWidth: true
                         text: "↑"
+                        // nri-0012 task 3.3: glyph-only button — the name is
+                        // the tooltip's action word (design map).
+                        Accessible.name: "Вверх"
                         enabled: root.pageCount > 1 && root.currentPage > 0
                         Nri.tooltip: "Вверх"
                         onClicked: root.vm.move_page(root.currentPage,
@@ -335,6 +344,7 @@ Rectangle {
                         objectName: "railDownButton"
                         Layout.fillWidth: true
                         text: "↓"
+                        Accessible.name: "Вниз"
                         Nri.tooltip: "Вниз"
                         enabled: root.pageCount > 1
                                  && root.currentPage < root.pageCount - 1
@@ -345,6 +355,7 @@ Rectangle {
                         objectName: "railDeleteButton"
                         Layout.fillWidth: true
                         text: "−"
+                        Accessible.name: "Удалить страницу"
                         Nri.tooltip: "Удалить страницу"
                         enabled: root.pageCount > 1
                         // the confirm (page has fields) is a native QMessageBox
@@ -355,6 +366,7 @@ Rectangle {
                         objectName: "railAddButton"
                         Layout.fillWidth: true
                         text: "+"
+                        Accessible.name: "Добавить страницу"
                         Nri.tooltip: "Добавить страницу после текущей"
                         enabled: root.pageCount > 0
                         onClicked: root.vm.add_page()
@@ -455,10 +467,14 @@ Rectangle {
 
                                     Repeater {
                                         model: [
-                                            {label: "X", name: "xField"},
-                                            {label: "Y", name: "yField"},
-                                            {label: "W", name: "wField"},
-                                            {label: "H", name: "hField"}
+                                            {label: "X", name: "xField",
+                                             accName: "Позиция X"},
+                                            {label: "Y", name: "yField",
+                                             accName: "Позиция Y"},
+                                            {label: "W", name: "wField",
+                                             accName: "Ширина"},
+                                            {label: "H", name: "hField",
+                                             accName: "Высота"}
                                         ]
                                         delegate: ColumnLayout {
                                             required property var modelData
@@ -475,6 +491,11 @@ Rectangle {
                                                 Layout.fillWidth: true
                                                 Layout.minimumWidth: 90
                                                 validator: DoubleValidator {bottom: 0}
+                                                // nri-0012 task 3.3 (design map):
+                                                // the bare X/Y/W/H captions are
+                                                // paint only — the tree names
+                                                // the fields by purpose.
+                                                Accessible.name: modelData.accName
                                                 Binding {
                                                     when: !geomField.activeFocus
                                                     target: geomField
@@ -500,6 +521,8 @@ Rectangle {
                                         Layout.columnSpan: 2
                                         Layout.preferredWidth: 120
                                         validator: DoubleValidator {bottom: 4; top: 72}
+                                        // nri-0012 task 3.3: same rule as X/Y/W/H.
+                                        Accessible.name: "Кегль"
                                         Binding {
                                             when: !fontField.activeFocus
                                             target: fontField
@@ -523,6 +546,9 @@ Rectangle {
                                     Layout.fillWidth: true
                                     Layout.minimumHeight: 64
                                     placeholderText: "Текст поля"
+                                    // nri-0012 task 3.3 (design map): the
+                                    // placeholder is not the tree's name slot.
+                                    Accessible.name: "Текст поля"
                                     color: root.fgColor
                                     background: Rectangle {
                                         color: root.canvasColor
@@ -555,6 +581,9 @@ Rectangle {
                                     visible: root.rowType === "number"
                                     Layout.fillWidth: true
                                     placeholderText: "Число (запятая допустима)"
+                                    // nri-0012 task 3.3: name = the map's short
+                                    // purpose (the placeholder stays paint-only).
+                                    Accessible.name: "Число"
                                     onEditingFinished: root.applyNumberDraft(text)
                                 }
                                 RowLayout {
@@ -572,6 +601,10 @@ Rectangle {
                                         objectName: "minField"
                                         Layout.fillWidth: true
                                         enabled: minCheck.checked
+                                        // nri-0012 task 3.3: «min» lives in the
+                                        // checkbox text only — the field needs
+                                        // the spelled-out name.
+                                        Accessible.name: "Минимум"
                                         onEditingFinished: root.applyBounds()
                                     }
                                 }
@@ -590,6 +623,7 @@ Rectangle {
                                         objectName: "maxField"
                                         Layout.fillWidth: true
                                         enabled: maxCheck.checked
+                                        Accessible.name: "Максимум"
                                         onEditingFinished: root.applyBounds()
                                     }
                                 }
@@ -648,6 +682,8 @@ Rectangle {
                                             objectName: "optionInput"
                                             Layout.fillWidth: true
                                             placeholderText: "Новая опция"
+                                            // nri-0012 task 3.3 (design map).
+                                            Accessible.name: "Новая опция"
                                             onAccepted: root.addOption()
                                         }
                                         ThemeButton {
@@ -666,11 +702,15 @@ Rectangle {
                                         ThemeButton {
                                             objectName: "optionUpButton"
                                             text: "↑"
+                                            // nri-0012 task 3.3: glyph-only —
+                                            // named by the action (design map).
+                                            Accessible.name: "Поднять опцию"
                                             onClicked: root.moveOption(-1)
                                         }
                                         ThemeButton {
                                             objectName: "optionDownButton"
                                             text: "↓"
+                                            Accessible.name: "Опустить опцию"
                                             onClicked: root.moveOption(1)
                                         }
                                         Item { Layout.fillWidth: true }
@@ -686,6 +726,10 @@ Rectangle {
                                             id: defaultCombo
                                             objectName: "defaultCombo"
                                             Layout.fillWidth: true
+                                            // nri-0012 task 3.3: the «Default:»
+                                            // caption is paint; the tree name
+                                            // spells the purpose once (map).
+                                            Accessible.name: "Значение по умолчанию"
                                             // the migrated empty-default entry
                                             model: ["", ...root.panelOptions]
                                             Binding {

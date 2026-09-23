@@ -163,6 +163,9 @@ Rectangle {
                     objectName: "typeNameField"
                     Layout.fillWidth: true
                     placeholderText: "Название типа"
+                    // nri-0012 task 3.5 (usage-site name, design map): the
+                    // placeholder is paint; the tree names the rename input.
+                    Accessible.name: "Название типа события"
                     onTextChanged: eventTypesVm.setNameText(text)
                     onEditingFinished: eventTypesVm.requestRename()
                 }
@@ -210,6 +213,8 @@ Rectangle {
                         id: upButton
                         objectName: "typeUpButton"
                         text: "↑"
+                        // nri-0012 task 3.5: glyph-only — named by the action.
+                        Accessible.name: "Поднять тип"
                         enabled: eventTypesVm.canMoveUp
                         onClicked: eventTypesVm.requestMove(-1)
                     }
@@ -217,6 +222,7 @@ Rectangle {
                         id: downButton
                         objectName: "typeDownButton"
                         text: "↓"
+                        Accessible.name: "Опустить тип"
                         enabled: eventTypesVm.canMoveDown
                         onClicked: eventTypesVm.requestMove(1)
                     }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import QPointF, Qt, QUrl
-from PySide6.QtGui import QColor, QImage, QKeySequence
+from PySide6.QtGui import QColor, QImage, QAccessible, QKeySequence
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
@@ -277,3 +277,61 @@ def test_live_retheme_changes_overlay_only(qtbot, qapp, runtime, tmp_path):
     assert host.storage == storage
     assert host.modified is modified
     assert plain.property("text") == "x A"
+
+
+# ── change nri-0012-qml-accessibility, task 1.3: the accessibility contract ──
+#
+# Offscreen pattern per design F6/D8: queryAccessibleInterface on the addressed
+# item; doAction drives the QML handlers. The field is EditableText and its
+# SetFocus action lands the focus on the plain text layer (design D6: via the
+# root's activeFocus delegation — Qt's attached type has no focus handler of
+# its own, the native setFocus hits the annotated item); a chip is a named
+# Link whose Press opens the mention through the same host slot the mouse uses.
+
+
+def test_field_is_editable_text_and_set_focus_reaches_plain_layer(
+    qtbot, qapp, runtime, tmp_path,
+):
+    widget, host, _ = load_field(qtbot, qapp, runtime, tmp_path)
+    host.storage = "plain text"
+    field = find_item(widget, "mentionField")
+    plain = find_item(widget, "mentionPlain")
+    widget.show()
+    qtbot.waitExposed(widget)
+    assert plain.property("activeFocus") is False
+
+    iface = QAccessible.queryAccessibleInterface(field)
+    assert iface is not None
+    assert iface.role() == QAccessible.Role.EditableText
+    actions = iface.actionInterface()
+    assert "SetFocus" in actions.actionNames()
+
+    actions.doAction("SetFocus")
+
+    assert plain.property("activeFocus") is True
+    assert widget.errors() == []
+
+
+def test_chip_is_named_link_and_press_opens_the_mention(
+    qtbot, qapp, runtime, tmp_path,
+):
+    widget, host, _ = load_field(qtbot, qapp, runtime, tmp_path)
+    host.storage = "x @[Alice](character:1) y"
+    widget.grab()
+    chip = find_item(widget, "mentionChip_character_1")
+    clicked = []
+    host.mentionClicked.connect(lambda t, i: clicked.append((t, i)))
+
+    iface = QAccessible.queryAccessibleInterface(chip)
+    assert iface is not None
+    assert iface.role() == QAccessible.Role.Link
+    assert iface.text(QAccessible.Name) == "Alice"
+    assert iface.text(QAccessible.Description) == "Открывает упомянутую сущность"
+    actions = iface.actionInterface()
+    assert "Press" in actions.actionNames()
+
+    actions.doAction("Press")
+
+    # The expected activateMention: the host slot behind the mouse click ran.
+    assert clicked == [("character", 1)]
+    assert widget.errors() == []

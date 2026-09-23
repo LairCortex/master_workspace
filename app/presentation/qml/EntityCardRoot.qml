@@ -111,6 +111,12 @@ Rectangle {
                         ThemeAiButton {
                             objectName: "entityGenerateButton"
                             proxy: entityCardVm.entityAiProxy
+                            // Task 2.4 (nri-0012): the wave button generates the
+                            // entity as a whole — the label names that target in
+                            // the tree (QML-side only: the wave itself is driven
+                            // through the proxy, this label never reaches it).
+                            fieldLabel: "Событие"
+                            Accessible.name: "Сгенерировать: " + fieldLabel
                         }
                     }
 
@@ -126,6 +132,10 @@ Rectangle {
                             Layout.fillWidth: true
                             text: entityCardVm.name
                             readOnly: entityCardVm.nameAiProxy.generating
+                            // nri-0012 task 2.4 (usage-site name, design map):
+                            // the typed value lives in the tree's value slot —
+                            // the name slot carries the field's purpose.
+                            Accessible.name: "Название"
                             onTextEdited: entityCardVm.name = text
                         }
                         ThemeAiButton {
@@ -134,6 +144,7 @@ Rectangle {
                             entityType: entityCardVm.entityType
                             fieldName: "name"
                             fieldLabel: "Название"
+                            Accessible.name: "Сгенерировать: " + fieldLabel
                         }
 
                         TitleText { text: "Рейтинг (1-20):" }
@@ -145,6 +156,7 @@ Rectangle {
                             to: 20
                             value: entityCardVm.rating
                             editable: true
+                            Accessible.name: "Рейтинг"
                             onValueModified: entityCardVm.setRating(value)
                             contentItem: TextInput {
                                 text: ratingSpin.textFromValue(ratingSpin.value, ratingSpin.locale)
@@ -173,6 +185,11 @@ Rectangle {
                             Layout.fillWidth: true
                             isoDate: entityCardVm.startIso
                             display: entityCardVm.startDisplay
+                            // nri-0012 task 2.4 (usage-site name, design map):
+                            // the tap opens the calendar popup; the name slot
+                            // carries the field's purpose (D5 description not
+                            // needed — the name spells the action's target).
+                            Accessible.name: "Дата начала"
                             onClicked: {
                                 const point = startDate.mapToItem(root, 0, 0)
                                 entityCardVm.requestDatePopup(
@@ -192,6 +209,7 @@ Rectangle {
                                 visible: !entityCardVm.noEnd
                                 isoDate: entityCardVm.endIso
                                 display: entityCardVm.endDisplay
+                                Accessible.name: "Дата конца"
                                 onClicked: {
                                     const point = endDate.mapToItem(root, 0, 0)
                                     entityCardVm.requestDatePopup(
@@ -215,10 +233,18 @@ Rectangle {
                             Layout.preferredHeight: 72
                             host: entityCardVm.characteristicsHost
                             enabled: !entityCardVm.characteristicsAiProxy.generating
+                            // nri-0012 task 2.4: the component brings the
+                            // EditableText role (1.3); the island names it.
+                            Accessible.name: "Характеристики"
                         }
                         ThemeAiButton {
                             objectName: "entityCharacteristicsAiButton"
                             proxy: entityCardVm.characteristicsAiProxy
+                            // The «✨» glyph alone is mute in the tree; the
+                            // name follows the field label (task 2.4). The
+                            // fieldLabel property itself stays unset — it
+                            // feeds the prompt, not the tree (behavior pin).
+                            Accessible.name: "Сгенерировать: Характеристики"
                         }
 
                         TitleText { text: "Предыстория:" }
@@ -228,10 +254,12 @@ Rectangle {
                             Layout.preferredHeight: 72
                             host: entityCardVm.backstoryHost
                             enabled: !entityCardVm.backstoryAiProxy.generating
+                            Accessible.name: "Предыстория"
                         }
                         ThemeAiButton {
                             objectName: "entityBackstoryAiButton"
                             proxy: entityCardVm.backstoryAiProxy
+                            Accessible.name: "Сгенерировать: Предыстория"
                         }
 
                         TitleText { text: "Музыка:" }
@@ -243,12 +271,18 @@ Rectangle {
                                 visible: entityCardVm.musicEditing || !entityCardVm.musicUrl
                                 text: entityCardVm.musicUrl
                                 placeholderText: "Ссылка на музыку"
+                                // nri-0012 task 2.4 (design map «Ссылка на
+                                // музыку»): the placeholder is not a name.
+                                Accessible.name: "Ссылка на музыку"
                                 onTextEdited: entityCardVm.setMusicUrl(text)
                             }
                             ThemeButton {
                                 objectName: "entityMusicOpenButton"
                                 visible: !entityCardVm.musicEditing && !!entityCardVm.musicUrl
                                 text: entityCardVm.musicUrl
+                                // The text is the URL (data, not a label), so
+                                // the usage-site name spells the action.
+                                Accessible.name: "Открыть ссылку на музыку"
                                 onClicked: entityCardVm.requestMusicOpen()
                             }
                         }
@@ -274,10 +308,15 @@ Rectangle {
                                 Layout.preferredHeight: 64
                                 host: modelData.mentionHost
                                 enabled: !modelData.aiProxy.generating
+                                // nri-0012 task 2.4: extra fields are named by
+                                // their model label (the same binding the
+                                // TitleText paints).
+                                Accessible.name: modelData.label
                             }
                             ThemeAiButton {
                                 objectName: "entityExtraAiButton_" + modelData.name
                                 proxy: modelData.aiProxy
+                                Accessible.name: "Сгенерировать: " + modelData.label
                             }
                         }
                     }

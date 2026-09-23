@@ -52,6 +52,8 @@ Rectangle {
             readOnly: true
             mono: true
             text: xlsxImportVm.formatText
+            // nri-0012 task 3.4 (usage-site name, design map).
+            Accessible.name: "Требования к формату файла"
         }
 
         RowLayout {
@@ -62,6 +64,10 @@ Rectangle {
                 objectName: "pathField"
                 Layout.fillWidth: true
                 placeholderText: "Выберите .xlsx файл…"
+                // nri-0012 task 3.4: the typed path rides the value slot; the
+                // name slot carries the field's purpose (the browse button is
+                // named by its own text next to it).
+                Accessible.name: "Путь к файлу .xlsx"
                 text: xlsxImportVm.path
                 onTextChanged: xlsxImportVm.path = text
             }

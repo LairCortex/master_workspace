@@ -16,7 +16,7 @@ import json
 
 import pytest
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QAccessible, QMouseEvent
 from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -587,3 +587,33 @@ async def test_popup_dropdown_closes_previous_and_keeps_orphan_first(dlg, qtbot)
     assert d.dropdown_menu is not None
     d._popup_dropdown("ghost-field", 0.0, 0.0)
     assert d.dropdown_menu is None
+
+
+# ── accessibility (change nri-0012-qml-accessibility, task 3.4) ──────────────
+
+def _iface(d, name: str):
+    iface = QAccessible.queryAccessibleInterface(_item(d, name))
+    assert iface is not None, f"no accessibility interface on {name!r}"
+    return iface
+
+
+async def test_value_editors_carry_map_names(dlg, qtbot):
+    d, ids, *_ = dlg
+    # line editor for a text field: the map names the field-agnostic editor.
+    d.view_model.select(ids["text"])
+    _pump(qtbot)
+    line = _iface(d, "fillTextInput")
+    assert line.role() == QAccessible.Role.EditableText
+    assert line.text(QAccessible.Name) == "Значение поля"
+
+    d.view_model.select(ids["ta"])
+    _pump(qtbot)
+    area = _iface(d, "fillTextarea")
+    assert area.role() == QAccessible.Role.EditableText
+    assert area.text(QAccessible.Name) == "Значение поля (многострочно)"
+
+    d.view_model.select(ids["dd"])
+    _pump(qtbot)
+    combo = _iface(d, "fillDropdown")
+    assert combo.role() == QAccessible.Role.ComboBox
+    assert combo.text(QAccessible.Name) == "Значение из списка"

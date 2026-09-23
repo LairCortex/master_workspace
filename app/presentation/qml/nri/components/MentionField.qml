@@ -35,6 +35,18 @@ Control {
     implicitWidth: 260
     implicitHeight: 96
 
+    // Accessibility contract (change nri-0012-qml-accessibility, task 1.3,
+    // design D6): the field is editable text, so its interface offers the
+    // SetFocus action; Qt's implementation focuses THIS item (the attached
+    // type exposes no focus handler), and the delegation below forwards that
+    // focus to the plain text layer, where keyboard input belongs. The
+    // guard makes it stable: once plain holds the focus the root's own
+    // activeFocus (which mirrors its child chain) changes no more.
+    // Name/description stay a usage-site decision (design D2).
+    onActiveFocusChanged: if (activeFocus && !plain.activeFocus)
+        plain.forceActiveFocus()
+    Accessible.role: Accessible.EditableText
+
     function syncFromHost() {
         if (!host || plain.text === host.display)
             return
@@ -195,6 +207,15 @@ Control {
 
                 objectName:
                     "mentionChip_" + modelData.type + "_" + modelData.id
+                // Accessibility contract (task 1.3): the chip opens the
+                // mentioned entity — a link whose Press action reuses the
+                // host entry point the MouseArea drives.
+                Accessible.role: Accessible.Link
+                Accessible.name: modelData.display
+                Accessible.description: "Открывает упомянутую сущность"
+                Accessible.onPressAction: control.host.activateMention(
+                    modelData.type, modelData.id
+                )
                 x: startRect.x
                 y: startRect.y
                 width: Math.max(1, endRect.x - startRect.x)

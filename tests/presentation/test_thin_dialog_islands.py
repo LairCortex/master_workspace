@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QAccessible, QImage, QPixmap
 
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
@@ -140,3 +140,33 @@ def test_doc_done_releases(qtbot, tmp_path):
     dlg = DocViewerDialog("t", tmp_path / "x.md")
     qtbot.addWidget(dlg)
     dlg.done(0)
+
+
+# ── accessibility (change nri-0012-qml-accessibility, task 3.4) ──────────────
+
+def _iface(quick, name: str):
+    iface = QAccessible.queryAccessibleInterface(find_item(quick, name))
+    assert iface is not None, f"no accessibility interface on {name!r}"
+    return iface
+
+
+def test_xlsx_import_zones_carry_map_names(qtbot):
+    dlg = XlsxImportDialog()
+    qtbot.addWidget(dlg)
+    fmt = _iface(dlg.quick, "formatArea")
+    assert fmt.role() == QAccessible.Role.EditableText
+    assert fmt.text(QAccessible.Name) == "Требования к формату файла"
+
+    path_field = _iface(dlg.quick, "pathField")
+    assert path_field.role() == QAccessible.Role.EditableText
+    assert path_field.text(QAccessible.Name) == "Путь к файлу .xlsx"
+
+
+def test_doc_viewer_textarea_carries_map_name(qtbot, tmp_path):
+    path = tmp_path / "doc.md"
+    path.write_text("hello", encoding="utf-8")
+    dlg = DocViewerDialog("T", path)
+    qtbot.addWidget(dlg)
+    doc_text = _iface(dlg.quick, "docText")
+    assert doc_text.role() == QAccessible.Role.EditableText
+    assert doc_text.text(QAccessible.Name) == "Текст документа"

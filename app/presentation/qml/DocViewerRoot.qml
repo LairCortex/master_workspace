@@ -26,6 +26,9 @@ Rectangle {
             readOnly: true
             mono: true
             text: docViewerVm.text
+            // nri-0012 task 3.4 (usage-site name, design map): the whole
+            // island is this one viewer — the name states what it shows.
+            Accessible.name: "Текст документа"
         }
     }
 }

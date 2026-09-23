@@ -36,6 +36,9 @@ Rectangle {
                 Layout.fillWidth: true
                 text: eventDialogVm.name
                 placeholderText: "Название события *"
+                // nri-0012 task 3.5 (usage-site name, design map): the typed
+                // name rides the value slot; the caption is paint.
+                Accessible.name: "Название события"
                 onTextEdited: eventDialogVm.name = text
             }
             ThemeAiButton {
@@ -44,6 +47,9 @@ Rectangle {
                 entityType: "event"
                 fieldName: "name"
                 fieldLabel: "Название"
+                // nri-0012 task 3.5: the «✨» glyph is mute in the tree; the
+                // name follows the fieldLabel the proxy prompt already uses.
+                Accessible.name: "Сгенерировать: " + fieldLabel
             }
 
             TitleText { text: "Дата начала *:" }
@@ -53,6 +59,9 @@ Rectangle {
                 Layout.fillWidth: true
                 isoDate: eventDialogVm.startIso
                 display: eventDialogVm.startDisplay
+                // nri-0012 task 3.5: the tap opens the calendar popup; the
+                // name slot carries the field's purpose (entity-card precedent).
+                Accessible.name: "Дата начала"
                 onClicked: {
                     const point = startDate.mapToItem(root, 0, 0)
                     eventDialogVm.requestDatePopup(
@@ -71,6 +80,7 @@ Rectangle {
                     visible: !eventDialogVm.noEnd
                     isoDate: eventDialogVm.endIso
                     display: eventDialogVm.endDisplay
+                    Accessible.name: "Дата конца"
                     onClicked: {
                         const point = endDate.mapToItem(root, 0, 0)
                         eventDialogVm.requestDatePopup(
@@ -95,12 +105,18 @@ Rectangle {
                     Layout.fillWidth: true
                     model: eventDialogVm.typeNames
                     currentIndex: eventDialogVm.selectedTypeIndex
+                    // nri-0012 task 3.5: the combo shows type names (data) —
+                    // the tree name is the purpose (design map).
+                    Accessible.name: "Тип события"
                     onActivated: eventDialogVm.selectType(index)
                 }
                 ThemeSwatch {
                     objectName: "eventTypeSwatch"
                     visible: eventDialogVm.selectedColorIndex > 0
                     colorIndex: Math.max(1, eventDialogVm.selectedColorIndex)
+                    // nri-0012 task 3.5: the dialog override of the group-1
+                    // swatch default («Цвет палитры №N» stays in the palette).
+                    accessibleName: "Цвет типа события"
                 }
             }
             Item { implicitWidth: 24 }
@@ -111,6 +127,9 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 72
                 host: eventDialogVm.characteristicsMentionHost
+                // nri-0012 task 3.5: the component brings the EditableText
+                // role (1.3); the island names it (entity-card precedent).
+                Accessible.name: "Характеристики"
             }
             ThemeAiButton {
                 objectName: "eventCharacteristicsAiButton"
@@ -118,6 +137,7 @@ Rectangle {
                 entityType: "event"
                 fieldName: "characteristics"
                 fieldLabel: "Характеристики"
+                Accessible.name: "Сгенерировать: " + fieldLabel
             }
 
             TitleText { text: "Предыстория *:" }
@@ -126,6 +146,7 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 72
                 host: eventDialogVm.backstoryMentionHost
+                Accessible.name: "Предыстория"
             }
             ThemeAiButton {
                 objectName: "eventBackstoryAiButton"
@@ -133,6 +154,7 @@ Rectangle {
                 entityType: "event"
                 fieldName: "backstory"
                 fieldLabel: "Предыстория"
+                Accessible.name: "Сгенерировать: " + fieldLabel
             }
         }
 
@@ -142,6 +164,12 @@ Rectangle {
             ThemeAiButton {
                 objectName: "eventEntityAiButton"
                 proxy: eventDialogVm.entityAiProxy
+                // nri-0012 task 3.5: the wave generates the event as a whole
+                // — the labelled target surfaces in the tree (the label is
+                // QML-side only here: this button has no fieldName, the wave
+                // rides the proxy unchanged).
+                fieldLabel: "Событие"
+                Accessible.name: "Сгенерировать: " + fieldLabel
             }
         }
 

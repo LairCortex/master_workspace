@@ -406,6 +406,27 @@ Rectangle {
             forceActiveFocus()
     }
 
+    // ───────────────────── accessibility facet press (task 2.5, D7) ─────────
+    // One accessibility Press runs the CURRENT mode's single-click branch
+    // through the very handlers the mouse drives — design mode selects the
+    // field (the pointer-tool branch's outcome), fill/read-only re-enters the
+    // existing ``onFillPress`` from the field's own view-space center (inline
+    // open / checkbox toggle / dropdown & image bridges all live THERE — no
+    // second press branch is invented here). The coordinates are the field's
+    // model roles mapped through the canvas's own pt↔px maths.
+    function pressFieldFromA11y(fieldId, page, fx, fy, fw, fh) {
+        if (designMode) {
+            vm.select(fieldId)
+            return
+        }
+        onFillPress(
+            toViewXP(originX(page) + fx + fw / 2),
+            toViewYP(originY(page) + fy + fh / 2),
+            false
+        )
+        giveCanvasFocus()
+    }
+
     // ───────────────────────────── keyboard (D5) ────────────────────────────
     // Keys.onPressed (Qt 6 exposes no Keys.onKeyPressed) runs the migrated
     // keyPressEvent branches: while an inline editor is open the keys belong
@@ -891,6 +912,54 @@ Rectangle {
                     readonly property bool isFrame:
                         model.type !== "image" && model.type !== "line"
 
+                    // Accessibility facet (change nri-0012-qml-accessibility,
+                    // task 2.5, design D7 + annotation map): every clickable
+                    // field carries ONE accessibility face — role by type
+                    // (text/textarea/number → editable text, checkbox → check
+                    // box with its state, image → the picture button, the
+                    // remaining selectable types → button), name = the model
+                    // content with the type as fallback, the image description
+                    // spelled out, and a Press replaying the CURRENT mode's
+                    // single-click branch (pressFieldFromA11y above). The
+                    // heading (label) and the divider (line) stay OUT of the
+                    // tree by contract, and D9 forbids both a NoRole stub and
+                    // an ignored node — hence a per-instance face (a Loader
+                    // that exists only for the annotated kinds) instead of an
+                    // always-present attached block on the delegate root: the
+                    // plain delegate item keeps NO accessible interface at all
+                    // (queryAccessibleInterface answers None there).
+                    Loader {
+                        objectName: "fieldA11yFace"
+                        anchors.fill: parent
+                        active: model.type !== "label" && model.type !== "line"
+                        sourceComponent: Item {
+                            // The accessibility test seam (the codebase's
+                            // objectName addressing convention; test_2.5).
+                            objectName: "fieldA11yFaceItem"
+                            anchors.fill: parent
+                            Accessible.role:
+                                model.type === "text" || model.type === "textarea"
+                                        || model.type === "number"
+                                    ? Accessible.EditableText
+                                    : model.type === "checkbox"
+                                        ? Accessible.CheckBox : Accessible.Button
+                            // Name rule of the design map: the delivered text,
+                            // the type as fallback; a checkbox's content is
+                            // its VALUE (state), so its name keeps the type.
+                            Accessible.name:
+                                model.content !== "" && model.type !== "checkbox"
+                                    ? String(model.content) : model.type
+                            Accessible.description: model.type === "image"
+                                ? "Открыть изображение" : ""
+                            Accessible.checked: model.type === "checkbox"
+                                && model.content === "true"
+                            Accessible.onPressAction: canvas.pressFieldFromA11y(
+                                model.id, model.page, model.x, model.y,
+                                model.w, model.h
+                            )
+                        }
+                    }
+
                     // label/text/textarea/number/dropdown/rect/checkbox: one
                     // frame pass; image draws its own dashed frame, line is
                     // an axis fill (the migrated paint branches).
@@ -1109,6 +1178,9 @@ Rectangle {
             id: inlineFieldComponent
             TextField {
                 objectName: "sheetInlineEditor"
+                // Task 2.5: the reused editor names itself in the tree (the
+                // value slot stays the editor's own text, штатно).
+                Accessible.name: "Редактирование поля"
                 leftPadding: 1
                 rightPadding: 1
                 topPadding: 0
@@ -1141,6 +1213,7 @@ Rectangle {
             id: inlineAreaComponent
             TextArea {
                 objectName: "sheetInlineEditor"
+                Accessible.name: "Редактирование поля"
                 wrapMode: TextArea.WordWrap
                 font.family: canvas.sheetFontFamily
                 font.pointSize: Math.max(1, Math.round(inlineLoader.fieldFontSize * canvas.zoom))

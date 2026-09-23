@@ -154,6 +154,10 @@ Rectangle {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 Nri.tooltip: "Добавить событие (правый клик — другие сущности)"
+                // Accessibility (change nri-0012-qml-accessibility, task 2.1):
+                // the button's only glyph is «+», so its name is the usage-site
+                // label, mirroring the tooltip's primary action.
+                Accessible.name: "Добавить событие"
                 onClicked: root.addRequested()
                 // Right click opens the native «+» menu through the facade
                 // (system-popups rule); the left click keeps its channel.

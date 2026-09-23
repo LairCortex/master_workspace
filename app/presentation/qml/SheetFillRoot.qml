@@ -208,6 +208,9 @@ Rectangle {
                         objectName: "fillTextInput"
                         visible: root.rowType === "text" || root.rowType === "number"
                         Layout.fillWidth: true
+                        // nri-0012 task 3.4 (usage-site name, design map): the
+                        // editor is field-agnostic — the tree names its purpose.
+                        Accessible.name: "Значение поля"
                         Binding {
                             when: !textInput.activeFocus
                             target: textInput
@@ -224,6 +227,8 @@ Rectangle {
                         visible: root.rowType === "textarea"
                         Layout.fillWidth: true
                         Layout.minimumHeight: 80
+                        // nri-0012 task 3.4: the multiline sibling of the line editor.
+                        Accessible.name: "Значение поля (многострочно)"
                         color: root.fgColor
                         background: Rectangle {
                             color: root.canvasColor
@@ -268,6 +273,8 @@ Rectangle {
                         objectName: "fillDropdown"
                         visible: root.rowType === "dropdown"
                         Layout.fillWidth: true
+                        // nri-0012 task 3.4: options are data — purpose in name.
+                        Accessible.name: "Значение из списка"
                         model: root.displayedOptions
                         // ComboBox.currentText is read-only — mirror by index
                         // (the migrated setCurrentText direction of travel)

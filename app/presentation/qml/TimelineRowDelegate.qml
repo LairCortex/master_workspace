@@ -54,6 +54,16 @@ Item {
     // exactly one row kind.
     objectName: "eventRow"
 
+    // Accessibility contract (change nri-0012-qml-accessibility, task 2.1,
+    // design D2/D3): the row is a list item, its name is the delivered
+    // caption, and a single Press takes the DOUBLE-click path — the event
+    // open (accessibility has no double press; the review opens with one
+    // activation). The mouse paths below stay untouched (single = select).
+    Accessible.role: Accessible.ListItem
+    Accessible.name: row.caption
+    Accessible.description: "Открывает событие"
+    Accessible.onPressAction: row.rowDoubleClicked()
+
     // Row geometry: mark at TEXT_LEFT_PAD, mark side MARK_SIZE, text at
     // TEXT_INDENT = 8 + 8 + 4, right bleed TEXT_LEFT_PAD (the migrated
     // ladder row's rhythm, kept identical so the mark/text pair reads the

@@ -71,6 +71,10 @@ Rectangle {
                         placeholderText: "Базовый URL до /v1, например https://api.openai.com/v1"
                             + " или http://localhost:11434/v1 (Ollama)"
                         text: llmSetupVm.endpoint
+                        // nri-0012 task 3.2 (usage-site name, design map): the
+                        // typed URL lives in the value slot; the name slot
+                        // carries the field's purpose.
+                        Accessible.name: "Endpoint"
                         onTextChanged: llmSetupVm.endpoint = text
                     }
 
@@ -80,6 +84,7 @@ Rectangle {
                         Layout.fillWidth: true
                         placeholderText: "Название модели, например gpt-4o-mini или llama3"
                         text: llmSetupVm.model
+                        Accessible.name: "Модель"
                         onTextChanged: llmSetupVm.model = text
                     }
 
@@ -90,6 +95,7 @@ Rectangle {
                         echoPassword: true
                         placeholderText: "Ключ API — необязательно для локальных серверов"
                         text: llmSetupVm.apiKey
+                        Accessible.name: "Ключ API"
                         onTextChanged: llmSetupVm.apiKey = text
                     }
                 }
@@ -138,6 +144,8 @@ Rectangle {
                     Layout.fillHeight: true
                     placeholderText: "Опишите ваш мир: сеттинг, эпоха, стиль, ключевые особенности..."
                     text: llmSetupVm.worldPrompt
+                    // nri-0012 task 3.2: the world-description zone of the map.
+                    Accessible.name: "Описание мира"
                     onTextChanged: llmSetupVm.worldPrompt = text
                 }
             }
@@ -184,6 +192,10 @@ Rectangle {
                                 Layout.fillWidth: true
                                 placeholderText: modelData.placeholder
                                 text: modelData.value
+                                // nri-0012 task 3.2: the repeater rows bind the
+                                // name to the same model label the TitleText
+                                // paints (D4: label is already a binding).
+                                Accessible.name: modelData.label
                                 onTextChanged: llmSetupVm.setFieldValue(
                                     fieldPage.pageIndex, index, text)
                             }

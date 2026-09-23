@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QAccessible
 from PySide6.QtQuick import QQuickItem
 
 from app.domain import entity_registry
@@ -45,6 +46,43 @@ def test_root_object_names_cover_every_control(dialog):
     ):
         assert expected in names, expected
     assert root.property("defaultButton").objectName() == "saveButton"
+
+
+def _iface(widget, object_name: str):
+    iface = QAccessible.queryAccessibleInterface(find_item(widget, object_name))
+    assert iface is not None, f"no accessibility interface on {object_name!r}"
+    return iface
+
+
+def test_accessibility_names_on_all_four_zones(dialog):
+    """nri-0012 task 3.2: endpoint/model/key/world carry the design-map names
+    through the interface, and the field-prompt repeater names itself by the
+    model label (the same string its TitleText paints)."""
+    quick = dialog.quick
+
+    endpoint = _iface(quick, "endpointField")
+    assert endpoint.role() == QAccessible.Role.EditableText
+    assert endpoint.text(QAccessible.Name) == "Endpoint"
+
+    model = _iface(quick, "modelField")
+    assert model.role() == QAccessible.Role.EditableText
+    assert model.text(QAccessible.Name) == "Модель"
+
+    key = _iface(quick, "keyField")
+    assert key.role() == QAccessible.Role.EditableText
+    assert key.text(QAccessible.Name) == "Ключ API"
+
+    # The world page sits on StackLayout page 1: show it before querying.
+    dialog.vm.goNext()
+    world = _iface(quick, "worldPromptArea")
+    assert world.role() == QAccessible.Role.EditableText
+    assert world.text(QAccessible.Name) == "Описание мира"
+
+
+def test_field_prompt_repeater_names_by_model_label(dialog):
+    prompt = _iface(dialog.quick, "fieldPrompt_event_name")
+    assert prompt.role() == QAccessible.Role.EditableText
+    assert prompt.text(QAccessible.Name) == "Название"
 
 
 def test_field_prompt_inputs_come_from_field_config(dialog):

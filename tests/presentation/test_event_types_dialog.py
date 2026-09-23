@@ -27,7 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QPointF, QUrl
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAccessible, QColor
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QDialog
@@ -221,6 +221,43 @@ class TestIslandContract:
         # Write-through: no Save button and no confirm affordance exists.
         assert "saveButton" not in names
         assert "confirmButton" not in names
+
+    def test_map_names_surface_through_the_accessibility_interface(
+        self, qtbot, island_palette
+    ):
+        """nri-0012 task 3.5: the rename field, the arrows and the palette
+        swatches are addressable by name through the interface; text buttons
+        keep the stock face (empty name slot offscreen, caption in ``text``)."""
+        widget = _load_island(qtbot, _island_vm(), island_palette)
+
+        def iface(object_name: str):
+            found = QAccessible.queryAccessibleInterface(
+                find_item(widget, object_name))
+            assert found is not None, object_name
+            return found
+
+        name_field = iface("typeNameField")
+        assert name_field.role() == QAccessible.Role.EditableText
+        assert name_field.text(QAccessible.Name) == "Название типа события"
+
+        up = iface("typeUpButton")
+        assert up.role() == QAccessible.Role.Button
+        assert up.text(QAccessible.Name) == "Поднять тип"
+        down = iface("typeDownButton")
+        assert down.role() == QAccessible.Role.Button
+        assert down.text(QAccessible.Name) == "Опустить тип"
+
+        # The swatch keeps the group-1 component default: «Цвет палитры №N»
+        # (the map spells it, so no island override — index follows colorIndex).
+        swatch2 = iface("typeColorSwatch2")
+        assert swatch2.role() == QAccessible.Role.RadioButton
+        assert swatch2.text(QAccessible.Name) == "Цвет палитры №2"
+
+        add_item = find_item(widget, "typeAddButton")
+        add = QAccessible.queryAccessibleInterface(add_item)
+        assert add.role() == QAccessible.Role.Button
+        assert add.text(QAccessible.Name) == ""
+        assert add_item.property("text") == "Добавить"
 
     def test_exactly_eight_chart_swatches_and_no_free_color_control(
         self, qtbot, island_palette

@@ -45,6 +45,18 @@ Rectangle {
             height: Math.max(64, content.implicitHeight + 16)
             tintColor: ratingTint
 
+            // Accessibility contract (change nri-0012-qml-accessibility,
+            // task 2.2, design D2/D3): a card row is a list item named by the
+            // entity name; a single Press takes the double-click path — the
+            // card open through the VM (accessibility has no double press).
+            // The mouse MouseArea below stays untouched.
+            Accessible.role: Accessible.ListItem
+            Accessible.name: rowCard.entityName
+            Accessible.description: "Открывает карточку"
+            Accessible.onPressAction: detailPanelVm.activate(
+                rowCard.entityType, rowCard.entityId
+            )
+
             RowLayout {
                 id: content
                 anchors.fill: parent
@@ -63,6 +75,17 @@ Rectangle {
                         source: rowCard.imageSource
                         fillMode: Image.PreserveAspectFit
                         asynchronous: true
+                        // Accessibility (task 2.2): the picture is the
+                        // «open the image» button; without an entity name the
+                        // generic «Изображение» names it. The MouseArea beside
+                        // it keeps driving the same VM call for the mouse.
+                        Accessible.role: Accessible.Button
+                        Accessible.name: rowCard.entityName !== ""
+                            ? rowCard.entityName : "Изображение"
+                        Accessible.description: "Открыть изображение"
+                        Accessible.onPressAction: detailPanelVm.requestImage(
+                            rowCard.entityType, rowCard.entityId
+                        )
                     }
 
                     MouseArea {

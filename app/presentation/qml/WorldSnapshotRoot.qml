@@ -110,6 +110,26 @@ Rectangle {
                     height: rowKind === "sectionHeader" ? 36 : 34
                     Nri.tooltip: tooltipHtml
 
+                    // Accessibility contract (change nri-0012-qml-accessibility,
+                    // task 2.3, design map «WorldSnapshot строка»): the entity
+                    // row is a list item whose Press runs the selection jump
+                    // (vm.select(index) — the mouse's single-click channel);
+                    // the section header is the expand/collapse button. Both
+                    // names are the delivered displayText (the ▸/▾ glyph is
+                    // paint, not the name). The MouseArea below stays the
+                    // mouse path.
+                    Accessible.role: rowKind === "sectionHeader"
+                        ? Accessible.Button : Accessible.ListItem
+                    Accessible.name: displayText
+                    Accessible.description: rowKind === "sectionHeader"
+                        ? "Развернуть или свернуть раздел" : "Переходит к сущности"
+                    Accessible.onPressAction: {
+                        if (rowKind === "sectionHeader")
+                            worldSnapshotVm.toggleSection(index)
+                        else
+                            worldSnapshotVm.select(index)
+                    }
+
                     ThemeRatingCard {
                         anchors.fill: parent
                         visible: rowKind === "entityRow"

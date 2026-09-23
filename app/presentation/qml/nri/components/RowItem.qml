@@ -40,6 +40,16 @@ Rectangle {
     implicitHeight: rowText.implicitHeight + 2 * Tokens.px(islandTokens, "space.xs", 4)
     color: row.selected ? row.accentColor : "transparent"
 
+    // Accessibility contract (change nri-0012-qml-accessibility, task 1.1,
+    // design D2/D3/D4): the role is the component's (a list row is always a
+    // list item), the name defaults to the row's own text, and a single
+    // Press activates — accessibility has no double press, so the press
+    // handler mirrors the double-click path, never the selection one. The
+    // mouse paths below stay untouched.
+    Accessible.role: Accessible.ListItem
+    Accessible.name: rowText.text
+    Accessible.onPressAction: row.activateRequested()
+
     Text {
         id: rowText
         anchors.left: parent.left
