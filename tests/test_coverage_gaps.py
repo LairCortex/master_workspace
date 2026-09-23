@@ -269,10 +269,12 @@ async def test_entity_service_skips_unknown_relation_attrs(async_session):
 # ── AI button wiring guard ────────────────────────────────────────────────
 
 def test_wire_ai_buttons_without_buttons_attr():
-    from app.main import Application
+    from app.presentation.ai_generation_controller import AiGenerationController
 
-    # A dialog object without get_ai_buttons must be a silent no-op
-    Application._wire_ai_buttons(object(), object())
+    # The controller-level gate (audit B1 moved the wiring out of Application):
+    # a dialog object without get_ai_buttons must be a silent no-op; the
+    # dependencies below are never touched before the gate short-circuits.
+    AiGenerationController(llm_vm=None, service=None).wire(object())
 
 
 # ── domain: rating validation ───────────────────────────────────────────────

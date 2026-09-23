@@ -29,6 +29,7 @@ from app.application.services.xlsx_template import (
     template_headers,
 )
 from app.domain.game_calendar import StandardCalendar
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db.models import (
     CharacterModel,
     EventModel,
@@ -124,7 +125,7 @@ async def _names(session, model) -> set[str]:
 
 class TestTemplateAnalyzeAndImport:
     async def test_analyzes_with_zero_problems(self, tmp_path, async_session):
-        plan = await _svc().analyze_file(_generated_template(tmp_path), async_session)
+        plan = await _svc().analyze_file(_generated_template(tmp_path), GameSessionUoW(async_session))
         assert plan.fatal_errors == []
         assert plan.skipped_rows == []
         assert plan.warnings == []
@@ -133,8 +134,8 @@ class TestTemplateAnalyzeAndImport:
         assert not plan.has_fatal
 
     async def test_imports_cleanly_into_empty_db(self, tmp_path, async_session):
-        plan = await _svc().analyze_file(_generated_template(tmp_path), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_generated_template(tmp_path), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         expected_entities = sum(len(rows) for rows in SAMPLE_ROWS.values())
         assert report.created == expected_entities  # every sample row is unique
@@ -148,8 +149,8 @@ class TestTemplateAnalyzeAndImport:
         assert await _names(async_session, ItemModel) == {"Дневник"}
 
     async def test_link_columns_install_cross_sheet_links(self, tmp_path, async_session):
-        plan = await _svc().analyze_file(_generated_template(tmp_path), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_generated_template(tmp_path), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         # 11 distinct edges over the importable M2M tables; the samples
         # repeat edges from the opposite sheet on purpose (dedup).
@@ -177,8 +178,8 @@ class TestTemplateAnalyzeAndImport:
         assert {c.name for c in diary.characters} == {"Мария"}
 
     async def test_scalar_and_date_and_rating_columns_land(self, tmp_path, async_session):
-        plan = await _svc().analyze_file(_generated_template(tmp_path), async_session)
-        await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_generated_template(tmp_path), GameSessionUoW(async_session))
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         ball = (await async_session.execute(
             select(EventModel).where(EventModel.name == "Бал")
@@ -207,7 +208,7 @@ class TestTemplateAnalyzeAndImport:
         assert zagovor.start_key < zagovor.end_key < 0
 
     async def test_event_type_autocreation_is_reported(self, tmp_path, async_session):
-        plan = await _svc().analyze_file(_generated_template(tmp_path), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_generated_template(tmp_path), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert len(report.decisions) == 2  # «Праздник» + «Дуэль»
         assert all("Автосоздание" in d for d in report.decisions)

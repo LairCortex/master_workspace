@@ -16,8 +16,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.domain.theme import DEFAULT_THEME, THEMES
+from app.infrastructure.paths import NRI_MANAGER_DIR
 
-CONFIG_DIR = Path.home() / ".nri_manager"
+CONFIG_DIR = NRI_MANAGER_DIR
 
 
 def default_config_file() -> Path:

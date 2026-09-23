@@ -44,13 +44,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from PySide6.QtCore import QPoint, QRect, QSize, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QMenu, QVBoxLayout, QWidget
 
+from app.domain.enums.entity_type import EntityType
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.qml_palette import QmlPalette
@@ -64,12 +65,14 @@ ROOT_QML = str(Path(QML_IMPORT_PATH) / "TimelineRoot.qml")
 #: ``(caption, entity_type)`` pairs; the entity type is the payload of
 #: ``add_entity_requested`` (``None`` = the event item, which emits
 #: ``add_event_requested`` instead), before the «Типы событий…» separator.
+# The menu's captions are this dialog's UI copy; the entity type payloads are
+# the registry's canonical keys (wave 3, A4) so no string id drifts here.
 ADD_MENU_ITEMS: tuple[tuple[str, str | None], ...] = (
     ("Новое событие", None),
-    ("Новый персонаж", "character"),
-    ("Новая локация", "location"),
-    ("Новая организация", "organization"),
-    ("Новый предмет", "item"),
+    ("Новый персонаж", EntityType.CHARACTER.value),
+    ("Новая локация", EntityType.LOCATION.value),
+    ("Новая организация", EntityType.ORGANIZATION.value),
+    ("Новый предмет", EntityType.ITEM.value),
 )
 
 #: Window knob normalized: ``None`` and ``(None, None)`` both mean «Все дни».
@@ -102,7 +105,8 @@ def _window_knob_readable(window) -> bool:
     return isinstance(window, tuple) and len(window) == 2
 
 
-class TimelineWidget(QWidget):
+class TimelineWidget(IslandDialogMixin, QWidget):
+    island_context_names = {"vm": "_vm"}
     """Left-panel timeline: a QML flat-list island under the panel facade.
 
     The header chrome (title, «Выбор даты» chip, «+») lives in the island;
@@ -154,30 +158,16 @@ class TimelineWidget(QWidget):
         # the bridge after it — the scene never outlives-observes a destroyed
         # palette (the deferred ``closeEvent`` below covers the same hazard
         # when the panel is closed with a QML handler on the stack).
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+        # Context contract: the QSS-``palette`` name is shadowed by Qt Quick
+        # Controls, hence ``islandPalette`` (LauncherRoot.qml contract); the VM
+        # binds as ``vm`` (TimelineRoot.qml), aliasing its own attribute name.
+        # A child context of the shared engine — not its root (see above).
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self._root_qml = root_qml  # facade tests inject a stub root
         self._palette = QmlPalette(self._theme, parent=self)
-        # The QSS-``palette`` name is shadowed by Qt Quick Controls, hence
-        # ``islandPalette`` (LauncherRoot.qml context contract).
-        self._context = island_context(
-            engine, self, vm=self._vm, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        # Shared tooltip bridge: parented to the island, exposed as
-        # ``tooltipBridge`` for the root's HoverHandlers.
-        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
-        # ``root_qml`` exists for the facade tests only: until the production
-        # root ships, an injected stub declares the contract; a missing file
-        # (assert-on-missing) is the same honest failure the launcher ships.
-        self._component = load_island(
-            self.quick, self._context, root_qml if root_qml else ROOT_QML
-        )
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        self.setup_island()
         outer.addWidget(self.quick)
 
-        self._root = self.quick.rootObject()
         self._wire_island()
 
         # The chrome mirrors ride the ViewModel's change signal too: writes
@@ -382,20 +372,17 @@ class TimelineWidget(QWidget):
         self._set_window_caption((start, end))
         self.window_changed.emit(start, end)
 
-    # ── teardown (the launcher's deferred release) ──────────────────────────
+    # ── island lifecycle — IslandDialogMixin (release deferred per above) ──
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
+    def island_source(self) -> str:
+        # ``root_qml`` exists for the facade tests only: until the production
+        # root ships, an injected stub declares the contract; a missing file
+        # (assert-on-missing) is the same honest failure the launcher ships.
+        return self._root_qml or ROOT_QML
 
-    def closeEvent(self, event) -> None:  # Qt API name
-        """Release the island against its VM/palette context properties.
-
-        A QML-originated handler may still be on the stack when the panel
-        closes (e.g. a menu path closing the window it lives in), and
-        destroying the scene synchronously there is fatal; the one-shot timer
-        bound to ``self`` runs when the JS stack has unwound and never after
-        the panel is gone. If the whole window is torn down without a close
-        event, the creation order above (island before palette) keeps the
-        same invariant at child destruction."""
-        QTimer.singleShot(0, self, self._release_island)
-        super().closeEvent(event)
+    def load_island_scene(self, quick) -> None:
+        super().load_island_scene(quick)
+        # Shared tooltip bridge: parented to the island, exposed as
+        # ``tooltipBridge`` for the root's HoverHandlers (after the context
+        # exists; the hand-written order preserved).
+        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)

@@ -39,7 +39,7 @@ from app.infrastructure.repositories.character_sheet_repository import (
 )
 from app.presentation.viewmodels.sheet_list_view_model import TAB_INSTANCES
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
-from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
+from app.domain.character_sheets.preset_catalog import PresetCatalog
 from tests.presentation.qml_helpers import (
     click_item,
     find_item,

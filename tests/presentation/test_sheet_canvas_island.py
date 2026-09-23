@@ -851,7 +851,7 @@ class TestDesignGestures:
         flick(w).setProperty("contentY", 700.0 * zoom(w))
         _pump(2)
         # Drop far into page 1 — the page change is the VM's computation
-        # (design D5: drag_move/commit_drag know the gutter).
+        # (design D5: drag_move/apply_drag know the gutter).
         drag_pt(w, (110.0, 710.0), (140.0, PAGE_HEIGHT_PT + 140.0))
         _pump(3)
         assert vm2.page_of(a) == 1

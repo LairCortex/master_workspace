@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import app.domain.date_era as date_era_module
 from app.domain.date_era import (
     BC_YEAR_STEP,
     MAX_YEAR,
@@ -187,3 +188,22 @@ class TestIntercalaryKeyInContinuousRow:
         reset_current_calendar()
         with pytest.raises(InvalidGameDateError):  # пресет вставных не знает
             era_key(IntercalaryDay(44, 0), True)
+
+
+class TestEraKeyResolverBinding:
+    """Task 6.7: the calendar dispatch arrives through an explicit hand-off —
+    importing game_calendar binds the resolver, and without a binding era_key
+    refuses loudly instead of reaching back through a lazy circular import."""
+
+    def test_game_calendar_import_binds_the_era_key_resolver(self):
+        import app.domain.game_calendar as game_calendar_module
+
+        assert date_era_module._ERA_KEY_RESOLVER is not None
+        # the bound resolver is game_calendar's own dispatch (single source)
+        assert date_era_module._ERA_KEY_RESOLVER is game_calendar_module._resolve_era_key
+
+    def test_unbound_resolver_refuses_with_import_hint(self, monkeypatch):
+        monkeypatch.setattr(date_era_module, "_ERA_KEY_RESOLVER", None)
+        with pytest.raises(RuntimeError, match="app.domain.game_calendar"):
+            era_key(date(2025, 1, 1))
+        assert date_era_module._ERA_KEY_RESOLVER is None  # refusal mutates nothing

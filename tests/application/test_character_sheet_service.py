@@ -36,7 +36,7 @@ from app.domain.entities.character_sheet import (
 from app.infrastructure.db.database import create_engine as app_create_engine
 from app.infrastructure.db.models import Base, CharacterSheetModel
 from app.infrastructure.repositories.character_sheet_repository import CharacterSheetRepository
-from app.presentation.views.character_sheet.presets.catalog import (
+from app.domain.character_sheets.preset_catalog import (
     PRESETS_DIR,
     PresetCatalog,
 )

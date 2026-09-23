@@ -23,11 +23,7 @@ from app.application.services.calendar_settings_service import (
     CalendarSettingsService,
 )
 from app.domain.game_calendar import (
-    CALENDAR_DRAFT_KEY,
     DEFAULT_MONTH_NAMES,
-    DRAFT_STAGE_MONTHS,
-    DRAFT_STAGE_PREVIEW,
-    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
     IntercalaryDay,
@@ -36,12 +32,21 @@ from app.domain.game_calendar import (
     MonthSpec,
     StandardCalendar,
     current_calendar,
-    encode_calendar,
-    encode_coord,
     reset_current_calendar,
     set_current_calendar,
 )
+from app.infrastructure.calendar_storage import (
+    CalendarDraft,
+    DRAFT_STAGE_MONTHS,
+    DRAFT_STAGE_PREVIEW,
+    encode_calendar,
+    encode_coord,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    CALENDAR_DRAFT_KEY,
+)
 from app.infrastructure.db.models import EventModel, GameSettingsModel, RatingModel
+from app.infrastructure.db.uow import GameSessionUoW
 from app.presentation.utils.date_utils import STANDARD_WEEK_NAMES
 from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     KIND_CUSTOM,
@@ -94,7 +99,7 @@ _FLOW_ORDER = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_PREVIEW)
 
 def _vm(session, service=None, *, first_entry: bool = False) -> CalendarWizardViewModel:
     return CalendarWizardViewModel(
-        session, service or CalendarSettingsService(), first_entry=first_entry
+        GameSessionUoW(session), service or CalendarSettingsService(), first_entry=first_entry
     )
 
 

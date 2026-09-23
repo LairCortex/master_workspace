@@ -7,14 +7,17 @@ zero exists in neither, and the BC scale is mirrored with a per-year step of
 2L (twice the game-year length), so every BC key stays below every CE key —
 the same scheme ``app.domain.date_era`` realizes for Gregorian dates.
 
-Pure domain code.  Since piece C1 ``app.domain.date_era.era_key`` lazily
-imports the active-calendar accessor from this module (design D1/D3), the
-app-wide chronological key follows the active game calendar; the import stays
-lazy because the ``GameCalendar`` protocol (design D2) is the only surface
-future consumers may depend on, the standard preset delegates to the private
-``_gregorian_key`` formula rather than to ``era_key`` (D2, no mutual
-recursion) and the custom calendar is built from a fixed ``CalendarSpec`` of
-month lengths, week names and intercalary days (D4/D6).  Also since C1 the
+Pure domain code.  Since piece C1 the app-wide chronological key
+``app.domain.date_era.era_key`` dispatches through the active game calendar
+from this module (design D1/D3); wave-6 task 6.7 replaced the lazy import that
+once formed the ``date_era ↔ game_calendar`` load-order cycle with an explicit
+hand-off — this module passes :func:`_resolve_era_key` to
+``date_era.bind_era_key_resolver`` when it finishes loading, while the
+``GameCalendar`` protocol (design D2) stays the only surface consumers depend
+on, the standard preset delegates to the private ``_gregorian_key`` formula
+rather than to ``era_key`` (D2, no mutual recursion) and the custom calendar
+is built from a fixed ``CalendarSpec`` of month lengths, week names and
+intercalary days (D4/D6).  Also since C1 the
 module owns the pure invalid-coordinate policy: ``classify``/``shift_invalid``
 diagnose exactly three absence reasons and clamp such a coordinate to the
 nearest valid one through the protocol, without any storage access (D4/D5).
@@ -27,31 +30,17 @@ names the six tables, and never carries localized captions or entity names.
 Piece C2 (designs D1/D7) makes the calendar a stored setting: month display
 names become an integral part of the calendar itself — the protocol's
 ``month_names`` member, the domain-owned ``DEFAULT_MONTH_NAMES`` the standard
-preset defaults to, and the pure :func:`encode_calendar` /
-:func:`decode_calendar` codec mapping calendars to the versioned
-``{"v": 1, "kind": ...}`` JSON value the ``game_settings`` row keeps and back;
-an unreadable stored value answers with machine-readable reasons
-(``CalendarCorrupted``) instead of raising, and a third calendar implementer
-has no storage shape until the C4 wizard gives it one.
-Piece C3a (design D2) adds the coordinate storage codec:
-:func:`encode_coord` / :func:`decode_coord` turn a single ``GameCoord`` into
-the discriminated text ``M:year:month:day`` / ``I:year:index`` and back —
- an injective, exactly reversible cycle whose unparseable texts answer with
-machine-readable reasons (``CoordCorrupted``) rather than raising; whether
-the coordinate exists in any calendar stays the shift policy's question,
-never the codec's.
-Piece C4 (design D6) adds the wizard draft codec: :func:`encode_draft` /
-:func:`decode_draft` wrap the same versioned custom-spec body together with
-the first unclosed wizard stage into the ``game_calendar_draft`` value — an
-unreadable or invalid draft is the caller's "no draft", never an exception —
-and the module now owns the three ``game_settings`` keys (``game_calendar``,
-``game_calendar_draft``, ``calendar_wizard_seen``) shared by the service and
-the fresh-schema seeding.
+preset defaults to.  Since the wave-6 decomposition the three storage format
+carriers that C2/C3a/C4 originally added to this module — the versioned
+calendar value codec, the ``M:year:month:day`` / ``I:year:index`` coordinate
+text codec and the wizard draft envelope codec — live in
+``app.infrastructure.calendar_storage``, and the ``game_settings`` keys they
+key into live in ``app.infrastructure.repositories.game_settings_repository``;
+the domain keeps only pure calendar logic.
 """
 from __future__ import annotations
 
 import bisect
-import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -59,7 +48,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from app.domain.date_era import BC_YEAR_STEP, _gregorian_key
+from app.domain.date_era import BC_YEAR_STEP, _gregorian_key, bind_era_key_resolver
 
 #: Both eras span years MIN_YEAR…MAX_YEAR (same bound as ``date_era``).
 MIN_YEAR = 1
@@ -495,6 +484,15 @@ class StandardCalendar:
 #: piece (C2) switches it.  No locks by design (D3): the whole app runs on the
 #: single qasync event loop and game switching is serialized (shutdown +
 #: start), so read/set/reset can never interleave.
+#:
+#: DECISION (wave-6 task 6.7): the audit (docs/refactoring-audit.md,
+#: «скрытая связанность» finding) proposed replacing this process global with
+#: dependency injection.  We keep it deliberately: the calendar is genuine
+#: process-wide ambient state (one game per process) with a tested accessor,
+#: the only real cycle it ever caused — the lazy ``era_key`` back-import — has
+#: been removed via the explicit ``bind_era_key_resolver`` hand-off below, and
+#: every consumer goes through ``current_calendar()``/``era_key`` rather than
+#: reading the module variable, so no hidden coupled state remains.
 _current_calendar: GameCalendar = StandardCalendar()
 
 
@@ -527,8 +525,9 @@ def reset_current_calendar() -> None:
 #: the allowed boundary years 1…9999 (``date(1, 1, 1)`` opens, ``date(9999,
 #: 12, 31)`` closes it contiguously).  Computed through the private formula,
 #: never the ``era_key`` dispatcher: dispatching at module import would come
-#: back through the lazy import into this partially initialized module
-#: (design D2).
+#: back into this module while its own classes are still being defined
+#: (the resolver is only handed to ``date_era`` at the very end of the
+#: module), so the private formula is called directly here (design D2).
 _AD_FIRST_KEY = _gregorian_key(date(MIN_YEAR, 1, 1))
 _AD_LAST_KEY = _gregorian_key(date(MAX_YEAR, 12, 31))
 
@@ -1025,512 +1024,20 @@ def build_shift_report(checks: Iterable[ShiftCheck], calendar: GameCalendar) -> 
     return ShiftReport(tuple(entries))
 
 
-# ── ``game_settings`` storage keys (roadmap pieces C2/C4, designs D1/D6) ──
-
-#: Key under which the game's active calendar setting lives in the per-game
-#: ``game_settings`` key/value table.
-CALENDAR_SETTINGS_KEY = "game_calendar"
-
-#: Key under which the calendar wizard keeps its work-in-progress draft
-#: (piece C4, design D6): the same versioned spec body as the main key, lined
-#: with a stage marker.  Never consulted on game open — a draft warms the
-#: wizard flow only, never the active calendar (spec «Черновик мастера
-#: календаря»).
-CALENDAR_DRAFT_KEY = "game_calendar_draft"
-
-#: Key of the binary «wizard seen» flag (C4): a game created by this version
-#: is seeded with :data:`CALENDAR_WIZARD_SEEN_NO`, a keyless game reads as an
-#: old one that never sees the wizard automatically, and the flag influences
-#: nothing but the wizard's auto-show (spec «Флаг просмотра мастера
-#: календаря»).
-CALENDAR_WIZARD_SEEN_KEY = "calendar_wizard_seen"
-
-#: The two stored texts of the flag.
-CALENDAR_WIZARD_SEEN_NO = "0"
-CALENDAR_WIZARD_SEEN_YES = "1"
-
-
-# ── Storage codec (roadmap piece C2, design D1) ──────────────────────────
-
-#: JSON format version :func:`encode_calendar` writes and
-#: :func:`decode_calendar` reads; a value stamped with any other version is
-#: reported as ``unknown_version`` rather than silently misread (spec
-#: «Календарь-настройки хранятся в базе игры»).
-CALENDAR_STORAGE_VERSION = 1
-
-#: ``kind`` discriminators of the stored value (design D1).
-_KIND_STANDARD = "standard"
-_KIND_CUSTOM = "custom"
-
-
-@dataclass(frozen=True)
-class CalendarDecoded:
-    """Successful decode: the stored value describes this calendar."""
-
-    calendar: GameCalendar
-
-
-@dataclass(frozen=True)
-class CalendarCorrupted:
-    """Rejected decode: every reason the stored value could not be read.
-
-    The reasons are the machine-readable :class:`SpecProblem` codes design
-    D4 reserves for corruption — the codec's own ``corrupt_json``,
-    ``unknown_version`` and ``corrupt_shape`` plus the spec-validation
-    codes of a rejected custom spec (the full list, never just the first
-    hit).  Like ``validate`` these are never localized here; the
-    presentation renders the user-facing warning from these codes."""
-
-    reasons: tuple[SpecProblem, ...]
-
-
-def _corrupt_shape(detail: str) -> CalendarCorrupted:
-    """One malformed-payload problem as a decode result."""
-    return CalendarCorrupted((SpecProblem("corrupt_shape", detail),))
-
-
-def encode_calendar(calendar: GameCalendar) -> str:
-    """Serialize a calendar into the stored JSON value of design D1.
-
-    ``{"v": 1, "kind": "standard"}`` gains a ``month_names`` object only
-    when the preset's names actually differ from ``DEFAULT_MONTH_NAMES`` —
-    an empty (or all-default) override stays normalized into "no field", so
-    a setting is never stored "про запас" (spec «Календарь-настройки
-    хранятся в базе игры», design "Open Questions").  ``kind: "custom"``
-    writes the full spec fields one-for-one: ``months`` (name + length),
-    ``week_names`` and ``intercalary`` (name + after_month), list order
-    meaningful.  Only the two concrete calendars have a storage shape — a
-    third implementer of the protocol refuses here until the C4 wizard
-    gives it one.
-    """
-    if isinstance(calendar, CustomCalendar):
-        spec = calendar.spec
-        payload: dict = {
-            "v": CALENDAR_STORAGE_VERSION,
-            "kind": _KIND_CUSTOM,
-            "months": [{"name": month.name, "length": month.length} for month in spec.months],
-            "week_names": list(spec.week_names),
-            "intercalary": [
-                {"name": rule.name, "after_month": rule.after_month}
-                for rule in spec.intercalary
-            ],
-        }
-    elif isinstance(calendar, StandardCalendar):
-        payload = {"v": CALENDAR_STORAGE_VERSION, "kind": _KIND_STANDARD}
-        overrides = {
-            str(number): name
-            for number, name in calendar.month_names.items()
-            if DEFAULT_MONTH_NAMES.get(number) != name
-        }
-        if overrides:
-            payload["month_names"] = overrides
-    else:
-        raise TypeError(
-            "only StandardCalendar and CustomCalendar can be stored, not "
-            f"{type(calendar).__name__}"
-        )
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def decode_calendar(raw: str) -> CalendarDecoded | CalendarCorrupted:
-    """Read the stored JSON value back into a calendar (design D1).
-
-    A broken value never raises (design D4): the result is either a
-    ``CalendarDecoded`` calendar or a ``CalendarCorrupted`` carrying
-    machine-readable reasons — the caller chooses its warning phrasing from
-    those codes and leaves the corrupted row untouched.  A stored custom
-    spec is run through the core's ``validate`` first, so the full reason
-    list is reported and the ``CustomCalendar`` constructor — the same
-    gate, reached only with a pre-validated spec — cannot raise here.
-    """
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return CalendarCorrupted(
-            (SpecProblem("corrupt_json", "the stored calendar is not parseable JSON"),)
-        )
-    return _decode_calendar_data(data)
-
-
-def _decode_calendar_data(data: object) -> CalendarDecoded | CalendarCorrupted:
-    """Decode an already-parsed calendar payload — shared by
-    :func:`decode_calendar` and the wizard-draft reader below, so a draft's
-    ``spec`` body really goes through the very same validation path as the
-    main key (design D6: "переиспользует decode_calendar для тела спеки")."""
-    if not isinstance(data, dict):
-        return _corrupt_shape(
-            f"stored calendar must be a JSON object, got {type(data).__name__}"
-        )
-    version = data.get("v")
-    if version != CALENDAR_STORAGE_VERSION:
-        return CalendarCorrupted(
-            (
-                SpecProblem(
-                    "unknown_version",
-                    f"calendar format version {version!r} is not supported "
-                    f"(this app reads and writes version {CALENDAR_STORAGE_VERSION})",
-                ),
-            )
-        )
-    kind = data.get("kind")
-    if kind == _KIND_STANDARD:
-        return _decode_standard(data)
-    if kind == _KIND_CUSTOM:
-        return _decode_custom(data)
-    return _corrupt_shape(
-        f"unknown calendar kind {kind!r}, expected {_KIND_STANDARD!r} or {_KIND_CUSTOM!r}"
-    )
-
-
-def _decode_standard(data: dict) -> CalendarDecoded | CalendarCorrupted:
-    """``kind: standard`` — the preset plus an optional ``month_names``
-    override, whose keys are month numbers carried as JSON strings."""
-    raw_names = data.get("month_names")
-    if raw_names is None:
-        return CalendarDecoded(StandardCalendar())
-    if not isinstance(raw_names, dict):
-        return _corrupt_shape("month_names must be a JSON object")
-    month_names: dict[int, str] = {}
-    for number, name in raw_names.items():
-        if not isinstance(name, str):
-            return _corrupt_shape(f"month name for key {number!r} is not a string")
-        try:
-            month_names[int(number)] = name
-        except ValueError:
-            return _corrupt_shape(
-                f"month_names key {number!r} is not an integer month number"
-            )
-    return CalendarDecoded(StandardCalendar(month_names=month_names))
-
-
-def _is_stored_int(value: object) -> bool:
-    """An integer of the JSON world — ``bool`` is ``int`` in Python but is
-    never a length or a month number in this format."""
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _decode_custom(data: dict) -> CalendarDecoded | CalendarCorrupted:
-    """``kind: custom`` — the full spec, fields decoded one-for-one after a
-    shape pass (both ``validate`` and ``CustomCalendar`` assume plain ints
-    and strings) and the core's own validation of the rebuilt spec."""
-    months_raw = data.get("months")
-    week_raw = data.get("week_names")
-    intercalary_raw = data.get("intercalary")
-    if (
-        not isinstance(months_raw, list)
-        or not isinstance(week_raw, list)
-        or not isinstance(intercalary_raw, list)
-    ):
-        return _corrupt_shape(
-            "custom calendar fields months/week_names/intercalary must be JSON lists"
-        )
-    months: list[MonthSpec] = []
-    for entry in months_raw:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("name"), str)
-            or not _is_stored_int(entry.get("length"))
-        ):
-            return _corrupt_shape(
-                f"month entry {entry!r} needs a string name and an integer length"
-            )
-        months.append(MonthSpec(entry["name"], entry["length"]))
-    for name in week_raw:
-        if not isinstance(name, str):
-            return _corrupt_shape(f"week name {name!r} must be a string")
-    intercalary: list[IntercalarySpec] = []
-    for entry in intercalary_raw:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("name"), str)
-            or not _is_stored_int(entry.get("after_month"))
-        ):
-            return _corrupt_shape(
-                f"intercalary entry {entry!r} needs a string name "
-                f"and an integer after_month"
-            )
-        intercalary.append(IntercalarySpec(entry["name"], entry["after_month"]))
-    spec = CalendarSpec(
-        months=tuple(months), week_names=tuple(week_raw), intercalary=tuple(intercalary)
-    )
-    spec_problems = validate(spec)
-    if spec_problems:
-        return CalendarCorrupted(tuple(spec_problems))
-    return CalendarDecoded(CustomCalendar(spec))
-
-
-# ── Wizard draft codec (roadmap piece C4, design D6) ──────────────────────
-
-#: JSON format version :func:`encode_draft` writes and :func:`decode_draft`
-#: reads; a draft stamped with any other version reads as corruption rather
-#: than being silently misread — mirroring :data:`CALENDAR_STORAGE_VERSION`.
-CALENDAR_DRAFT_VERSION = 1
-
-#: Machine codes of the wizard's build stages.  The stage stored in a draft is
-#: the first screen the assembly has NOT closed yet (design D6: "stage =
-#: следующая незакрытая"); the completed part of the form is already inside
-#: ``spec`` with defaults standing in for the unclosed stages.
-DRAFT_STAGE_WEEK = "week"
-DRAFT_STAGE_MONTHS = "months"
-DRAFT_STAGE_INTERCALARY = "intercalary"
-DRAFT_STAGE_PREVIEW = "preview"
-
-#: All stage codes a stored draft may carry.
-DRAFT_STAGES: tuple[str, ...] = (
-    DRAFT_STAGE_WEEK,
-    DRAFT_STAGE_MONTHS,
-    DRAFT_STAGE_INTERCALARY,
-    DRAFT_STAGE_PREVIEW,
-)
-
-
-@dataclass(frozen=True)
-class CalendarDraft:
-    """The wizard's half-built custom calendar: the spec assembled so far
-    (unclosed stages keep their defaults) plus the next open ``stage`` — the
-    two fields of design D6, with no behavior of its own.  A draft is data
-    only: it never touches the active calendar, captions or keys until
-    :meth:`CalendarSettingsService.promote_draft` raises it to the main key."""
-
-    spec: CalendarSpec
-    stage: str
-
-
-@dataclass(frozen=True)
-class DraftDecoded:
-    """Successful decode: the stored draft value describes this draft."""
-
-    draft: CalendarDraft
-
-
-@dataclass(frozen=True)
-class DraftCorrupted:
-    """Rejected decode: machine-readable reasons in the same
-    :class:`SpecProblem` shape as the calendar codec — ``corrupt_json``,
-    ``unknown_version``, ``corrupt_shape`` (draft envelope problems) plus the
-    spec-validation codes of a rejected spec body, which the shared payload
-    reader passes through verbatim.  A rejected draft simply means "no
-    draft" (spec «Битой черновик — как его нет»); the caller logs and starts
-    the flow fresh."""
-
-    reasons: tuple[SpecProblem, ...]
-
-
-def _draft_corrupt_shape(detail: str) -> DraftCorrupted:
-    """One malformed-envelope problem as a draft decode result."""
-    return DraftCorrupted((SpecProblem("corrupt_shape", detail),))
-
-
-def encode_draft(draft: CalendarDraft) -> str:
-    """Serialize a wizard draft into its stored JSON value (design D6).
-
-    ``{"v": 1, "spec": <custom value of the main codec>, "stage": "months"}``
-    — the spec body is produced by :func:`encode_calendar` itself, so the
-    draft and the main key share one spec representation and one evolution
-    rhythm.  Writing is the read's strict gate: the spec goes through the
-    ``CustomCalendar`` constructor (the same gate as the main key — a draft
-    half the wizard would consider validated must actually validate), and an
-    unknown stage has no storage shape and refuses with ``ValueError`` —
-    like ``encode_calendar``, this function never invents data.
-    """
-    if draft.stage not in DRAFT_STAGES:
-        raise ValueError(
-            f"unknown wizard draft stage {draft.stage!r}, "
-            f"expected one of {', '.join(repr(s) for s in DRAFT_STAGES)}"
-        )
-    inner = json.loads(encode_calendar(CustomCalendar(draft.spec)))
-    payload = {
-        "v": CALENDAR_DRAFT_VERSION,
-        "spec": inner,
-        "stage": draft.stage,
-    }
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def decode_draft(raw: str) -> DraftDecoded | DraftCorrupted:
-    """Read a stored draft value back — never raising, exactly like
-    :func:`decode_calendar` beside it.
-
-    Every failure shape answers with reasons, and the service then reads the
-    draft as absent (spec «Битой черновик — как его нет»): an unparsable
-    envelope, a foreign format version, a ``spec`` that is not an object or
-    not a custom calendar value, an unknown stage, or a spec body the core
-    itself rejects (full reason list from ``validate``).  The spec body is
-    read through the shared payload decoder, so a draft cannot smuggle a
-    spec the main key would refuse; the «Стандартный» preset is not a draft
-    (the wizard assembles custom calendars only — design D6)."""
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return DraftCorrupted(
-            (SpecProblem("corrupt_json", "the stored calendar draft is not parseable JSON"),)
-        )
-    if not isinstance(data, dict):
-        return _draft_corrupt_shape(
-            f"stored draft must be a JSON object, got {type(data).__name__}"
-        )
-    version = data.get("v")
-    if version != CALENDAR_DRAFT_VERSION:
-        return DraftCorrupted(
-            (
-                SpecProblem(
-                    "unknown_version",
-                    f"calendar draft format version {version!r} is not supported "
-                    f"(this app reads and writes version {CALENDAR_DRAFT_VERSION})",
-                ),
-            )
-        )
-    spec_raw = data.get("spec")
-    if not isinstance(spec_raw, dict):
-        return _draft_corrupt_shape(
-            f"draft spec must be a JSON object, got {type(spec_raw).__name__}"
-        )
-    stage = data.get("stage")
-    if stage not in DRAFT_STAGES:
-        return _draft_corrupt_shape(
-            f"unknown wizard stage {stage!r}, expected one of "
-            f"{', '.join(repr(s) for s in DRAFT_STAGES)}"
-        )
-    decoded = _decode_calendar_data(spec_raw)
-    if isinstance(decoded, CalendarCorrupted):
-        return DraftCorrupted(decoded.reasons)
-    assert isinstance(decoded, CalendarDecoded)
-    if not isinstance(decoded.calendar, CustomCalendar):
-        return _draft_corrupt_shape(
-            "a wizard draft wraps a custom calendar spec, not the standard preset"
-        )
-    return DraftDecoded(CalendarDraft(spec=decoded.calendar.spec, stage=stage))
-
-
-# ── Coordinate storage codec (roadmap piece C3a, design D2) ───────────────
-
-#: Kind discriminators of the stored coordinate text (design D2): the first
-#: field is always the kind, so a regular day and an intercalary day never
-#: share one representation and the reading is self-describing.
-_COORD_KIND_MONTH = "M"
-_COORD_KIND_INTERCALARY = "I"
-
-#: Field names per kind in text order — the stored text is exactly these
-#: colon-joined plain ``str()`` integers (no leading zeros written, none
-#: demanded on reading; canonicalness is pinned by the round trip).
-_COORD_FIELDS = MappingProxyType(
-    {
-        _COORD_KIND_MONTH: ("year", "month", "day"),
-        _COORD_KIND_INTERCALARY: ("year", "index"),
-    }
-)
-
-
-@dataclass(frozen=True)
-class CoordDecoded:
-    """Successful decode: the stored text describes this coordinate."""
-
-    coord: GameCoord
-
-
-@dataclass(frozen=True)
-class CoordCorrupted:
-    """Rejected decode: every machine-readable reason the text could not be
-    read, in the same :class:`SpecProblem` shape the calendar codec uses —
-    ``empty_coord``, ``not_a_string``, ``unknown_kind`` (missing or foreign
-    discriminator), ``incomplete_coord``, ``too_many_fields`` and
-    ``non_numeric_field`` (one per offending field).  Never localized; the
-    caller phrases its warning from these codes."""
-
-    reasons: tuple[SpecProblem, ...]
-
-
-def encode_coord(coord: GameCoord) -> str:
-    """Serialize one coordinate into its stored text (design D2).
-
-    ``"M:year:month:day"`` for a month day, ``"I:year:index"`` for an
-    intercalary day — plain ``str()`` digits, which makes the mapping
-    injective (distinct kinds differ in the discriminator; same-kind
-    coordinates differ in at least one colon-separated number and a number
-    cannot swallow the separator) and the cycle ``decode(encode(c)) == c``
-    exact.  Era is not part of a coordinate (D3), so it is not part of its
-    text either — the same text serves both eras.  Existence in any calendar
-    is deliberately NOT checked: the codec owns shape, while
-    ``classify``/``shift_invalid`` own existence.  A value that is not one of
-    the two D3 coordinate kinds has no storage shape and raises
-    ``TypeError`` (same refusal stance as ``encode_calendar``).
-    """
-    if isinstance(coord, MonthDay):
-        return f"{_COORD_KIND_MONTH}:{coord.year}:{coord.month}:{coord.day}"
-    if isinstance(coord, IntercalaryDay):
-        return f"{_COORD_KIND_INTERCALARY}:{coord.year}:{coord.index}"
-    raise TypeError(
-        "only MonthDay and IntercalaryDay coordinates can be stored, not "
-        f"{type(coord).__name__}"
-    )
-
-
-def decode_coord(raw: str) -> CoordDecoded | CoordCorrupted:
-    """Read a stored coordinate text back (design D2).
-
-    Like :func:`decode_calendar` next to it, an unreadable value never
-    raises: the answer is a :class:`CoordCorrupted` carrying the *full* list
-    of machine-readable reasons, and the storage resolver/C4 caller logs and
-    repairs from those codes.  The reader is deliberately more lenient than
-    the writer — a hand-edited ``M:044:03:05`` parses, and re-encoding the
-    result returns the canonical text — while the format itself stays an
-    opaque internal representation read only by this codec.  No number is
-    checked against any calendar here: an out-of-calendar coordinate decodes
-    exactly, because existence is the shift policy's question, not the
-    codec's.
-    """
-    if not isinstance(raw, str):
-        return CoordCorrupted(
-            (SpecProblem("not_a_string", f"stored coordinate {raw!r} is not text"),)
-        )
-    if not raw:
-        return CoordCorrupted(
-            (SpecProblem("empty_coord", "stored coordinate text is empty"),)
-        )
-    parts = raw.split(":")
-    kind = parts[0]
-    field_names = _COORD_FIELDS.get(kind)
-    if field_names is None:
-        return CoordCorrupted(
-            (
-                SpecProblem(
-                    "unknown_kind",
-                    f"coordinate kind {kind!r} is neither {_COORD_KIND_MONTH!r} "
-                    f"(month day) nor {_COORD_KIND_INTERCALARY!r} (intercalary day)",
-                ),
-            )
-        )
-    given = parts[1:]
-    problems: list[SpecProblem] = []
-    if len(given) < len(field_names):
-        problems.append(
-            SpecProblem(
-                "incomplete_coord",
-                f"coordinate text {raw!r}: kind {kind!r} needs {len(field_names)} "
-                f"numbers, found {len(given)}",
-            )
-        )
-    elif len(given) > len(field_names):
-        problems.append(
-            SpecProblem(
-                "too_many_fields",
-                f"coordinate text {raw!r}: kind {kind!r} has {len(field_names)} "
-                f"numbers, found {len(given)}",
-            )
-        )
-    numbers: list[int] = []
-    for name, text in zip(field_names, given):
-        try:
-            numbers.append(int(text))
-        except ValueError:
-            problems.append(
-                SpecProblem(
-                    "non_numeric_field",
-                    f"{kind} coordinate field {name} {text!r} is not an integer",
-                )
-            )
-    if problems:
-        return CoordCorrupted(tuple(problems))
-    if kind == _COORD_KIND_MONTH:
-        return CoordDecoded(MonthDay(*numbers))
-    return CoordDecoded(IntercalaryDay(*numbers))
+# ── Explicit era-key dependency hand-off (wave-6, task 6.7) ──────────────
+
+def _resolve_era_key(coord: GameCoord | date, is_bc: bool) -> int:
+    """The dispatch ``date_era.era_key`` delegates to — body verbatim from
+    the era_key that once lazy-imported ``MonthDay``/``current_calendar`` to
+    break the load-order cycle; now the cycle edge is deleted and this module
+    hands the strategy over when it is fully loaded (design D2/D3/D4
+    semantics unchanged: a plain ``date`` becomes the equal ``MonthDay``,
+    the active calendar owns existence refusal)."""
+    if isinstance(coord, date):
+        coord = MonthDay(coord.year, coord.month, coord.day)
+    return current_calendar().to_key(coord, is_bc)
+
+
+# ``date_era`` imports nothing from this module (at import time or lazily):
+# the dependency travels this way only, once, after all names above exist.
+bind_era_key_resolver(_resolve_era_key)

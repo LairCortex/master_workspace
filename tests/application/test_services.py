@@ -52,6 +52,7 @@ class TestEventService:
             character_service=char_svc,
             item_service=item_svc,
             location_service=loc_svc,
+            event_type_repo=AsyncMock(),
         )
         return svc, event_repo, desc_repo
 

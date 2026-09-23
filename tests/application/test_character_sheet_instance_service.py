@@ -205,17 +205,20 @@ class TestBind:
         char = await char_repo.create(name="P", start_date=date(1300, 1, 1))
         await async_session.commit()
 
-        orig_commit = inst_svc._session.commit
+        # The finish belongs to the unit of work now (task 5.11) — patch its
+        # session's commit to emulate the constraint error escaping the commit.
+        uow_session = inst_svc._uow.session
+        orig_commit = uow_session.commit
 
         async def boom():
             raise IntegrityError("UPDATE", {}, Exception("fk"))
 
-        inst_svc._session.commit = boom  # type: ignore[method-assign]
+        uow_session.commit = boom  # type: ignore[method-assign]
         try:
             with pytest.raises(IntegrityError):
                 await inst_svc.bind_character(row.id, char.id)
         finally:
-            inst_svc._session.commit = orig_commit  # type: ignore[method-assign]
+            uow_session.commit = orig_commit  # type: ignore[method-assign]
 
     async def test_unbind(self, async_session: AsyncSession):
         sheet_svc, inst_svc, repo = await _services(async_session)

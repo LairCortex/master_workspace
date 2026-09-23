@@ -137,7 +137,7 @@ class TestMutators:
 
 class TestNoLayoutMutators:
     def test_no_move_or_place(self):
-        for name in ("place", "move", "drag_move", "commit_drag", "add_page", "remove_page"):
+        for name in ("place", "move", "drag_move", "apply_drag", "add_page", "remove_page"):
             assert not hasattr(CharacterSheetFillViewModel, name)
 
 
@@ -222,7 +222,7 @@ class TestUndo:
         vm.set_text(ids["text"], "а")
         vm.set_text(ids["text"], "аб")
         vm.set_text(ids["text"], "абв")
-        vm.commit_inline()
+        vm.apply_inline()
         vm.undo()
         assert vm.display_value(ids["text"]) == "Иван"
         assert vm.can_undo is False
@@ -300,7 +300,7 @@ class TestProtocolAndEdges:
         vm.select("a")
         vm.set_current_page(3)
         vm.open_inline("x")
-        vm.commit_inline()
+        vm.apply_inline()
         vm.cancel_inline()
         vm.undo()
         vm.redo()
@@ -336,7 +336,7 @@ class TestProtocolAndEdges:
         vm.open_inline(ids["chk"])
         vm.open_inline(ids["text"])
         vm.open_inline(ids["text"])
-        vm.commit_inline()
+        vm.apply_inline()
         vm.cancel_inline()
         vm.open_inline(ids["text"])
         vm.set_text(ids["text"], "черновик")
@@ -360,5 +360,5 @@ class TestProtocolAndEdges:
         vm.open_inline(ids["text"])
         vm.set_text(ids["text"], "шаг")
         vm._undo_stack = [dict(vm.values) for _ in range(UNDO_STACK_LIMIT)]
-        vm.commit_inline()
+        vm.apply_inline()
 

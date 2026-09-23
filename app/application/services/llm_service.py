@@ -12,32 +12,21 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from app.domain import entity_registry
 from app.infrastructure.llm.base_provider import BaseLlmProvider
 
 log = logging.getLogger("llm.service")
 
-FIELD_CONFIG: dict[str, list[str]] = {
-    "event": ["name", "characteristics", "backstory"],
-    "organization": ["name", "characteristics", "backstory", "tasks"],
-    "character": ["name", "characteristics", "backstory", "personality", "tasks"],
-    "item": ["name", "characteristics", "backstory"],
-    "location": ["name", "characteristics", "backstory", "tasks"],
-}
-
+# Which fields of which entity type are generated (FIELD_CONFIG) and the
+# singular type captions (ENTITY_LABELS) moved to the domain entity registry
+# in wave 3 (finding A4): iterate ``entity_registry.LLM_TYPES`` and read
+# ``descriptor(t).llm_fields`` / ``descriptor(t).label`` instead.
 FIELD_LABELS: dict[str, str] = {
     "name": "Название",
     "characteristics": "Характеристики",
     "backstory": "Предыстория",
     "personality": "Личность",
     "tasks": "Задачи",
-}
-
-ENTITY_LABELS: dict[str, str] = {
-    "event": "Событие",
-    "organization": "Организация",
-    "character": "Персонаж",
-    "item": "Предмет",
-    "location": "Локация",
 }
 
 #: Request phase: the request has been (or is being) sent to the LLM.
@@ -153,7 +142,7 @@ class LlmService:
 
         Returns (system_prompt, user_prompt).
         """
-        entity_label = ENTITY_LABELS.get(entity_type, entity_type)
+        entity_label = entity_registry.display_label(entity_type)
 
         system_prompt = (
             f"Ты — автор контента для настольной ролевой игры. Мир: {world_prompt}\n"

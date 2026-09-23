@@ -29,18 +29,16 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
-from PySide6.QtQml import QQmlComponent, QQmlContext
-from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.compiler import CHART_TOKEN_KEYS, token_rgb
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.event_types_view_model import EventTypesViewModel
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EventTypesRoot.qml")
@@ -87,7 +85,11 @@ def type_dot_icon(theme, color_index: int, size: int = SWATCH_SIZE) -> QIcon:
     return QIcon(pixmap)
 
 
-class EventTypesDialog(QDialog):
+class EventTypesDialog(IslandDialogMixin, QDialog):
+    island_context_names = {"eventTypesVm": "vm"}
+
+    def island_source(self) -> str:
+        return ROOT_QML
     """Per-game event-type editor with immediate write-through."""
 
     #: Emitted after any edit landed in the game (the panel re-renders its scale).
@@ -117,27 +119,15 @@ class EventTypesDialog(QDialog):
         # The island reaches the dialog edges so no OS-palette band frames it.
         layout.setContentsMargins(0, 0, 0, 0)
 
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._theme, parent=self)
-        # The root view is destroyed before this dialog-owned context, avoiding
-        # binding evaluation against a null VM during deferred teardown.
-        self._context = QQmlContext(engine.rootContext(), self)
-        self._context.setContextProperty("eventTypesVm", self.vm)
-        self._context.setContextProperty("islandPalette", self._palette)
-        source = QUrl.fromLocalFile(ROOT_QML)
-        self._component = QQmlComponent(engine, source, self)
-        root = self._component.create(self._context)
-        assert root is not None, self._component.errors()
-        self.quick.setContent(source, self._component, root)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        # Dialog-owned context (IslandDialogMixin): the root view is destroyed
+        # before it, avoiding binding evaluation against a null VM in teardown.
+        self.setup_island()
         layout.addWidget(self.quick)
         # The island's own width is what its action row needs, and that grows
         # with the system font: opening at the 420 floor instead clipped ↑/↓ on
         # the right edge, where Qt neither paints nor delivers clicks.
-        fit_dialog_to_island(self, root, floor=(420, 320))
+        fit_dialog_to_island(self, self._root, floor=(420, 320))
 
         self.vm.addRequested.connect(self._on_add)
         self.vm.renameRequested.connect(self._on_rename)
@@ -239,7 +229,15 @@ class EventTypesDialog(QDialog):
         return (max(used) % len(CHART_TOKEN_KEYS)) + 1
 
     async def _remove(self, type_) -> None:
-        await self._service.delete_event_type(type_.id)
+        try:
+            await self._service.delete_event_type(type_.id)
+        except Exception as exc:
+            # The service no longer swallows the failure (audit Q14 scenario 7,
+            # task 5.2) — the dialog is the place that can show it.
+            QMessageBox.warning(
+                self, "Удаление типа", f"Не удалось удалить тип «{type_.name}»: {exc}",
+            )
+            return
         # The row is gone: the reload drops the selection with it.
         await self._reload()
         self.types_changed.emit()
@@ -258,14 +256,7 @@ class EventTypesDialog(QDialog):
         await self._reload()
         self.types_changed.emit()
 
-    # ── island lifecycle ───────────────────────────────────────────────────
-
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # ── island lifecycle — IslandDialogMixin (context, deferred release) ──
 
     # ── test-facing conveniences ───────────────────────────────────────────
 

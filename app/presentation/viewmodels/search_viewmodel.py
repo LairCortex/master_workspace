@@ -5,23 +5,8 @@ from typing import Any, Dict, List
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
+from app.domain import entity_registry
 from app.presentation.utils.date_utils import era_flag, format_game_date
-
-_TYPE_LABELS = {
-    "events": "События",
-    "organizations": "Организации",
-    "characters": "Персонажи",
-    "items": "Предметы",
-    "locations": "Локации",
-}
-
-_TYPE_TO_ENTITY = {
-    "events": "event",
-    "organizations": "organization",
-    "characters": "character",
-    "items": "item",
-    "locations": "location",
-}
 
 DEBOUNCE_INTERVAL_MS = 300
 
@@ -144,8 +129,12 @@ class SearchViewModel(QObject):
         for type_key, entities in self.results.items():
             if not entities:
                 continue
-            label = _TYPE_LABELS.get(type_key, type_key)
-            entity_type = _TYPE_TO_ENTITY.get(type_key, type_key)
+            # section captions and payload types resolve through the entity
+            # registry (wave 3, finding A4), keeping the tolerant fallback
+            # for keys outside the registry
+            desc = entity_registry.by_collection(type_key)
+            label = desc.plural_label if desc else type_key
+            entity_type = desc.key if desc else type_key
             rows.append(
                 self._row(
                     "sectionHeader",

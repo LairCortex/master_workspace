@@ -4,17 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from PySide6.QtCore import QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
-from PySide6.QtQml import QQmlComponent, QQmlContext
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
+from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.world_snapshot_view_model import (
     WorldSnapshotViewModel,
 )
@@ -37,8 +34,10 @@ def _colored_circle(color: QColor, size: int = 16) -> QIcon:
     return QIcon(pixmap)
 
 
-class WorldSnapshotWidget(QWidget):
+class WorldSnapshotWidget(IslandDialogMixin, QWidget):
     """Thin shared-engine island preserving the original wiring surface."""
+
+    island_context_names = {"worldSnapshotVm": "vm"}
 
     entity_clicked = Signal(str, int)
     snapshot_requested = Signal(object)
@@ -52,32 +51,29 @@ class WorldSnapshotWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._theme, parent=self)
-        self._context = QQmlContext(engine.rootContext(), self)
-        self.vm.setParent(self._context)
-        self._palette.setParent(self._context)
-        self._context.setContextProperty("worldSnapshotVm", self.vm)
-        self._context.setContextProperty("islandPalette", self._palette)
-        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
-
-        source = QUrl.fromLocalFile(ROOT_QML)
-        self._component = QQmlComponent(engine, source, self)
-        root = self._component.create(self._context)
-        assert root is not None, self._component.errors()
-        self.quick.setContent(source, self._component, root)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # Panel-owned private context (IslandDialogMixin): neither the VM nor
+        # the token bridge touches the shared engine root context.
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self.setup_island()
         layout.addWidget(self.quick)
-        self._root = self.quick.rootObject()
 
         self.date_popup = ThemeDatePopup(self)
         self.date_popup.date_selected.connect(self.vm.set_date)
         self.vm.datePopupRequested.connect(self._open_date_popup)
         self.vm.snapshotRequested.connect(self.snapshot_requested.emit)
         self.vm.entitySelected.connect(self.entity_clicked.emit)
+
+    def island_source(self) -> str:
+        return ROOT_QML
+
+    def load_island_scene(self, quick) -> None:
+        # The bridge and the VM must be in the context BEFORE the scene
+        # compiles (hand-written order preserved): both are raw context
+        # pointers, and the VM is adopted under the context so the scene
+        # (created before it) dies first at child destruction.
+        self.vm.setParent(self._context)
+        self._tooltip_bridge = install_island_tooltips(quick, self._context)
+        super().load_island_scene(quick)
 
     def populate(self, events: Sequence[Any], for_date: Any) -> None:
         # ``for_date`` is the snapshot bridge payload: a (coordinate, era)
@@ -102,9 +98,4 @@ class WorldSnapshotWidget(QWidget):
     def _on_clear(self) -> None:
         self.vm.clear()
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def closeEvent(self, event) -> None:  # Qt API name
-        QTimer.singleShot(0, self, self._release_island)
-        super().closeEvent(event)
+    # Island lifecycle (context, deferred closeEvent release) — IslandDialogMixin.

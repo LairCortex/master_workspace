@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable, Iterator
 
+from app.domain import entity_registry
+from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import (
     MAX_YEAR,
     MIN_YEAR,
@@ -152,38 +154,53 @@ COL_MUSIC_URL = ColumnSpec(
     description="Ссылка на музыкальную тему",
 )
 
-_ALL_ENTITY_TYPES: tuple[str, ...] = ("event", "character", "location", "organization", "item")
+# The workbook's own sheet layout order over the registry's card types
+# (wave 3, A4): type ids come from EntityType, sheet captions from the
+# registry's plural labels. RATING has no sheet (the format's own scope).
+_SHEET_ORDER: tuple[EntityType, ...] = (
+    EntityType.EVENT,
+    EntityType.CHARACTER,
+    EntityType.LOCATION,
+    EntityType.ORGANIZATION,
+    EntityType.ITEM,
+)
+_ALL_ENTITY_TYPES: tuple[str, ...] = tuple(etype.value for etype in _SHEET_ORDER)
 
+# Instrumental-case column captions are this file's format knowledge; only
+# the type ids reference the registry (wave 3, A4).
 # Link column per *target* type (spec "Колонки связей"). The association table
 # for a (source, target) pair lives in LINK_TABLES below.
+_LINK_COLUMN_CAPTIONS: tuple[tuple[EntityType, str], ...] = (
+    (EntityType.EVENT, "Связь событиями"),
+    (EntityType.CHARACTER, "Связь персонажами"),
+    (EntityType.ORGANIZATION, "Связь организациями"),
+    (EntityType.ITEM, "Связь предметами"),
+    (EntityType.LOCATION, "Связь локациями"),
+)
 LINK_COLUMNS_BY_TARGET: dict[str, LinkColumnSpec] = {
-    "event": LinkColumnSpec(target_type="event", label="Связь событиями"),
-    "character": LinkColumnSpec(target_type="character", label="Связь персонажами"),
-    "organization": LinkColumnSpec(target_type="organization", label="Связь организациями"),
-    "item": LinkColumnSpec(target_type="item", label="Связь предметами"),
-    "location": LinkColumnSpec(target_type="location", label="Связь локациями"),
+    etype.value: LinkColumnSpec(target_type=etype.value, label=label)
+    for etype, label in _LINK_COLUMN_CAPTIONS
 }
-
 # (source entity type, target entity type) → M2M association table, as defined
 # in app/infrastructure/db/models.py. Covers all 13 M2M tables except the
 # three ``*_rating`` ones (ratings are out of import scope).
-_LINK_TABLE_FACTS: tuple[tuple[str, str, str], ...] = (
-    ("event", "organization", "event_organization"),
-    ("event", "character", "event_character"),
-    ("event", "item", "event_item"),
-    ("event", "location", "event_location"),
-    ("organization", "character", "organization_character"),
-    ("organization", "item", "organization_item"),
-    ("organization", "location", "organization_location"),
-    ("character", "item", "character_item"),
-    ("character", "location", "character_location"),
-    ("item", "location", "item_location"),
+_LINK_TABLE_FACTS: tuple[tuple[EntityType, EntityType, str], ...] = (
+    (EntityType.EVENT, EntityType.ORGANIZATION, "event_organization"),
+    (EntityType.EVENT, EntityType.CHARACTER, "event_character"),
+    (EntityType.EVENT, EntityType.ITEM, "event_item"),
+    (EntityType.EVENT, EntityType.LOCATION, "event_location"),
+    (EntityType.ORGANIZATION, EntityType.CHARACTER, "organization_character"),
+    (EntityType.ORGANIZATION, EntityType.ITEM, "organization_item"),
+    (EntityType.ORGANIZATION, EntityType.LOCATION, "organization_location"),
+    (EntityType.CHARACTER, EntityType.ITEM, "character_item"),
+    (EntityType.CHARACTER, EntityType.LOCATION, "character_location"),
+    (EntityType.ITEM, EntityType.LOCATION, "item_location"),
 )
 
 LINK_TABLES: dict[tuple[str, str], str] = {}
 for _src, _dst, _table in _LINK_TABLE_FACTS:
-    LINK_TABLES[(_src, _dst)] = _table
-    LINK_TABLES[(_dst, _src)] = _table
+    LINK_TABLES[(_src.value, _dst.value)] = _table
+    LINK_TABLES[(_dst.value, _src.value)] = _table
 
 
 # ── Sheet registry ────────────────────────────────────────────────────────
@@ -193,39 +210,51 @@ def _common_columns() -> tuple[ColumnSpec, ...]:
     return (COL_NAME, COL_START_DATE, COL_END_DATE, COL_CHARACTERISTICS, COL_BACKSTORY, COL_RATING)
 
 
+# Sheet ids and names come from the registry / EntityType (wave 3, A4 — the
+# RU sheet captions ARE the registry plural labels); the columns and the per
+# sheet link target layout stay this file's format knowledge (spec "Колонки
+# листа" / "Колонки связей").
 SHEETS: dict[str, SheetSpec] = {
     spec.entity_type: spec
-    for spec in (
+    for spec in tuple(
         SheetSpec(
-            entity_type="event",
-            sheet_name="События",
-            columns=_common_columns() + (COL_EVENT_TYPE,),
-            link_targets=("character", "organization", "item", "location"),
-        ),
-        SheetSpec(
-            entity_type="character",
-            sheet_name="Персонажи",
-            columns=_common_columns() + (COL_PERSONALITY, COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
-            link_targets=("event", "organization", "item", "location"),
-        ),
-        SheetSpec(
-            entity_type="location",
-            sheet_name="Локации",
-            columns=_common_columns() + (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
-            link_targets=("event", "character", "organization", "item"),
-        ),
-        SheetSpec(
-            entity_type="organization",
-            sheet_name="Организации",
-            columns=_common_columns() + (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
-            link_targets=("event", "character", "item", "location"),
-        ),
-        SheetSpec(
-            entity_type="item",
-            sheet_name="Предметы",
-            columns=_common_columns() + (COL_MUSIC_URL,),
-            link_targets=("event", "character", "organization", "location"),
-        ),
+            entity_type=etype.value,
+            sheet_name=entity_registry.descriptor(etype).plural_label,
+            columns=_common_columns() + extras,
+            link_targets=tuple(target.value for target in targets),
+        )
+        for etype, extras, targets in (
+            (
+                EntityType.EVENT,
+                (COL_EVENT_TYPE,),
+                (EntityType.CHARACTER, EntityType.ORGANIZATION,
+                 EntityType.ITEM, EntityType.LOCATION),
+            ),
+            (
+                EntityType.CHARACTER,
+                (COL_PERSONALITY, COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
+                (EntityType.EVENT, EntityType.ORGANIZATION,
+                 EntityType.ITEM, EntityType.LOCATION),
+            ),
+            (
+                EntityType.LOCATION,
+                (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
+                (EntityType.EVENT, EntityType.CHARACTER,
+                 EntityType.ORGANIZATION, EntityType.ITEM),
+            ),
+            (
+                EntityType.ORGANIZATION,
+                (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
+                (EntityType.EVENT, EntityType.CHARACTER,
+                 EntityType.ITEM, EntityType.LOCATION),
+            ),
+            (
+                EntityType.ITEM,
+                (COL_MUSIC_URL,),
+                (EntityType.EVENT, EntityType.CHARACTER,
+                 EntityType.ORGANIZATION, EntityType.LOCATION),
+            ),
+        )
     )
 }
 
@@ -345,7 +374,7 @@ class DateProblem:
     month name without its day number, ``out_of_range`` — a number the
     coordinate constructor refuses) and ``subject`` echoes back the offending
     fragment of the cell. Localization is the consumer's job (D4): the RU row
-    caption is built from ``code``/``subject`` in ``xlsx_import_service``, so
+    caption is built from ``code``/``subject`` in ``xlsx_report_text``, so
     this pure parse never carries display text.
     """
 

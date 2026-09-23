@@ -36,6 +36,7 @@ async def _make_service(session) -> EventService:
         character_service=EntityService(CharacterRepository(session), desc_repo),
         item_service=EntityService(ItemRepository(session), desc_repo),
         location_service=EntityService(LocationRepository(session), desc_repo),
+        event_type_repo=EventTypeRepository(session),
     )
 
 
@@ -120,6 +121,36 @@ class TestEventServiceEventTypes:
         svc = await _make_service(async_session)
         assert await svc.save_event_type(name="X", color_index=1, type_id=999999) is None
 
+    async def test_save_failure_rolls_back_and_raises(self, async_session, monkeypatch):
+        """Scenario-5 patch (task 5.2): a failed create/commit rolls the shared
+        session back and the error travels out — no dirty-session fallout."""
+        svc = await _make_service(async_session)
+        await svc.save_event_type(name="Живой", color_index=2)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr(async_session, "commit", boom)
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await svc.save_event_type(name="Сгорит", color_index=3)
+        monkeypatch.undo()
+
+        # The session stayed usable and the failed row never appeared.
+        assert [t.name for t in await svc.get_event_types()] == ["Живой"]
+
+    async def test_save_update_failure_rolls_back_and_raises(self, async_session, monkeypatch):
+        svc = await _make_service(async_session)
+        live = await svc.save_event_type(name="Живой", color_index=2)
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("update exploded")
+
+        monkeypatch.setattr(svc._event_type_repo, "update", boom)
+        with pytest.raises(RuntimeError, match="update exploded"):
+            await svc.save_event_type(name="Нет", color_index=3, type_id=live.id)
+
+        assert [t.name for t in await svc.get_event_types()] == ["Живой"]
+
     @pytest.mark.parametrize("bad_index", [0, 9, -1, 3.5, "3", None, True])
     async def test_save_rejects_color_index_outside_1_8(self, async_session, bad_index):
         svc = await _make_service(async_session)
@@ -170,9 +201,9 @@ class TestEventServiceEventTypes:
     async def test_delete_failure_rolls_the_transaction_back(
         self, async_session, monkeypatch,
     ):
-        """A failed delete answers ``False`` instead of raising: the unbind and
-        the DELETE roll back together (the event keeps its type) and the shared
-        session stays usable for the next call."""
+        """Task 5.2 (scenario 7): the failure is no longer swallowed — it
+        raises to the caller (the dialog notifies the user), the session rolls
+        back so the event keeps its type and stays usable for the next call."""
         svc = await _make_service(async_session)
         occupied = await svc.save_event_type(name="Сгорит", color_index=3)
         event = await _make_event(async_session, "Держится", occupied.id)
@@ -183,7 +214,8 @@ class TestEventServiceEventTypes:
             raise RuntimeError("db write failed")
 
         monkeypatch.setattr(svc._event_type_repo, "delete", boom)
-        assert await svc.delete_event_type(occupied.id) is False
+        with pytest.raises(RuntimeError, match="db write failed"):
+            await svc.delete_event_type(occupied.id)
 
         assert [t.name for t in await svc.get_event_types()] == ["Сгорит"]
         refetched = await svc.get_event(event_id)

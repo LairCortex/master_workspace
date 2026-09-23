@@ -10,7 +10,7 @@ from app.application.services.llm_service import LlmService
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
-from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
+from app.presentation.viewmodels.llm_viewmodel import GenerationTarget, LlmViewModel
 
 
 @pytest.fixture
@@ -36,6 +36,15 @@ def mock_service():
 @pytest.fixture
 def vm(mock_service, config_manager, http):
     return LlmViewModel(mock_service, config_manager, http)
+
+
+def target(field_id="event.name", entity_type="event", field_name="name",
+           field_label="Название", current_text="", owner=None) -> GenerationTarget:
+    """One generation request as the controller hands it to the ViewModel."""
+    return GenerationTarget(
+        field_id=field_id, entity_type=entity_type, field_name=field_name,
+        field_label=field_label, current_text=current_text, owner=owner,
+    )
 
 
 # --- status ---------------------------------------------------------------
@@ -178,7 +187,7 @@ async def test_request_generation_emits_finished(vm, mock_service, qtbot):
     vm.world_prompt = "Мир"
 
     with qtbot.waitSignal(vm.generation_finished, timeout=1000) as blocker:
-        await vm.request_generation("event.name", "event", "name", "Название", "текст")
+        await vm.request_generation(target(current_text="текст"))
 
     assert blocker.args == [None, "event.name", "AI text"]
     mock_service.generate_for_field.assert_awaited_once()
@@ -192,7 +201,7 @@ async def test_request_generation_emits_error(vm, mock_service, qtbot):
     mock_service.generate_for_field = AsyncMock(side_effect=RuntimeError("LLM не настроен"))
 
     with qtbot.waitSignal(vm.generation_error, timeout=1000) as blocker:
-        await vm.request_generation("item.name", "item", "name", "Название", "")
+        await vm.request_generation(target(field_id="item.name", entity_type="item"))
 
     assert blocker.args == [None, "item.name", "LLM не настроен"]
 
@@ -202,7 +211,7 @@ async def test_request_generation_passes_owner_to_service(vm, mock_service):
     vm.apply_config(LlmConfig("http://x", "m"))
     owner = object()
 
-    await vm.request_generation("event.name", "event", "name", "Название", "", owner=owner)
+    await vm.request_generation(target(owner=owner))
 
     kwargs = mock_service.generate_for_field.await_args.kwargs
     assert kwargs["owner"] is owner

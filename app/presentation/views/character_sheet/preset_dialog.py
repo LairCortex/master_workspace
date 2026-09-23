@@ -36,7 +36,6 @@ from typing import Any, Awaitable, Callable, Coroutine
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -50,9 +49,8 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
 )
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.sheet_preset_view_model import (
     SheetPresetViewModel,
 )
@@ -67,8 +65,12 @@ async def _run_now(coro: Coroutine) -> Any:
     return await coro
 
 
-class CharacterSheetPresetDialog(QDialog):
+class CharacterSheetPresetDialog(IslandDialogMixin, QDialog):
     """Pick a bundled preset, see its license, name the snapshot, create it."""
+
+    island_context_names = {"sheetPresetVm": "vm"}
+    # Synchronous release, pinned against the WA_DeleteOnClose race below.
+    island_release_deferred = False
 
     created = Signal(int)
 
@@ -103,26 +105,19 @@ class CharacterSheetPresetDialog(QDialog):
         # The island shares the one process-wide engine (spec qml-shell
         # «Движок один на приложение»); ``setup_qml_shell`` is idempotent, and
         # the reference keeps the engine alive under a live island.
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        # Dialog-owned context (see list_dialog's identical apply-time note):
-        # rootContext() on the shared engine is the ENGINE root, where a name
-        # is a single global slot — this dialog is explicitly deleted when it
-        # finishes, and a bridge of its own left there would strand the list
-        # (and the editor behind it) on the off-skin colors.
-        self._palette = QmlPalette(self._theme, parent=self)
-        self._context = island_context(
-            engine, self, sheetPresetVm=self.vm, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        self._component = load_island(self.quick, self._context, ROOT_QML)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # Dialog-owned context (IslandDialogMixin; see list_dialog's
+        # identical apply-time note): rootContext() on the shared engine is
+        # the ENGINE root, where a name is a single global slot — this dialog
+        # is explicitly deleted when it finishes, and a bridge of its own
+        # left there would strand the list (and the editor behind it) on the
+        # off-skin colors.
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self.setup_island()
         layout.addWidget(self.quick)
-
-        self._root = self.quick.rootObject()
         self._wire_island()
+
+    def island_source(self) -> str:
+        return ROOT_QML
 
     # ---- island -> facade wiring ------------------------------------------------
 
@@ -197,7 +192,8 @@ class CharacterSheetPresetDialog(QDialog):
 
     # ---- island teardown — synchronous release (Q3a correction) ------------
     #
-    # NOT the Q1 deferred one-shot. The deferred seam exists so a dialog close
+    # NOT the mixin's deferred one-shot: island_release_deferred = False.
+    # The deferred seam exists so a dialog close
     # cannot tear the scene down while a QML ``onClicked`` is still on the
     # stack; it is only safe while the dialog object itself stays alive for
     # that one loop turn. A finished preset dialog is a QDialog already under
@@ -213,11 +209,6 @@ class CharacterSheetPresetDialog(QDialog):
     # and a QDialog::done() call is never a QML signal stack frame (QML clicks
     # land on the facade's Python handlers first).
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
-        """Release the island against its VM/palette before the dialog dies.
-        """
-        self._release_island()
-        super().done(result)
+    # Release itself (and the scheduling) — IslandDialogMixin with
+    # island_release_deferred = False: releasing inside done() unwinds the
+    # scene while ``vm``/``_palette`` are still alive.

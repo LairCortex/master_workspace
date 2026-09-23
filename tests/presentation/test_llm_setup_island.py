@@ -7,10 +7,17 @@ from pathlib import Path
 import pytest
 from PySide6.QtQuick import QQuickItem
 
-from app.application.services.llm_service import FIELD_CONFIG
+from app.domain import entity_registry
 from app.infrastructure.llm.config import LlmConfig
 from app.presentation.views.llm_setup_dialog import ROOT_QML, LlmSetupDialog
 from tests.presentation.qml_helpers import find_item, walk_items
+
+# The LLM field set lives in the domain entity registry since wave 3 (A4);
+# this local view keeps the assertions in this file unchanged.
+FIELD_CONFIG = {
+    desc.key: list(desc.llm_fields)
+    for desc in map(entity_registry.descriptor, entity_registry.LLM_TYPES)
+}
 
 
 @pytest.fixture

@@ -35,21 +35,26 @@ from app.application.services.calendar_settings_service import (
     CalendarSettingsService,
 )
 from app.domain.game_calendar import (
-    CALENDAR_DRAFT_KEY,
-    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
-    DRAFT_STAGE_MONTHS,
     MonthDay,
     MonthSpec,
     StandardCalendar,
     current_calendar,
-    encode_calendar,
-    encode_coord,
     reset_current_calendar,
     set_current_calendar,
 )
+from app.infrastructure.calendar_storage import (
+    CalendarDraft,
+    DRAFT_STAGE_MONTHS,
+    encode_calendar,
+    encode_coord,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    CALENDAR_DRAFT_KEY,
+)
 from app.infrastructure.db.models import EventModel, GameSettingsModel
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.ui_prefs.config import UiPrefsManager
 from app.presentation.theme import ThemeRuntime
 from app.presentation.theme.compiler import tokens_file_path
@@ -106,7 +111,8 @@ _CUSTOM_ORDER = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_PREVIEW)
 
 def _vm(session, service=None, *, first_entry: bool = False) -> CalendarWizardViewModel:
     return CalendarWizardViewModel(
-        session, service or CalendarSettingsService(), first_entry=first_entry
+        GameSessionUoW(session), service or CalendarSettingsService(),
+        first_entry=first_entry,
     )
 
 

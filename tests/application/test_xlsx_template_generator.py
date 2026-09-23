@@ -40,10 +40,13 @@ from app.domain.game_calendar import (
     MonthDay,
     MonthSpec,
     StandardCalendar,
-    encode_coord,
     reset_current_calendar,
     set_current_calendar,
 )
+from app.infrastructure.calendar_storage import (
+    encode_coord,
+)
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db.models import EventModel, ItemModel
 
 
@@ -340,13 +343,13 @@ async def _assert_imports_into_itself_cleanly(wb: Workbook, calendar, session, t
     wb.save(path)
     set_current_calendar(calendar)
 
-    plan = await _svc().analyze_file(path, session)
+    plan = await _svc().analyze_file(path, GameSessionUoW(session))
     assert plan.fatal_errors == []
     assert plan.skipped_rows == []
     assert plan.warnings == []
     assert plan.ghosts == {}
 
-    report = await _svc().apply_plan(plan, session)
+    report = await _svc().apply_plan(plan, GameSessionUoW(session))
     assert report.skipped == []
     assert report.date_shifts == []  # not a single transfer row
     return report

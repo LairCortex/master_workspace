@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
+from app.domain.character_sheets.preset_catalog import PresetCatalog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPEC_PATH = REPO_ROOT / "nri_manager.spec"
-PRESETS_SRC = "app/presentation/views/character_sheet/presets"
+PRESETS_SRC = "app/domain/character_sheets"
 
 
 def _spec_datas_text() -> str:

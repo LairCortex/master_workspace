@@ -37,7 +37,7 @@ from app.infrastructure.repositories.character_sheet_repository import (
 from app.presentation.views.character_sheet.preset_dialog import (
     CharacterSheetPresetDialog,
 )
-from app.presentation.views.character_sheet.presets.catalog import (
+from app.domain.character_sheets.preset_catalog import (
     FATE_LICENSE_TEXT,
     MORK_BORG_LICENSE_TEXT,
 )

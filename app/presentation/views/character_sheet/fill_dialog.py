@@ -23,7 +23,7 @@ import warnings
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -44,13 +44,13 @@ from app.application.services.character_sheet_instance_service import (
 )
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.infrastructure.images.store import ImageStore
+from app.presentation.dialog_utils import IMAGE_FILE_FILTER
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.character_sheet_fill_viewmodel import (
     CharacterSheetFillViewModel,
 )
@@ -59,7 +59,8 @@ log = logging.getLogger(__name__)
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "SheetFillRoot.qml")
 
-_IMAGE_FILTER = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
+# extension whitelist is the domain's (audit A5); the shared filter text
+_IMAGE_FILTER = IMAGE_FILE_FILTER
 
 
 def character_choice_labels(chars) -> list[tuple[str, int]]:
@@ -78,7 +79,7 @@ async def _run_now(coro: Coroutine) -> Any:
     return await coro
 
 
-class CharacterSheetFillDialog(QDialog):
+class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
     """Fill of one instance. Load before showing."""
 
     binding_changed = Signal()
@@ -137,26 +138,24 @@ class CharacterSheetFillDialog(QDialog):
         # the live engine's provider and remembered for later registrations
         bind_sheet_image_store(self._image_store)
 
-    # ── island seam (the Q3a dialog pattern) ─────────────────────────────────
+    # ── island seam (IslandDialogMixin owns the lifecycle) ──────────────────
+
+    def island_source(self) -> str:
+        return ROOT_QML
+
+    def load_island_scene(self, quick) -> None:
+        # Native tooltip display for the island chrome (Q2.5a D9): the bridge
+        # is parented to the island and declared BEFORE the root compiles.
+        self._tooltip_bridge = install_island_tooltips(quick, self._context)
+        super().load_island_scene(quick)
 
     def _build_island(self) -> QQuickWidget:
         self._engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self.quick = QQuickWidget(self._engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         # the VM as the island's DECLARED property, the bridge in a
         # dialog-owned context (never an engine-wide name for one dialog —
         # the Q3a lesson)
-        self._palette = QmlPalette(self._theme, parent=self)
-        self._context = island_context(
-            self._engine, self, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
-        self._component = load_island(
-            self.quick, self._context, ROOT_QML, {"vm": self._vm}
-        )
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
-        self._root = self.quick.rootObject()
+        self.island_initial_properties = {"vm": self._vm}
+        self.setup_island()
         self._wire_island()
         if self._theme is not None:
             attach_theme(self._menu_bar, self._theme)
@@ -193,6 +192,12 @@ class CharacterSheetFillDialog(QDialog):
     async def load_instance(self, instance_id: int) -> None:
         self._instance_id = instance_id
         await self.load()
+
+    @property
+    def instance_id(self) -> int | None:
+        """Public getter (audit B2, task 6.4): the open instance id before the
+        view model has loaded it (``view_model.instance_id`` is unset pre-load)."""
+        return self._instance_id
 
     @property
     def view_model(self) -> CharacterSheetFillViewModel:
@@ -268,16 +273,8 @@ class CharacterSheetFillDialog(QDialog):
         self._teardown_vm_links()
         super().closeEvent(event)
 
-    # ── island teardown (the launcher/list-dialog pattern) ──────────────────
-
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
-        # Deferred scene release before the dialog's children go away (the
-        # Q3a list-dialog comment applies verbatim).
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # ── island release — IslandDialogMixin (deferred one loop turn after
+    # accept/reject/done, the Q3a list-dialog contract) ──────────────────────
 
     # -- native bridges --------------------------------------------------------
 

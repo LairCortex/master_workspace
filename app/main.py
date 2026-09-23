@@ -8,7 +8,6 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -16,16 +15,19 @@ from qasync import QEventLoop
 
 from app.infrastructure.db.database import create_engine, create_session_factory
 from app.infrastructure.db.migrations import init_db
-from app.infrastructure.db.game_manager import ensure_game_directory, export_game, get_db_url, get_images_dir
-from app.infrastructure.db.models import GameSettingsModel
+from app.infrastructure.db.game_manager import ensure_game_directory, get_db_url, get_images_dir
+from app.infrastructure.db.uow import GameSessionUoW
+from app.infrastructure.db.models import (
+    CharacterModel,
+    ItemModel,
+    LocationModel,
+    OrganizationModel,
+)
 from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.event_type_repository import EventTypeRepository
-from app.infrastructure.repositories.organization_repository import OrganizationRepository
-from app.infrastructure.repositories.character_repository import CharacterRepository
-from app.infrastructure.repositories.item_repository import ItemRepository
-from app.infrastructure.repositories.location_repository import LocationRepository
+from app.infrastructure.repositories.dated_repository import dated_repository
 from app.infrastructure.db.models import DescriptionModel
 
 from app.application.services.event_service import EventService
@@ -34,13 +36,12 @@ from app.application.services.calendar_settings_service import (
 )
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
+from app.application.services.export_service import ExportService
 from app.application.services.llm_service import LlmService
 from app.application.services.character_sheet_service import (
-    CharacterSheetError,
     CharacterSheetService,
 )
 from app.application.services.character_sheet_instance_service import (
-    CharacterSheetInstanceError,
     CharacterSheetInstanceService,
 )
 from app.application.services.table_host_service import (
@@ -48,20 +49,18 @@ from app.application.services.table_host_service import (
     PortBusyError,
     TableHostService,
 )
+from app.presentation.dialog_utils import confirm_discard
+from app.presentation.ai_generation_controller import AiGenerationController
 from app.presentation.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
-from app.presentation.viewmodels.llm_viewmodel import (
-    FIELD_PROMPTS_KEY, WORLD_PROMPT_KEY, LlmViewModel,
-)
+from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
 
+from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import (
-    CALENDAR_WIZARD_SEEN_NO,
-    CALENDAR_WIZARD_SEEN_YES,
-    StandardCalendar,
     reset_current_calendar,
 )
 from app.presentation.utils.calendar_warnings import (
@@ -81,9 +80,7 @@ from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 from app.presentation.theme import ThemeRuntime, get_default_theme
 from app.presentation.qml import setup_qml_shell
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
-from app.presentation.views.character_sheet.editor_dialog import CharacterSheetEditorDialog
-from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
-from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
+from app.presentation.sheet_windows import SheetWindowsManager
 from app.presentation.views.table_host.panel import TableHostPanel
 from app.infrastructure.table_host.http import TableHostHttp, create_table_host_app
 from app.infrastructure.repositories.character_sheet_repository import (
@@ -91,6 +88,9 @@ from app.infrastructure.repositories.character_sheet_repository import (
 )
 from app.infrastructure.repositories.character_sheet_instance_repository import (
     CharacterSheetInstanceRepository,
+)
+from app.infrastructure.repositories.llm_settings_repository import (
+    LlmSettingsRepository,
 )
 
 class Application:
@@ -132,6 +132,9 @@ class Application:
         self._http: AppHttpClient | None = None
         self._llm_service: LlmService | None = None
         self._llm_vm: LlmViewModel | None = None
+        # AI generation orchestration (audit B1, design D6): built per game
+        # with the ViewModel it drives; dialogs are wired through it.
+        self._ai_controller: AiGenerationController | None = None
         # Entity service catalog — built once per game in start()
         self._entity_services: dict[str, EntityService] = {}
         # Game-calendar settings (C2, design D2): one stateless service per
@@ -143,14 +146,45 @@ class Application:
         # here — it dies inside start().
         self._calendar_wizard: CalendarWizardDialog | None = None
         self._wiring: ApplicationWiring | None = None
-        # Character-sheet windows (D6/D4): at most one list + one editor + one fill
+        # Character sheets (D6/D4): one service pair per game; the window
+        # lifecycle (list + editor + fill, audit B2) lives in SheetWindowsManager,
+        # built in start() once the wiring exists. The ``_sheet_*`` attributes
+        # below stay as properties delegating to it (retained test-visible API).
         self._sheet_service: CharacterSheetService | None = None
         self._instance_service: CharacterSheetInstanceService | None = None
-        self._sheet_list_dialog: CharacterSheetListDialog | None = None
-        self._sheet_editor: CharacterSheetEditorDialog | None = None
-        self._sheet_fill: CharacterSheetFillDialog | None = None
+        self._sheets: SheetWindowsManager | None = None
         self._table_host: TableHostService | None = None
         self._table_host_panel: TableHostPanel | None = None
+
+    # The three window refs stay readable/writable under their historical
+    # private names: the suite's e2e tests observe the open windows through
+    # them, and the table-host flows reassign them (task 6.1, design D6).
+    @property
+    def _sheet_list_dialog(self):
+        return self._sheets.list_dialog if self._sheets is not None else None
+
+    @_sheet_list_dialog.setter
+    def _sheet_list_dialog(self, dialog) -> None:
+        if self._sheets is not None:
+            self._sheets.list_dialog = dialog
+
+    @property
+    def _sheet_editor(self):
+        return self._sheets.editor if self._sheets is not None else None
+
+    @_sheet_editor.setter
+    def _sheet_editor(self, editor) -> None:
+        if self._sheets is not None:
+            self._sheets.editor = editor
+
+    @property
+    def _sheet_fill(self):
+        return self._sheets.fill if self._sheets is not None else None
+
+    @_sheet_fill.setter
+    def _sheet_fill(self, fill) -> None:
+        if self._sheets is not None:
+            self._sheets.fill = fill
 
     @property
     def qml_engine(self) -> QQmlEngine | None:
@@ -177,8 +211,18 @@ class Application:
         image_dir = get_images_dir(db_path)
         await init_db(self.engine, image_dir=image_dir)
         self._session = self.session_factory()
+        # Wave 5 (design D4): one unit of work per game over the shared
+        # session; it also owns the lock every session task serializes on.
+        # Services and the connector receive this same unit, so every write
+        # path finishes through one point with one non-reentrancy guard.
+        self._uow = GameSessionUoW(self._session)
         self._image_store = ImageStore(self._session, image_dir)
-        await self._image_store.startup_gc()
+        # The boot storage scan is a write like any other: it finishes through
+        # the same unit of work as every user operation (task 5.11 — the store
+        # itself no longer commits; its two former commit points live here
+        # and in the services' post-write hooks).
+        async with self._uow.transaction():
+            await self._image_store.startup_gc()
         set_image_dir(image_dir)
 
         game_name = Path(db_path).parent.name
@@ -208,10 +252,12 @@ class Application:
         # Repositories
         desc_repo = BaseRepository(self._session, DescriptionModel)
         event_repo = EventRepository(self._session)
-        org_repo = OrganizationRepository(self._session)
-        char_repo = CharacterRepository(self._session)
-        item_repo = ItemRepository(self._session)
-        loc_repo = LocationRepository(self._session)
+        # The dated tables share one implementation (C4); the composition
+        # root is the only place naming a model per repository.
+        org_repo = dated_repository(OrganizationModel)(self._session)
+        char_repo = dated_repository(CharacterModel)(self._session)
+        item_repo = dated_repository(ItemModel)(self._session)
+        loc_repo = dated_repository(LocationModel)(self._session)
         event_type_repo = EventTypeRepository(self._session)
 
         # Services
@@ -224,6 +270,9 @@ class Application:
             item_service=self._entity_services["item"],
             location_service=self._entity_services["location"],
             event_type_repo=event_type_repo,
+            # Task 5.9: the SAME unit the entity services and the connector
+            # share — one finish point, one non-reentrancy guard (design D4).
+            uow=self._uow,
         )
         search_service = SearchService(
             event=event_repo,
@@ -243,6 +292,7 @@ class Application:
         self._http = self._http_injected if self._http_injected is not None else AppHttpClient()
         self._llm_service = LlmService(RemoteLlmProvider(LlmConfig(), self._http))
         self._llm_vm = LlmViewModel(self._llm_service, self._config_manager, self._http)
+        self._ai_controller = AiGenerationController(self._llm_vm, self._llm_service)
 
         # Load LLM settings
         await self._load_llm_settings()
@@ -262,6 +312,7 @@ class Application:
         # Wire signals
         self._wiring = ApplicationWiring(
             self, window, timeline_vm, detail_vm, search_vm, event_dialog_vm, event_service,
+            uow=self._uow,
         )
         self._wiring.connect()
 
@@ -278,17 +329,19 @@ class Application:
 
         # Character-sheet menu (D6): one service per game, repo→service DI.
         # The ImageStore is required: the service GCs the sheet-page image
-        # references (pages JSON) after a save/delete commits (design D6) —
-        # without it the files of cleared/deleted sheet images are never
-        # removed in the running app.
+        # references through the unit's post-write hooks after the save has
+        # committed (design D6, task 5.11) — without it the files of
+        # cleared/deleted sheet images are never removed in the running app.
         inst_repo = CharacterSheetInstanceRepository(self._session)
         self._sheet_service = CharacterSheetService(
             CharacterSheetRepository(self._session),
             image_store=self._image_store,
             instance_repo=inst_repo,
+            uow=self._uow,
         )
         self._instance_service = CharacterSheetInstanceService(
             inst_repo, self._sheet_service, image_store=self._image_store,
+            uow=self._uow,
         )
         self._table_host = TableHostService(
             self._instance_service,
@@ -301,6 +354,19 @@ class Application:
         self._instance_service.set_seating_guard(self._table_host.is_seated)
         self._table_host.subscribe_values(self._on_host_values)
         self._table_host.subscribe_occupancy(self._sync_list_seated)
+        # The sheet-window lifecycle (B2, task 6.1) is built once per game with
+        # exactly the collaborators its flows touch; the wiring above already
+        # exists, so the manager gets the real session-lock scheduler.
+        self._sheets = SheetWindowsManager(
+            sheet_service=self._sheet_service,
+            instance_service=self._instance_service,
+            character_service=self._entity_services["character"],
+            image_store=self._image_store,
+            theme=self._theme,
+            window=window,
+            table_host=self._table_host,
+            spawn=self._wiring.run_locked,
+        )
         window.char_sheets_requested.connect(self._on_char_sheets)
         window.table_host_requested.connect(self._on_table_host)
 
@@ -326,24 +392,28 @@ class Application:
         return window
 
     def _on_export_game(self) -> None:
-        """Export current game as .nri archive."""
+        """Export current game as .nri archive.
+
+        Only the Qt shell (task 6.3): picking the destination and reporting
+        the outcome. Naming and packing live in :class:`ExportService`.
+        """
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 
         if not self._db_path:
             return
-        game_name = Path(self._db_path).parent.name
+        service = ExportService(self._db_path)
         dest, _ = QFileDialog.getSaveFileName(
             self._window,
             "Экспорт игры",
-            f"{game_name}.nri",
+            service.suggested_file_name(),
             "NRI архив (*.nri);;Все файлы (*)",
         )
         if not dest:
             return
         try:
-            export_game(self._db_path, dest)
+            service.run_export(dest)
             QMessageBox.information(
-                self._window, "Экспорт", f"Игра «{game_name}» успешно экспортирована.",
+                self._window, "Экспорт", f"Игра «{service.game_name}» успешно экспортирована.",
             )
         except Exception as e:
             QMessageBox.critical(self._window, "Ошибка экспорта", str(e))
@@ -362,26 +432,18 @@ class Application:
         the prompt aborts the switch (the launcher stays open).
         """
         if self._sheet_editor is not None and self._sheet_editor.view_model.dirty:
-            answer = QMessageBox.question(
+            if not confirm_discard(
                 self._window,
-                "Несохранённые изменения",
                 "В макете чар-листа есть несохранённые правки. Сменить игру и "
                 "закрыть редактор без сохранения?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+            ):
                 return
         if self._sheet_fill is not None and self._sheet_fill.view_model.dirty:
-            answer = QMessageBox.question(
+            if not confirm_discard(
                 self._window,
-                "Несохранённые изменения",
                 "В заполненном листе есть несохранённые правки. Сменить игру и "
                 "закрыть лист без сохранения?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+            ):
                 return
         if self._table_host is not None and self._table_host.is_running:
             await self._table_host.stop()
@@ -410,7 +472,7 @@ class Application:
             self._calendar_wizard.raise_()
             self._calendar_wizard.activateWindow()
             return
-        wizard_vm = CalendarWizardViewModel(self._session, self._calendar_service)
+        wizard_vm = CalendarWizardViewModel(self._uow, self._calendar_service)
         dialog = CalendarWizardDialog(
             wizard_vm,
             parent=self._window,
@@ -422,7 +484,7 @@ class Application:
         # Propagation (design D11): a successful application repaints the
         # surfaces that are showing dates right now.
         wizard_vm.apply_succeeded.connect(
-            lambda: self._wiring._spawn(self._reload_after_calendar_change())
+            lambda: self._wiring.run_locked(self._reload_after_calendar_change())
         )
         dialog.finished.connect(
             lambda _r, _d=dialog: self._forget_calendar_wizard(_d)
@@ -432,7 +494,7 @@ class Application:
         # Draft continuation (spec «Черновик мастера») reads the session —
         # a locked spawn; its state_changed repaints the already-visible
         # dialog onto the saved stage.
-        self._wiring._spawn(dialog.begin())
+        self._wiring.run_locked(dialog.begin())
 
     def _forget_calendar_wizard(self, dialog: CalendarWizardDialog) -> None:
         """Drop the closed wizard and queue its C++ teardown."""
@@ -455,8 +517,8 @@ class Application:
         wiring = self._wiring
         if window is None or wiring is None:
             return
-        timeline_vm = wiring._timeline_vm
-        detail_vm = wiring._detail_vm
+        timeline_vm = wiring.timeline_vm
+        detail_vm = wiring.detail_vm
         await timeline_vm.load_events()
         window.timeline_widget.update_events(timeline_vm.events)
         if detail_vm.event is not None:
@@ -466,22 +528,19 @@ class Application:
             await self._refresh_table_host_panel()
 
     async def _maybe_show_calendar_wizard(self) -> None:
-        """First entry of a new game (task 7.2, design D8).
+        """First entry of a new game (task 7.2, design D8; task 6.3 thinned
+        it — the status decision and the close step are service calls now,
+        see :meth:`CalendarSettingsService.wizard_should_open_on_start`).
 
-        Only the seeded «не показан» flag brings the wizard here — an old
-        keyless game opens without it (spec «Старая игра не видит мастера»).
-        The modal runs before ``MainWindow.show()``; its prefilled kind is
-        «Стандартный» because a freshly seeded game lives on the preset.
-        Closing (the X or «Отменить») without a draft means «Стандартный»
-        with application and writes the «показан» flag; a live draft keeps
-        the flag at «не показан» so the next open calls the wizard back as a
-        flow continuation (spec «Брошенный черновик зовёт обратно»).
+        The modal still runs before ``MainWindow.show()``; its prefilled kind
+        is «Стандартный» because a freshly seeded game lives on the preset.
         """
-        seen = await self._calendar_service.load_wizard_seen(self._session)
-        if seen != CALENDAR_WIZARD_SEEN_NO:
+        if not await self._calendar_service.wizard_should_open_on_start(
+            self._session
+        ):
             return
         wizard_vm = CalendarWizardViewModel(
-            self._session, self._calendar_service, first_entry=True,
+            self._uow, self._calendar_service, first_entry=True,
         )
         dialog = CalendarWizardDialog(
             wizard_vm, theme=self._theme, run=self._wiring.run_locked,
@@ -492,69 +551,27 @@ class Application:
         await dialog.begin()
         dialog.exec()
         dialog.deleteLater()
-        if await self._calendar_service.load_draft(self._session) is not None:
-            return  # abandoned draft: the flag stays «не показан»
-        if (
-            await self._calendar_service.load_wizard_seen(self._session)
-            != CALENDAR_WIZARD_SEEN_YES
-        ):
-            # Nothing was applied inside the modal: the close itself is the
-            # preset application (trivial transaction over a new game).
-            await self._calendar_service.promote_draft(
-                self._session, StandardCalendar(), mark_wizard_seen=True,
-            )
+        # Draft-left / already-applied / close-as-preset: all in the service.
+        await self._calendar_service.finish_first_run_flow(self._session)
 
     # -- character sheets (D6) ------------------------------------------------
+    # The window lifecycle itself — creation, single-window dirty confirms,
+    # the ``deleteLater`` ownership — moved into :class:`SheetWindowsManager`
+    # (audit B2, task 6.1). What stays below are thin delegates for the menu
+    # wiring and the suite's e2e observers.
 
     def _close_sheet_windows(self) -> None:
-        """Close the list and the editor without prompts (app shutdown / game switch)."""
-        if self._sheet_list_dialog is not None:
-            self._sheet_list_dialog.close()
-            self._sheet_list_dialog = None
-        if self._sheet_editor is not None:
-            self._sheet_editor.force_close()
-            self._sheet_editor = None
-        if self._sheet_fill is not None:
-            self._sheet_fill.force_close()
-            self._sheet_fill = None
+        """Close the sheet windows and the table-host panel, without prompts."""
+        if self._sheets is not None:
+            self._sheets.close_windows()
         if self._table_host_panel is not None:
             self._table_host_panel.close()
             self._table_host_panel = None
 
     def _on_char_sheets(self) -> None:
         """Show (or create) the non-modal sheet list window."""
-        if self._sheet_list_dialog is None:
-            dialog = CharacterSheetListDialog(
-                self._sheet_service, parent=self._window,
-                run_locked=self._wiring.run_locked,
-                instance_service=self._instance_service,
-                theme=self._theme,
-            )
-            dialog.open_requested.connect(self._on_sheet_open)
-            dialog.open_instance_requested.connect(self._on_instance_open)
-            dialog.renamed.connect(self._on_sheet_renamed)
-            dialog.instance_renamed.connect(self._on_instance_renamed)
-            # Closing the dialog releases its QML island (list_dialog.done),
-            # so the instance is single-use: the next open builds a fresh one
-            # (the editor/fill ``_forget_*`` contract).
-            dialog.finished.connect(lambda _r, _d=dialog: self._forget_sheet_list(_d))
-            self._sheet_list_dialog = dialog
-        self._sheet_list_dialog.show()
-        self._sheet_list_dialog.raise_()
-        self._sheet_list_dialog.activateWindow()
-        # Session-touching: go through the wiring's session lock like all others.
-        self._wiring._spawn(self._sheet_list_refresh())
-
-    def _forget_sheet_list(self, dialog) -> None:
-        """Drop the closed list: its island is gone with ``done()``.
-
-        The delete is queued behind the dialog's own deferred
-        ``_release_island`` (same timer queue, FIFO), so the scene is already
-        unloaded when the dialog and its VM/palette die.
-        """
-        if self._sheet_list_dialog is dialog:
-            self._sheet_list_dialog = None
-        QTimer.singleShot(0, dialog, dialog.deleteLater)
+        if self._sheets is not None:
+            self._sheets.on_char_sheets()
 
     def _on_table_host(self) -> None:
         if self._table_host is None or self._window is None:
@@ -564,17 +581,17 @@ class Application:
                 self._table_host, parent=self._window, theme=self._theme,
             )
             panel.start_requested.connect(
-                lambda: self._wiring._spawn(self._start_table())
+                lambda: self._wiring.run_locked(self._start_table())
             )
             panel.stop_requested.connect(
-                lambda: self._wiring._spawn(self._stop_table())
+                lambda: self._wiring.run_locked(self._stop_table())
             )
             panel.player_selected.connect(self._on_host_player_selected)
             self._table_host_panel = panel
         self._table_host_panel.show()
         self._table_host_panel.raise_()
         self._table_host_panel.activateWindow()
-        self._wiring._spawn(self._refresh_table_host_panel())
+        self._wiring.run_locked(self._refresh_table_host_panel())
 
     async def _refresh_table_host_panel(self) -> None:
         panel = self._table_host_panel
@@ -592,15 +609,11 @@ class Application:
         if host is None or panel is None:
             return
         if self._sheet_fill is not None and self._sheet_fill.view_model.dirty:
-            answer = QMessageBox.question(
+            if not confirm_discard(
                 self._window,
-                "Несохранённые изменения",
                 "В заполненном листе есть несохранённые правки. Открыть стол и "
                 "закрыть лист без сохранения?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+            ):
                 return
             self._sheet_fill.force_close()
             self._sheet_fill = None
@@ -630,264 +643,53 @@ class Application:
         self._sync_list_seated()
 
     def _sync_list_seated(self) -> None:
-        dialog = self._sheet_list_dialog
-        host = self._table_host
-        if dialog is None:
-            return
-        if host is not None and host.is_running:
-            dialog.set_seated_ids(host.seated_ids)
-        else:
-            dialog.set_seated_ids(set())
+        if self._sheets is not None:
+            self._sheets.sync_list_seated()
 
     def _on_host_player_selected(self, instance_id: int) -> None:
-        self._wiring._spawn(self._open_fill(instance_id))
+        if self._sheets is not None:
+            self._sheets.on_host_player_selected(instance_id)
 
     def _on_host_values(self, instance_id: int, field_id: str, value) -> None:
-        fill = self._sheet_fill
-        if fill is None or fill.view_model.instance_id != instance_id:
-            return
-        fill.view_model.apply_remote_value(field_id, value)
+        if self._sheets is not None:
+            self._sheets.on_host_values(instance_id, field_id, value)
 
     async def _sheet_list_refresh(self) -> None:
-        # Runs inside the task spawned by ``_wiring._spawn`` above, which
-        # holds the session lock for the whole task — that is how this caller
-        # satisfies ``refresh()``'s "its caller provides the lock" contract.
-        # Do NOT wrap ``dialog.refresh()`` in ``run_locked`` here: the lock
-        # is not reentrant (review #12).
-        dialog = self._sheet_list_dialog
-        if dialog is None:
-            return
-        try:
-            await dialog.refresh()
-        except Exception as exc:  # app already shut down under this task
-            logging.getLogger("app.main").debug("character-sheet list refresh skipped: %s", exc)
-            return
-        if self._sheet_list_dialog is not dialog:
-            return
-        sheet_id = None
-        if self._sheet_editor is not None:
-            sheet_id = self._sheet_editor.view_model.sheet_id
-        dialog.set_open_sheet_id(sheet_id)
-        instance_id = None
-        if self._sheet_fill is not None:
-            instance_id = self._sheet_fill.view_model.instance_id
-        dialog.set_open_instance_id(instance_id)
-        self._sync_list_seated()
-
-    def _on_sheet_open(self, sheet_id: int) -> None:
-        self._wiring._spawn(self._open_sheet(sheet_id))
-
-    async def _open_sheet(self, sheet_id: int) -> None:
-        """Open one editor (D6): a dirty current editor is closed only after confirm."""
-        if self._sheet_editor is not None:
-            if self._sheet_editor.view_model.dirty:
-                answer = QMessageBox.question(
-                    self._window,
-                    "Несохранённые изменения",
-                    "В текущем макете есть несохранённые правки. Закрыть без сохранения "
-                    "и открыть новый шаблон?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if answer != QMessageBox.StandardButton.Yes:
-                    return
-                # The confirm above already asked the user — close without the
-                # editor's own dirty prompt.
-                self._sheet_editor.force_close()
-            else:
-                self._sheet_editor.close()
-            self._sheet_editor = None
-        editor = CharacterSheetEditorDialog(
-            self._sheet_service, sheet_id, parent=self._window,
-            run_locked=self._wiring.run_locked,
-            image_store=self._image_store,
-            theme=self._theme,
-        )
-        self._sheet_editor = editor
-        # A closed window must not keep its stale reference (D6 single editor).
-        editor.finished.connect(lambda _r, _e=editor: self._forget_editor(_e))
-        editor.saved.connect(lambda _e=editor: self._on_design_saved(_e))
-        editor.show()
-        try:
-            await editor.load()
-        except CharacterSheetError as exc:
-            # A corrupt template must not be opened (spec): drop the editor and report.
-            if self._sheet_editor is editor:
-                self._sheet_editor = None
-            editor.force_close()  # template is None -> no dirty prompt
-            QMessageBox.critical(self._window, "Чар-листы", str(exc))
-            if self._sheet_list_dialog is not None:
-                self._sheet_list_dialog.set_open_sheet_id(None)
-            return
-        except Exception as exc:  # session gone (app shut down mid-load): just drop
-            logging.getLogger("app.main").debug("character-sheet load aborted: %s", exc)
-            if self._sheet_editor is editor:
-                self._sheet_editor = None
-            editor.force_close()  # template is None -> no dirty prompt
-            return
-        # Only mark the sheet open if this editor is still the current one:
-        # if the window was closed while load was in flight, ``finished``
-        # already ran ``_forget_editor`` (clearing the mark), and re-applying
-        # it here would leave a stale "open" flag on a closed sheet.
-        if self._sheet_list_dialog is not None and self._sheet_editor is editor:
-            self._sheet_list_dialog.set_open_sheet_id(editor.view_model.sheet_id)
-
-    def _on_sheet_renamed(self, sheet_id: int, name: str) -> None:
-        """External rename (D5): update the open editor's title, dirty untouched."""
-        if self._sheet_editor is not None and self._sheet_editor.view_model.sheet_id == sheet_id:
-            self._sheet_editor.set_name(name)
+        if self._sheets is not None:
+            await self._sheets.sheet_list_refresh()
 
     def _on_instance_open(self, instance_id: int) -> None:
-        self._wiring._spawn(self._open_fill(instance_id))
+        if self._sheets is not None:
+            self._sheets.on_instance_open(instance_id)
 
     async def _open_fill(self, instance_id: int) -> None:
-        """Open one Fill window (D4): dirty current Fill is closed only after confirm."""
-        read_only = bool(self._table_host is not None and self._table_host.is_running)
-        if self._sheet_fill is not None:
-            current_id = self._sheet_fill.view_model.instance_id
-            if current_id is None:
-                current_id = self._sheet_fill._instance_id
-            if current_id == instance_id:
-                self._sheet_fill.show()
-                self._sheet_fill.raise_()
-                self._sheet_fill.activateWindow()
-                return
-            if read_only:
-                try:
-                    await self._sheet_fill.load_instance(instance_id)
-                except (CharacterSheetError, CharacterSheetInstanceError) as exc:
-                    QMessageBox.critical(self._window, "Чар-листы", str(exc))
-                    return
-                if self._sheet_list_dialog is not None:
-                    self._sheet_list_dialog.set_open_instance_id(
-                        self._sheet_fill.view_model.instance_id
-                    )
-                return
-            if self._sheet_fill.view_model.dirty:
-                answer = QMessageBox.question(
-                    self._window,
-                    "Несохранённые изменения",
-                    "В текущем листе есть несохранённые правки. Закрыть без сохранения "
-                    "и открыть другой лист?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if answer != QMessageBox.StandardButton.Yes:
-                    return
-                self._sheet_fill.force_close()
-            else:
-                self._sheet_fill.close()
-            self._sheet_fill = None
-        fill = CharacterSheetFillDialog(
-            self._instance_service,
-            self._sheet_service,
-            instance_id,
-            parent=self._window,
-            run_locked=self._wiring.run_locked,
-            image_store=self._image_store,
-            character_service=self._entity_services.get("character"),
-            read_only=read_only,
-            theme=self._theme,
-        )
-        self._sheet_fill = fill
-        fill.finished.connect(lambda _r, _f=fill: self._forget_fill(_f))
-        fill.binding_changed.connect(
-            lambda: self._wiring._spawn(self._refresh_character_cards())
-        )
-        fill.show()
-        try:
-            await fill.load()
-        except (CharacterSheetError, CharacterSheetInstanceError) as exc:
-            if self._sheet_fill is fill:
-                self._sheet_fill = None
-            fill.force_close()
-            QMessageBox.critical(self._window, "Чар-листы", str(exc))
-            if self._sheet_list_dialog is not None:
-                self._sheet_list_dialog.set_open_instance_id(None)
-            return
-        except Exception as exc:
-            logging.getLogger("app.main").debug("character-sheet fill load aborted: %s", exc)
-            if self._sheet_fill is fill:
-                self._sheet_fill = None
-            fill.force_close()
-            return
-        if self._sheet_list_dialog is not None and self._sheet_fill is fill:
-            self._sheet_list_dialog.set_open_instance_id(fill.view_model.instance_id)
+        if self._sheets is not None:
+            await self._sheets.open_fill(instance_id)
 
     def _on_instance_renamed(self, instance_id: int, name: str) -> None:
-        if self._sheet_fill is not None and self._sheet_fill.view_model.instance_id == instance_id:
-            self._sheet_fill.set_name(name)
+        if self._sheets is not None:
+            self._sheets.on_instance_renamed(instance_id, name)
 
     def _on_design_saved(self, editor) -> None:
-        fill = self._sheet_fill
-        wiring = self._wiring
-        if wiring is None:
-            return
-        if fill is not None and fill.view_model.template_id == editor.view_model.sheet_id:
-            wiring._spawn(self._reload_fill_after_design(editor))
-            return
-        host = self._table_host
-        if host is not None and host.is_running:
-            wiring._spawn(host.broadcast_layout(editor.view_model.sheet_id))
+        if self._sheets is not None:
+            self._sheets.on_design_saved(editor)
 
     async def _reload_fill_after_design(self, editor) -> None:
-        fill = self._sheet_fill
-        if fill is None or editor is None:
-            return
-        if fill.view_model.template_id != editor.view_model.sheet_id:
-            return
-        try:
-            await fill.view_model.reload_layout()
-        except Exception as exc:
-            logging.getLogger("app.main").debug(
-                "fill reload_layout after design save skipped: %s", exc
-            )
-        host = self._table_host
-        if host is not None and host.is_running:
-            await host.broadcast_layout(editor.view_model.sheet_id)
-
-    def _forget_fill(self, fill) -> None:
-        if self._sheet_fill is fill:
-            self._sheet_fill = None
-        if self._sheet_list_dialog is not None:
-            self._sheet_list_dialog.set_open_instance_id(None)
-        fill.deleteLater()
-
-    def _forget_editor(self, editor) -> None:
-        """Drop the reference once the editor window is actually closed.
-
-        Also queue the C++ teardown: the dialog is a child of the main window,
-        so without ``deleteLater`` every closed editor would linger as a hidden
-        top-level widget until the app shuts down.
-        """
-        if self._sheet_editor is editor:
-            self._sheet_editor = None
-        if self._sheet_list_dialog is not None:
-            self._sheet_list_dialog.set_open_sheet_id(None)
-        editor.deleteLater()
+        if self._sheets is not None:
+            await self._sheets.reload_fill_after_design(editor)
 
     async def _refresh_character_cards(self) -> None:
-        window = self._window
-        svc = self._instance_service
-        if window is None or svc is None:
-            return
-        from app.presentation.views.entity_card_dialog import EntityCardDialog
-        for card in window.findChildren(EntityCardDialog):
-            if card.entity_type != "character":
-                continue
-            eid = card.populated_entity_id
-            if eid is None:
-                continue
-            inst = await svc.get_by_character_id(eid)
-            card.set_character_sheet_available(inst is not None)
+        if self._sheets is not None:
+            await self._sheets.refresh_character_cards()
 
     def _wire_mentions_for_dialog(self, dialog, on_entity_click_fn):
         """Connect mention search and click signals for a dialog's mention proxies.
 
         Both signals touch the shared ``AsyncSession`` (search / entity load),
-        so they must run through ``ApplicationWiring._spawn`` like every other
-        session-touching task — a bare ``ensure_future`` here would race the
-        session against whatever task the lock is currently serializing.
+        so they must run through the connector's public ``run_locked`` like
+        every other session-touching task — a bare ``ensure_future`` here
+        would race the session against whatever task the lock is currently
+        serializing.
         """
         for edit in dialog.get_mention_edits():
             async def _do_search(query, _edit=edit):
@@ -900,15 +702,15 @@ class Application:
                     )
 
             edit.mention_search_requested.connect(
-                lambda q, _fn=_do_search: self._wiring._spawn(_fn(q))
+                lambda q, _fn=_do_search: self._wiring.run_locked(_fn(q))
             )
 
         async def _on_mention_clicked(entity_type, entity_id):
-            window = self._wiring._window
+            window = self._wiring.window
             if entity_type == "event":
-                event = await self._wiring._event_service.get_event(entity_id)
+                event = await self._wiring.event_service.get_event(entity_id)
                 if event:
-                    await self._wiring._on_edit_event(entity_id)
+                    await self._wiring.open_event_editor(entity_id)
                     return
                 QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
                 return
@@ -923,7 +725,7 @@ class Application:
             await on_entity_click_fn(entity_type, entity_id)
 
         dialog.mention_clicked.connect(
-            lambda t, i: self._wiring._spawn(_on_mention_clicked(t, i))
+            lambda t, i: self._wiring.run_locked(_on_mention_clicked(t, i))
         )
 
     def _get_entity_service(self, entity_type: str) -> EntityService | None:
@@ -933,14 +735,19 @@ class Application:
     def _build_entity_services(self) -> dict[str, EntityService]:
         """Build the per-game catalog once (replaces per-call construction)."""
         desc_repo = BaseRepository(self._session, DescriptionModel)
+        # type↔repository stays in the composition root (design D2); the keys
+        # are EntityType members, not parallel string literals
         repo_map = {
-            "organization": OrganizationRepository(self._session),
-            "character": CharacterRepository(self._session),
-            "item": ItemRepository(self._session),
-            "location": LocationRepository(self._session),
+            EntityType.ORGANIZATION: dated_repository(OrganizationModel)(self._session),
+            EntityType.CHARACTER: dated_repository(CharacterModel)(self._session),
+            EntityType.ITEM: dated_repository(ItemModel)(self._session),
+            EntityType.LOCATION: dated_repository(LocationModel)(self._session),
         }
         services = {
-            t: EntityService(repo=r, description_repo=desc_repo, image_store=self._image_store)
+            t.value: EntityService(
+                repo=r, description_repo=desc_repo,
+                image_store=self._image_store, uow=self._uow,
+            )
             for t, r in repo_map.items()
         }
         for type_name, svc in services.items():
@@ -950,237 +757,12 @@ class Application:
         return services
 
     def _wire_ai_buttons(self, dialog) -> None:
-        """Connect AI buttons in a dialog to the LLM ViewModel.
+        """Route a dialog's AI-assist buttons through the generation controller.
 
-        Field buttons trigger single-field generation; the entity button
-        (top-right of the form) starts a parallel wave over all fields and
-        becomes its cancel while the wave runs. At most one wave per
-        dialog at a time; "Save" is locked for the whole generation.
+        The whole orchestration moved to :class:`AiGenerationController`
+        (audit finding B1, design D6); the composition root wires it in.
         """
-        if not hasattr(dialog, "get_ai_buttons"):
-            return
-        llm_vm = self._llm_vm
-        service = self._llm_service
-        get_entity_button = getattr(dialog, "get_entity_button", None)
-        log = logging.getLogger("llm.wire")
-
-        # Per-dialog wave state shared by the field and entity-button handlers.
-        # ``batch`` is None outside a wave, otherwise:
-        #   {"fields": {field_id: (button, field_name, field_label)},
-        #    "pending": set[field_id], "errors": {field_id: reason}}
-        # ``single_field`` — field_id of the in-flight single generation (or None).
-        # ``cancelled_fields`` — fields of a stopped wave: ALL late results/
-        # errors for them are dropped (cancellation is not an error). The
-        # marker stays until a new generation of the same field is started.
-        state: dict = {"batch": None, "single_field": None, "cancelled_fields": set()}
-
-        def _entity_button():
-            return get_entity_button() if get_entity_button is not None else None
-
-        def _any_generating() -> bool:
-            return (
-                any(b.is_generating for b in dialog.get_ai_buttons())
-                or state["batch"] is not None
-                or state["single_field"] is not None
-            )
-
-        def _sync_controls() -> None:
-            lock = getattr(dialog, "set_save_locked", None)
-            if lock is not None:
-                lock(_any_generating())
-            ebtn = _entity_button()
-            if ebtn is not None:
-                ebtn.set_wave_running(state["batch"] is not None)
-                ebtn.set_single_in_flight(
-                    state["batch"] is None and state["single_field"] is not None
-                )
-
-        buttons_by_id = {
-            f"{b.entity_type}.{b.field_name}": b for b in dialog.get_ai_buttons()
-        }
-
-        def _fail_field(field_id: str, err: str) -> None:
-            """Terminal failure of a dialog field (provider error or an
-            unexpected break of request_generation): the single completion
-            path for failures, so the dialog can never be left stuck (no
-            leaked single_field / batch pending); D6: visible warning."""
-            if field_id in state["cancelled_fields"]:
-                return  # late signal for a cancelled field
-            btn = buttons_by_id[field_id]
-            btn.set_generating(False)
-            batch = state["batch"]
-            if batch is not None and field_id in batch["fields"]:
-                batch["errors"][field_id] = err
-                batch["pending"].discard(field_id)
-                if not batch["pending"]:
-                    _finish_wave()
-            else:
-                if state["single_field"] == field_id:
-                    state["single_field"] = None
-                QMessageBox.warning(
-                    dialog,
-                    "AI-ассистент",
-                    f"Не удалось сгенерировать поле «{btn.field_label}»: {err}",
-                )
-                _sync_controls()
-
-        def _launch(btn, field_id: str, et: str, fn: str, fl: str, ct: str) -> None:
-            async def _do():
-                try:
-                    await llm_vm.request_generation(field_id, et, fn, fl, ct, owner=dialog)
-                except Exception as exc:
-                    # request_generation converts provider errors into
-                    # generation_error; this only catches unexpected breaks —
-                    # routed through _fail_field so the dialog never sticks.
-                    log.error("Generation failed: %s — %s", field_id, exc)
-                    _fail_field(field_id, str(exc))
-
-            asyncio.ensure_future(_do())
-
-        def _show_batch_errors(errors: dict, fields: dict) -> None:
-            """One aggregated dialog for the failed fields of a finished wave.
-
-            A shared reason is stated once for the whole list; different
-            reasons are listed per field.
-            """
-            items = [(fields[fid][2], reason) for fid, reason in errors.items()]
-            reasons = {reason for _label, reason in items}
-            if len(reasons) == 1:
-                lines = "\n".join(f"- «{label}»" for label, _reason in items)
-                text = f"Не удалось сгенерировать поля:\n{lines}\n\nПричина: {next(iter(reasons))}"
-            else:
-                lines = "\n".join(f"- «{label}»: {reason}" for label, reason in items)
-                text = f"Не удалось сгенерировать поля:\n{lines}"
-            QMessageBox.warning(dialog, "AI-ассистент", text)
-
-        def _finish_wave() -> None:
-            # Every field resets its own button in the finishing handler
-            # before dropping out of ``pending``, so by the time the counter
-            # reaches zero the whole wave is already unblocked.
-            batch = state["batch"]
-            state["batch"] = None
-            _sync_controls()
-            if batch["errors"]:
-                _show_batch_errors(batch["errors"], batch["fields"])
-
-        def _stop_all_no_error() -> None:
-            """End the wave/single generation without an error dialog: cancel
-            the requests and synchronously reset the buttons; results already
-            written into fields stay there."""
-            batch = state["batch"]
-            stopping: set[str] = set(batch["fields"]) if batch is not None else set()
-            if state["single_field"] is not None:
-                stopping.add(state["single_field"])
-            state["cancelled_fields"] |= stopping
-            state["batch"] = None
-            state["single_field"] = None
-            service.cancel_all(dialog)
-            for btn in dialog.get_ai_buttons():
-                btn.set_generating(False)
-            _sync_controls()
-
-        def _start_wave() -> None:
-            # Reaches here only from the entity button, which emits
-            # batch_requested only when ready and no generation is running.
-            fields: dict[str, tuple] = {}
-            for btn in dialog.get_ai_buttons():
-                field_id = f"{btn.entity_type}.{btn.field_name}"
-                fields[field_id] = (btn, btn.field_name, btn.field_label)
-                # A new wave invalidates the cancellation markers of a previous one.
-                state["cancelled_fields"].discard(field_id)
-                btn.set_generating(True)
-            state["batch"] = {"fields": fields, "pending": set(fields), "errors": {}}
-            _sync_controls()
-            for field_id, (btn, fn, fl) in fields.items():
-                # Existing field text is part of the prompt; the result
-                # overrides it (safe override per spec).
-                _launch(btn, field_id, btn.entity_type, fn, fl, btn.current_text)
-
-        for btn in dialog.get_ai_buttons():
-            btn.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
-            llm_vm.model_status_changed.connect(
-                lambda _s, _b=btn: _b.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
-            )
-
-            def _on_generate(et, fn, fl, ct, _btn=btn):
-                field_id = f"{et}.{fn}"
-                if _any_generating():
-                    return  # at most one wave per dialog
-                log.info("AI button clicked: %s, label=%s, text=%r", field_id, fl, ct[:50] if ct else "")
-                # A new run invalidates the cancellation marker of a previous wave.
-                state["cancelled_fields"].discard(field_id)
-                _btn.set_generating(True)
-                state["single_field"] = field_id
-                _sync_controls()
-                _launch(_btn, field_id, et, fn, fl, ct)
-
-            btn.generate_requested.connect(_on_generate)
-
-            def _on_field_finished(owner, fid, text, _btn=btn, _et=btn.entity_type, _fn=btn.field_name):
-                field_id = f"{_et}.{_fn}"
-                # owner is not dialog → the signal belongs to another (nested)
-                # dialog of the same entity type: its results must not land here.
-                if owner is not dialog or fid != field_id:
-                    return
-                if field_id in state["cancelled_fields"]:
-                    return  # late signal for a cancelled field
-                _btn.set_result_text(text)
-                batch = state["batch"]
-                if batch is not None and field_id in batch["fields"]:
-                    batch["pending"].discard(field_id)
-                    if not batch["pending"]:
-                        _finish_wave()
-                else:
-                    if state["single_field"] == field_id:
-                        state["single_field"] = None
-                    _sync_controls()
-
-            def _on_field_error(owner, fid, err, _et=btn.entity_type, _fn=btn.field_name):
-                field_id = f"{_et}.{_fn}"
-                if owner is not dialog or fid != field_id:
-                    return
-                _fail_field(fid, err)
-
-            llm_vm.generation_finished.connect(_on_field_finished)
-            llm_vm.generation_error.connect(_on_field_error)
-
-        def _close_guard() -> None:
-            """Close path (X / «Отмена») while a generation may be in flight.
-
-            In-flight requests → confirmation with a warning; requests only
-            waiting between retries → silent cancel. Either way the wave is
-            cancelled after the decision (cancellation is not an error).
-            """
-            if not _any_generating():
-                dialog.reject()
-                return
-            in_flight = service.count_in_flight(dialog)
-            if in_flight > 0:
-                answer = QMessageBox.question(
-                    dialog,
-                    "Генерация",
-                    f"Идёт запрос к LLM ({in_flight} полей). Если закрыть, запрос "
-                    f"будет прерван и результат не появится.",
-                    buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    defaultButton=QMessageBox.StandardButton.No,
-                )
-                if answer != QMessageBox.StandardButton.Yes:
-                    return
-            _stop_all_no_error()
-            dialog.reject()
-
-        set_close_guard = getattr(dialog, "set_close_guard", None)
-        if set_close_guard is not None:
-            set_close_guard(_close_guard)
-
-        ebtn = _entity_button()
-        if ebtn is not None:
-            ebtn.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
-            llm_vm.model_status_changed.connect(
-                lambda _s, _e=ebtn: _e.update_llm_state(llm_vm.status, llm_vm.has_world_prompt)
-            )
-            ebtn.batch_requested.connect(_start_wave)
-            ebtn.batch_cancel_requested.connect(_stop_all_no_error)
+        self._ai_controller.wire(dialog)
 
     def _on_llm_setup(self, window) -> None:
         llm_vm = self._llm_vm
@@ -1213,45 +795,38 @@ class Application:
                 ok = False
             dialog.finish_saving(ok)
 
-        dialog.saved.connect(lambda c, wp, fp: asyncio.ensure_future(_on_saved(c, wp, fp)))
+        # The save touches the shared session (per-game prompts): schedule it
+        # through the wiring's lock like every other session-touching task —
+        # a raw ensure_future here raced that session with concurrent dialog
+        # flows (audit Q14 scenario 6).
+        dialog.saved.connect(lambda c, wp, fp: self._wiring.run_locked(_on_saved(c, wp, fp)))
         dialog.open()
 
     async def _load_llm_settings(self) -> None:
-        from sqlalchemy import select
+        # Per-game prompts read through the infrastructure repository
+        # (task 6.2): ``main`` no longer hand-rolls ``game_settings`` queries.
         try:
-            result = await self._session.execute(
-                select(GameSettingsModel).where(GameSettingsModel.key == WORLD_PROMPT_KEY)
-            )
-            row = result.scalars().first()
-            if row:
-                self._llm_vm.world_prompt_from_json(row.value)
-
-            result2 = await self._session.execute(
-                select(GameSettingsModel).where(GameSettingsModel.key == FIELD_PROMPTS_KEY)
-            )
-            row2 = result2.scalars().first()
-            if row2:
-                self._llm_vm.field_prompts_from_json(row2.value)
+            repo = LlmSettingsRepository(self._session)
+            world = await repo.load_world_prompt()
+            if world is not None:
+                self._llm_vm.world_prompt_from_json(world)
+            fields = await repo.load_field_prompts()
+            if fields is not None:
+                self._llm_vm.field_prompts_from_json(fields)
         except Exception as exc:
             logging.getLogger("app.main").warning(
                 "Failed to load LLM settings: %s", exc
             )
 
     async def _save_llm_settings(self) -> None:
-        from sqlalchemy import select
-        for key, value in [
-            (WORLD_PROMPT_KEY, self._llm_vm.world_prompt_to_json()),
-            (FIELD_PROMPTS_KEY, self._llm_vm.field_prompts_to_json()),
-        ]:
-            result = await self._session.execute(
-                select(GameSettingsModel).where(GameSettingsModel.key == key)
-            )
-            row = result.scalars().first()
-            if row:
-                row.value = value
-            else:
-                self._session.add(GameSettingsModel(key=key, value=value))
-        await self._session.commit()
+        # Wave 5 (task 5.11): the per-game prompts upsert finishes through the
+        # game's unit of work — commit on clean exit, rollback + re-raise on
+        # any failure. The caller already holds the session lock (5.1), so the
+        # transaction has the session to itself.
+        async with self._uow.transaction():
+            repo = LlmSettingsRepository(self._session)
+            await repo.save_world_prompt(self._llm_vm.world_prompt_to_json())
+            await repo.save_field_prompts(self._llm_vm.field_prompts_to_json())
 
     async def shutdown(self) -> None:
         # C2 (spec «Активный календарь в жизненном цикле игры»): closing the
@@ -1267,9 +842,13 @@ class Application:
             self._calendar_wizard.close()
             self._calendar_wizard = None
         self._table_host = None
+        # The sheet manager is game-bound too (its dialogs parent to this
+        # game's window); ``_close_sheet_windows`` above already tore them down.
+        self._sheets = None
         if self._session:
             await self._session.close()
             self._session = None
+        self._uow = None
         self._image_store = None
         set_image_dir(None)
         if self.engine:

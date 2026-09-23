@@ -16,9 +16,9 @@ from app.domain.entities.character_sheet_instance import (
 from app.domain.enums.field_type import FieldType
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     TOOL_POINTER,
-    SheetFieldModel,
     pages_layout_of,
 )
+from app.presentation.viewmodels.sheet_field_model import SheetFieldModel
 
 UNDO_STACK_LIMIT: int = 50
 
@@ -291,7 +291,7 @@ class CharacterSheetFillViewModel(QObject):
         if self._template_id is None:
             return
         if self._inline_id is not None:
-            self.commit_inline()
+            self.apply_inline()
         self._template = await self._sheet_service.load(self._template_id)
         self.template_changed.emit()
 
@@ -351,7 +351,7 @@ class CharacterSheetFillViewModel(QObject):
         self.selection_changed.emit(field_id)
 
     @Slot()
-    def commit_inline(self) -> None:
+    def apply_inline(self) -> None:
         if self._inline_id is None:
             return
         field_id = self._inline_id

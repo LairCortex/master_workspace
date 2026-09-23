@@ -58,7 +58,7 @@
 // tool click → ``vm.place`` (Shift = one-shot snap override), single/Shift
 // click → ``select``/``toggle_select``, rubber band → ``select_ids(ids,
 // additive)``, set drag → ``drag_move``/``drag_move_selection`` +
-// ``commit_drag``/``commit_drag_selection`` (the per-field clamp and the
+// ``apply_drag``/``apply_drag_selection`` (the per-field clamp and the
 // cross-gutter page change are counted by the VM), corner handles →
 // ``resize`` inside a gesture, dblclick → inline/checkbox/image branches,
 // Del/Backspace → ``remove_selection``, Esc → ``select(null)``.
@@ -359,7 +359,7 @@ Rectangle {
         var ed = inlineLoader.item
         if (inlineIsType("number") && ed !== null)
             vm.apply_number(inlineId, ed.text)
-        vm.commit_inline()
+        vm.apply_inline()
     }
 
     function inlineCommitEnter() {
@@ -372,7 +372,7 @@ Rectangle {
             return
         if (inlineIsType("number")) {
             if (vm.apply_number(inlineId, ed.text)) {
-                vm.commit_inline()
+                vm.apply_inline()
                 giveCanvasFocus()
             } else {
                 inlineLoader.pushedText = inlineInitialText()
@@ -380,7 +380,7 @@ Rectangle {
                 ed.selectAll()
             }
         } else {
-            vm.commit_inline()
+            vm.apply_inline()
             giveCanvasFocus()
         }
     }
@@ -528,9 +528,9 @@ Rectangle {
         } else if (dragFid !== "") {
             var sel = selectedList
             if (sel !== null && sel.length > 1)
-                vm.commit_drag_selection(px, py, grabDx, grabDy, dragFid)
+                vm.apply_drag_selection(px, py, grabDx, grabDy, dragFid)
             else
-                vm.commit_drag(dragFid, px, py, grabDx, grabDy)
+                vm.apply_drag(dragFid, px, py, grabDx, grabDy)
             vm.set_snap_override(null)
         } else if (rubberArmed) {
             var target = rubberRectPt()
@@ -1170,7 +1170,7 @@ Rectangle {
         // Plain Enter inserts a newline in the area; Ctrl(+Shift)+Enter
         // closes the session keeping the live text (the migrated filter).
         if (event.modifiers & Qt.ControlModifier) {
-            vm.commit_inline()
+            vm.apply_inline()
             giveCanvasFocus()
             return true
         }

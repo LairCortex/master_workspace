@@ -12,11 +12,15 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from app.domain.game_calendar import (
+    StandardCalendar,
+)
+from app.infrastructure.calendar_storage import (
+    encode_calendar,
+)
+from app.infrastructure.repositories.game_settings_repository import (
     CALENDAR_SETTINGS_KEY,
     CALENDAR_WIZARD_SEEN_KEY,
     CALENDAR_WIZARD_SEEN_NO,
-    StandardCalendar,
-    encode_calendar,
 )
 from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.migrations import init_db

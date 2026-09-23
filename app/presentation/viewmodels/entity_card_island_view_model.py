@@ -98,7 +98,7 @@ class EntityCardIslandViewModel(QObject):
         self.entityAi = EntityGenerateProxy(owner, self)
 
         self._sections: dict[str, RelatedSectionState] = {
-            cfg["attr"]: RelatedSectionState(self) for cfg in self._related_configs
+            cfg.attr: RelatedSectionState(self) for cfg in self._related_configs
         }
 
     def _set_name(self, value: str) -> None:
@@ -184,10 +184,10 @@ class EntityCardIslandViewModel(QObject):
         "QVariant",
         lambda self: [
             {
-                "attr": cfg["attr"],
-                "label": cfg["label"],
-                "entityType": cfg["entity_type"],
-                "section": self._sections[cfg["attr"]],
+                "attr": cfg.attr,
+                "label": cfg.label,
+                "entityType": cfg.entity_type.value,
+                "section": self._sections[cfg.attr],
             }
             for cfg in self._related_configs
         ],

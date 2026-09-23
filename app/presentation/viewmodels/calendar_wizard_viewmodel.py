@@ -38,16 +38,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.calendar_settings_service import CalendarSettingsService
 from app.domain.game_calendar import (
     DEFAULT_MONTH_NAMES,
-    DRAFT_STAGE_INTERCALARY,
-    DRAFT_STAGE_MONTHS,
-    DRAFT_STAGE_PREVIEW,
-    DRAFT_STAGE_WEEK,
-    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
     DateField,
@@ -62,14 +56,14 @@ from app.domain.game_calendar import (
     current_calendar,
     validate,
 )
-from app.infrastructure.db.models import (
-    CharacterModel,
-    EventModel,
-    ItemModel,
-    LocationModel,
-    OrganizationModel,
-    RatingModel,
+from app.infrastructure.calendar_storage import (
+    CalendarDraft,
+    DRAFT_STAGE_INTERCALARY,
+    DRAFT_STAGE_MONTHS,
+    DRAFT_STAGE_PREVIEW,
+    DRAFT_STAGE_WEEK,
 )
+from app.infrastructure.db.uow import GameSessionUoW
 from app.presentation.utils.calendar_warnings import corruption_reason_phrase
 from app.presentation.utils.date_utils import STANDARD_WEEK_NAMES, format_game_date
 
@@ -113,16 +107,6 @@ _DEFAULT_MONTHS: tuple[MonthSpec, ...] = tuple(
 _DEFAULT_WEEK_NAMES: tuple[str, ...] = tuple(STANDARD_WEEK_NAMES)
 
 # ── report caption vocabulary (presentation, design D10) ────────────────────
-
-#: The six dated tables the C2 traversal reports on, as ORM models by key.
-_TABLE_MODELS = {
-    "events": EventModel,
-    "organizations": OrganizationModel,
-    "characters": CharacterModel,
-    "items": ItemModel,
-    "locations": LocationModel,
-    "ratings": RatingModel,
-}
 
 #: Caption of a record without a (non-empty) name: «<таблица> №<id>».
 _TABLE_CAPTIONS = {
@@ -197,9 +181,12 @@ class CalendarWizardViewModel(QObject):
 
     The dialog (task group 6) owns only widgets and buttons: it reads
     :attr:`state`, connects the three lifecycle signals, and calls the intents
-    below.  The service and the session arrive through the constructor so the
-    same class serves the first-entry modal and the «Настройки → Календарь…»
-    entry, with ``first_entry`` deciding whether a successful application closes
+    below.  The settings service arrives through the constructor together with
+    the game's :class:`GameSessionUoW` (wave 5, task 5.11): the unit is only a
+    session carrier for the per-call arguments of that stateless service — no
+    queries and no transaction finish run here (audit A2), so the same class
+    serves the first-entry modal and the «Настройки → Календарь…» entry,
+    with ``first_entry`` deciding whether a successful application closes
     the «seen» flag (design D8/D9).
     """
 
@@ -213,14 +200,22 @@ class CalendarWizardViewModel(QObject):
 
     def __init__(
         self,
-        session: AsyncSession,
+        uow: GameSessionUoW,
         calendar_service: CalendarSettingsService,
         *,
         first_entry: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        self._session = session
+        # The game's unit of work is a pure carrier here: every DB read or
+        # write goes through the session-taking methods of the stateless
+        # CalendarSettingsService (the direct ``session.get`` moved to its
+        # ``record_names`` with audit finding A2). The wizard's stage drafts
+        # keep their own micro-saves inside that service by design (the
+        # abandoned-draft recovery, see design Non-Goals) — this class only
+        # hands out ``uow.session`` and never finishes a transaction (task
+        # 5.11: the raw session no longer enters the presentation package).
+        self._uow = uow
         self._service = calendar_service
         self._first_entry = first_entry
 
@@ -289,7 +284,7 @@ class CalendarWizardViewModel(QObject):
         custom by construction (spec «Черновик мастера»).  Without a draft the
         view stays on the kind-choice screen with the preselected kind.
         """
-        draft = await self._service.load_draft(self._session)
+        draft = await self._service.load_draft(self._uow.session)
         if draft is not None:
             self._kind = KIND_CUSTOM
             self._week_names = tuple(draft.spec.week_names)
@@ -405,7 +400,7 @@ class CalendarWizardViewModel(QObject):
             self.state_changed.emit()
             return
         self._step = _CUSTOM_FLOW[_CUSTOM_FLOW.index(self._step) + 1]
-        await self._service.save_draft(self._session, CalendarDraft(self._spec(), self._step))
+        await self._service.save_draft(self._uow.session, CalendarDraft(self._spec(), self._step))
         self.state_changed.emit()
 
     def go_back(self) -> None:
@@ -431,7 +426,7 @@ class CalendarWizardViewModel(QObject):
         target = self._target_calendar()
         if target is None:  # a corrupted preview must never reach the button
             return
-        report = await self._service.apply_to_records(self._session, target, dry_run=True)
+        report = await self._service.apply_to_records(self._uow.session, target, dry_run=True)
         self._pending_target = target
         if report.shift_count == 0:
             await self._promote(target)
@@ -507,7 +502,7 @@ class CalendarWizardViewModel(QObject):
         keeps its state so the user can still react."""
         try:
             await self._service.promote_draft(
-                self._session, target, mark_wizard_seen=self._first_entry
+                self._uow.session, target, mark_wizard_seen=self._first_entry
             )
         except Exception as exc:
             self.apply_failed.emit(str(exc))
@@ -523,7 +518,7 @@ class CalendarWizardViewModel(QObject):
         """Turn the domain report into display rows (design D10): per entry the
         record's own name (else «<таблица> №<id>»), the slot caption, and old/new
         dates in the old (still active) and new (being applied) calendars."""
-        names = await self._record_names(report)
+        names = await self._service.record_names(self._uow.session, report)
         lines: list[ReportLine] = []
         for entry in report.records:
             record = names.get((entry.table, entry.row_id))
@@ -540,17 +535,6 @@ class CalendarWizardViewModel(QObject):
                 )
             )
         return tuple(lines)
-
-    async def _record_names(self, report: ShiftReport) -> dict[tuple[str, int], str]:
-        """Read the display names of the records one report touches — one
-        ``GET`` per distinct row of the (already traversed) report."""
-        names: dict[tuple[str, int], str] = {}
-        for table, row_id in sorted({(e.table, e.row_id) for e in report.records}):
-            row = await self._session.get(_TABLE_MODELS[table], row_id)
-            name = getattr(row, "name", None)
-            if row is not None and name:
-                names[(table, row_id)] = name
-        return names
 
 
 def _replace_month(

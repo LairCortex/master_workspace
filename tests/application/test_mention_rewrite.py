@@ -11,6 +11,7 @@ from app.application.services.entity_service import EntityService
 from app.application.services.event_service import EventService
 from app.application.services.mention_rewrite import rewrite_mentions
 from app.application.services.xlsx_import_service import XlsxImportService
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db.models import (
     CharacterModel,
     DescriptionModel,
@@ -21,6 +22,7 @@ from app.infrastructure.db.models import (
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.event_repository import EventRepository
+from app.infrastructure.repositories.event_type_repository import EventTypeRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
 from app.infrastructure.repositories.location_repository import LocationRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -42,6 +44,7 @@ async def _svcs(session):
         char_svc,
         item_svc,
         loc_svc,
+        EventTypeRepository(session),
     )
     return char_svc, org_svc, loc_svc, item_svc, event_svc
 
@@ -258,8 +261,8 @@ async def test_create_and_xlsx_do_not_rewrite(async_session, tmp_path, monkeypat
     path = tmp_path / "in.xlsx"
     wb.save(path)
     xlsx = XlsxImportService()
-    plan = await xlsx.analyze_file(path, async_session)
-    report = await xlsx.apply_plan(plan, async_session)
+    plan = await xlsx.analyze_file(path, GameSessionUoW(async_session))
+    report = await xlsx.apply_plan(plan, GameSessionUoW(async_session))
     assert report.created == 1
     spy.assert_not_called()
     await async_session.refresh(holder)

@@ -10,13 +10,13 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QPixmap
 from PySide6.QtWidgets import QDialog
 
+from app.domain import entity_registry
 from app.domain.game_calendar import MonthDay
 from app.presentation.qml.dialog_image_provider import dialog_image_provider
 from app.presentation.views.entity_card_dialog import (
     ROOT_QML,
     EntityCardDialog,
     _FIELD_SPECS,
-    _RELATED_CONFIG,
 )
 from tests.presentation.qml_helpers import find_item, find_items
 from tests.ui.test_theme_grab import make_runtime
@@ -38,7 +38,7 @@ def test_one_root_builds_exact_python_configured_composition(qtbot, entity_type)
     for name in {"personality", "tasks"}:
         items = find_items(dialog.quick, f"entityExtraField_{name}")
         assert bool(items) is (name in expected_fields)
-    expected_relations = {cfg["attr"] for cfg in _RELATED_CONFIG.get(entity_type, [])}
+    expected_relations = {ref.attr for ref in entity_registry.related_refs_for_key(entity_type)}
     for attr in {"characters", "items", "locations", "organizations"}:
         sections = find_items(dialog.quick, f"entityRelatedSection_{attr}")
         assert bool(sections) is (attr in expected_relations)

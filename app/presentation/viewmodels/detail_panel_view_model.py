@@ -16,9 +16,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor
 
+from app.domain import entity_registry
+from app.domain.enums.entity_type import EntityType
 from app.presentation.theme.rating import rating_to_color
 from app.presentation.utils.date_utils import era_flag, format_game_date
 from app.presentation.utils.image_utils import resolve_preview_path
+
+#: relation refs of the event card, registry order (wave 3, finding A4)
+_event_refs = entity_registry.related_refs(EntityType.EVENT)
 
 
 def _truncate(text: str, max_len: int = 120) -> str:
@@ -166,9 +171,12 @@ class DetailPanelViewModel(QObject):
     entityActivated = Signal(str, int)
     imageRequested = Signal(object)
 
-    TAB_TITLES = ("Организации", "Персонажи", "Предметы", "Локации")
-    ENTITY_TYPES = ("organization", "character", "item", "location")
-    EVENT_ATTRS = ("organizations", "characters", "items", "locations")
+    # The four tabs and their payload keys are generated at import time from the
+    # domain entity registry (wave 3, finding A4/C5): the same EVENT relation
+    # order as the event dialog, so both views of one event always agree.
+    TAB_TITLES = tuple(_ref.label for _ref in _event_refs)
+    ENTITY_TYPES = tuple(_ref.entity_type.value for _ref in _event_refs)
+    EVENT_ATTRS = tuple(_ref.attr for _ref in _event_refs)
 
     def __init__(self, runtime=None, parent: QObject | None = None) -> None:
         super().__init__(parent)

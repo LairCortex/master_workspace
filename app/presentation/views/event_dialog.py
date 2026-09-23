@@ -4,9 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
-from PySide6.QtQml import QQmlComponent, QQmlContext
-from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -17,26 +15,39 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.domain import entity_registry
+from app.domain.enums.entity_type import EntityType
+from app.presentation.dialog_results import (
+    EventCreateResult,
+    EventDialogResult,
+    EventEditResult,
+    RelatedRef,
+    relation_items,
+)
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.utils.date_utils import era_flag, split_date_era
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     EventDialogIslandViewModel,
     RelatedSectionState,
 )
 from app.presentation.views.event_types_dialog import type_dot_icon
+from app.presentation.views.ai_capable_dialog import AiCapableDialogBase
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EventDialogRoot.qml")
 ROLE_COLOR_INDEX = Qt.ItemDataRole.UserRole + 1
 
+# The tab collections, type ids and captions come from the entity registry's
+# EVENT relation list (wave 3, A4); the Python duck attribute names are the
+# dialog's own QML/test surface and stay local.
+_EVENT_REFS = entity_registry.related_refs(EntityType.EVENT)
+_TAB_DUCK_NAMES = ("org_tab", "char_tab", "item_tab", "loc_tab")
 _TABS: list[tuple[str, str, str, str]] = [
-    ("org_tab", "organizations", "organization", "Организации"),
-    ("char_tab", "characters", "character", "Персонажи"),
-    ("item_tab", "items", "item", "Предметы"),
-    ("loc_tab", "locations", "location", "Локации"),
+    (duck, ref.attr, ref.entity_type.value, ref.label)
+    for duck, ref in zip(_TAB_DUCK_NAMES, _EVENT_REFS)
 ]
 _REL_ATTRS = tuple(attr for _, attr, _, _ in _TABS)
 
@@ -215,8 +226,13 @@ class _TabsProxy:
         return False
 
 
-class EventDialog(QDialog):
-    saved = Signal(dict)
+class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
+    island_context_names = {"eventDialogVm": "vm"}
+
+    def island_source(self) -> str:
+        return ROOT_QML
+
+    saved = Signal(object)  # EventCreateResult | EventEditResult (dialog_results)
     create_related_requested = Signal(str, str)
     mention_clicked = Signal(str, int)
 
@@ -250,22 +266,9 @@ class EventDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._engine = setup_qml_shell(QApplication.instance(), self._qml_theme)
-        self.quick = QQuickWidget(self._engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._qml_theme, parent=self)
-        self._context = QQmlContext(self._engine.rootContext(), self)
-        self._palette.setParent(self._context)
-        self.vm.setParent(self._context)
-        self._context.setContextProperty("eventDialogVm", self.vm)
-        self._context.setContextProperty("islandPalette", self._palette)
-        source = QUrl.fromLocalFile(ROOT_QML)
-        self._component = QQmlComponent(self._engine, source, self)
-        root = self._component.create(self._context)
-        assert root is not None, self._component.errors()
-        self.quick.setContent(source, self._component, root)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # Context, widget and scene — IslandDialogMixin.
+        self.setup_island()
         layout.addWidget(self.quick)
-        self._root = root
 
         self.vm.characteristicsHost.attachWidget(self.quick)
         self.vm.backstoryHost.attachWidget(self.quick)
@@ -363,39 +366,52 @@ class EventDialog(QDialog):
         if self._event_id is not None:
             data["event_id"] = self._event_id
         for attr in _REL_ATTRS:
-            data[attr] = [
-                {"_existing_id": entity_id}
+            data[attr] = relation_items(self.build_result_relations()[attr])
+        return data
+
+    def build_result(self) -> EventDialogResult:
+        """The typed save contract (design D5): edit iff an event is loaded."""
+        relations = self.build_result_relations()
+        args: dict[str, Any] = {
+            "name": self.vm.name.strip(),
+            "characteristics": self.vm.characteristicsHost.storage.strip(),
+            "backstory": self.vm.backstoryHost.storage.strip(),
+            "start_date": self.vm._start_date,
+            "end_date": None if self.vm._no_end else self.vm._end_date,
+            "start_bc": self.vm._start_bc,
+            "end_bc": self.vm._end_bc,
+            "event_type_id": self.vm.selected_type_id,
+            **relations,
+        }
+        if self._event_id is not None:
+            return EventEditResult(event_id=self._event_id, **args)
+        return EventCreateResult(**args)
+
+    def build_result_relations(self) -> dict[str, tuple[RelatedRef, ...]]:
+        """Desired links per relation attr as contract objects (no junk keys)."""
+        return {
+            attr: tuple(
+                RelatedRef(entity_id)
                 for entity_id in self._sections[attr].get_current_ids()
                 if entity_id is not None
-            ]
-        return data
+            )
+            for attr in _REL_ATTRS
+        }
 
     def get_mention_edits(self):
         return [self.vm.characteristicsEdit, self.vm.backstoryEdit]
 
-    def get_ai_buttons(self):
-        return list(self._ai_buttons)
-
-    def get_entity_button(self):
-        return self._entity_button
-
-    def set_save_locked(self, locked: bool) -> None:
-        self.vm.set_save_locked(locked)
-
-    def set_close_guard(self, fn) -> None:
-        self._close_guard = fn
-
-    def _is_generation_active(self) -> bool:
-        return any(button.is_generating for button in self._ai_buttons) or (
-            self._entity_button.is_cancelling
-        )
+    # The AI proxy surface (get_ai_buttons/get_entity_button/set_save_locked/
+    # set_close_guard/_is_generation_active) is provided by
+    # AiCapableDialogBase — the shared conformance base of the controller
+    # contract (audit B1, design D5).
 
     def _on_save(self) -> None:
         if self._saving or not self.vm.valid:
             return
         self._saving = True
         self.vm.set_saving(True)
-        self.saved.emit(self.get_data())
+        self.saved.emit(self.build_result())
 
     def finish_saving(self, success: bool) -> None:
         self._saving = False
@@ -497,9 +513,4 @@ class EventDialog(QDialog):
     def _restyle_type_icons(self) -> None:
         self.vm.stateChanged.emit()
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # Island lifecycle (context, deferred release) — IslandDialogMixin.

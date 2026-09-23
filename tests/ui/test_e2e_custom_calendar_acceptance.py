@@ -41,20 +41,24 @@ from PySide6.QtWidgets import (
 )
 
 from app.domain.game_calendar import (
-    CALENDAR_DRAFT_KEY,
-    CALENDAR_SETTINGS_KEY,
-    CALENDAR_WIZARD_SEEN_KEY,
-    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
-    DRAFT_STAGE_MONTHS,
     IntercalaryDay,
     IntercalarySpec,
     MonthDay,
     MonthSpec,
+)
+from app.infrastructure.calendar_storage import (
+    CalendarDraft,
+    DRAFT_STAGE_MONTHS,
     encode_calendar,
     encode_coord,
     encode_draft,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    CALENDAR_DRAFT_KEY,
+    CALENDAR_SETTINGS_KEY,
+    CALENDAR_WIZARD_SEEN_KEY,
 )
 from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.migrations import init_db

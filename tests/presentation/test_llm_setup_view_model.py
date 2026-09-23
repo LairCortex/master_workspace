@@ -1,11 +1,18 @@
 """Sync VM of the LLM setup island (R3 pack 2) — no service, no http, no QML."""
 from __future__ import annotations
 
-from app.application.services.llm_service import FIELD_CONFIG
+from app.domain import entity_registry
 from app.presentation.viewmodels.llm_setup_view_model import (
     PAGE_WARNINGS,
     LlmSetupViewModel,
 )
+
+# The LLM field set lives in the domain entity registry since wave 3 (A4);
+# this local view keeps the assertions in this file unchanged.
+FIELD_CONFIG = {
+    desc.key: list(desc.llm_fields)
+    for desc in map(entity_registry.descriptor, entity_registry.LLM_TYPES)
+}
 
 
 def _vm(**kwargs) -> LlmSetupViewModel:

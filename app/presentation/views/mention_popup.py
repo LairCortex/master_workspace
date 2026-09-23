@@ -9,12 +9,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-_TYPE_ICONS = {
-    "event": "\U0001f4c5",
-    "organization": "\U0001f465",
-    "character": "\U0001f9d1",
-    "item": "\U0001f4e6",
-    "location": "\U0001f4cd",
+from app.domain import entity_registry
+from app.domain.enums.entity_type import EntityType
+
+# Presentation copy (the glyphs) stays with the view; the keys are registry
+# type identities resolved through the entity registry (wave 3, A4).
+_ICON_BY_TYPE = {
+    EntityType.EVENT: "\U0001f4c5",
+    EntityType.ORGANIZATION: "\U0001f465",
+    EntityType.CHARACTER: "\U0001f9d1",
+    EntityType.ITEM: "\U0001f4e6",
+    EntityType.LOCATION: "\U0001f4cd",
 }
 
 
@@ -49,7 +54,7 @@ class _MentionPopup(QWidget):
     def show_results(self, results: list[dict], global_pos: QPoint) -> None:
         self._list.clear()
         for result in results[:15]:
-            icon = _TYPE_ICONS.get(result["type"], "")
+            icon = _ICON_BY_TYPE.get(entity_registry.resolve(result["type"]), "")
             item = QListWidgetItem(f'{icon}  {result["name"]}')
             item.setData(Qt.ItemDataRole.UserRole, result)
             self._list.addItem(item)

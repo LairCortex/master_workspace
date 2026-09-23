@@ -10,6 +10,8 @@ from app.infrastructure.db.models import (
     CharacterModel, ItemModel, LocationModel,
 )
 from app.infrastructure.repositories.base_repository import BaseRepository
+from app.infrastructure.repositories.coord_mapping import CoordMappingMixin
+from app.infrastructure.repositories.dated_repository import dated_repository
 from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
@@ -283,6 +285,31 @@ class TestEventRepository:
             end_date=date(350, 1, 1), end_bc=1)
         names = {e.name for e in await repo.get_events_at_date(era_key(date(2026, 9, 15)))}
         assert names == set()
+
+
+# ── dated_repository factory (C4: one body, four models) ─────────────────
+
+
+class TestDatedRepositoryFactory:
+    def test_factory_is_model_stable_and_alias_matches(self):
+        # Same model → same class (is-identity): factory callers and the
+        # four module aliases never end up with two classes per model.
+        assert dated_repository(CharacterModel) is CharacterRepository
+        # Distinct models → distinct classes named after the model.
+        assert dated_repository(ItemModel) is not dated_repository(LocationModel)
+        assert CharacterRepository.__name__ == "CharacterModelRepository"
+
+    @pytest.mark.asyncio
+    async def test_factory_instances_keep_the_dated_contract(self, async_session: AsyncSession):
+        repo = dated_repository(LocationModel)(async_session)
+        assert isinstance(repo, CoordMappingMixin)  # dates route through C3a
+        assert repo.model is LocationModel
+        desc = await _make_desc(async_session)
+        loc = await repo.create(
+            name="Tower", description_id=desc.id,
+            start_date=date(100, 1, 1), end_date=date(300, 1, 1),
+        )
+        assert (await repo.get_by_id(loc.id)).name == "Tower"
 
 
 # ── OrganizationRepository ────────────────────────────────────────────────

@@ -39,6 +39,7 @@ from app.application.services.xlsx_import_service import (
 from app.domain import game_calendar
 from app.domain.date_era import era_key
 from app.domain.game_calendar import MonthDay
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db import models
 from app.infrastructure.db.models import (
     CharacterModel,
@@ -275,18 +276,18 @@ class TestFixtureGenerator:
 
 class TestPreAnalysis:
     async def test_clean_file_parts_have_no_fatals_or_warnings(self, async_session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         assert not plan.has_fatal
         assert plan.fatal_errors == [] and plan.warnings == []
 
     async def test_problem_rows_are_planned_skips_with_positions(self, async_session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         assert [
             (i.sheet, i.row_number, i.reason) for i in plan.skipped_rows
         ] == EXPECTED_SKIPS
 
     async def test_in_file_merge_combines_the_two_blacksmith_rows(self, async_session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         rows = [r for r in plan.planned_rows if r.entity_type == "character"]
         assert len(rows) == 3  # Иван, Марта, merged «Старый Кузнец»
         merged = plan.lookup_row("character", "Старый Кузнец")
@@ -302,7 +303,7 @@ class TestPreAnalysis:
         ]
 
     async def test_link_columns_resolve_to_other_sheets_of_the_file(self, async_session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         ball = plan.lookup_row("event", "Взятие Штурмграда")
         # every `;`-segment names a row of another sheet → resolved to file
         for target_type in ("character", "organization", "item", "location"):
@@ -318,7 +319,7 @@ class TestPreAnalysis:
         ]
 
     async def test_ghost_target_spans_the_dates_of_its_referrers(self, async_session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         ghost = plan.ghosts[("item", "амулет вдовы")]
         # min start / max end из строк «Взятие…» (1200-05-01…1200-09-15) и
         # «Поход…» (1202-06-10…1203-01-20) — spec «Противоречивые даты»
@@ -334,7 +335,7 @@ class TestPreAnalysis:
         self, async_session
     ):
         org, _ = await seed_world(async_session)
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         row = plan.lookup_row("organization", "Гильдия копья")
         # lower(name) uniqueness — the case-varied DB org is the update target
         assert row.is_update and row.existing_id == org.id
@@ -343,7 +344,7 @@ class TestPreAnalysis:
         assert "backstory" not in row.fields and "end_date" not in row.fields
 
     async def test_broken_rows_cast_no_shadow_on_the_plan(self, async_session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         assert plan.lookup_row("event", "Пир в ратуше") is None
         assert plan.lookup_row("character", "Гоблин-наёмник") is None
 
@@ -352,8 +353,8 @@ class TestPreAnalysis:
 
 class TestApplyFixture:
     async def _apply(self, session):
-        plan = await _svc().analyze_file(FIXTURE_PATH, session)
-        return plan, await _svc().apply_plan(plan, session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(session))
+        return plan, await _svc().apply_plan(plan, GameSessionUoW(session))
 
     async def test_imports_entities_ghost_and_links_into_an_empty_db(self, async_session):
         _plan, report = await self._apply(async_session)
@@ -484,12 +485,12 @@ class TestApplyEraAware:
         path = tmp_path / "bc_ghost.xlsx"
         wb.save(path)
 
-        plan = await _svc().analyze_file(path, async_session)
+        plan = await _svc().analyze_file(path, GameSessionUoW(async_session))
         ghost_plan = plan.ghosts[("item", "амфора")]
         assert (ghost_plan.min_start, ghost_plan.min_start_bc) == (MonthDay(44, 3, 15), True)
         assert (ghost_plan.max_end, ghost_plan.max_end_bc) == (MonthDay(43, 3, 5), True)
 
-        report = await _svc().apply_plan(plan, async_session)
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         event = await _one(async_session, EventModel, name="Угощение Юлии")
         assert (event.start_date, bool(event.start_bc)) == (date(44, 3, 15), True)
@@ -614,21 +615,26 @@ class TestDateProblemReasons:
 # ── 6.1 — transaction (spec «Транзакционность импорта») ────────────────────
 
 class TestTransaction:
-    async def test_success_commits_exactly_once(self, async_session):
+    async def test_success_commits_exactly_once(self, async_session, monkeypatch):
+        # The unit of work holds the finish (task 5.11): count the commits and
+        # rollbacks on the session the unit runs over — the removed
+        # commit/rollback callback parameters spied on exactly this.
         commits, rollbacks = [], []
+        real_commit, real_rollback = async_session.commit, async_session.rollback
 
-        async def commit():
+        async def spy_commit():
             commits.append(True)
-            await async_session.commit()
+            await real_commit()
 
-        async def rollback():
+        async def spy_rollback():
             rollbacks.append(True)
-            await async_session.rollback()
+            await real_rollback()
 
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
-        report = await _svc().apply_plan(
-            plan, async_session, commit=commit, rollback=rollback
-        )
+        monkeypatch.setattr(async_session, "commit", spy_commit)
+        monkeypatch.setattr(async_session, "rollback", spy_rollback)
+
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert (report.created, report.links) == (11, 17)
         assert commits == [True] and rollbacks == []
 
@@ -638,14 +644,18 @@ class TestTransaction:
         org, _ = await seed_world(async_session)
         await async_session.commit()
         commits, rollbacks = [], []
+        real_commit, real_rollback = async_session.commit, async_session.rollback
 
-        async def commit():
+        async def spy_commit():
             commits.append(True)
-            await async_session.commit()
+            await real_commit()
 
-        async def rollback():
+        async def spy_rollback():
             rollbacks.append(True)
-            await async_session.rollback()
+            await real_rollback()
+
+        monkeypatch.setattr(async_session, "commit", spy_commit)
+        monkeypatch.setattr(async_session, "rollback", spy_rollback)
 
         svc = _svc()
 
@@ -654,9 +664,9 @@ class TestTransaction:
 
         monkeypatch.setattr(svc, "_resolve_link_target", boom)
 
-        plan = await _svc().analyze_file(FIXTURE_PATH, async_session)
+        plan = await _svc().analyze_file(FIXTURE_PATH, GameSessionUoW(async_session))
         with pytest.raises(RuntimeError, match="сбой"):
-            await svc.apply_plan(plan, async_session, commit=commit, rollback=rollback)
+            await svc.apply_plan(plan, GameSessionUoW(async_session))
 
         assert commits == [] and rollbacks == [True]
         # nothing of the import survives — the DB stays as it was before it

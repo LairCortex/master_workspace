@@ -25,24 +25,32 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QInputDialog, QMessageBox, QVBoxLayout, QWidget,
 )
 
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
-from app.presentation.theme.qml_palette import QmlPalette
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.theme.runtime import ThemeRuntime
+from app.presentation.theme.qml_palette import QmlPalette as _QmlPalette
 from app.presentation.viewmodels.launcher_viewmodel import LauncherViewModel
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "LauncherRoot.qml")
 
 
-class GameLauncherDialog(QDialog):
+class GameLauncherDialog(IslandDialogMixin, QDialog):
+    # The QSS-``palette`` name is shadowed by Qt Quick Controls, hence
+    # ``islandPalette`` (LauncherRoot.qml context contract); the VM binds as
+    # ``vm``. Both live in the dialog-owned context the mixin builds.
+    island_context_names = {"vm": "vm"}
+
     game_selected = Signal(str)  # db file path
+
+    def island_source(self) -> str:
+        return ROOT_QML
 
     def __init__(self, parent: QWidget | None = None, *, theme: ThemeRuntime) -> None:
         super().__init__(parent)
@@ -55,7 +63,7 @@ class GameLauncherDialog(QDialog):
         # children — a context property is a raw pointer, so dropping the
         # Python reference would leave QML holding a null.
         self.vm = LauncherViewModel(parent=self)
-        self._palette = QmlPalette(theme, parent=self)
+        self._palette = _QmlPalette(theme, parent=self)
 
         layout = QVBoxLayout(self)
         # The island must reach the dialog edges: a default layout margin
@@ -66,25 +74,12 @@ class GameLauncherDialog(QDialog):
         # The island shares the one process-wide engine (spec qml-shell
         # «Движок один на приложение»); ``setup_qml_shell`` is idempotent,
         # so the launcher shown before ``Application.start()`` is up first.
-        engine = setup_qml_shell(QApplication.instance(), theme)
-        # Keep a reference so the shared engine never dies under a live island
-        # (test isolation resets the shell singleton between tests).
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        # The QSS-``palette`` name is shadowed by Qt Quick Controls, hence
-        # ``islandPalette`` (see the LauncherRoot.qml context contract). Both
-        # names live in a dialog-owned context: the launcher is reopened over
-        # a running app on a game switch, and the shared engine root context
-        # would hand its bridge to every island until this dialog dies.
-        self._context = island_context(
-            engine, self, vm=self.vm, islandPalette=self._palette
-        )
-        self._component = load_island(self.quick, self._context, ROOT_QML)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # The mixin keeps ``_engine`` referenced so the shared engine never
+        # dies under a live island (test isolation resets the shell).
+        self._engine = setup_qml_shell(QApplication.instance(), theme)
+        self.setup_island()
         layout.addWidget(self.quick)
 
-        self._root = self.quick.rootObject()
         self._wire_island()
         self._sync_theme()
         theme.add_listener(self._sync_theme)
@@ -192,25 +187,8 @@ class GameLauncherDialog(QDialog):
     def selected_path(self) -> str | None:
         return self._selected_path
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
-        """Release the island against its VM/palette before the dialog dies.
-
-        ``QDialog.closeEvent`` calls ``reject()`` and both accept/reject
-        funnel through ``done()``. Clearing the QML source tears the island
-        down while ``vm``/``_palette`` (children of the dialog) are still
-        alive, so its bindings never observe a half-destroyed context.
-
-        The release is deferred one loop turn (acceptance Q1): every
-        QML-originated accept — «Открыть» click, row double-click, create-and-
-        open — lands here while the island's own ``onClicked`` handler is
-        still on the stack, and destroying the scene synchronously there is
-        fatal («Object destroyed while one of its QML signal handlers is in
-        progress»). The one-shot is bound to ``self``: it runs when the JS
-        stack has unwound and never after the dialog is gone.
-        """
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # Island lifecycle — IslandDialogMixin. The deferred release (acceptance
+    # Q1) matters here: every QML-originated accept — «Открыть» click, row
+    # double-click, create-and-open — lands while the island's own
+    # ``onClicked`` handler is still on the stack.
 

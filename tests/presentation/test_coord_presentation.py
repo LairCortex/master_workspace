@@ -26,9 +26,11 @@ from app.domain.game_calendar import (
     MonthDay,
     MonthSpec,
     current_calendar,
-    encode_coord,
     reset_current_calendar,
     set_current_calendar,
+)
+from app.infrastructure.calendar_storage import (
+    encode_coord,
 )
 from app.presentation.utils.date_utils import (
     format_game_date,
@@ -307,6 +309,9 @@ class TestDialogViewModelsCarryCoordinates:
             CharacterRepository,
         )
         from app.infrastructure.repositories.event_repository import EventRepository
+        from app.infrastructure.repositories.event_type_repository import (
+            EventTypeRepository,
+        )
         from app.infrastructure.repositories.item_repository import ItemRepository
         from app.infrastructure.repositories.location_repository import (
             LocationRepository,
@@ -349,6 +354,7 @@ class TestDialogViewModelsCarryCoordinates:
             location_service=EntityService(
                 LocationRepository(async_session), desc_repo
             ),
+            event_type_repo=EventTypeRepository(async_session),
         )
         created = await service.create_event(**payload)
         reloaded = await service.get_event(created.id)

@@ -212,3 +212,63 @@ class TestStoreRaceCondition:
 
         with pytest.raises(IntegrityError):
             await store.store(data)
+
+    @pytest.mark.asyncio
+    async def test_integrity_error_keeps_rows_accumulated_around_it(
+        self, qapp, async_session: AsyncSession, image_dir, monkeypatch,
+    ):
+        """Audit Q14 scenario 2 (task 5.3): the collision must be contained in
+        its own savepoint.
+
+        The blanket ``session.rollback()`` this replaced discarded every row
+        the caller had accumulated around the store — mid-xlsx-import that
+        silently dropped the already-created entity rows. Here: rows pending
+        in the session when the collision fires must still commit afterwards.
+        """
+        store = ImageStore(async_session, image_dir)
+        data = _png_bytes()
+        sha = hashlib.sha256(data).hexdigest()
+
+        winner = ImageModel(sha256=sha, ext="png", width=1, height=1, size_bytes=1)
+        async_session.add(winner)
+        await async_session.commit()
+        winner_id = winner.id
+
+        # Mid-import state: rows the caller accumulated, not yet committed.
+        accumulated = [
+            ImageModel(sha256=f"pending-{i}", ext="png", width=1, height=1, size_bytes=1)
+            for i in range(3)
+        ]
+        async_session.add_all(accumulated)
+
+        # Same TOCTOU window as the fallback test above.
+        real_get_by_sha = store._get_by_sha
+        call_count = {"n": 0}
+
+        async def fake_get_by_sha(sha256):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None  # simulate: no row visible yet at check time
+            return await real_get_by_sha(sha256)
+
+        monkeypatch.setattr(store, "_get_by_sha", fake_get_by_sha)
+
+        assert await store.store(data) == winner_id
+
+        # The accumulated rows are intact and reach the database on commit.
+        await async_session.commit()
+        from sqlalchemy import func, select
+        count = (
+            await async_session.execute(
+                select(func.count()).select_from(ImageModel).where(
+                    ImageModel.sha256.like("pending-%")
+                )
+            )
+        ).scalar()
+        assert count == 3
+        rows = (
+            await async_session.execute(
+                select(func.count()).select_from(ImageModel).where(ImageModel.sha256 == sha)
+            )
+        ).scalar()
+        assert rows == 1  # and no duplicate row for the collided content

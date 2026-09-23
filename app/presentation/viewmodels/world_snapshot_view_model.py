@@ -15,6 +15,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
+from app.domain import entity_registry
+from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import GameCoord, as_game_coord
 from app.presentation.theme.rating import rating_to_color
 from app.presentation.utils.date_utils import (
@@ -28,16 +30,31 @@ from app.presentation.utils.image_utils import load_entity_preview, resolve_prev
 
 ICON_SIZE = 24
 SUPPORTED_ENTITY_TYPES = frozenset(
-    {"location", "organization", "character", "item"}
+    etype.value
+    for etype in (
+        EntityType.LOCATION,
+        EntityType.ORGANIZATION,
+        EntityType.CHARACTER,
+        EntityType.ITEM,
+    )
 )
 _TRANSPARENT = "#00000000"
-_SECTION_ORDER = ("events", "locations", "organizations", "characters", "items")
-_SECTION_META = {
-    "events": ("📅  Активные события", "event", "📅"),
-    "locations": ("📍  Локации", "location", "📍"),
-    "organizations": ("👥  Организации", "organization", "👥"),
-    "characters": ("🧑  Персонажи", "character", "🧑"),
-    "items": ("🗡  Предметы", "item", "🗡"),
+# Section header copy and glyphs are this view's presentation surface; the
+# collection keys, canonical order and type ids derive from the entity
+# registry (wave 3, A4 — including the plural morphology it centralizes).
+_SECTION_KINDS: tuple[tuple[EntityType, str, str], ...] = (
+    (EntityType.EVENT, "📅  Активные события", "📅"),
+    (EntityType.LOCATION, "📍  Локации", "📍"),
+    (EntityType.ORGANIZATION, "👥  Организации", "👥"),
+    (EntityType.CHARACTER, "🧑  Персонажи", "🧑"),
+    (EntityType.ITEM, "🗡  Предметы", "🗡"),
+)
+_SECTION_ORDER: tuple[str, ...] = tuple(
+    entity_registry.descriptor(etype).plural for etype, _, _ in _SECTION_KINDS
+)
+_SECTION_META: dict[str, tuple[str, str, str]] = {
+    entity_registry.descriptor(etype).plural: (header, etype.value, glyph)
+    for etype, header, glyph in _SECTION_KINDS
 }
 
 
@@ -361,7 +378,8 @@ class WorldSnapshotViewModel(QObject):
         name = str(getattr(entity, "name", entity))
         display = name if rating <= 1 else f"{name}  [{rating}/20]"
         pixmap = load_entity_preview(entity, slot_size=ICON_SIZE)
-        section_key = f"{entity_type}s" if entity_type != "character" else "characters"
+        # the plural morphology lives in the registry only (wave 3, A4)
+        section_key = entity_registry.collection(entity_type)
         icon_text = _SECTION_META[section_key][2]
         icon = QIcon(pixmap) if not pixmap.isNull() else _text_icon(icon_text)
         preview_path = resolve_preview_path(entity)

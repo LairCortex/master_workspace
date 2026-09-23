@@ -108,6 +108,9 @@ class TestRefcount:
         await async_session.delete(char)
         await async_session.commit()
         await store.gc_after_commit(image_id)
+        # The store no longer commits (task 5.11): the caller's unit finishes
+        # the row delete the collector staged.
+        await async_session.commit()
 
         assert await store.refcount(image_id) == 1
         img_row = await async_session.get(ImageModel, image_id)
@@ -152,6 +155,9 @@ class TestStartupGc:
         await _instance_with_image(async_session, store, image_id)
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert await async_session.get(ImageModel, image_id) is not None
         row = await async_session.get(ImageModel, image_id)

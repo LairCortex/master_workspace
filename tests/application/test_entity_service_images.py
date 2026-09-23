@@ -185,3 +185,46 @@ class TestNoOpPaths:
         )
         assert result is not None
         assert result.image_id == img.id
+
+
+class TestGcCrashAfterCommit:
+    """Audit Q14 scenario 3 (task 5.8): the image collector is a post-write
+    hook of the unit of work — its crash happens after the update has already
+    committed and must be logged, never re-raised as «не удалось сохранить»
+    over already-written data."""
+
+    async def test_failing_image_gc_keeps_the_saved_entity(
+        self, qapp, async_session, image_dir, monkeypatch, caplog
+    ):
+        import logging
+
+        svc, store = await _svc(async_session, image_dir)
+        old_id = await store.store(_png_bytes(Qt.GlobalColor.red))
+        org = await _make_org(async_session, old_id)
+        await async_session.commit()
+
+        new_id = await store.store(_png_bytes(Qt.GlobalColor.blue))
+        await async_session.flush()
+
+        async def exploding_gc(*_old_image_ids):
+            raise RuntimeError("gc exploded")
+
+        monkeypatch.setattr(store, "gc_after_commit", exploding_gc)
+
+        with caplog.at_level(logging.ERROR, logger="app.db.uow"):
+            result = await svc.update_entity_with_relations(
+                org.id,
+                field_data={"image_id": new_id},
+                characteristics="c",
+                backstory="b",
+                related_changes={},
+            )  # must NOT raise when the collector crashes
+
+        assert result is not None
+        # The update itself stayed committed and was not rolled back.
+        refetched = await async_session.get(OrganizationModel, org.id)
+        assert refetched.image_id == new_id
+        # The old image row survived (its GC never ran) — the crash surfaced
+        # in the log only.
+        assert await async_session.get(ImageModel, old_id) is not None
+        assert "gc exploded" in caplog.text

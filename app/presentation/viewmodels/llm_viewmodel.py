@@ -3,21 +3,42 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from app.application.services.llm_service import FIELD_CONFIG, LlmService
+from app.application.services.llm_service import LlmService
+from app.domain import entity_registry
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 
-WORLD_PROMPT_KEY = "llm_world_prompt"
-FIELD_PROMPTS_KEY = "llm_field_prompts"
+
+@dataclass(frozen=True)
+class GenerationTarget:
+    """Everything one field generation needs to know (audit B1, design D6).
+
+    Replaces the six positional parameters of the former
+    ``request_generation``/``_launch`` pair: one immutable value built by
+    the AI generation controller from a dialog's button (or its emitted
+    signal) and consumed whole by :meth:`LlmViewModel.request_generation`.
+    """
+
+    field_id: str  # "{entity_type}.{field_name}" — the delivery-signal key
+    entity_type: str
+    field_name: str
+    field_label: str
+    current_text: str
+    owner: Any = None  # host dialog (delivery/registration scoping)
 
 
 def _default_field_prompts() -> dict[str, dict[str, str]]:
-    return {etype: {f: "" for f in fields} for etype, fields in FIELD_CONFIG.items()}
+    # generated field set comes from the entity registry (wave 3, finding A4)
+    return {
+        desc.key: {f: "" for f in desc.llm_fields}
+        for desc in map(entity_registry.descriptor, entity_registry.LLM_TYPES)
+    }
 
 
 class LlmViewModel(QObject):
@@ -111,35 +132,30 @@ class LlmViewModel(QObject):
     def is_generation_available(self) -> bool:
         return self._status == self.STATUS_READY and self.has_world_prompt
 
-    async def request_generation(
-        self,
-        field_id: str,
-        entity_type: str,
-        field_name: str,
-        field_label: str,
-        current_text: str,
-        owner: Any = None,
-    ) -> None:
+    async def request_generation(self, target: GenerationTarget) -> None:
         log = logging.getLogger(__name__)
 
-        field_prompt = self.get_field_prompt(entity_type, field_name)
-        self.generation_started.emit(field_id)
-        log.info("Generation requested: %s (prompt=%r)", field_id, field_prompt[:50] if field_prompt else "")
+        field_prompt = self.get_field_prompt(target.entity_type, target.field_name)
+        self.generation_started.emit(target.field_id)
+        log.info(
+            "Generation requested: %s (prompt=%r)",
+            target.field_id, field_prompt[:50] if field_prompt else "",
+        )
         try:
             result = await self._service.generate_for_field(
-                field_id=field_id,
-                entity_type=entity_type,
+                field_id=target.field_id,
+                entity_type=target.entity_type,
                 world_prompt=self._world_prompt,
                 field_prompt=field_prompt,
-                field_label=field_label,
-                current_text=current_text,
-                owner=owner,
+                field_label=target.field_label,
+                current_text=target.current_text,
+                owner=target.owner,
             )
-            log.info("Generation finished: %s (%d chars)", field_id, len(result))
-            self.generation_finished.emit(owner, field_id, result)
+            log.info("Generation finished: %s (%d chars)", target.field_id, len(result))
+            self.generation_finished.emit(target.owner, target.field_id, result)
         except Exception as exc:
-            log.error("Generation error: %s — %s", field_id, exc)
-            self.generation_error.emit(owner, field_id, str(exc))
+            log.error("Generation error: %s — %s", target.field_id, exc)
+            self.generation_error.emit(target.owner, target.field_id, str(exc))
 
     def world_prompt_to_json(self) -> str:
         return json.dumps(self._world_prompt, ensure_ascii=False)

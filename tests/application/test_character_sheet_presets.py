@@ -12,17 +12,17 @@ from pathlib import Path
 
 import pytest
 
+from app.domain.character_sheets.preset_catalog import (
+    FATE_LICENSE_TEXT,
+    MORK_BORG_LICENSE_TEXT,
+    PRESETS_DIR,
+    PresetCatalog,
+)
 from app.domain.entities.character_sheet import (
     FieldType,
     PAGE_HEIGHT_PT,
     PAGE_WIDTH_PT,
     SheetTemplate,
-)
-from app.presentation.views.character_sheet.presets.catalog import (
-    FATE_LICENSE_TEXT,
-    MORK_BORG_LICENSE_TEXT,
-    PRESETS_DIR,
-    PresetCatalog,
 )
 
 
@@ -109,9 +109,9 @@ class TestPresetLayouts:
         )
         assert entries == [
             "__init__.py",
-            "catalog.py",
             "fate_core.json",
             "mork_borg.json",
+            "preset_catalog.py",
         ]
 
     def test_presets_dir_resolves_to_the_module_directory(self):
@@ -119,11 +119,11 @@ class TestPresetLayouts:
         # module" — true for the dev tree and for the PyInstaller onedir
         # bundle (verified against a real bundle: __file__ resolves inside
         # it, _MEIPASS adds nothing). If someone reintroduces a bundle layout
-        # where the JSONs are not next to catalog.py, this fails and the
-        # resolution logic must be revisited.
-        from app.presentation.views.character_sheet.presets import catalog
+        # where the JSONs are not next to preset_catalog.py, this fails and
+        # the resolution logic must be revisited.
+        from app.domain.character_sheets import preset_catalog
 
-        assert PRESETS_DIR == Path(catalog.__file__).resolve().parent
+        assert PRESETS_DIR == Path(preset_catalog.__file__).resolve().parent
         for preset in PresetCatalog().list():
             assert (PRESETS_DIR / preset.json_name).is_file(), preset.json_name
 

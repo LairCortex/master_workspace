@@ -26,16 +26,11 @@ from app.application.services.calendar_settings_service import (
     CalendarSettingsService,
 )
 from app.domain.date_era import BC_YEAR_STEP
+from app.infrastructure.repositories.game_settings_repository import (
+    GameSettingsRepository,
+)
 from app.domain.game_calendar import (
-    CALENDAR_DRAFT_KEY,
-    CALENDAR_DRAFT_VERSION,
-    CALENDAR_STORAGE_VERSION,
-    CALENDAR_WIZARD_SEEN_KEY,
-    CALENDAR_WIZARD_SEEN_NO,
     DEFAULT_MONTH_NAMES,
-    DRAFT_STAGE_INTERCALARY,
-    DRAFT_STAGE_MONTHS,
-    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
     DateField,
@@ -43,12 +38,27 @@ from app.domain.game_calendar import (
     MonthDay,
     MonthSpec,
     ShiftReason,
+    ShiftReport,
+    ShiftReportEntry,
     StandardCalendar,
     current_calendar,
+    reset_current_calendar,
+)
+from app.infrastructure.calendar_storage import (
+    CALENDAR_DRAFT_VERSION,
+    CALENDAR_STORAGE_VERSION,
+    CalendarDraft,
+    DRAFT_STAGE_INTERCALARY,
+    DRAFT_STAGE_MONTHS,
     encode_calendar,
     encode_coord,
     encode_draft,
-    reset_current_calendar,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    CALENDAR_DRAFT_KEY,
+    CALENDAR_WIZARD_SEEN_KEY,
+    CALENDAR_WIZARD_SEEN_NO,
+    CALENDAR_WIZARD_SEEN_YES,
 )
 from app.infrastructure.db.models import (
     CharacterModel,
@@ -1134,3 +1144,127 @@ class TestPromoteDraft:
         assert await _setting(async_session, CALENDAR_DRAFT_KEY) == draft_before
         assert await service.load_wizard_seen(async_session) == CALENDAR_WIZARD_SEEN_NO
         assert not isinstance(current_calendar(), CustomCalendar)
+
+
+# ── nri-0005 task 1.5: record_names — report rows → display names ─────────
+# Test-first: this class lands before the service method (the first run of it
+# is red), so the wizard report's name lookup can move out of
+# ``CalendarWizardViewModel`` without weakening its behavior (design D4.1).
+
+
+def _entry(table: str, row_id: int, field: DateField = DateField.START) -> ShiftReportEntry:
+    """A report entry whose coordinates are irrelevant to ``record_names`` —
+    only ``(table, row_id)`` is read off it."""
+    coord = (MonthDay(44, 1, 1), False)
+    return ShiftReportEntry(
+        table=table, row_id=row_id, field=field,
+        old=coord, new=coord, reason=ShiftReason.DAY_OVERFLOW,
+    )
+
+
+class TestRecordNames:
+    async def test_reads_names_of_every_named_row(self, async_session):
+        event = EventModel(name="Пир", start_date=date(44, 1, 1), end_date=None)
+        character = CharacterModel(
+            name="Кузнец", start_date=date(44, 1, 1), end_date=None
+        )
+        async_session.add_all([event, character])
+        await async_session.commit()
+
+        report = ShiftReport((
+            _entry("events", event.id),
+            _entry("characters", character.id),
+        ))
+        names = await CalendarSettingsService().record_names(async_session, report)
+
+        assert names == {
+            ("events", event.id): "Пир",
+            ("characters", character.id): "Кузнец",
+        }
+
+    async def test_skips_unnamed_and_missing_rows_and_dedups_entries(
+        self, async_session
+    ):
+        nameless = EventModel(name="", start_date=date(44, 1, 1), end_date=None)
+        async_session.add(nameless)
+        await async_session.commit()
+
+        report = ShiftReport((
+            _entry("events", nameless.id),
+            # the missing row and the twice-named row read as one GET each —
+            # the same traversal the wizard's report screen performs
+            _entry("events", nameless.id, DateField.END),
+            _entry("organizations", 99999),
+        ))
+        names = await CalendarSettingsService().record_names(async_session, report)
+
+        assert names == {}
+
+    async def test_empty_report_reads_nothing(self, async_session):
+        names = await CalendarSettingsService().record_names(
+            async_session, ShiftReport()
+        )
+
+        assert names == {}
+
+
+# ── task 6.3: first-entry wizard status, moved out of Application ─────────
+
+
+class TestFirstRunWizardStatus:
+    """The wizard-seen decision of «Мастер первого запуска» as two service
+    steps (task 6.3): the startup predicate and the modal close handling.
+    These pin the exact behavior ``Application._maybe_show_calendar_wizard``
+    used to inline."""
+
+    async def test_status_is_open_only_for_the_seeded_never_shown_flag(
+        self, async_session
+    ):
+        service = CalendarSettingsService()
+        settings = GameSettingsRepository(async_session)
+        # an old keyless game never gets the modal (absence means "shown")
+        assert await service.wizard_should_open_on_start(async_session) is False
+        await settings.upsert(
+            CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
+        )
+        await async_session.commit()
+        assert await service.wizard_should_open_on_start(async_session) is True
+        await settings.upsert(
+            CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_YES
+        )
+        await async_session.commit()
+        assert await service.wizard_should_open_on_start(async_session) is False
+
+    async def test_close_without_application_promotes_the_preset(self, async_session):
+        service = CalendarSettingsService()
+        await _put_setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
+        )
+        await service.finish_first_run_flow(async_session)
+        assert await _setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY
+        ) == CALENDAR_WIZARD_SEEN_YES
+        assert await _setting(async_session, CALENDAR_SETTINGS_KEY) is not None
+
+    async def test_abandoned_draft_keeps_the_flag_never_shown(self, async_session):
+        service = CalendarSettingsService()
+        await _put_setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_NO
+        )
+        await _seeded_draft(async_session)
+        await service.finish_first_run_flow(async_session)
+        assert await _setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY
+        ) == CALENDAR_WIZARD_SEEN_NO
+        assert await service.load_draft(async_session) == _DRAFT
+
+    async def test_close_after_in_modal_application_changes_nothing(
+        self, async_session
+    ):
+        service = CalendarSettingsService()
+        await _put_setting(
+            async_session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_YES
+        )
+        await service.finish_first_run_flow(async_session)
+        # the modal applied inside its own flow: the close step is a no-op
+        assert await _setting(async_session, CALENDAR_SETTINGS_KEY) is None

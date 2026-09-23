@@ -73,12 +73,21 @@ class ImageStore:
         new_row = ImageModel(
             sha256=sha, ext=ext, width=img.width(), height=img.height(), size_bytes=len(data),
         )
-        self._session.add(new_row)
         try:
-            await self._session.flush()
+            # The collision is contained with a SAVEPOINT (task 5.3, audit Q14
+            # scenario 2): the old blanket session.rollback() discarded every
+            # row the caller had accumulated around this store — mid-xlsx-import
+            # that silently dropped dozens of already-written entity rows.
+            # Entering the savepoint first flushes whatever the caller had
+            # accumulated (those inserts land in the outer transaction, where
+            # they belong); only the add + flush below live inside it.
+            async with self._session.begin_nested():
+                self._session.add(new_row)
+                await self._session.flush()
         except IntegrityError:
-            # Race: another store() for the same content won the insert.
-            await self._session.rollback()
+            # Race: another store() for the same content won the insert. The
+            # savepoint rollback only retracted the failed image row — the
+            # session stays usable and everything else it carried survives.
             existing = await self._get_by_sha(sha)
             if existing is None:
                 raise
@@ -172,9 +181,11 @@ class ImageStore:
 
         Must run after the caller has already committed the ref mutation
         (design D6): a failed unlink here only logs — it must never affect
-        the user operation that already succeeded.
+        the user operation that already succeeded. The row deletes this
+        leaves in the session are finished by the caller's unit of work
+        (task 5.11): as a ``GameSessionUoW.after_write`` hook the unit commits
+        them right after the hooks run — the store never commits itself.
         """
-        any_removed = False
         for image_id in old_image_ids:
             if not image_id:
                 continue
@@ -190,9 +201,6 @@ class ImageStore:
                 # up as an "unreferenced row" and retry the unlink.
                 continue
             await self._session.delete(row)
-            any_removed = True
-        if any_removed:
-            await self._session.commit()
 
     async def startup_gc(self) -> None:
         """Restore the storage invariant (design D7) when a game is opened.
@@ -201,6 +209,10 @@ class ImageStore:
         deleted; rows without an original are dropped (references nulled);
         rows with an original but no preview get the preview regenerated;
         rows with no references left are dropped along with their files.
+
+        The whole scan is one write: the caller (``Application.start``) wraps
+        it in the game's unit of work and that unit holds the only commit
+        (task 5.11) — the store keeps its hands off the transaction finish.
         """
         self._cleanup_tmp_files()
         disk_hashes = self._scan_disk_hashes()
@@ -238,8 +250,6 @@ class ImageStore:
                 self._safe_unlink(orig)
                 self._safe_unlink(prev)
                 await self._session.delete(row)
-
-        await self._session.commit()
 
     async def _null_references(self, image_id: int) -> None:
         """Clear every reference to ``image_id``: entity FKs (SET NULL via

@@ -34,7 +34,7 @@ import warnings
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
@@ -55,13 +55,13 @@ from app.domain.character_sheet_pdf import write_sheet_pdf
 from app.domain.entities.character_sheet import SheetTemplate
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.images.store import ImageStore
+from app.presentation.dialog_utils import IMAGE_FILE_FILTER
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     CharacterSheetViewModel,
 )
@@ -70,7 +70,8 @@ log = logging.getLogger(__name__)
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "SheetEditorRoot.qml")
 
-_IMAGE_FILTER = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
+# extension whitelist is the domain's (audit A5); the shared filter text
+_IMAGE_FILTER = IMAGE_FILE_FILTER
 
 
 def _safe_disconnect(sig) -> None:
@@ -85,12 +86,12 @@ async def _run_now(coro: Coroutine) -> Any:
     return await coro
 
 
-class CharacterSheetEditorDialog(QDialog):
+class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
     """Editor of one sheet template. Load the sheet before showing it.
 
     ``run_locked`` wraps the session-touching part of ``save()`` and the
-    image ingest in the application's session lock (the shared AsyncSession
-    is not safe for concurrent tasks). Unit tests pass nothing and the
+    image ingest in the application's session lock (the one shared game
+    session is not safe for concurrent tasks). Unit tests pass nothing and the
     coroutines run bare.
     """
 
@@ -154,33 +155,30 @@ class CharacterSheetEditorDialog(QDialog):
         # the live engine's provider and remembered for later registrations
         bind_sheet_image_store(self._image_store)
 
-    # ── island seam (the Q3a dialog pattern) ─────────────────────────────────
+    # ── island seam (IslandDialogMixin owns the lifecycle) ──────────────────
+
+    def island_source(self) -> str:
+        return ROOT_QML
+
+    def load_island_scene(self, quick) -> None:
+        # Native tooltip display for the island chrome (Q2.5a D9): the bridge
+        # is parented to the island (raw-pointer context property) before the
+        # root compiles.
+        self._tooltip_bridge = install_island_tooltips(quick, self._context)
+        super().load_island_scene(quick)
 
     def _build_island(self) -> QQuickWidget:
         # The one process-wide engine (spec «Движок один на приложение»);
         # ``setup_qml_shell`` is idempotent and the reference keeps it alive.
-        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self.quick = QQuickWidget(self._engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         # The VM goes in as the root's DECLARED property; the token bridge —
         # which nested library components look up by name — into the dialog's
-        # own context. Neither reaches the shared engine root context, whose
-        # names are one global slot per island: the facade that writes last
-        # owns it and nulls it for everyone when it dies (the Q3a lesson,
-        # pinned in list_dialog.py).
-        self._palette = QmlPalette(self._theme, parent=self)
-        self._context = island_context(
-            self._engine, self, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        # Native tooltip display for the island chrome (Q2.5a D9): the bridge
-        # is parented to the island (raw-pointer context property).
-        self._tooltip_bridge = install_island_tooltips(self.quick, self._context)
-        self._component = load_island(
-            self.quick, self._context, ROOT_QML, {"vm": self._vm}
-        )
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
-        self._root = self.quick.rootObject()
+        # own context (IslandDialogMixin). Neither reaches the shared engine
+        # root context, whose names are one global slot per island: the
+        # facade that writes last owns it and nulls it for everyone when it
+        # dies (the Q3a lesson, pinned in list_dialog.py).
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self.island_initial_properties = {"vm": self._vm}
+        self.setup_island()
         self._wire_island()
         if self._theme is not None:
             attach_theme(self._menu_bar, self._theme)
@@ -402,22 +400,9 @@ class CharacterSheetEditorDialog(QDialog):
         self._teardown_vm_links()
         super().closeEvent(event)
 
-    # ── island teardown (the Q1-accepted launcher pattern, as in list_dialog) ──
-
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
-        """Release the island against its VM/palette before the dialog dies.
-
-        The release is deferred one loop turn: a QML-originated close lands
-        here while the island's own handler is still on the stack, and
-        destroying the scene synchronously there is fatal. One-shot bound to
-        ``self`` — it runs when the JS stack unwound and never after the
-        dialog is gone (the list_dialog Q3a precedent, word for word).
-        """
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # ── island release — IslandDialogMixin: deferred one loop turn, because a
+    # QML-originated close lands while the island's own handler is still on
+    # the stack (the list_dialog Q3a precedent, kept verbatim). ───────────────
 
     def _sync_edit_actions(self) -> None:
         self.undo_action.setEnabled(self._vm.can_undo)

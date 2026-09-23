@@ -219,7 +219,7 @@ def test_number_inline_comma_on_enter(vm):
     # (pinned in test_sheet_window_islands_qml); comma → dot (design D3).
     vm.set_content(fid, "1,5")
     assert vm.apply_number(fid, "1,5") is True
-    vm.commit_inline()
+    vm.apply_inline()
     assert vm.inline_field_id is None
     assert vm.template.get_field(fid).content == "1.5"
 
@@ -240,7 +240,7 @@ def test_number_refuses_out_of_bounds_and_non_numeric(vm):
     assert vm.inline_field_id is not None           # the rejected edit stays open
     assert vm.apply_number(fid, "x") is False       # not a number
     assert vm.template.get_field(fid).content == "1.5"
-    vm.commit_inline()
+    vm.apply_inline()
 
 
 # ── 6.3 dropdown ────────────────────────────────────────────────────────────

@@ -26,10 +26,13 @@ from app.domain.game_calendar import (
     IntercalarySpec,
     MonthDay,
     MonthSpec,
-    encode_coord,
     reset_current_calendar,
     set_current_calendar,
 )
+from app.infrastructure.calendar_storage import (
+    encode_coord,
+)
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db.models import CharacterModel, LocationModel, resolve_coord
 
 
@@ -131,8 +134,8 @@ class TestParsedDatesBecomeCoordinates:
         set_current_calendar(_CUSTOM)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Иван", "2026-08-31", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Иван")
         # Custom route: the coordinate columns carry the clamped day; the
@@ -156,8 +159,8 @@ class TestParsedDatesBecomeCoordinates:
         set_current_calendar(_CUSTOM)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Марья", "2026-11-05", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Марья")
         assert char.start_coord == encode_coord(MonthDay(2026, 10, 30))
@@ -170,8 +173,8 @@ class TestParsedDatesBecomeCoordinates:
         set_current_calendar(_CUSTOM)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Фёдор", "2026-08-15", "2026-09-02"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Фёдор")
         assert char.start_coord == encode_coord(MonthDay(2026, 8, 15))
@@ -183,8 +186,8 @@ class TestParsedDatesBecomeCoordinates:
         wb = _new_workbook()
         # Signed-ISO BC form parses to the same coordinate the text form would.
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Ксеркс", "-0044-08-31", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Ксеркс")
         assert char.start_coord == encode_coord(MonthDay(44, 8, 30))
@@ -200,8 +203,8 @@ class TestParsedDatesBecomeCoordinates:
         # coordinate columns, no transfer rows, no shift.
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Обычный", "2026-08-31", "2026-09-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Обычный")
         assert (char.start_date, char.end_date) == (date(2026, 8, 31), date(2026, 9, 1))
@@ -214,9 +217,9 @@ class TestParsedDatesBecomeCoordinates:
         set_current_calendar(_CUSTOM)
         wb = _new_workbook()
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "2026-08-31", "Парк"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         # the report is not asserted here — the ghost target dates are checked below
-        await _svc().apply_plan(plan, async_session)
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         ghost = plan.ghosts[("location", "парк")]
         assert ghost.min_start == MonthDay(2026, 8, 30)
@@ -236,8 +239,8 @@ class TestParsedDatesBecomeCoordinates:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS,
                [["Иван", "2026-08-31", None], ["Иван", "2026-07-05", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Иван")
         assert char.start_coord == encode_coord(MonthDay(2026, 7, 5))
@@ -253,8 +256,8 @@ class TestParsedDatesBecomeCoordinates:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS,
                [["Иван", "2026-07-05", None], ["Иван", "2026-08-31", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Иван")
         assert char.start_coord == encode_coord(MonthDay(2026, 8, 30))
@@ -275,8 +278,8 @@ class TestParsedDatesBecomeCoordinates:
 
         wb = _new_workbook()
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "2026-08-31", "Парк"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert report.skipped and report.created == 0
         assert report.date_shifts == []
@@ -290,8 +293,8 @@ class TestParsedDatesBecomeCoordinates:
         set_current_calendar(_CUSTOM)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Листопалый", "31 Листопад 2026", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Листопалый")
         assert resolve_coord(char, "start") == MonthDay(2026, 8, 30)
@@ -312,8 +315,8 @@ class TestParsedDatesBecomeCoordinates:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS,
                [["Медожин", "Медожор 44 г. до н.э.", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Медожин")
         assert char.start_coord == encode_coord(IntercalaryDay(44, 0))
@@ -335,8 +338,8 @@ class TestReportDateShiftSection:
             ["Перенесён", "2026-08-31", None],          # start row
             ["Оба", "-0044-07-31", "-0044-08-31"],      # start + end rows, BC
         ])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert report.created == 3  # all rows imported (the shifts are silent-free)
         assert [(s.sheet, s.row_number, s.field, s.old, s.new) for s in report.date_shifts] == [
@@ -349,8 +352,8 @@ class TestReportDateShiftSection:
         # Spec task 4.2: under the standard preset there is no section at all.
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["А", "2026-08-31", "2026-09-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert report.date_shifts == []
 
 
@@ -366,8 +369,8 @@ class TestTransferDateSignature:
         set_current_calendar(_WIDE)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", FULL_HEADERS, [["Широкий", "2026-11-05", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         char = await _one(async_session, CharacterModel, name="Широкий")
         assert char.start_coord == encode_coord(MonthDay(2026, 10, 45))
@@ -379,3 +382,46 @@ class TestTransferDateSignature:
         # has no ISO form at all, its codec text stands in, era marker kept.
         assert _coord_text(IntercalaryDay(44, 0), False) == "I:44:0"
         assert _coord_text(IntercalaryDay(44, 0), True) == "I:44:0 до н.э."
+
+
+# ── A3: one shared route also for the importer — value collisions ───────────
+
+class TestPlaceholderValueCollision:
+    """The insert placeholder (date(1, 1, 1)) is schema noise for the NOT NULL
+    legacy slot; the user may import that very date as real data. The shared
+    ``route_insert_dates`` must keep the two roles apart on both storages.
+    """
+
+    async def test_custom_route_placeholder_never_outranks_the_real_coord(
+        self, tmp_path, async_session
+    ):
+        # The imported coordinate's date equals the placeholder: the slot gets
+        # the same literal as schema noise, yet the read route answers the
+        # coordinate — the placeholder is never mistaken for the value.
+        set_current_calendar(_CUSTOM)
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", FULL_HEADERS, [["Нулевой", "0001-01-01", None]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
+
+        char = await _one(async_session, CharacterModel, name="Нулевой")
+        assert char.start_coord == encode_coord(MonthDay(1, 1, 1))
+        assert char.start_date_raw == date(1, 1, 1)  # placeholder == value, by design
+        assert resolve_coord(char, "start") == MonthDay(1, 1, 1)
+
+    async def test_standard_route_stores_the_colliding_date_as_real_data(
+        self, tmp_path, async_session
+    ):
+        # Under the preset the same literal is an ordinary value written to
+        # the date columns: no coordinate slot, no placeholder distinction —
+        # the shared route only placeholders rows whose value really went to
+        # the coordinate columns.
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", FULL_HEADERS, [["Нулевой", "0001-01-01", None]])
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
+
+        char = await _one(async_session, CharacterModel, name="Нулевой")
+        assert char.start_date_raw == date(1, 1, 1)  # the real imported value
+        assert char.start_coord is None
+        assert resolve_coord(char, "start") == MonthDay(1, 1, 1)

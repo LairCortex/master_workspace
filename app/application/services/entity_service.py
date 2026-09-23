@@ -2,33 +2,17 @@
 from __future__ import annotations
 
 from datetime import date
+from functools import partial
 from typing import Any, Dict, Sequence
 
 from app.application.services.mention_rewrite import rewrite_mentions
-from app.infrastructure.db.models import (
-    CharacterModel,
-    ItemModel,
-    LocationModel,
-    OrganizationModel,
-)
+from app.application.services.relation_sync import sync_related
+from app.domain import entity_registry
+from app.domain.enums.entity_type import EntityType
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.images.store import ImageStore
+from app.infrastructure.repositories import entity_type_for_model
 from app.infrastructure.repositories.base_repository import BaseRepository
-
-# Map attr names to entity_type strings for relationship syncing
-# (ported from main.py, where the relation-sync closures lived)
-_ATTR_TO_ENTITY_TYPE = {
-    "characters": "character",
-    "items": "item",
-    "organizations": "organization",
-    "locations": "location",
-}
-
-_MODEL_TO_MENTION_TYPE = {
-    CharacterModel: "character",
-    OrganizationModel: "organization",
-    ItemModel: "item",
-    LocationModel: "location",
-}
 
 
 class EntityService:
@@ -38,6 +22,7 @@ class EntityService:
         description_repo: BaseRepository,
         related_services: Dict[str, "EntityService"] | None = None,
         image_store: ImageStore | None = None,
+        uow: GameSessionUoW | None = None,
     ) -> None:
         self._repo = repo
         self._desc_repo = description_repo
@@ -49,6 +34,11 @@ class EntityService:
         # (design D6/task 6.2) — None for entity types without an image field
         # (the "image_id" key is simply absent from field_data for those).
         self._image_store = image_store
+        # Wave 5 (design D4): the single transaction finish point. The app
+        # hands every service the SAME unit (shared non-reentrancy guard);
+        # a bare-session construction (the ~40 service unit tests) self-builds
+        # one over the repository's session, so no caller needs to know.
+        self._uow = uow if uow is not None else GameSessionUoW(repo.session)
 
     def set_related_services(self, services: Dict[str, "EntityService"]) -> None:
         """Point at sibling services (populated by the Application catalog)."""
@@ -84,43 +74,85 @@ class EntityService:
     async def delete_entity(self, entity_id: int) -> bool:
         return await self._repo.delete(entity_id)
 
+    async def delete_entity_and_description(
+        self, entity_id: int, description_id: int
+    ) -> None:
+        """Remove a popup-created entity together with its description row.
+
+        No transaction is opened here (task 5.11): the caller — the connector's
+        batched popup cleanup, the only place with the whole pending list —
+        owns the unit-of-work transaction around the loop. The two lookups are
+        the repositories' job, so the connector no longer holds a session or
+        an ORM model. The entity (the description's referrer) goes first.
+        """
+        await self._repo.delete(entity_id)
+        await self._desc_repo.delete(description_id)
+
     # ── M2M relation sync (ported 1:1 from the main.py closures) ─────────
 
     @property
     def _session(self):
         # The repository already holds the session (same pattern as the app wiring)
-        return self._repo._session
+        return self._repo.session
 
-    @staticmethod
-    def _relation_type(attr_name: str) -> str | None:
-        return _ATTR_TO_ENTITY_TYPE.get(attr_name)
+    def _sibling_service(self, attr_name: str) -> "EntityService | None":
+        """The sibling service owning the link collection named ``attr_name``.
+
+        Dispatch is an exhaustive ``match`` over ``EntityType`` (wave 3, D2):
+        a registry type handled here in the future must be listed explicitly,
+        so forgetting it fails as ``MatchError`` in tests instead of silently
+        skipping the relation (audit A4: «тихо выходят из if rel_type is
+        None: return»).
+        """
+        match entity_registry.type_for_collection(attr_name):
+            case (
+                EntityType.CHARACTER
+                | EntityType.ITEM
+                | EntityType.LOCATION
+                | EntityType.ORGANIZATION
+            ) as link_type:
+                return self._related_services.get(link_type.value)
+            case EntityType.EVENT | EntityType.RATING:
+                # the event and rating collections are never card links;
+                # they are synced by the event/card services themselves
+                return None
+            case None:
+                # a related_changes key that is not a link collection at all
+                return None
 
     async def sync_related(self, entity: Any, attr_name: str, desired_ids: set) -> None:
         """Link-only M2M sync for one attribute: add missing, remove extras.
 
-        1:1 port of the per-attribute sync block from on_entity_saved in
-        main.py: related entities are only fetched (never created).
+        Delegates to the single application-layer synchronizer (C3) with the
+        link-only flag: related entities are only fetched, never created.
         """
-        rel_type = self._relation_type(attr_name)
-        if rel_type is None:
-            return
-        rel_svc = self._related_services.get(rel_type)
+        rel_svc = self._sibling_service(attr_name)
         if rel_svc is None:
             return
 
-        collection = getattr(entity, attr_name)
-        current_ids = {e.id for e in collection}
+        await sync_related(
+            rel_svc,
+            getattr(entity, attr_name),
+            ({"_existing_id": aid} for aid in desired_ids),
+            create_missing=False,
+        )
 
-        # Add missing
-        for aid in desired_ids - current_ids:
-            rel_entity = await rel_svc.get_entity(aid)
-            if rel_entity:
-                collection.append(rel_entity)
+    async def apply_related_changes(self, entity: Any, related_changes: dict) -> None:
+        """Resync every M2M attribute a dialog payload names (link-only).
 
-        # Remove extras
-        to_remove = [e for e in collection if e.id in (current_ids - desired_ids)]
-        for e in to_remove:
-            collection.remove(e)
+        The one «related_changes → per-attribute sync» loop shared by the
+        entity-card save (``update_entity_with_relations``) and the wiring's
+        popup-create path (C3): each attribute is loaded into the identity
+        map first (the link-only sync must not lazy-load), unknown attribute
+        names and types without a sibling service are skipped.
+        """
+        for attr_name, change_data in related_changes.items():
+            if self._sibling_service(attr_name) is None:
+                continue
+            await self._session.refresh(entity, attribute_names=[attr_name])
+            await self.sync_related(
+                entity, attr_name, set(change_data.get("current_ids", []))
+            )
 
     async def update_entity_with_relations(
         self,
@@ -137,8 +169,15 @@ class EntityService:
         success returns the updated entity; a missing entity raises
         ``ValueError`` before the relation refresh; any failure rolls the
         transaction back and re-raises (no more rollback + silent None).
+
+        Wave 5 (design D4.3, closes audit Q14 scenario 3): the whole body runs
+        inside the unit of work's single transaction — no manual ``commit``
+        halfway, no separate image-GC commit behind it. The GC of a replaced
+        image is a post-write hook now: it runs only once the mutation has
+        committed, and its failure is logged, never surfaced as a false
+        "could not save" over already-written data.
         """
-        try:
+        async with self._uow.transaction():
             # Snapshot name and image_id before mutating so rename rewrite
             # compares the pre-update name and image GC can run after commit.
             current = await self.get_entity(entity_id)
@@ -163,31 +202,18 @@ class EntityService:
                 refreshed.description.backstory = backstory
 
             # Sync M2M relationships (link-only, never creates)
-            for attr_name, change_data in related_changes.items():
-                desired_ids = set(change_data.get("current_ids", []))
-                rel_type = self._relation_type(attr_name)
-                if not rel_type:
-                    continue
-                if not self._related_services.get(rel_type):
-                    continue
-
-                ent = await self.get_entity(entity_id)
-                await self._session.refresh(ent, attribute_names=[attr_name])
-                await self.sync_related(ent, attr_name, desired_ids)
+            await self.apply_related_changes(refreshed, related_changes)
 
             new_name = field_data.get("name")
             if new_name is not None and new_name != old_name:
-                mention_type = _MODEL_TO_MENTION_TYPE[self._repo._model]
+                mention_type = entity_type_for_model(self._repo.model).value
                 await rewrite_mentions(self._session, mention_type, entity_id, new_name)
-
-            await self._session.commit()
 
             if has_image_field and self._image_store is not None:
                 new_image_id = field_data.get("image_id")
                 if new_image_id != old_image_id:
-                    await self._image_store.gc_after_commit(old_image_id)
+                    self._uow.after_write(
+                        partial(self._image_store.gc_after_commit, old_image_id)
+                    )
 
             return refreshed
-        except Exception:
-            await self._session.rollback()
-            raise

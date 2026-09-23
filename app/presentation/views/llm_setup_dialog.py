@@ -11,9 +11,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Signal
-from PySide6.QtQml import QQmlComponent, QQmlContext
-from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout, QWidget
 
 from app.infrastructure.http import AppHttpClient
@@ -21,15 +19,20 @@ from app.infrastructure.llm.config import LlmConfig
 from app.infrastructure.llm.errors import LlmError
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.llm_setup_view_model import LlmSetupViewModel
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "LlmSetupRoot.qml")
 
 
-class LlmSetupDialog(QDialog):
+class LlmSetupDialog(IslandDialogMixin, QDialog):
+    island_context_names = {"llmSetupVm": "vm"}
+
+    def island_source(self) -> str:
+        return ROOT_QML
+
     saved = Signal(object, str, dict)  # (LlmConfig, world_prompt, field_prompts_dict)
 
     def __init__(
@@ -61,24 +64,12 @@ class LlmSetupDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._theme, parent=self)
-        # Keep the context on the dialog, not on the view: during teardown the
-        # QML root must die with ``quick`` before its context is invalidated.
-        self._context = QQmlContext(engine.rootContext(), self)
-        self._context.setContextProperty("llmSetupVm", self.vm)
-        self._context.setContextProperty("islandPalette", self._palette)
-        source = QUrl.fromLocalFile(ROOT_QML)
-        self._component = QQmlComponent(engine, source, self)
-        root = self._component.create(self._context)
-        assert root is not None, self._component.errors()
-        self.quick.setContent(source, self._component, root)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        # Context lives on the dialog, not on the view (IslandDialogMixin):
+        # during teardown the QML root must die with ``quick`` before its
+        # context is invalidated.
+        self.setup_island()
         layout.addWidget(self.quick)
-        self._root = self.quick.rootObject()
 
         self.vm.checkRequested.connect(lambda: asyncio.ensure_future(self._on_check()))
         self.vm.saveRequested.connect(self._on_save)
@@ -166,9 +157,4 @@ class LlmSetupDialog(QDialog):
         # The dialog accepts itself in finish_saving() once the application
         # has finished the async save.
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # Island lifecycle (context, deferred release) — IslandDialogMixin.

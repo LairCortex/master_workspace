@@ -19,6 +19,8 @@ os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "0")
 os.environ.setdefault("QT_SCREEN_SCALE_FACTORS", "1")
 os.environ.setdefault("QT_SCALE_FACTOR", "1")
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
@@ -110,3 +112,15 @@ async def async_session(async_engine):
     session_factory = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as session:
         yield session
+
+
+@pytest_asyncio.fixture
+async def uow(async_session):
+    """GameSessionUoW over the test session (wave 5, design D4).
+
+    Built with a fresh ``asyncio.Lock`` — tests exercising real serialization
+    supply their own; this one just satisfies the unit's signature.
+    """
+    from app.infrastructure.db.uow import GameSessionUoW
+
+    return GameSessionUoW(async_session, asyncio.Lock())

@@ -208,6 +208,37 @@ async def test_add_move_and_remove_are_written_through_without_save(
     assert stored_order() == applied
 
 
+async def test_failing_type_delete_notifies_the_user(
+    app, wait_for, menu_qmenu, monkeypatch, message_boxes
+):
+    """Task 5.2 (audit Q14 scenario 7): the service error is no longer eaten —
+    the types dialog surfaces it and keeps the row (nothing silently vanishes)."""
+    application, window = app
+
+    helpers.pick_menu_action(menu_qmenu, "Типы событий…")
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
+    await wait_for(lambda: _visible_dialog(window, EventTypesDialog) is not None)
+    dialog = _visible_dialog(window, EventTypesDialog)
+    await wait_for(lambda: dialog.type_names() == SEEDED_ORDER)
+
+    async def boom(_type_id):
+        raise RuntimeError("delete exploded")
+
+    monkeypatch.setattr(application._wiring._event_service, "delete_event_type", boom)
+
+    _select_type_row(dialog, "Ров будней")
+    click_item(dialog.quick, find_item(dialog.quick, "typeRemoveButton"))
+    await wait_for(lambda: any(
+        kind == "warning" and "Удаление типа" == title
+        for kind, title, _text in message_boxes
+    ))
+    await helpers.wait_until_settled()
+
+    assert "Ров будней" in dialog.type_names()  # the row was not lost
+    dialog.close()
+
+
 # ── 6.3 — assigning «Слух» paints the row dot in the token hex ──────────────
 
 async def test_assigning_type_marks_scale_row_in_token_hex(app, wait_for):

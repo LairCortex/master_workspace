@@ -16,6 +16,7 @@ from app.infrastructure.llm.config import LlmConfig
 from app.infrastructure.llm.errors import LlmHttpError
 from app.application.services.event_service import EventService
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
+from app.presentation.dialog_results import EntityCreateResult
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 
@@ -498,6 +499,50 @@ async def test_popup_cleanup_after_external_rollback(app, wait_for, modal_qdialo
     assert await application._entity_services["character"].get_all() == []
 
 
+async def test_popup_entity_committed_by_foreign_task_does_not_survive_cancel(
+    app, wait_for, modal_qdialog
+):
+    """Task 5.6 characterization (audit Q14 scenario 1).
+
+    A popup-created entity is only flushed; if another task's unrelated
+    commit drags it into the database before the parent dialog's fate is
+    decided, cancelling the parent must STILL remove the entity, and a later
+    commit must not bring it back. Task 5.4 (cleanup commits its deletes) and
+    the popup path's unit of work (task 5.8) are what keep this invariant.
+    """
+    application, window = app
+    db_path = application._db_path
+
+    timeline_probe.click_object(window, "addButton")
+    await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
+    dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
+    loaded = helpers.watch_available_entity_load(dialog)
+    await wait_for(lambda: len(loaded) == 4)
+    dialog.name_input.setText("Отменное")
+    dialog.characteristics_input.setContent("Текст")
+
+    await helpers.create_related_via_popup(
+        window, wait_for, modal_qdialog, dialog, "characters", "character", "Фантом"
+    )
+    await helpers.wait_until_settled()
+
+    # A random commit (task 5.8 already committed it at popup save; before
+    # 5.8 this commit is what dragged the pending rows into the DB) — either
+    # way the entity is committed and cancel must remove it in both modes.
+    await application._session.commit()
+    assert query_db(db_path, "SELECT COUNT(*) FROM characters")[0][0] == 1
+
+    # Cancelling the parent must still erase the entity, though it was committed.
+    dialog.reject()
+    await helpers.wait_until_settled()
+    assert query_db(db_path, "SELECT COUNT(*) FROM characters")[0][0] == 0
+    assert query_db(db_path, "SELECT COUNT(*) FROM descriptions")[0][0] == 0
+
+    # A later unrelated commit must not resurrect anything.
+    await application._session.commit()
+    assert query_db(db_path, "SELECT COUNT(*) FROM characters")[0][0] == 0
+
+
 async def test_create_related_without_service_is_noop(app, wait_for, menu_qmenu):
     """on_sub_saved: no service registered for the related type → early return.
 
@@ -526,7 +571,12 @@ async def test_create_related_without_service_is_noop(app, wait_for, menu_qmenu)
         d for d in window.findChildren(EntityCardDialog)
         if d.isVisible() and d._entity_type == "rating"
     )
-    sub.saved.emit({"name": "МнимыйРейтинг"})
+    sub.saved.emit(
+        EntityCreateResult(
+            fields={"name": "МнимыйРейтинг"}, characteristics="",
+            backstory="", related_changes={},
+        )
+    )
     await helpers.wait_until_settled()
 
     # Guard: no service → nothing created, nothing attached to the card

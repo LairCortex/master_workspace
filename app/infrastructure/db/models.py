@@ -10,7 +10,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.date_era import era_key
 from app.domain.game_calendar import (
-    CoordDecoded,
     DateField,
     GameCoord,
     InvalidGameDateError,
@@ -18,6 +17,9 @@ from app.domain.game_calendar import (
     StandardCalendar,
     as_game_coord,
     current_calendar,
+)
+from app.infrastructure.calendar_storage import (
+    CoordDecoded,
     decode_coord,
     encode_coord,
 )

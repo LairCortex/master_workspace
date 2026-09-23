@@ -264,6 +264,36 @@ async def test_refresh_character_cards_syncs_only_populated_character_cards(
     assert item_card.open_sheet_button.isHidden()
 
 
+def test_sheet_editor_proxy_setter_routes_ownership_to_the_manager(app):
+    """6.1 proxy contract: the Application setter writes through to the manager."""
+
+    class _EditorToken:  # ownership token stand-in, never a real window
+        pass
+
+    application, _window = app
+    editor = _EditorToken()
+    application._sheet_editor = editor
+    assert application._sheets.editor is editor
+    assert application._sheet_editor is editor
+    application._sheet_editor = None
+    assert application._sheets.editor is None
+
+
+async def test_manager_card_refresh_without_game_context_is_a_silent_noop():
+    """Guard branch of SheetWindowsManager: no window/service → return, no crash.
+
+    A live per-game manager always has both; the branch only exists so a
+    half-torn-down manager (shutdown races a save) cannot raise.
+    """
+    from app.presentation.sheet_windows import SheetWindowsManager
+
+    manager = SheetWindowsManager(
+        sheet_service=None, instance_service=None, character_service=None,
+        image_store=None, theme=None, window=None, table_host=None, spawn=None,
+    )
+    await manager.refresh_character_cards()
+
+
 async def test_character_card_has_no_sheet_button_without_instance_service(app, wait_for):
     application, window = app
     char = await _make_character(application)

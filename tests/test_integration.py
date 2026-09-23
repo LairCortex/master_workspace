@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from app.infrastructure.db.models import Base, DescriptionModel
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
+from app.infrastructure.repositories.event_type_repository import EventTypeRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
@@ -46,6 +47,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
 
         event = await svc.create_event(
@@ -78,6 +80,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
         search_svc = SearchService(
             event=event_repo,
@@ -116,6 +119,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
         org_svc = EntityService(repo=org_repo, description_repo=desc_repo)
         char_svc = EntityService(repo=char_repo, description_repo=desc_repo)
@@ -166,6 +170,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
 
         await svc.create_event(name="Later", characteristics="x", backstory="y",
@@ -196,6 +201,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
         char_svc = EntityService(repo=char_repo, description_repo=desc_repo)
 
@@ -253,6 +259,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
         # "Dragon" appears in name, characteristics, and backstory
         await event_svc.create_event(
@@ -282,6 +289,7 @@ class TestFullEventFlow:
             character_service=AsyncMock(),
             item_service=AsyncMock(),
             location_service=AsyncMock(),
+            event_type_repo=EventTypeRepository(session),
         )
 
         event = await svc.create_event(

@@ -38,6 +38,7 @@ from app.infrastructure.db.models import DescriptionModel, EventModel
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.event_repository import EventRepository
+from app.infrastructure.repositories.event_type_repository import EventTypeRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
 from app.infrastructure.repositories.location_repository import LocationRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -96,6 +97,7 @@ async def _make_service(session) -> EventService:
         character_service=EntityService(CharacterRepository(session), desc_repo),
         item_service=EntityService(ItemRepository(session), desc_repo),
         location_service=EntityService(LocationRepository(session), desc_repo),
+        event_type_repo=EventTypeRepository(session),
     )
 
 

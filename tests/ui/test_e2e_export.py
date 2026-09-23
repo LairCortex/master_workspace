@@ -43,12 +43,12 @@ async def test_export_edge_cases(app, file_dialogs, message_boxes, monkeypatch, 
     assert message_boxes == []
 
     # export_game fails → critical box with the error text
-    import app.main as main_mod
+    import app.application.services.export_service as export_service_mod
 
     def broken(*args, **kwargs):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(main_mod, "export_game", broken)
+    monkeypatch.setattr(export_service_mod, "export_game", broken)
     file_dialogs["save"] = str(tmp_path / "bad.nri")
     window.export_action.trigger()
     assert ("critical", "Ошибка экспорта", "disk full") in message_boxes

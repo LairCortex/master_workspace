@@ -12,12 +12,21 @@ from typing import Any, Coroutine
 
 from PySide6.QtWidgets import QMessageBox
 
-from app.application.services.event_service import EventService, _TYPE_UNSET
+from app.application.services.event_service import EventService
 from app.application.services.xlsx_import_service import XlsxImportService
+from app.domain import entity_registry
 from app.domain.date_era import era_key
-from app.infrastructure.db.models import DescriptionModel
+from app.infrastructure.db.uow import GameSessionUoW
+from app.presentation.dialog_results import (
+    EntityCreateResult,
+    EntityEditResult,
+    EventDialogResult,
+    EventEditResult,
+)
 from app.presentation.utils.date_utils import split_date_era
-from app.presentation.views.entity_card_dialog import EntityCardDialog, _RELATED_CONFIG
+from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
+from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
+from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
@@ -39,6 +48,7 @@ class ApplicationWiring:
         search_vm,
         event_dialog_vm,
         event_service: EventService,
+        uow: GameSessionUoW,
     ) -> None:
         self._app = app
         self._window = window
@@ -48,19 +58,28 @@ class ApplicationWiring:
         self._event_dialog_vm = event_dialog_vm
         self._event_service = event_service
         self._on_edit_event = None
-        # Serializes every task spawned below (via ``_spawn``) against the
-        # single shared AsyncSession: SQLAlchemy's AsyncSession does not
-        # support concurrent operations on one connection — two overlapping
-        # tasks racing on it can leave an awaited Future unresolved forever
-        # (an asyncio hang, not a clean "concurrent operations" error), which
-        # is what timed out the E2E suite before this lock covered every
-        # session-touching task uniformly. Acquired exactly once per task in
-        # ``_run_locked``; nested helper coroutines reached via plain
-        # ``await`` (not through ``_spawn``) must never acquire it themselves.
-        self._session_lock = asyncio.Lock()
+        # Wave 5 (design D4, task 5.11): the single transaction finish point
+        # over the game's one shared session, REQUIRED at construction — the
+        # composition root injects the SAME unit the entity/event/char-sheet
+        # services use, so no caller can build a connector around a second
+        # finish point, and the raw session never enters this package. The
+        # unit owns the serialization lock (``uow.lock``) that ``_spawn``
+        # below acquires — one lock, one owner.
+        # Serializing every spawned task against the session is required:
+        # SQLAlchemy's session type does not support concurrent operations on
+        # one connection — two overlapping tasks racing on it can leave an
+        # awaited Future unresolved forever (an asyncio hang, not a clean
+        # "concurrent operations" error), which is what timed out the E2E
+        # suite before this lock covered every session-touching task
+        # uniformly. Acquired exactly once per task in ``_run_locked``;
+        # nested helper coroutines reached via plain ``await`` (not through
+        # ``_spawn``) must never acquire it themselves.
+        self._uow = uow
+        self._session_lock = self._uow.lock
         # parent_dialog → [(entity_type, entity_id, description_id)] for
-        # entities created in its popups: flushed but not committed, so they
-        # are explicitly deleted if the parent dialog is rejected.
+        # entities created in its popups: persisted by the popup's own unit
+        # of work (task 5.8), so they are explicitly deleted (and that delete
+        # persisted) when the parent dialog is rejected.
         self._popup_created: dict[Any, list[tuple[str, int, int]]] = {}
         # Unified five-sheet import (rework 4.3): writes through the session/
         # ORM in apply_plan, only the image ingest pipeline is a dependency.
@@ -90,6 +109,40 @@ class ApplicationWiring:
     async def _run_locked(self, coro: Coroutine) -> Any:
         async with self._session_lock:
             return await coro
+
+    # ── public surface for the composition root (task 6.4, finding B2) ──────
+    # The application drives a couple of connector-owned flows (reload after a
+    # calendar change, mention click-throughs); it goes through these accessors
+    # instead of poking connector privates.
+
+    @property
+    def window(self):
+        """The main window this connector serves."""
+        return self._window
+
+    @property
+    def timeline_vm(self) -> TimelineViewModel:
+        """The timeline feed view model."""
+        return self._timeline_vm
+
+    @property
+    def detail_vm(self) -> DetailViewModel:
+        """The detail panel view model."""
+        return self._detail_vm
+
+    @property
+    def event_service(self) -> EventService:
+        """The event service behind the timeline/detail/dialog flows."""
+        return self._event_service
+
+    async def open_event_editor(self, event_id: int) -> None:
+        """Run the connector's open-edit-event handler for ``event_id``.
+
+        Public entry to the flow the mention click-through needs; the handler
+        itself is the closure installed by :meth:`connect` (with dialogs,
+        snapshot and images wired around it).
+        """
+        await self._on_edit_event(event_id)
 
     def _wire_image_picked(self, dialog: EntityCardDialog) -> None:
         """Ingest a freshly picked file through ``ImageStore`` (design D4/6.1).
@@ -173,9 +226,7 @@ class ApplicationWiring:
 
             async def _analyze(path: str):
                 try:
-                    plan = await self._xlsx_import.analyze_file(
-                        path, session=self._app._session
-                    )
+                    plan = await self._xlsx_import.analyze_file(path, self._uow)
                 except Exception as exc:  # noqa: BLE001
                     # Сбой чтения вне штатных фатальных ошибок плана —
                     # причину показывает список проблем диалога.
@@ -189,10 +240,11 @@ class ApplicationWiring:
                     return
                 try:
                     report = await self._xlsx_import.apply_plan(
-                        plan, self._app._session, progress_callback=dlg.set_progress,
+                        plan, self._uow, progress_callback=dlg.set_progress,
                     )
                 except Exception as exc:  # noqa: BLE001
-                    # apply_plan уже откатил транзакцию (design D6) —
+                    # apply_plan's unit already rolled the transaction back
+                    # (design D6) —
                     # причину принимает диалог (в т.ч. уже закрытый: publish_*
                     # проверяют живость C++-стороны перед показом).
                     dlg.publish_import_failure(str(exc))
@@ -252,6 +304,50 @@ class ApplicationWiring:
 
         window.timeline_widget.event_types_requested.connect(on_event_types)
 
+        # ── Event save (task 5.10, design D5): ONE apply path for both ──────
+        # dialog flows. The dialogs emit frozen contracts (dialog_results), so
+        # the old near-duplicate dict.pop blocks are gone; the service finishes
+        # the write through the shared unit of work (task 5.9).
+        async def _apply_event_result(result: EventDialogResult) -> bool:
+            relations = result.as_relations_payload()
+            try:
+                if isinstance(result, EventEditResult):
+                    await event_service.update_event_with_relations(
+                        result.event_id,
+                        name=result.name,
+                        start_date=result.start_date,
+                        end_date=result.end_date,
+                        start_bc=result.start_bc,
+                        end_bc=result.end_bc,
+                        characteristics=result.characteristics,
+                        backstory=result.backstory,
+                        relations=relations,
+                        event_type_id=result.event_type_id,
+                    )
+                else:
+                    await event_service.create_event_with_relations(
+                        name=result.name,
+                        start_date=result.start_date,
+                        end_date=result.end_date,
+                        start_bc=result.start_bc,
+                        end_bc=result.end_bc,
+                        characteristics=result.characteristics,
+                        backstory=result.backstory,
+                        relations=relations,
+                        event_type_id=result.event_type_id,
+                    )
+            except Exception as exc:  # noqa: BLE001 — the modal names the reason
+                # The service's unit of work already undid the partial write
+                # (no undo here — the finish is the unit's). Reload the
+                # timeline BEFORE the blocking modal so the state under it is
+                # consistent (the same move as every other save handler).
+                await _reload_timeline()
+                QMessageBox.critical(
+                    window, "Ошибка", f"Не удалось сохранить событие: {exc}",
+                )
+                return False
+            return True
+
         # Add event button
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
@@ -260,40 +356,14 @@ class ApplicationWiring:
             self._app._wire_mentions_for_dialog(dialog, on_entity_click)
             self._app._wire_ai_buttons(dialog)
 
-            async def on_saved(data):
-                relations = {
-                    "organizations": data.pop("organizations", []),
-                    "characters": data.pop("characters", []),
-                    "items": data.pop("items", []),
-                    "locations": data.pop("locations", []),
-                }
-                try:
-                    await event_service.create_event_with_relations(
-                        name=data.pop("name"),
-                        start_date=data.pop("start_date"),
-                        end_date=data.pop("end_date"),
-                        start_bc=data.pop("start_bc", False),
-                        end_bc=data.pop("end_bc", False),
-                        characteristics=data.pop("characteristics", ""),
-                        backstory=data.pop("backstory", ""),
-                        relations=relations,
-                        event_type_id=data.pop("event_type_id", None),
-                    )
-                except Exception as exc:  # noqa: BLE001 — причину показывает модалка
-                    # Транзакцию уже откатил сервис; ленту перегружаем до модалки
-                    # (тот же приём, что в других save-handler'ах), чтобы под
-                    # блокирующий QMessageBox осталось консистентное состояние.
-                    await _reload_timeline()
-                    QMessageBox.critical(
-                        window, "Ошибка", f"Не удалось сохранить событие: {exc}",
-                    )
+            async def on_saved(result: EventDialogResult) -> None:
+                if not await _apply_event_result(result):
                     dialog.finish_saving(False)
                     return
-                await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
+                await _reload_timeline()
                 dialog.finish_saving(True)
 
-            dialog.saved.connect(lambda data: self._spawn(on_saved(data)))
+            dialog.saved.connect(lambda result: self._spawn(on_saved(result)))
             dialog.create_related_requested.connect(
                 lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
             )
@@ -312,32 +382,21 @@ class ApplicationWiring:
                 if not entity_service:
                     return
 
-                dialog = EntityCardDialog(
-                    None, entity_type=entity_type, parent=window,
-                    theme=self._app._theme,
-                )
-                self._app._wire_mentions_for_dialog(dialog, on_entity_click)
-                self._app._wire_ai_buttons(dialog)
-                self._wire_image_picked(dialog)
-
-                async def on_entity_saved(data):
+                async def on_entity_saved(result: EntityCreateResult) -> None:
                     try:
-                        data.pop("related_changes", None)
-                        chars_text = data.pop("characteristics", "")
-                        backstory_text = data.pop("backstory", "")
-                        await entity_service.create_entity(
-                            characteristics=chars_text,
-                            backstory=backstory_text,
-                            **data,
-                        )
-                        await self._app._session.commit()
-                    except Exception as exc:  # noqa: BLE001 — причину показывает модалка
-                        # Путь СОХРАНЕНИЯ данных (сущность ещё не создана):
-                        # откат здесь — владелец этого транзакционного блока, +
-                        # то же уведомление, что и в остальных save-handler'ах
-                        # (save-error-reporting). Частичный refresh не нужен:
-                        # объект не создан, лента сущностей на шкале не показывается.
-                        await self._app._session.rollback()
+                        # The unit of work is the finish (design D4): it persists on
+                        # clean exit, reverts + re-raises on any failure.
+                        async with self._uow.transaction():
+                            await entity_service.create_entity(
+                                characteristics=result.characteristics,
+                                backstory=result.backstory,
+                                **result.fields,
+                            )
+                    except Exception as exc:  # noqa: BLE001 — the modal names the reason
+                        # The data SAVE path of an entity not yet stored: the
+                        # unit already rolled the partial rows back; a partial
+                        # reload is pointless (no object, the scale shows no
+                        # entity rows) — only the report stays (save-error-reporting).
                         QMessageBox.critical(
                             window, "Ошибка", f"Не удалось создать сущность: {exc}",
                         )
@@ -345,14 +404,16 @@ class ApplicationWiring:
                         return
                     dialog.finish_saving(True)
 
-                dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
+                dialog = await open_entity_card(
+                    entity_type, parent=window, on_saved=on_entity_saved,
+                    load_available=False,
+                )
                 dialog.open()
             except Exception as exc:
-                # Путь «ДИАЛОГ НЕ ОТКРЫЛСЯ» (конструктор/поповер), а не сбой
-                # сохранения данных: только откат + лог, БЕЗ модалки — чтобы
-                # провал открытия не плодил двойные сообщения. Ср. on_entity_saved
-                # выше — там путь сохранения, он сообщает пользователю.
-                await self._app._session.rollback()
+                # The "DIALOG DID NOT OPEN" path (constructor/popover), not a
+                # data-save failure: log only, NO modal — an open failure must
+                # not spawn double reports. The save path above is the one
+                # reporting to the user.
                 logging.getLogger("app.wiring").warning(
                     "Не удалось открыть диалог создания сущности: %s", exc,
                 )
@@ -376,47 +437,20 @@ class ApplicationWiring:
                 self._app._wire_mentions_for_dialog(dialog, on_entity_click)
                 self._app._wire_ai_buttons(dialog)
 
-                async def on_event_updated(data):
-                    eid = data.pop("event_id", None)
-                    relations = {
-                        "organizations": data.pop("organizations", []),
-                        "characters": data.pop("characters", []),
-                        "items": data.pop("items", []),
-                        "locations": data.pop("locations", []),
-                    }
-                    try:
-                        await event_service.update_event_with_relations(
-                            eid,
-                            name=data.pop("name"),
-                            start_date=data.pop("start_date"),
-                            end_date=data.pop("end_date"),
-                            start_bc=data.pop("start_bc", False),
-                            end_bc=data.pop("end_bc", False),
-                            characteristics=data.pop("characteristics", ""),
-                            backstory=data.pop("backstory", ""),
-                            relations=relations,
-                            event_type_id=data.pop("event_type_id", _TYPE_UNSET),
-                        )
-                    except Exception as exc:  # noqa: BLE001 — причину показывает модалка
-                        # Откат уже выполнен сервисом. Перезагружаем ленту до
-                        # модалки (тот же приём, что в других save-handler'ах);
-                        # детальную панель НЕ обновляем — «обновлённой» версии нет,
-                        # показываем прежнее.
-                        await _reload_timeline()
-                        QMessageBox.critical(
-                            window, "Ошибка", f"Не удалось сохранить событие: {exc}",
-                        )
+                async def on_event_updated(result: EventDialogResult) -> None:
+                    if not await _apply_event_result(result):
+                        # The unit of work already rolled back; the timeline was
+                        # reloaded for the modal. The detail panel stays on the
+                        # previous state — an "updated" version does not exist.
                         dialog.finish_saving(False)
                         return
-                    await timeline_vm.load_events()
-                    window.timeline_widget.update_events(timeline_vm.events)
-
+                    await _reload_timeline()
                     # Refresh detail panel
-                    await detail_vm.load_details(eid)
+                    await detail_vm.load_details(result.event_id)
                     window.detail_panel.show_event(detail_vm.event)
                     dialog.finish_saving(True)
 
-                dialog.saved.connect(lambda d: self._spawn(on_event_updated(d)))
+                dialog.saved.connect(lambda result: self._spawn(on_event_updated(result)))
                 dialog.create_related_requested.connect(
                     lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
                 )
@@ -425,8 +459,12 @@ class ApplicationWiring:
                     lambda: self._spawn(self._cleanup_popup_entities(dialog))
                 )
                 dialog.open()
-            except Exception:
-                await self._app._session.rollback()
+            except Exception as exc:
+                # Open-failure path (reads only happened): the unit of work
+                # owns every finish, so this is a plain log, no undo here.
+                logging.getLogger("app.wiring").warning(
+                    "Не удалось открыть диалог события: %s", exc,
+                )
 
         self._on_edit_event = on_edit_event
 
@@ -498,6 +536,45 @@ class ApplicationWiring:
             )
             await _refresh_button()
 
+        # ── Shared entity-card factory (task 5.10, design D5) ──────────────
+        # One place for the card's opening ceremony: creation, populate, the
+        # mention/AI/image wiring, the linkable-sections load and the save
+        # pump. Callers only add their own save handler and the window-local
+        # extras (the popup-cleanup pair for a parent dialog).
+        async def open_entity_card(
+            entity_type: str,
+            *,
+            parent,
+            on_saved,
+            entity: Any = None,
+            load_available: bool = True,
+            popup_cleanup: bool = False,
+        ):
+            dialog = EntityCardDialog(
+                None, entity_type=entity_type, parent=parent,
+                theme=self._app._theme,
+            )
+            if entity is not None:
+                dialog.populate(entity)
+            self._app._wire_mentions_for_dialog(dialog, on_entity_click)
+            self._app._wire_ai_buttons(dialog)
+            self._wire_image_picked(dialog)
+            if load_available:
+                # Load available related entities for linking (registry, wave 3).
+                # Plain awaits: every caller runs inside its own locked task.
+                for cfg in entity_registry.related_refs_for_key(entity_type):
+                    rel_svc = self._app._get_entity_service(cfg.entity_type.value)
+                    if rel_svc:
+                        available = await rel_svc.get_all()
+                        dialog.set_available_entities(cfg.attr, list(available))
+            dialog.saved.connect(lambda result: self._spawn(on_saved(result)))
+            if popup_cleanup:
+                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+                dialog.rejected.connect(
+                    lambda: self._spawn(self._cleanup_popup_entities(dialog))
+                )
+            return dialog
+
         # Entity card double-click
         async def on_entity_click(entity_type, entity_id):
             try:
@@ -508,37 +585,18 @@ class ApplicationWiring:
                 if not entity:
                     return
 
-                dialog = EntityCardDialog(
-                    None, entity_type=entity_type, parent=window,
-                    theme=self._app._theme,
-                )
-                dialog.populate(entity)
-                self._app._wire_mentions_for_dialog(dialog, on_entity_click)
-                self._app._wire_ai_buttons(dialog)
-                self._wire_image_picked(dialog)
-
-                # Load available related entities for linking
-                related_configs = _RELATED_CONFIG.get(entity_type, [])
-                for cfg in related_configs:
-                    rel_svc = self._app._get_entity_service(cfg["entity_type"])
-                    if rel_svc:
-                        available = await rel_svc.get_all()
-                        dialog.set_available_entities(cfg["attr"], list(available))
-
                 # Handle save (update entity fields + sync relationships)
-                async def on_entity_saved(data):
-                    related_changes = data.pop("related_changes", {})
-                    chars_text = data.pop("characteristics", "")
-                    backstory_text = data.pop("backstory", "")
-                    field_data = {k: v for k, v in data.items() if k not in ("characteristics", "backstory")}
+                async def on_entity_saved(result: EntityEditResult) -> None:
                     try:
                         await entity_service.update_entity_with_relations(
-                            entity_id, field_data, chars_text, backstory_text, related_changes,
+                            entity_id, result.fields, result.characteristics,
+                            result.backstory, result.related_changes,
                         )
-                    except Exception as exc:  # noqa: BLE001 — причину показывает модалка
-                        # Откат уже выполнен сервисом; перегружаем ленту до
-                        # модалки (тот же приём, что в других save-handler'ах),
-                        # деталь не обновляем — обновлённой версии нет.
+                    except Exception as exc:  # noqa: BLE001 — the modal names the reason
+                        # The service's unit of work already undid the partial
+                        # write; reload the timeline before the blocking modal
+                        # (the same move as every other save handler); the
+                        # detail stays previous — no "updated" version exists.
                         await _reload_timeline()
                         QMessageBox.critical(
                             window, "Ошибка", f"Не удалось сохранить сущность: {exc}",
@@ -552,70 +610,53 @@ class ApplicationWiring:
                         window.detail_panel.show_event(detail_vm.event)
                     dialog.finish_saving(True)
 
-                dialog.saved.connect(lambda d: self._spawn(on_entity_saved(d)))
-
+                dialog = await open_entity_card(
+                    entity_type, parent=window, entity=entity,
+                    on_saved=on_entity_saved, popup_cleanup=True,
+                )
                 dialog.create_related_requested.connect(
                     lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
                 )
                 await _wire_open_character_sheet(dialog, entity_type, entity_id)
-                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
-                dialog.rejected.connect(
-                    lambda: self._spawn(self._cleanup_popup_entities(dialog))
+                dialog.open()
+            except Exception as exc:
+                # Open-failure path (reads only happened): the unit of work
+                # owns every transaction finish — plain log, no undo here.
+                logging.getLogger("app.wiring").warning(
+                    "Не удалось открыть карточку сущности: %s", exc,
                 )
 
-                dialog.open()
-            except Exception:
-                await self._app._session.rollback()
-
         # ── Shared helper: popup for creating a related entity ─────────────
-        # One card window opened from the parent dialog (event or entity card).
-        # On save the entity is created + flushed (no commit) and attached to
-        # the parent's section; commit happens with the parent dialog's save.
-        # Nested «Создать нового» is intentionally not wired (depth = 1).
+        # One card window opened from the parent dialog (event or entity card)
+        # through open_entity_card (task 5.10). On save the entity and its own
+        # links are written as one unit of work (task 5.8): the row never
+        # rides a later unrelated finish, and rejecting the parent deletes it
+        # through the cleanup's own transaction (tasks 5.4/5.6, audit Q14
+        # scenario 1 stays closed). Nested «Создать нового» is intentionally
+        # not wired (depth = 1).
         async def _open_related_create_dialog(parent_dialog, attr_name: str, entity_type: str):
-            sub_dialog = EntityCardDialog(
-                None, entity_type=entity_type, parent=parent_dialog,
-                theme=self._app._theme,
-            )
-            self._app._wire_mentions_for_dialog(sub_dialog, on_entity_click)
-            self._app._wire_ai_buttons(sub_dialog)
-            self._wire_image_picked(sub_dialog)
-
-            # Fill the popup's own related sections so «Привязать существующего»
-            # works inside. Plain awaits: this runs inside the task already
-            # spawned (locked) at the connect site that scheduled us.
-            for cfg in _RELATED_CONFIG.get(entity_type, []):
-                rel_svc = self._app._get_entity_service(cfg["entity_type"])
-                if rel_svc:
-                    available = await rel_svc.get_all()
-                    sub_dialog.set_available_entities(cfg["attr"], list(available))
-
-            async def on_sub_saved(sub_data):
-                related_changes = sub_data.pop("related_changes", {})
+            async def on_sub_saved(result: EntityCreateResult) -> None:
                 sub_svc = self._app._get_entity_service(entity_type)
                 if not sub_svc:
                     sub_dialog.finish_saving(False)
                     return
-                chars_text = sub_data.pop("characteristics", "")
-                backstory_text = sub_data.pop("backstory", "")
                 try:
-                    new_entity = await sub_svc.create_entity(
-                        characteristics=chars_text,
-                        backstory=backstory_text,
-                        **sub_data,
-                    )
-                    await self._app._session.flush()
-                    for attr, change in related_changes.items():
-                        current_ids = change.get("current_ids", [])
-                        if not current_ids:
-                            continue
-                        # Pre-load the collection (link-only sync must not lazy-load).
-                        await self._app._session.refresh(new_entity, attribute_names=[attr])
-                        await sub_svc.sync_related(new_entity, attr, set(current_ids))
+                    async with self._uow.transaction():
+                        new_entity = await sub_svc.create_entity(
+                            characteristics=result.characteristics,
+                            backstory=result.backstory,
+                            **result.fields,
+                        )
+                        # The one related_changes sync loop (C3), link-only.
+                        # Inside the same transaction: the entity and its
+                        # links are one atomic write (task 5.8).
+                        await sub_svc.apply_related_changes(
+                            new_entity, result.related_changes,
+                        )
                 except Exception as exc:  # noqa: BLE001
-                    # Roll back the partial state (description row, failed
-                    # entity) so the shared session is left usable, and notify.
-                    await self._app._session.rollback()
+                    # The unit of work rolled the partial state (description
+                    # row, failed entity) back so the shared session is left
+                    # usable; the user gets the reason.
                     QMessageBox.critical(
                         self._window, "Ошибка создания сущности", str(exc)
                     )
@@ -627,7 +668,9 @@ class ApplicationWiring:
                 )
                 sub_dialog.finish_saving(True)
 
-            sub_dialog.saved.connect(lambda d: self._spawn(on_sub_saved(d)))
+            sub_dialog = await open_entity_card(
+                entity_type, parent=parent_dialog, on_saved=on_sub_saved,
+            )
             sub_dialog.open()
 
         window.detail_panel.entity_clicked.connect(
@@ -659,20 +702,18 @@ class ApplicationWiring:
     async def _cleanup_popup_entities(self, parent_dialog) -> None:
         """Delete popup-created rows when the parent dialog is rejected.
 
-        Popup saves only flush (no commit): without this cleanup the flushed
-        rows (entities, their descriptions, M2M links) sit pending in the
-        shared session and ride any later commit, persisting entities the
-        user cancelled.
+        Popup saves persist through the unit of work (task 5.8) — rows a user
+        cancelled must therefore be deleted explicitly and that delete
+        persisted (tasks 5.4/5.6, audit Q14 scenario 1): the cleanup runs as
+        its own transaction, so the removal lands at once instead of hanging
+        pending to ride a later save or burn in an unrelated revert.
+        The deletion itself is the entity service's (task 5.11) — this glue
+        opened the transaction and owns the pending list, nothing more.
         """
         pending = self._popup_created.pop(parent_dialog, [])
         if not pending:
             return
-        for entity_type, entity_id, description_id in pending:
-            service = self._app._get_entity_service(entity_type)
-            entity = await service.get_entity(entity_id)
-            if entity is not None:
-                await self._app._session.delete(entity)
-            description = await self._app._session.get(DescriptionModel, description_id)
-            if description is not None:
-                await self._app._session.delete(description)
-        await self._app._session.flush()
+        async with self._uow.transaction():
+            for entity_type, entity_id, description_id in pending:
+                service = self._app._get_entity_service(entity_type)
+                await service.delete_entity_and_description(entity_id, description_id)

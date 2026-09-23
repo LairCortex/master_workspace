@@ -4,22 +4,24 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent, QPixmap
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.island import QML_IMPORT_PATH, IslandDialogMixin
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.image_viewer_view_model import ImageViewerViewModel
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "ImageViewerRoot.qml")
 
 
-class ImageViewerDialog(QDialog):
+class ImageViewerDialog(IslandDialogMixin, QDialog):
+    island_context_names = {"imageViewerVm": "vm"}
+
+    def island_source(self) -> str:
+        return ROOT_QML
     def __init__(
         self,
         original: QPixmap | None,
@@ -45,8 +47,7 @@ class ImageViewerDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
         if pixmap is not None:
             put_dialog_pixmap(self._key, pixmap)
             self.vm.set_source(
@@ -57,18 +58,10 @@ class ImageViewerDialog(QDialog):
         else:
             self.vm.set_source("", used_preview=False, unavailable=True)
 
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._theme, parent=self)
-        # Dialog-owned context: this viewer is opened over live islands and
-        # destroyed right after ``exec()``, so a bridge of its own in the
-        # shared engine root context would take their colors down with it.
-        self._context = island_context(
-            engine, self, imageViewerVm=self.vm, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        self._component = load_island(self.quick, self._context, ROOT_QML)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # Dialog-owned context (IslandDialogMixin): this viewer is opened over
+        # live islands and destroyed right after ``exec()``, so a bridge of its
+        # own in the shared engine root context would take their colors down.
+        self.setup_island()
         layout.addWidget(self.quick)
         self._root = self.quick.rootObject()
         self._root.closeRequested.connect(self.close)
@@ -87,8 +80,6 @@ class ImageViewerDialog(QDialog):
 
     def _release_island(self) -> None:
         clear_dialog_pixmap(self._key)
-        release_island(self.quick)
+        super()._release_island()
 
-    def done(self, result: int) -> None:
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # Release scheduling (accept/reject/done/close) — IslandDialogMixin.

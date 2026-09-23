@@ -3,18 +3,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.application.services.llm_service import FIELD_CONFIG, FIELD_LABELS
+from app.application.services.llm_service import FIELD_LABELS
+from app.domain import entity_registry
 
-_ENTITY_LABELS: dict[str, str] = {
-    "event": "События",
-    "organization": "Организации",
-    "character": "Персонажи",
-    "item": "Предметы",
-    "location": "Локации",
-}
-
-_ENTITY_ORDER = ["event", "organization", "character", "item", "location"]
-
+# The page set, its order and the per-type captions come from the entity
+# registry in wave 3 (finding A4); the placeholder strings below are this
+# dialog's own UI copy and stay here.
 _FIELD_PLACEHOLDERS: dict[str, dict[str, str]] = {
     "event": {
         "name": "Короткое название события в духе мира",
@@ -47,8 +41,8 @@ _FIELD_PLACEHOLDERS: dict[str, dict[str, str]] = {
     },
 }
 
-#: Connection + world + one page per entity type, warnings last.
-PAGE_WARNINGS = 2 + len(_ENTITY_ORDER)
+#: Connection + world + one page per LLM-covered entity type, warnings last.
+PAGE_WARNINGS = 2 + len(entity_registry.LLM_TYPES)
 
 
 class LlmSetupViewModel(QObject):
@@ -81,19 +75,20 @@ class LlmSetupViewModel(QObject):
         self._check_status: str | None = None
         initial = field_prompts or {}
         self._pages: list[dict] = []
-        for etype in _ENTITY_ORDER:
+        for etype in entity_registry.LLM_TYPES:
+            desc = entity_registry.descriptor(etype)
             fields = []
-            seeded = initial.get(etype, {})
-            for name in FIELD_CONFIG[etype]:
+            seeded = initial.get(desc.key, {})
+            for name in desc.llm_fields:
                 fields.append({
                     "name": name,
                     "label": FIELD_LABELS.get(name, name),
-                    "placeholder": _FIELD_PLACEHOLDERS.get(etype, {}).get(name, ""),
+                    "placeholder": _FIELD_PLACEHOLDERS.get(desc.key, {}).get(name, ""),
                     "value": seeded.get(name, ""),
                 })
             self._pages.append({
-                "entityType": etype,
-                "title": f"Промты полей — {_ENTITY_LABELS.get(etype, etype)}",
+                "entityType": desc.key,
+                "title": f"Промты полей — {desc.plural_label}",
                 "fields": fields,
             })
 
@@ -152,7 +147,7 @@ class LlmSetupViewModel(QObject):
     def _get_field_pages(self) -> list:
         return self._pages
 
-    # The row set is fixed at construction (FIELD_CONFIG order): a constant
+    # The row set is fixed at construction (entity registry order): a constant
     # property keeps typing in one field from rebuilding every delegate.
     fieldPages = Property("QVariant", _get_field_pages, constant=True)
 

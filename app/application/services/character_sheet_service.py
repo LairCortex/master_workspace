@@ -1,14 +1,16 @@
 """Character-sheet template service: CRUD, name uniqueness, layout round-trip.
 
-Runs on the shared ``AsyncSession`` through the repository (same convention as
-``EntityService``). The ORM row <-> domain ``SheetTemplate`` conversion happens
+Runs on the shared session through the repository and the game's
+``GameSessionUoW`` — exactly one transaction finish per user operation (wave 5,
+task 5.11; same convention as ``EntityService``). The ORM row <-> domain
+``SheetTemplate`` conversion happens
 here, so presentation never parses ``pages`` JSON. Failures surface as
 ``CharacterSheetError`` subclasses the UI can map to user-facing messages.
 
 Design D5:
 - create: empty single-page layout, uniqueness checked before insert and
   again at the DB level (IntegrityError backstop -> NameConflictError).
-- rename: commits immediately, touches only ``name`` (never ``pages``), so a
+- rename: saves immediately, touches only ``name`` (never ``pages``), so a
   rename is never treated as an unsaved layout edit.
 - load: corrupt JSON -> CorruptSheetError, the row is never handed out as a
   template.
@@ -27,6 +29,7 @@ an already-copied layout.
 from __future__ import annotations
 
 from datetime import datetime
+from functools import partial
 from typing import Sequence
 
 from sqlalchemy.exc import IntegrityError
@@ -40,11 +43,12 @@ from app.domain.entities.character_sheet import (
     iter_sheet_image_ids,
 )
 from app.infrastructure.db.models import CharacterSheetModel
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
-from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
+from app.domain.character_sheets.preset_catalog import PresetCatalog
 
 
 class CharacterSheetError(Exception):
@@ -124,12 +128,17 @@ class CharacterSheetService:
         image_store: ImageStore | None = None,
         instance_repo=None,
         preset_catalog: PresetCatalog | None = None,
+        uow: GameSessionUoW | None = None,
     ) -> None:
         self._repo = repo
-        self._session = repo._session
         self._image_store = image_store
         self._instance_repo = instance_repo
         self._preset_catalog = preset_catalog or PresetCatalog()
+        # Wave 5 (design D4, task 5.11): sheets are saved through the game's
+        # unit of work — the same instance the app injects into every other
+        # service; a bare construction (unit tests, export) self-builds one
+        # over the repository's session. No manual commit/rollback left here.
+        self._uow = uow if uow is not None else GameSessionUoW(repo.session)
 
     # -- listing -----------------------------------------------------------
 
@@ -148,15 +157,16 @@ class CharacterSheetService:
         if await self._repo.get_by_name(name) is not None:
             raise NameConflictError(name)
         try:
-            row = await self._repo.create(
-                name=name,
-                schema_version=SCHEMA_VERSION,
-                orientation=ORIENTATION_PORTRAIT,
-                pages=EMPTY_PAGES_JSON,
-            )
-            await self._session.commit()
+            async with self._uow.transaction():
+                row = await self._repo.create(
+                    name=name,
+                    schema_version=SCHEMA_VERSION,
+                    orientation=ORIENTATION_PORTRAIT,
+                    pages=EMPTY_PAGES_JSON,
+                )
         except IntegrityError:
-            await self._session.rollback()
+            # The unique-name backstop (the failed flush or its commit rolls the
+            # insert back inside the unit) surfaces as the domain conflict.
             raise NameConflictError(name) from None
         return row
 
@@ -198,15 +208,14 @@ class CharacterSheetService:
         if await self._repo.get_by_name(name) is not None:
             raise NameConflictError(name)
         try:
-            row = await self._repo.create(
-                name=name,
-                schema_version=SCHEMA_VERSION,
-                orientation=ORIENTATION_PORTRAIT,
-                pages=pages_json,
-            )
-            await self._session.commit()
+            async with self._uow.transaction():
+                row = await self._repo.create(
+                    name=name,
+                    schema_version=SCHEMA_VERSION,
+                    orientation=ORIENTATION_PORTRAIT,
+                    pages=pages_json,
+                )
         except IntegrityError:
-            await self._session.rollback()
             raise NameConflictError(name) from None
         return row
 
@@ -241,22 +250,31 @@ class CharacterSheetService:
 
         ``to_pages_json`` always emits the v2 shape, so saving an opened v1
         sheet promotes the stored ``schema_version`` to 2 (design D3). Image
-        fields that lost their reference in the new layout are GC'd only
-        after the reference change is committed (design D6).
+        fields that lost their reference in the new layout are GC'd only after
+        the reference change is committed — the unit of work's post-write hook
+        runs ``gc_after_commit`` once the commit succeeded (design D6, task
+        5.11); a failing collector is logged there, never reported over the
+        saved layout.
         """
         row = await self._repo.get_by_id(sheet_id)
         if row is None:
+            # Raised before the unit opens — a missing template must not roll
+            # back and expire the session's loaded objects.
             raise SheetNotFoundError(sheet_id)
         old_image_ids = set(iter_sheet_image_ids(row.pages))
-        row.pages = template.to_pages_json()
-        row.schema_version = SCHEMA_VERSION
-        template.schema_version = SCHEMA_VERSION
-        row.updated_at = datetime.utcnow()
-        await self._session.commit()
-        if self._image_store is not None:
-            new_image_ids = set(iter_sheet_image_ids(row.pages))
-            for image_id in old_image_ids - new_image_ids:
-                await self._image_store.gc_after_commit(image_id)
+        # Image GC only makes sense as a hook (it needs this transaction's
+        # commit), so the layout swap runs inside the unit.
+        async with self._uow.transaction():
+            row.pages = template.to_pages_json()
+            row.schema_version = SCHEMA_VERSION
+            template.schema_version = SCHEMA_VERSION
+            row.updated_at = datetime.utcnow()
+            if self._image_store is not None:
+                new_image_ids = set(iter_sheet_image_ids(row.pages))
+                for image_id in old_image_ids - new_image_ids:
+                    self._uow.after_write(
+                        partial(self._image_store.gc_after_commit, image_id)
+                    )
         return row
 
     # -- rename -------------------------------------------------------------
@@ -271,12 +289,13 @@ class CharacterSheetService:
             raise SheetNotFoundError(sheet_id)
         existing = await self._repo.get_by_name(new_name)
         if existing is not None and existing.id != sheet_id:
+            # Raised BEFORE the unit opens: a rejected rename must not roll
+            # back (and expire) the session's loaded objects.
             raise NameConflictError(new_name)
-        row.name = new_name
         try:
-            await self._session.commit()
+            async with self._uow.transaction():
+                row.name = new_name
         except IntegrityError:
-            await self._session.rollback()
             raise NameConflictError(new_name) from None
         return row
 
@@ -286,8 +305,9 @@ class CharacterSheetService:
         """Delete a template, then GC its image fields (design D6).
 
         A template with filled instances cannot be deleted (RESTRICT + explicit
-        count check). The row deletion commits first; files are removed only
-        after that and only if no other referrer still holds them.
+        count check). The row deletion is committed by the unit; files are
+        removed only after that commit and only if no other referrer still
+        holds them — as post-write hooks.
         """
         row = await self._repo.get_by_id(sheet_id)
         if row is None:
@@ -295,15 +315,16 @@ class CharacterSheetService:
         if self._instance_repo is not None:
             if await self._instance_repo.count_by_template(sheet_id) > 0:
                 raise TemplateHasInstancesError(sheet_id)
-        image_ids = iter_sheet_image_ids(row.pages)
+        image_ids = set(iter_sheet_image_ids(row.pages))
         try:
-            deleted = await self._repo.delete(sheet_id)
+            async with self._uow.transaction():
+                deleted = await self._repo.delete(sheet_id)
+                if deleted and self._image_store is not None:
+                    for image_id in image_ids:
+                        self._uow.after_write(
+                            partial(self._image_store.gc_after_commit, image_id)
+                        )
         except IntegrityError:
-            await self._session.rollback()
+            # RESTRICT backstop: the unit rolled the delete back inside.
             raise TemplateHasInstancesError(sheet_id) from None
-        if deleted:
-            await self._session.commit()
-            if self._image_store is not None:
-                for image_id in set(image_ids):
-                    await self._image_store.gc_after_commit(image_id)
         return deleted

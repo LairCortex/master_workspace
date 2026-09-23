@@ -89,6 +89,9 @@ class TestGcAfterCommit:
         await async_session.commit()
 
         await store.gc_after_commit(image_id)
+        # The store no longer commits (task 5.11): the caller's unit finishes
+        # the row delete the collector staged.
+        await async_session.commit()
 
         assert not orig.exists()
         assert not prev.exists()
@@ -102,6 +105,9 @@ class TestGcAfterCommit:
         await async_session.commit()
 
         await store.gc_after_commit(image_id)
+        # The store no longer commits (task 5.11): the caller's unit finishes
+        # the row delete the collector staged.
+        await async_session.commit()
 
         assert await async_session.get(ImageModel, image_id) is not None
 
@@ -124,6 +130,9 @@ class TestGcAfterCommit:
         await async_session.commit()
 
         await store.gc_after_commit(image_id)
+        # The store no longer commits (task 5.11): the caller's unit finishes
+        # the row delete the collector staged.
+        await async_session.commit()
 
         assert await async_session.get(ImageModel, image_id) is None
 
@@ -138,6 +147,9 @@ class TestGcAfterCommit:
 
         monkeypatch.setattr(Path, "unlink", failing_unlink)
         await store.gc_after_commit(image_id)
+        # The store no longer commits (task 5.11): the caller's unit finishes
+        # the row delete the collector staged.
+        await async_session.commit()
 
         # Row survives — the operation is retried by the next startup_gc.
         assert await async_session.get(ImageModel, image_id) is not None
@@ -154,6 +166,9 @@ class TestStartupGc:
         orphan_file.write_bytes(b"stale")
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert not orphan_file.exists()
 
@@ -170,6 +185,9 @@ class TestStartupGc:
         original_path(image_dir, row.sha256, row.ext).unlink()
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert await async_session.get(ImageModel, image_id) is None
         await async_session.refresh(org)
@@ -194,11 +212,17 @@ class TestStartupGc:
         original_path(image_dir, row.sha256, row.ext).unlink()
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert await async_session.get(ImageModel, image_id) is None
         assert not prev.exists()
 
         await store.startup_gc()  # second run: state unchanged
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
         assert not prev.exists()
 
     @pytest.mark.asyncio
@@ -214,6 +238,9 @@ class TestStartupGc:
         assert not prev.exists()
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert prev.exists()
         assert await async_session.get(ImageModel, image_id) is not None
@@ -236,6 +263,9 @@ class TestStartupGc:
         )
 
         await store.startup_gc()  # must not raise
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
         # Row (and reference) survive: original still readable, only preview failed.
         assert await async_session.get(ImageModel, image_id) is not None
 
@@ -246,6 +276,9 @@ class TestStartupGc:
         await async_session.commit()
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert await async_session.get(ImageModel, image_id) is None
 
@@ -260,6 +293,9 @@ class TestStartupGc:
         prev = preview_path(image_dir, row.sha256)
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert orig.exists()
         assert prev.exists()
@@ -275,6 +311,9 @@ class TestStartupGc:
         leftover.write_bytes(b"partial")
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert not leftover.exists()
 
@@ -285,6 +324,9 @@ class TestStartupGc:
         store = ImageStore(async_session, image_dir)
         assert not image_dir.exists()
         await store.startup_gc()  # must not raise
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
     @pytest.mark.asyncio
     async def test_idempotent_second_run_no_changes(self, qapp, async_session: AsyncSession, image_dir):
@@ -294,12 +336,18 @@ class TestStartupGc:
         await async_session.commit()
 
         await store.startup_gc()
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
         row = await async_session.get(ImageModel, image_id)
         orig = original_path(image_dir, row.sha256, row.ext)
         prev = preview_path(image_dir, row.sha256)
         assert orig.exists() and prev.exists()
 
         await store.startup_gc()  # second run: no-op
+        # The scan stages its row deletes for the caller to finish (task 5.11:
+        # Application.start wraps startup_gc in the game's unit of work).
+        await async_session.commit()
 
         assert orig.exists() and prev.exists()
         assert await async_session.get(ImageModel, image_id) is not None

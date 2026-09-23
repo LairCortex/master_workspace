@@ -180,6 +180,38 @@ async def test_llm_settings_reload_and_save_edge_paths(
         await application.shutdown()
 
 
+async def test_llm_settings_save_serializes_behind_the_session_lock(
+    app, llm_client, tmp_llm_config, monkeypatch
+):
+    """Scenario-6 regression (Q14): the settings save is a locked task.
+
+    While the delayed fixture save runs, a task spawned through the shared
+    lock must not enter: the two session users never overlap. Before the fix
+    the save was a raw ``ensure_future`` bypassing the lock and «other» cut
+    into the «save-start…save-end» window.
+    """
+    application, window = app
+    order: list[str] = []
+
+    async def slow_save():
+        order.append("save-start")
+        await asyncio.sleep(0.05)  # the delayed session work of the save
+        order.append("save-end")
+
+    monkeypatch.setattr(application, "_save_llm_settings", slow_save)
+
+    wizard = _open_wizard(window)
+    wizard.saved.emit(LlmConfig(base_url=ENDPOINT, model=MODEL), "W", {})
+    await asyncio.sleep(0)  # let the save task grab the lock first
+
+    async def other_locked_task():
+        order.append("other")
+
+    second = application._wiring.run_locked(other_locked_task())
+    await second
+    assert order == ["save-start", "save-end", "other"]
+
+
 # ── visible errors (D6) and batch orchestration ────────────────────────────
 
 

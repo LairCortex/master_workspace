@@ -7,10 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
-from PySide6.QtQml import QQmlComponent, QQmlContext
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,16 +21,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.presentation.dialog_results import (
+    EntityCreateResult,
+    EntityEditResult,
+)
+from app.presentation.dialog_utils import IMAGE_FILE_FILTER
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
-from app.presentation.qml.engine import QML_IMPORT_PATH, release_island
+from app.presentation.qml.engine import QML_IMPORT_PATH
+from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
 from app.presentation.viewmodels.entity_card_island_view_model import (
     EntityCardIslandViewModel,
 )
+from app.domain import entity_registry
 from app.domain.game_calendar import IntercalaryDay, MonthDay
 from app.presentation.utils.date_utils import (
     era_flag,
@@ -45,6 +49,7 @@ from app.presentation.views.event_dialog import (
     _ListProxy,
 )
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
+from app.presentation.views.ai_capable_dialog import AiCapableDialogBase
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EntityCardRoot.qml")
@@ -81,30 +86,14 @@ _FIELD_SPECS: dict[str, list[_FieldSpec]] = {
     "rating": [],
 }
 
-_RELATED_CONFIG: dict[str, list[dict[str, str]]] = {
-    "organization": [
-        {"attr": "characters", "label": "Персонажи", "entity_type": "character"},
-        {"attr": "items", "label": "Предметы", "entity_type": "item"},
-        {"attr": "locations", "label": "Локации", "entity_type": "location"},
-    ],
-    "character": [
-        {"attr": "items", "label": "Предметы", "entity_type": "item"},
-        {"attr": "locations", "label": "Локации", "entity_type": "location"},
-        {"attr": "organizations", "label": "Организации", "entity_type": "organization"},
-    ],
-    "item": [
-        {"attr": "locations", "label": "Локации", "entity_type": "location"},
-        {"attr": "characters", "label": "Персонажи", "entity_type": "character"},
-        {"attr": "organizations", "label": "Организации", "entity_type": "organization"},
-    ],
-    "location": [
-        {"attr": "characters", "label": "Персонажи", "entity_type": "character"},
-        {"attr": "organizations", "label": "Организации", "entity_type": "organization"},
-        {"attr": "items", "label": "Предметы", "entity_type": "item"},
-    ],
-}
+# The card's relation sections come from the domain entity registry
+# (wave 3, finding A4/C5): the private ``_RELATED_CONFIG`` this dialog used
+# to own became its public part at ``entity_registry.RELATED_CONFIG``.
+_related_refs_for_key = entity_registry.related_refs_for_key
 
-_IMAGE_FILTERS = "Изображения (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;Все файлы (*)"
+# kept as a module name for readability at the pick site; the extension
+# whitelist lives in the domain (audit A5)
+_IMAGE_FILTERS = IMAGE_FILE_FILTER
 
 
 class _ValueProxy:
@@ -250,15 +239,20 @@ class _SectionProxy:
         return self._state.get_current_ids()
 
     def _on_link_existing(self) -> None:
-        cfg = next(c for c in self._dialog._related_configs if c["attr"] == self._attr)
-        self._dialog._open_related_picker(self._attr, cfg["label"])
+        cfg = next(c for c in self._dialog._related_configs if c.attr == self._attr)
+        self._dialog._open_related_picker(self._attr, cfg.label)
 
     def _on_remove(self) -> None:
         self._state.unlinkSelected()
 
 
-class EntityCardDialog(QDialog):
-    saved = Signal(dict)
+class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
+    island_context_names = {"entityCardVm": "vm"}
+
+    def island_source(self) -> str:
+        return ROOT_QML
+
+    saved = Signal(object)  # EntityCreateResult | EntityEditResult (dialog_results)
     create_related_requested = Signal(str, str)
     mention_clicked = Signal(str, int)
     image_picked = Signal(bytes)
@@ -277,7 +271,7 @@ class EntityCardDialog(QDialog):
         self._qml_theme = theme if theme is not None else get_default_theme()
         self._entity_type = entity_type
         self._extra_specs = list(_FIELD_SPECS.get(entity_type, []))
-        self._related_configs = list(_RELATED_CONFIG.get(entity_type, []))
+        self._related_configs = list(_related_refs_for_key(entity_type))
         self._has_image_field = any(spec.kind == "image" for spec in self._extra_specs)
         self._populated_entity_id: int | None = None
         self._image_id: int | None = None
@@ -316,23 +310,10 @@ class EntityCardDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._engine = setup_qml_shell(QApplication.instance(), self._qml_theme)
-        self.quick = QQuickWidget(self._engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._qml_theme, parent=self)
-        self._context = QQmlContext(self._engine.rootContext(), self)
-        self.vm.setParent(self._context)
-        self._palette.setParent(self._context)
-        self._context.setContextProperty("entityCardVm", self.vm)
-        self._context.setContextProperty("islandPalette", self._palette)
-        source = QUrl.fromLocalFile(ROOT_QML)
-        self._component = QQmlComponent(self._engine, source, self)
-        root = self._component.create(self._context)
-        assert root is not None, self._component.errors()
-        self.quick.setContent(source, self._component, root)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # Context, widget and scene — IslandDialogMixin.
+        self.setup_island()
         layout.addWidget(self.quick)
-        self._root = root
-        fit_dialog_to_island(self, root, floor=self._size_floor)
+        fit_dialog_to_island(self, self._root, floor=self._size_floor)
 
         for host in self.vm.hosts.values():
             host.attachWidget(self.quick)
@@ -352,16 +333,16 @@ class EntityCardDialog(QDialog):
 
         self._related_sections: dict[str, _SectionProxy] = {}
         for cfg in self._related_configs:
-            attr = cfg["attr"]
+            attr = cfg.attr
             state = self.vm.sections[attr]
             proxy = _SectionProxy(self, attr)
             self._related_sections[attr] = proxy
             state.createRequested.connect(
-                lambda a=attr, t=cfg["entity_type"]:
+                lambda a=attr, t=cfg.entity_type.value:
                     self.create_related_requested.emit(a, t)
             )
             state.linkRequested.connect(
-                lambda a=attr, label=cfg["label"]:
+                lambda a=attr, label=cfg.label:
                     self._open_related_picker(a, label)
             )
 
@@ -584,6 +565,23 @@ class EntityCardDialog(QDialog):
             }
         return data
 
+    def build_result(self) -> EntityCreateResult:
+        """The typed save contract (design D5): edit iff a stored entity is loaded."""
+        data = dict(self.get_data())
+        characteristics = data.pop("characteristics")
+        backstory = data.pop("backstory")
+        related_changes = data.pop("related_changes", {})
+        if self._populated_entity_id is not None:
+            return EntityEditResult(
+                entity_id=self._populated_entity_id, fields=data,
+                characteristics=characteristics, backstory=backstory,
+                related_changes=related_changes,
+            )
+        return EntityCreateResult(
+            fields=data, characteristics=characteristics,
+            backstory=backstory, related_changes=related_changes,
+        )
+
     def get_mention_edits(self):
         return [
             self.vm.mention_proxies["characteristics"],
@@ -594,29 +592,17 @@ class EntityCardDialog(QDialog):
             ],
         ]
 
-    def get_ai_buttons(self):
-        return list(self._ai_buttons)
-
-    def get_entity_button(self):
-        return self._entity_button
-
-    def set_save_locked(self, locked: bool) -> None:
-        self.vm.set_save_locked(locked)
-
-    def set_close_guard(self, fn) -> None:
-        self._close_guard = fn
-
-    def _is_generation_active(self) -> bool:
-        return any(button.is_generating for button in self._ai_buttons) or (
-            self._entity_button.is_cancelling
-        )
+    # The AI proxy surface (get_ai_buttons/get_entity_button/set_save_locked/
+    # set_close_guard/_is_generation_active) is provided by
+    # AiCapableDialogBase — the shared conformance base of the controller
+    # contract (audit B1, design D5).
 
     def _on_save(self) -> None:
         if self._saving or not self.vm.saveEnabled:
             return
         self._saving = True
         self.vm.set_saving(True)
-        self.saved.emit(self.get_data())
+        self.saved.emit(self.build_result())
 
     def finish_saving(self, success: bool) -> None:
         self._saving = False
@@ -714,8 +700,6 @@ class EntityCardDialog(QDialog):
 
     def _release_island(self) -> None:
         clear_dialog_pixmap(self._image_key)
-        release_island(self.quick)
+        super()._release_island()
 
-    def done(self, result: int) -> None:
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # Release scheduling — IslandDialogMixin.

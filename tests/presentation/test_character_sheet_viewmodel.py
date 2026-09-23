@@ -257,14 +257,14 @@ async def test_open_inline_snapshots_and_commit(vm):
     assert vm.template.get_field(fid).content == "новое значение"
     assert vm.dirty is True
 
-    vm.commit_inline()
+    vm.apply_inline()
     assert vm.inline_field_id is None
     assert vm.selection == fid
     assert vm.template.get_field(fid).content == "новое значение"
 
 
-async def test_commit_inline_without_opening_is_noop(vm):
-    vm.commit_inline()
+async def test_apply_inline_without_opening_is_noop(vm):
+    vm.apply_inline()
     assert vm.inline_field_id is None
     assert vm.dirty is False
 
@@ -581,7 +581,7 @@ async def test_switch_back_to_portrait_clamps_wide_fields(vm):
     assert f.w == before_portrait_w                  # width never scaled
 
 
-# ── A-playable: cross-page drag (relocate_field / commit_drag, design D5) ──
+# ── A-playable: cross-page drag (relocate_field / apply_drag, design D5) ──
 
 PAGE_W = PAGE_WIDTH_PT
 PAGE_H = PAGE_HEIGHT_PT
@@ -630,12 +630,12 @@ def _drag_setup(vm):
     return fid, 5.0, 9.0
 
 
-async def test_commit_drag_drop_on_second_sheet_moves_the_field(vm):
+async def test_apply_drag_drop_on_second_sheet_moves_the_field(vm):
     fid, gx, gy = _drag_setup(vm)
     # the cursor lands in the middle of page 1 (local 200, 50)
     drop = (200.0, PAGE_H + G + 50.0)
 
-    result = vm.commit_drag(fid, drop[0], drop[1], gx, gy)
+    result = vm.apply_drag(fid, drop[0], drop[1], gx, gy)
 
     assert result == 1
     assert vm.page_of(fid) == 1
@@ -645,12 +645,12 @@ async def test_commit_drag_drop_on_second_sheet_moves_the_field(vm):
     assert f.x + f.w <= PAGE_W and f.y + f.h <= PAGE_H        # fully on it
 
 
-async def test_commit_drag_drop_in_gutter_keeps_the_original_page(vm):
+async def test_apply_drag_drop_in_gutter_keeps_the_original_page(vm):
     fid, gx, gy = _drag_setup(vm)
     # the cursor is in the gutter between the pages
     drop_y = PAGE_H + G / 2
 
-    result = vm.commit_drag(fid, 200.0, drop_y, gx, gy)
+    result = vm.apply_drag(fid, 200.0, drop_y, gx, gy)
 
     assert result == 0
     assert vm.page_of(fid) == 0
@@ -659,9 +659,9 @@ async def test_commit_drag_drop_in_gutter_keeps_the_original_page(vm):
     assert f.x + f.w <= PAGE_W
 
 
-async def test_commit_drag_drop_past_last_page_clamps_back(vm):
+async def test_apply_drag_drop_past_last_page_clamps_back(vm):
     fid, gx, gy = _drag_setup(vm)
-    result = vm.commit_drag(fid, 200.0, 2 * PAGE_H + 2 * G + 5.0, gx, gy)
+    result = vm.apply_drag(fid, 200.0, 2 * PAGE_H + 2 * G + 5.0, gx, gy)
 
     assert result == 0
     f = vm.template.get_field(fid)
@@ -669,10 +669,10 @@ async def test_commit_drag_drop_past_last_page_clamps_back(vm):
     assert f.x + f.w <= PAGE_W
 
 
-async def test_commit_drag_drop_on_same_page_clamps_to_edge(vm):
+async def test_apply_drag_drop_on_same_page_clamps_to_edge(vm):
     fid, gx, gy = _drag_setup(vm)
     # drop far to the right: beyond the page width
-    result = vm.commit_drag(fid, PAGE_W + 80.0, 150.0, gx, gy)
+    result = vm.apply_drag(fid, PAGE_W + 80.0, 150.0, gx, gy)
 
     assert result == 0
     f = vm.template.get_field(fid)
@@ -702,8 +702,8 @@ async def test_drag_move_over_other_page_holds_clamped_position(vm):
     assert vm.page_of(fid) == 0                        # not relocated yet
 
 
-async def test_commit_drag_unknown_fields_are_noop(vm):
-    assert vm.commit_drag("nope", 10.0, 10.0, 0.0, 0.0) is None
+async def test_apply_drag_unknown_fields_are_noop(vm):
+    assert vm.apply_drag("nope", 10.0, 10.0, 0.0, 0.0) is None
     vm.drag_move("nope", 10.0, 10.0, 0.0, 0.0)
 
 
@@ -717,7 +717,7 @@ async def test_unloaded_vm_page_mutators_are_noop(service):
     assert vm.set_orientation("landscape") is False
     assert vm.set_current_page(5) is None
     assert vm.relocate_field("x", 0, 1.0, 1.0) is False
-    assert vm.commit_drag("x", 1.0, 1.0, 0.0, 0.0) is None
+    assert vm.apply_drag("x", 1.0, 1.0, 0.0, 0.0) is None
     vm.drag_move("x", 1.0, 1.0, 0.0, 0.0)
     fid = vm.place(FieldType.LABEL, 1.0, 1.0, page_index=1)
     assert fid == ""
@@ -808,7 +808,7 @@ async def test_inline_commit_is_one_undo_step(vm):
     vm.set_content(fid, "а")
     vm.set_content(fid, "аб")
     vm.set_content(fid, "абв")
-    vm.commit_inline()
+    vm.apply_inline()
 
     vm.undo()
     assert vm.template.get_field(fid).content == "до"
@@ -887,7 +887,7 @@ async def test_move_selection_relocates_through_gutter(vm):
     vm.select_ids([a, b])
 
     drop_x, drop_y = 200.0, PAGE_HEIGHT_PT + GUTTER_PT + 50.0
-    vm.commit_drag_selection(drop_x, drop_y, grab_dx=5.0, grab_dy=9.0)
+    vm.apply_drag_selection(drop_x, drop_y, grab_dx=5.0, grab_dy=9.0)
 
     assert vm.page_of(a) == 1
     assert vm.page_of(b) == 1
@@ -1136,23 +1136,23 @@ async def test_rename_page_value_error_is_false(vm):
 async def test_redo_caps_undo_stack(vm):
     vm.place(FieldType.LABEL, 10.0, 10.0)
     snap = vm._layout_snapshot()
-    vm._undo_stack = [snap] * UNDO_STACK_LIMIT
-    vm._redo_stack = [snap]
+    vm._history._undo[:] = [snap] * UNDO_STACK_LIMIT
+    vm._history._redo[:] = [snap]
     vm.redo()
-    assert len(vm._undo_stack) == UNDO_STACK_LIMIT
+    assert len(vm._history._undo) == UNDO_STACK_LIMIT
 
 
 async def test_begin_gesture_caps_undo_stack(vm):
     vm.place(FieldType.LABEL, 10.0, 10.0)
-    vm._undo_stack = [vm._layout_snapshot()] * UNDO_STACK_LIMIT
+    vm._history._undo[:] = [vm._layout_snapshot()] * UNDO_STACK_LIMIT
     vm.begin_gesture()
-    assert len(vm._undo_stack) == UNDO_STACK_LIMIT
+    assert len(vm._history._undo) == UNDO_STACK_LIMIT
 
 
-async def test_commit_drag_selection_skips_missing_and_empty_origins(vm):
+async def test_apply_drag_selection_skips_missing_and_empty_origins(vm):
     vm.place(FieldType.LABEL, 10.0, 10.0)
     vm._selected_ids = ["ghost"]
-    vm.commit_drag_selection(10.0, 10.0, 0.0, 0.0)
+    vm.apply_drag_selection(10.0, 10.0, 0.0, 0.0)
 
 
 async def test_drag_move_selection_missing_ref_is_noop(vm):

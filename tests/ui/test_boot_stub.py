@@ -7,6 +7,7 @@ network, all paths in tmp.
 from __future__ import annotations
 
 from app.infrastructure.llm.config import LlmConfig
+from app.presentation.viewmodels.llm_viewmodel import GenerationTarget
 
 
 async def test_boot_with_injected_mock_client(app, llm_client, tmp_llm_config):
@@ -17,7 +18,12 @@ async def test_boot_with_injected_mock_client(app, llm_client, tmp_llm_config):
 
     finished: list[tuple[str, str]] = []
     llm_vm.generation_finished.connect(lambda owner, fid, text: finished.append((fid, text)))
-    await llm_vm.request_generation("event.name", "event", "name", "Название", "")
+    await llm_vm.request_generation(
+        GenerationTarget(
+            field_id="event.name", entity_type="event", field_name="name",
+            field_label="Название", current_text="",
+        )
+    )
     assert finished == [("event.name", "Сгенерированный текст из mock-LLM")]
 
     # The LLM request went through the injected emulated client

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from functools import partial
 from typing import Any, Callable, Sequence
 
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +19,7 @@ from app.application.services.character_sheet_service import (
 )
 from app.domain.entities.character_sheet_instance import defaults_map, iter_instance_image_ids
 from app.infrastructure.db.models import CharacterSheetInstanceModel
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories.character_sheet_instance_repository import (
     CharacterSheetInstanceRepository,
@@ -65,12 +67,17 @@ class CharacterSheetInstanceService:
         repo: CharacterSheetInstanceRepository,
         sheet_service: CharacterSheetService,
         image_store: ImageStore | None = None,
+        uow: GameSessionUoW | None = None,
     ) -> None:
         self._repo = repo
-        self._session = repo._session
         self._sheet_service = sheet_service
         self._image_store = image_store
         self._is_seated: Callable[[int], bool] | None = None
+        # Wave 5 (design D4, task 5.11): every write finishes through the
+        # game's unit of work — the instance the app injects app-wide (or a
+        # self-built one over this repository's session for bare test
+        # constructions), never through a manual commit here.
+        self._uow = uow if uow is not None else GameSessionUoW(repo.session)
 
     def set_seating_guard(self, is_seated: Callable[[int], bool] | None) -> None:
         self._is_seated = is_seated
@@ -88,14 +95,15 @@ class CharacterSheetInstanceService:
         template = await self._sheet_service.load(template_id)
         values_json = json.dumps(defaults_map(template), ensure_ascii=False)
         try:
-            row = await self._repo.create(
-                name=name,
-                template_id=template_id,
-                values=values_json,
-            )
-            await self._session.commit()
+            async with self._uow.transaction():
+                row = await self._repo.create(
+                    name=name,
+                    template_id=template_id,
+                    values=values_json,
+                )
         except IntegrityError:
-            await self._session.rollback()
+            # The unit already rolled the failed insert back; re-probe to tell
+            # the unique-name race apart from any other constraint.
             if await self._repo.get_by_name(name) is not None:
                 raise InstanceNameConflictError(name) from None
             raise
@@ -114,13 +122,14 @@ class CharacterSheetInstanceService:
         row = await self.get(instance_id)
         existing = await self._repo.get_by_name(new_name)
         if existing is not None and existing.id != instance_id:
+            # Validation before the unit opens — a rejected rename must not
+            # roll back and expire the session's loaded objects.
             raise InstanceNameConflictError(new_name)
-        row.name = new_name
-        row.updated_at = datetime.utcnow()
         try:
-            await self._session.commit()
+            async with self._uow.transaction():
+                row.name = new_name
+                row.updated_at = datetime.utcnow()
         except IntegrityError:
-            await self._session.rollback()
             raise InstanceNameConflictError(new_name) from None
         return row
 
@@ -129,13 +138,17 @@ class CharacterSheetInstanceService:
     ) -> CharacterSheetInstanceModel:
         row = await self.get(instance_id)
         old_ids = set(iter_instance_image_ids(row.values))
-        row.values = json.dumps(values, ensure_ascii=False)
-        row.updated_at = datetime.utcnow()
-        await self._session.commit()
-        if self._image_store is not None:
-            new_ids = set(iter_instance_image_ids(row.values))
-            for image_id in old_ids - new_ids:
-                await self._image_store.gc_after_commit(image_id)
+        # Image GC of the cleared fields is a post-write hook, so the write
+        # itself runs inside the unit (design D6 / task 5.11).
+        async with self._uow.transaction():
+            row.values = json.dumps(values, ensure_ascii=False)
+            row.updated_at = datetime.utcnow()
+            if self._image_store is not None:
+                new_ids = set(iter_instance_image_ids(row.values))
+                for image_id in old_ids - new_ids:
+                    self._uow.after_write(
+                        partial(self._image_store.gc_after_commit, image_id)
+                    )
         return row
 
     async def delete(self, instance_id: int) -> bool:
@@ -144,28 +157,30 @@ class CharacterSheetInstanceService:
         row = await self._repo.get_by_id(instance_id)
         if row is None:
             return False
-        image_ids = iter_instance_image_ids(row.values)
-        deleted = await self._repo.delete(instance_id)
-        if deleted:
-            await self._session.commit()
-            if self._image_store is not None:
-                for image_id in set(image_ids):
-                    await self._image_store.gc_after_commit(image_id)
+        image_ids = set(iter_instance_image_ids(row.values))
+        async with self._uow.transaction():
+            deleted = await self._repo.delete(instance_id)
+            if deleted and self._image_store is not None:
+                for image_id in image_ids:
+                    self._uow.after_write(
+                        partial(self._image_store.gc_after_commit, image_id)
+                    )
         return deleted
-
     async def bind_character(
         self, instance_id: int, character_id: int
     ) -> CharacterSheetInstanceModel:
         row = await self.get(instance_id)
         taken = await self._repo.get_by_character_id(character_id)
         if taken is not None and taken.id != instance_id:
+            # Validation before the unit opens (see rename).
             raise CharacterAlreadyBoundError(character_id)
-        row.character_id = character_id
-        row.updated_at = datetime.utcnow()
         try:
-            await self._session.commit()
+            async with self._uow.transaction():
+                row.character_id = character_id
+                row.updated_at = datetime.utcnow()
         except IntegrityError:
-            await self._session.rollback()
+            # The unit rolled the binding back; re-probe to report the real
+            # reason when the unique-character constraint fired under us.
             taken = await self._repo.get_by_character_id(character_id)
             if taken is not None and taken.id != instance_id:
                 raise CharacterAlreadyBoundError(character_id) from None
@@ -174,9 +189,9 @@ class CharacterSheetInstanceService:
 
     async def unbind_character(self, instance_id: int) -> CharacterSheetInstanceModel:
         row = await self.get(instance_id)
-        row.character_id = None
-        row.updated_at = datetime.utcnow()
-        await self._session.commit()
+        async with self._uow.transaction():
+            row.character_id = None
+            row.updated_at = datetime.utcnow()
         return row
 
     async def get_by_character_id(

@@ -26,6 +26,7 @@ from app.infrastructure.db.models import (
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.character_repository import CharacterRepository
 from app.infrastructure.repositories.event_repository import EventRepository
+from app.infrastructure.repositories.event_type_repository import EventTypeRepository
 from app.infrastructure.repositories.item_repository import ItemRepository
 from app.infrastructure.repositories.location_repository import LocationRepository
 from app.infrastructure.repositories.organization_repository import OrganizationRepository
@@ -72,6 +73,7 @@ async def _world(session):
         character_service=ns.char_svc,
         item_service=ns.item_svc,
         location_service=ns.loc_svc,
+        event_type_repo=EventTypeRepository(session),
     )
     # Event preloaded with three linked characters
     ns.c1, ns.c2, ns.c3 = (

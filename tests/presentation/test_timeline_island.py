@@ -179,7 +179,10 @@ class TestIslandConstruction:
     def test_island_loads_ready_with_the_context_contract(self, qtbot, root_qml):
         vm = _real_vm([_evt(1, date(1200, 1, 5))])
         panel = _island(qtbot, vm, root_qml)
-        assert panel.quick.status() == timeline_island.QQuickWidget.Status.Ready
+        # The Ready enum is read from the widget itself: the island widget is
+        # built inside IslandDialogMixin, so the facade module no longer
+        # imports ``QQuickWidget`` itself.
+        assert panel.quick.status() == panel.quick.Status.Ready
         assert panel._root.objectName() == "timelineRootStub"
         context = panel.quick.rootContext()
         # The context names every island binds against — read through the

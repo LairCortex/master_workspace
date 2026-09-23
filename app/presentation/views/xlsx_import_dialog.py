@@ -21,9 +21,8 @@ import io
 from pathlib import Path
 
 import shiboken6
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -41,10 +40,9 @@ from app.domain.game_calendar import (
     current_calendar,
 )
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.island import QML_IMPORT_PATH, IslandDialogMixin
 from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.utils.date_utils import format_game_date
 from app.presentation.viewmodels.xlsx_import_view_model import (
     STATE_DONE,
@@ -271,7 +269,11 @@ class _FormatText:
         return True
 
 
-class XlsxImportDialog(QDialog):
+class XlsxImportDialog(IslandDialogMixin, QDialog):
+    island_context_names = {"xlsxImportVm": "vm"}
+
+    def island_source(self) -> str:
+        return ROOT_QML
     analyze_requested = Signal(str)
     confirm_import = Signal()
     download_template = Signal()
@@ -292,19 +294,9 @@ class XlsxImportDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self._palette = QmlPalette(self._theme, parent=self)
-        # Dialog-owned context (never the shared engine root): a name written
-        # there is nulled for every other island when this dialog dies.
-        self._context = island_context(
-            engine, self, xlsxImportVm=self.vm, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        self._component = load_island(self.quick, self._context, ROOT_QML)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        # Dialog-owned context and scene — IslandDialogMixin.
+        self.setup_island()
         layout.addWidget(self.quick)
         self._root = self.quick.rootObject()
         fit_dialog_to_island(self, self._root, floor=(620, 520))
@@ -399,11 +391,4 @@ class XlsxImportDialog(QDialog):
         self.vm.set_progress(current, total)
         QApplication.processEvents()
 
-    # ── island lifecycle ───────────────────────────────────────────────────
-
-    def _release_island(self) -> None:
-        release_island(self.quick)
-
-    def done(self, result: int) -> None:
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # ── island lifecycle — IslandDialogMixin (context, deferred release) ──

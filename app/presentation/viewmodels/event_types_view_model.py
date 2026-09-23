@@ -10,7 +10,7 @@ Every user action leaves here as a *synchronous request signal*; the facade
 owns ``EventService``, the injected ``_run``, the coroutines and the reload,
 so this object never sees a service, a coroutine or a QML type (spec
 qml-shell «Контракт биндингов», «VM не знает про QML»). Write-through: there
-is no Save, no dirty state and no rollback to model.
+is no Save, no dirty state and no revert to model.
 """
 from __future__ import annotations
 

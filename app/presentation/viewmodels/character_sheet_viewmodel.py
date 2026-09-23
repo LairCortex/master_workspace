@@ -32,7 +32,7 @@ min/max, dropdown options, image reference — the panel and canvas repaint).
 
 Cross-page drag (design D5): ``drag_move`` is the live feedback (the field
 follows the cursor while it stays within the field's own page, otherwise the
-field holds its last in-page position); ``commit_drag`` on release resolves the
+field holds its last in-page position); ``apply_drag`` on release resolves the
 drop: over another page the field is relocated there (topmost, clamped), over
 a gutter / the same page it is clamped back into its own page.
 """
@@ -43,11 +43,8 @@ from dataclasses import replace
 from uuid import uuid4
 
 from PySide6.QtCore import (
-    QAbstractListModel,
-    QModelIndex,
     QObject,
     Property,
-    Qt,
     Signal,
     Slot,
 )
@@ -63,8 +60,13 @@ from app.domain.entities.character_sheet import (
     scene_to_page,
     tape_height,
 )
-from app.domain.entities.character_sheet_instance import resolve_display
 from app.domain.enums.field_type import FieldType
+from app.presentation.viewmodels.sheet_edit_state import (
+    FieldClipboard,
+    LayoutHistory,
+    SelectionModel,
+)
+from app.presentation.viewmodels.sheet_field_model import SheetFieldModel
 
 UNDO_STACK_LIMIT: int = 50
 SNAP_PT: float = 4.0
@@ -138,294 +140,6 @@ def _field_type_for_value(type_value: str) -> FieldType | None:
         return None
 
 
-class SheetFieldModel(QAbstractListModel):
-    """Canvas fields as a QML-ready list model (Q3b D4 / spec «Питание QML-списков
-    списочной моделью», scenario «Поля канваса идут из модели»).
-
-    The rows are the live ``SheetField`` objects of the VM ``template`` in
-    flat order (page order, then the page's field order). The model never
-    copies the set: a mutation through the VM mutates the same row object in
-    place (identity preserved — verified by tests), and the role reads return
-    fresh values because they delegate to the field itself. Geometry,
-    per-type extras and the current-page rules are not re-derived here.
-
-    Feeding is incremental through the VM's existing signals (the contract is
-    unchanged): add/remove → ``beginInsertRows``/``beginRemoveRows``,
-    geometry/content/font/props → per-row ``dataChanged`` with the moved role
-    set, page structure / orientation / a full reload → model reset.
-
-    ``fill=True`` serves the fill view over the fill VM: the content/imageKey
-    for fillable fields resolve through the domain rule
-    :func:`resolve_display` (the instance value map first, the template
-    default otherwise — there is no second value-resolution implementation);
-    image fields render empty text (the image goes through ``imageKey``);
-    checkbox values reach the canvas as "true"/"false" strings, matching the
-    template-side storage form; ``disabled`` reflects the fill VM's
-    ``read_only``. Design rows never disable.
-    """
-
-    ID_ROLE = Qt.ItemDataRole.UserRole + 1
-    TYPE_ROLE = Qt.ItemDataRole.UserRole + 2
-    PAGE_ROLE = Qt.ItemDataRole.UserRole + 3
-    X_ROLE = Qt.ItemDataRole.UserRole + 4
-    Y_ROLE = Qt.ItemDataRole.UserRole + 5
-    W_ROLE = Qt.ItemDataRole.UserRole + 6
-    H_ROLE = Qt.ItemDataRole.UserRole + 7
-    FONT_SIZE_ROLE = Qt.ItemDataRole.UserRole + 8
-    CONTENT_ROLE = Qt.ItemDataRole.UserRole + 9
-    IMAGE_KEY_ROLE = Qt.ItemDataRole.UserRole + 10
-    OPTIONS_COUNT_ROLE = Qt.ItemDataRole.UserRole + 11
-    DISABLED_ROLE = Qt.ItemDataRole.UserRole + 12
-
-    GEOMETRY_ROLES = [PAGE_ROLE, X_ROLE, Y_ROLE, W_ROLE, H_ROLE]
-
-    def __init__(
-        self, view_model: QObject, fill: bool = False, parent: QObject | None = None
-    ) -> None:
-        super().__init__(parent)
-        self._vm = view_model
-        self._fill = bool(fill)
-        self._rows: list[SheetField] = []
-        self._page_of_row: list[int] = []
-        self._rebuild_rows()
-
-    # -- projection helpers ---------------------------------------------------
-
-    @property
-    def _template(self) -> SheetTemplate | None:
-        return self._vm.template
-
-    def _rebuild_rows(self) -> None:
-        rows: list[SheetField] = []
-        page_of_row: list[int] = []
-        template = self._template
-        if template is not None:
-            for i, page in enumerate(template.pages):
-                for field in page.fields:
-                    rows.append(field)
-                    page_of_row.append(i)
-        self._rows = rows
-        self._page_of_row = page_of_row
-
-    @property
-    def rows(self) -> tuple[SheetField, ...]:
-        """The delivered live field objects (introspection/test seam; the tuple
-        snapshot does not imply a copy of the set: entries are the template's
-        own fields — identity preserved by every transition)."""
-        return tuple(self._rows)
-
-    # -- incremental feeding (connected to the VM's existing signals) ---------
-
-    def on_field_added(self, field_id: str) -> None:
-        if self._row_in_projection(field_id) is not None:
-            # the id is already a row — something structural happened outside
-            # a clean add/remove pair; resync honestly.
-            self.on_template_changed()
-            return
-        row = self._flat_index_of(self._template, field_id)
-        if row > len(self._rows):
-            # structural surprise (id present but beyond the projection) —
-            # fall back to a reset: the QML view re-syncs correctly either
-            # way, the reset only costs delegate re-materialization.
-            self.on_template_changed()
-            return
-        field = self._template.get_field(field_id)
-        if field is None:  # raced with a removal — the remove path rebuilds
-            return
-        page_index = self._flat_index_page(self._template, row)
-        self.beginInsertRows(QModelIndex(), row, row)
-        self._rows.insert(row, field)
-        self._page_of_row.insert(row, page_index)
-        self.endInsertRows()
-
-    def on_field_removed(self, field_id: str) -> None:
-        row = self._row_in_projection(field_id)
-        if row is None:  # unknown id — nothing incremental to remove
-            self.on_template_changed()
-            return
-        self.beginRemoveRows(QModelIndex(), row, row)
-        del self._rows[row]
-        del self._page_of_row[row]
-        self.endRemoveRows()
-
-    def on_geometry_changed(self, field_id: str) -> None:
-        self._notify(field_id, list(self.GEOMETRY_ROLES))
-
-    def on_content_changed(self, field_id: str) -> None:
-        self._notify(field_id, [self.CONTENT_ROLE])
-
-    def on_font_changed(self, field_id: str) -> None:
-        self._notify(field_id, [self.FONT_SIZE_ROLE])
-
-    def on_props_changed(self, field_id: str) -> None:
-        self._notify(
-            field_id,
-            [self.CONTENT_ROLE, self.IMAGE_KEY_ROLE, self.OPTIONS_COUNT_ROLE],
-        )
-
-    def on_values_changed(self) -> None:
-        # the whole value map moved (undo/redo): every displayed value re-reads
-        self._notify_all([self.CONTENT_ROLE, self.IMAGE_KEY_ROLE])
-
-    def on_read_only_changed(self, _enabled: bool) -> None:
-        self._notify_all([self.DISABLED_ROLE])
-
-    def on_template_changed(self) -> None:
-        self.beginResetModel()
-        self._rebuild_rows()
-        self.endResetModel()
-
-    # -- QAbstractListModel contract -------------------------------------------
-
-    def _notify(self, field_id: str, roles: list[int]) -> None:
-        row = self._row_in_projection(field_id)
-        if row is None:
-            # the id lives outside the current projection (page removed — the
-            # following pages_changed resets the view anyway)
-            return
-        if self._flat_index_of(self._template, field_id) != row:
-            # the flat order (the tape's z-order) moved under this field
-            # (relocate-to-top within the page): dataChanged cannot reorder
-            # rows — the view honestly needs the structure reset
-            self.on_template_changed()
-            return
-        index = self.index(row)
-        self.dataChanged.emit(index, index, roles)
-
-    def _notify_all(self, roles: list[int]) -> None:
-        if not self._rows:
-            return
-        self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1), roles)
-
-    # -- row-position maths (template order is the single truth) ---------------
-
-    def _row_in_projection(self, field_id: str) -> int | None:
-        for i, field in enumerate(self._rows):
-            if field.id == field_id:
-                return i
-        return None
-
-    @staticmethod
-    def _flat_index_of(template: SheetTemplate | None, field_id: str) -> int:
-        """Row of ``field_id`` in the current template order, -1 when absent."""
-        if template is None:
-            return -1
-        row = 0
-        for page in template.pages:
-            for field in page.fields:
-                if field.id == field_id:
-                    return row
-                row += 1
-        return -1
-
-    @staticmethod
-    def _flat_index_page(template: SheetTemplate, index: int) -> int:
-        """Page of a flat row in the template order (the index space
-        insertRows announces to the view)."""
-        row = index
-        for page_index, page in enumerate(template.pages):
-            if row < len(page.fields):
-                return page_index
-            row -= len(page.fields)
-        raise IndexError(index)
-
-    # -- QAbstractListModel contract -------------------------------------------
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # Qt API name
-        return 0 if parent.isValid() else len(self._rows)
-
-    def data(
-        self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole
-    ):  # Qt API name
-        if not index.isValid() or not (0 <= index.row() < len(self._rows)):
-            return None
-        field = self._rows[index.row()]
-        if role == self.ID_ROLE:
-            return field.id
-        if role == self.TYPE_ROLE:
-            return field.type.value
-        if role == self.PAGE_ROLE:
-            return self._page_of_row[index.row()]
-        if role == self.X_ROLE:
-            return field.x
-        if role == self.Y_ROLE:
-            return field.y
-        if role == self.W_ROLE:
-            return field.w
-        if role == self.H_ROLE:
-            return field.h
-        if role == self.FONT_SIZE_ROLE:
-            return field.font_size
-        if role == self.CONTENT_ROLE:
-            return self._content_for(field)
-        if role == self.IMAGE_KEY_ROLE:
-            return self._image_key_for(field)
-        if role == self.OPTIONS_COUNT_ROLE:
-            return len(field.options)
-        if role == self.DISABLED_ROLE:
-            return bool(self._fill and getattr(self._vm, "read_only", False))
-        return None
-
-    # -- fill/design value rules: both delegate, never re-implement ------------
-
-    def _content_for(self, field: SheetField) -> str:
-        if not self._fill:
-            return field.content
-        if field.type is FieldType.IMAGE:
-            return ""
-        return self._display_text(field)
-
-    def _image_key_for(self, field: SheetField) -> str:
-        if not self._fill:
-            return "" if field.image_id is None else str(field.image_id)
-        if field.type is not FieldType.IMAGE:
-            return ""
-        return self._display_text(field)
-
-    def _display_text(self, field: SheetField) -> str:
-        # The domain's single value-resolution rule (instance map first,
-        # template default otherwise) — no second implementation (D4).
-        value = resolve_display(field, self._vm.values)
-        if value is None:
-            return ""
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
-
-    def roleNames(self) -> dict:  # Qt API name
-        return {
-            self.ID_ROLE: b"id",
-            self.TYPE_ROLE: b"type",
-            self.PAGE_ROLE: b"page",
-            self.X_ROLE: b"x",
-            self.Y_ROLE: b"y",
-            self.W_ROLE: b"w",
-            self.H_ROLE: b"h",
-            self.FONT_SIZE_ROLE: b"fontSize",
-            self.CONTENT_ROLE: b"content",
-            self.IMAGE_KEY_ROLE: b"imageKey",
-            self.OPTIONS_COUNT_ROLE: b"optionsCount",
-            self.DISABLED_ROLE: b"disabled",
-        }
-
-    # Q3b 2.1: the canvas hit-test/gesture maths run in the QML view layer and
-    # need row reads from plain JS, where the list-protocol (``.count`` /
-    # ``delegate.model``) is only available inside views. This is the same
-    # seam the timeline island's ``TimelineRowModel.get`` established (Q2.5a):
-    # a pure role projection through ``data()`` — no second geometry source,
-    # the values are the very ones ``data()`` returns to the delegates.
-    @Slot(int, result="QVariantMap")
-    def get(self, index: int) -> dict:
-        i = int(index)
-        if i < 0 or i >= len(self._rows):
-            return {}
-        model_index = self.index(i)
-        return {
-            name.decode("ascii"): self.data(model_index, role)
-            for role, name in self.roleNames().items()
-        }
-
-
 class CharacterSheetViewModel(QObject):
     dirty_changed = Signal(bool)
     template_changed = Signal()
@@ -457,18 +171,21 @@ class CharacterSheetViewModel(QObject):
         # flag drops by itself instead of sticking).
         self._saved_pages_json: str | None = None
         self._tool: str = TOOL_POINTER
-        self._selected_ids: list[str] = []
+        # Edit-state carriers (task 6.5.2, audit B4): plain non-Qt holders for
+        # the selection, the undo/redo stacks and the clipboard. The view
+        # model delegates through the ``_selected_ids``/``_clipboard``
+        # properties below and owns every signal emission itself.
+        self._selection = SelectionModel()
+        self._history = LayoutHistory(UNDO_STACK_LIMIT)
+        self._clipboard_carrier = FieldClipboard()
         self._inline_id: str | None = None
         self._inline_snapshot: str = ""
         self._inline_before: tuple[str, str] | None = None
         self._current_page: int = 0
-        self._undo_stack: list[tuple[str, str]] = []
-        self._redo_stack: list[tuple[str, str]] = []
         self._in_gesture: bool = False
         self._suppress_checkpoint: bool = False
         self._snap_enabled: bool = False
         self._snap_override: bool | None = None
-        self._clipboard: list[tuple[SheetField, int]] = []
         # The QML canvas feeds from this projection of the same template:
         # rows are the live domain fields, updated through the VM's existing
         # granular signals only (Q3b D4 — no second set anywhere).
@@ -501,11 +218,28 @@ class CharacterSheetViewModel(QObject):
     def tool(self) -> str:
         return self._tool
 
+    # Carrier-facing aliases: the whole module keeps addressing the selection
+    # and clipboard through these names (task 6.5.2); the getters hand out the
+    # carriers' live lists, the setters replace their content.
+    @property
+    def _selected_ids(self) -> list[str]:
+        return self._selection.ids
+
+    @_selected_ids.setter
+    def _selected_ids(self, ids: list[str]) -> None:
+        self._selection.set(ids)
+
+    @property
+    def _clipboard(self) -> list[tuple[SheetField, int]]:
+        return self._clipboard_carrier.items
+
+    @_clipboard.setter
+    def _clipboard(self, items: list[tuple[SheetField, int]]) -> None:
+        self._clipboard_carrier.set_items(items)
+
     @property
     def selection(self) -> str | None:
-        if len(self._selected_ids) == 1:
-            return self._selected_ids[0]
-        return None
+        return self._selection.primary
 
     @property
     def selected_ids(self) -> list[str]:
@@ -513,11 +247,11 @@ class CharacterSheetViewModel(QObject):
 
     @property
     def can_undo(self) -> bool:
-        return bool(self._undo_stack)
+        return self._history.can_undo
 
     @property
     def can_redo(self) -> bool:
-        return bool(self._redo_stack)
+        return self._history.can_redo
 
     @property
     def snap_enabled(self) -> bool:
@@ -559,7 +293,7 @@ class CharacterSheetViewModel(QObject):
     # notify signal already fired on EVERY transition of its value
     # (pre-existing contract, unchanged), so the bindings below are live by
     # construction: tool (set_tool/place/load), selection (select*/place/
-    # undo…), inline id (open/commit/cancel/_close_inline_session), current
+    # undo…), inline id (open/apply/cancel/_close_inline_session), current
     # page (rail/scroll channel), snap flag (set_snap_enabled). The page tape
     # is re-read from ``pages_layout()`` on ``pagesChanged`` (fires on every
     # structural moment, load/reload/reorder/orientation/undo included).
@@ -1014,7 +748,7 @@ class CharacterSheetViewModel(QObject):
 
         The ingest of a chosen file happens in the caller (the dialog owns the
         ImageStore); this only records the reference — the GC of a cleared
-        file runs after the next committed save (design D6).
+        file runs after the next write is persisted (design D6).
         """
         field = self._field(field_id)
         if field is None or field.type is not FieldType.IMAGE:
@@ -1039,7 +773,7 @@ class CharacterSheetViewModel(QObject):
         responsive — its key handling must not stay stuck in the inline
         branch on a widget that no longer exists. Text values are already in
         the VM (the inline widget is the live buffer); a number value not
-        yet committed on Enter loses its pending text, the same as a
+        yet applied on Enter loses its pending text, the same as a
         rejected Enter.
         """
         if self._inline_id is None:
@@ -1169,6 +903,115 @@ class CharacterSheetViewModel(QObject):
         return True
 
     # -- cross-page drag (design D5) ----------------------------------------
+    # Single-field and selection drags share one live-move and one release
+    # core (audit B4, task 6.5.3): the single path is the one-element case of
+    # the list, distinguished by ``multi`` only where the two originally
+    # opened the gesture at different moments. The @Slot wrappers below are
+    # the QML contract and keep their exact signatures.
+
+    def _drag_live(
+        self,
+        ids: list[str],
+        ref_id: str | None,
+        scene_x: float,
+        scene_y: float,
+        grab_dx: float,
+        grab_dy: float,
+        *,
+        multi: bool,
+    ) -> None:
+        if self._template is None or not ids:
+            return
+        ref = ref_id if ref_id in ids else ids[0]
+        field = self._field(ref)
+        src = self.page_of(ref)
+        if field is None or src is None:
+            if not multi:
+                return  # single drag on an unknown field: no state touched
+            # The selection path had already opened the gesture (original
+            # timing preserved): it stays open with nothing moved.
+            if not self._in_gesture:
+                self.begin_gesture()
+            return
+        page_w, page_h = self._template.page_size
+        hit = scene_to_page(scene_x, scene_y, page_w, page_h, len(self._template.pages))
+        if hit is None or hit[0] != src:
+            if multi and not self._in_gesture:
+                self.begin_gesture()  # selection opened it before the hit test
+            return                    # hold the last in-page position
+        if not self._in_gesture:
+            self.begin_gesture()
+        _, origin_y = page_origin(src, page_h)
+        dx = (scene_x - grab_dx) - field.x
+        dy = (scene_y - grab_dy - origin_y) - field.y
+        self._suppress_checkpoint = True
+        try:
+            for field_id in list(ids):
+                f = self._field(field_id)
+                if f is None:
+                    continue
+                self.move(field_id, f.x + dx, f.y + dy)
+        finally:
+            self._suppress_checkpoint = False
+
+    def _drag_release(
+        self,
+        ids: list[str],
+        ref_id: str | None,
+        drop_scene_x: float,
+        drop_scene_y: float,
+        grab_dx: float,
+        grab_dy: float,
+        *,
+        multi: bool,
+    ) -> int | None:
+        if self._template is None or not ids:
+            return None
+        ref = ref_id if ref_id in ids else ids[0]
+        if not multi and self._template.page_of(ref) is None:
+            return None  # single path: unknown field returns before the gesture
+        if not self._in_gesture:
+            self.begin_gesture()
+        try:
+            origins: dict[str, tuple[int, float, float]] = {}
+            for field_id in ids:
+                field = self._field(field_id)
+                page = self.page_of(field_id)
+                if field is None or page is None:
+                    continue
+                origins[field_id] = (page, field.x, field.y)
+            if not origins:
+                return None
+            ref = ref if ref in origins else next(i for i in ids if i in origins)
+            ref_page, ref_x, ref_y = origins[ref]
+            page_w, page_h = self._template.page_size
+            hit = scene_to_page(
+                drop_scene_x, drop_scene_y, page_w, page_h,
+                len(self._template.pages),
+            )
+            if hit is not None and hit[0] != ref_page:
+                dst, local_x, local_y = hit
+                dx = (local_x - grab_dx) - ref_x
+                dy = (local_y - grab_dy) - ref_y
+                self._suppress_checkpoint = True
+                try:
+                    for field_id, (_page, ox, oy) in origins.items():
+                        self.relocate_field(field_id, dst, ox + dx, oy + dy)
+                finally:
+                    self._suppress_checkpoint = False
+                return dst
+            _, origin_y = page_origin(ref_page, page_h)
+            dx = (drop_scene_x - grab_dx) - ref_x
+            dy = (drop_scene_y - grab_dy - origin_y) - ref_y
+            self._suppress_checkpoint = True
+            try:
+                for field_id, (_page, ox, oy) in origins.items():
+                    self.move(field_id, ox + dx, oy + dy)
+            finally:
+                self._suppress_checkpoint = False
+            return ref_page
+        finally:
+            self.end_gesture()
 
     @Slot(str, float, float, float, float)
     def drag_move(self, field_id: str, scene_x: float, scene_y: float,
@@ -1177,20 +1020,9 @@ class CharacterSheetViewModel(QObject):
         stays within the field's own page; over the gutter or another sheet
         the field holds its last in-page (clamped) position until release.
         Positions here are scene coordinates of the tape (D1)."""
-        if self._template is None:
-            return
-        field = self._field(field_id)
-        src = self._template.page_of(field_id)
-        if field is None or src is None:
-            return
-        page_w, page_h = self._template.page_size
-        hit = scene_to_page(scene_x, scene_y, page_w, page_h, len(self._template.pages))
-        if hit is None or hit[0] != src:
-            return  # hold the last in-page position
-        if not self._in_gesture:
-            self.begin_gesture()
-        _, origin_y = page_origin(src, page_h)
-        self.move(field_id, scene_x - grab_dx, scene_y - grab_dy - origin_y)
+        self._drag_live(
+            [field_id], field_id, scene_x, scene_y, grab_dx, grab_dy, multi=False
+        )
 
     @Slot(str, int, float, float, result=bool)
     def relocate_field(self, field_id: str, to_page_index: int,
@@ -1221,7 +1053,7 @@ class CharacterSheetViewModel(QObject):
         return True
 
     @Slot(str, float, float, float, float, result="QVariant")
-    def commit_drag(self, field_id: str, drop_scene_x: float, drop_scene_y: float,
+    def apply_drag(self, field_id: str, drop_scene_x: float, drop_scene_y: float,
                     grab_dx: float, grab_dy: float) -> int | None:
         """Resolve a drag on release (D5). The cursor drop point is in scene
         coordinates of the tape; the field's top-left goes to ``drop - grab``.
@@ -1230,26 +1062,10 @@ class CharacterSheetViewModel(QObject):
         over a gutter or its own page — it is clamped back into its own page.
         Returns the page index the field ended on, or None when unknown.
         """
-        if self._template is None:
-            return None
-        src = self._template.page_of(field_id)
-        if src is None:
-            return None
-        if not self._in_gesture:
-            self.begin_gesture()
-        try:
-            page_w, page_h = self._template.page_size
-            hit = scene_to_page(drop_scene_x, drop_scene_y, page_w, page_h,
-                                len(self._template.pages))
-            if hit is not None and hit[0] != src:
-                dst, local_x, local_y = hit
-                self.relocate_field(field_id, dst, local_x - grab_dx, local_y - grab_dy)
-                return dst
-            _, origin_y = page_origin(src, page_h)
-            self.move(field_id, drop_scene_x - grab_dx, drop_scene_y - grab_dy - origin_y)
-            return src
-        finally:
-            self.end_gesture()
+        return self._drag_release(
+            [field_id], field_id, drop_scene_x, drop_scene_y,
+            grab_dx, grab_dy, multi=False,
+        )
 
     # -- inline editing (state; the widget itself lives on the canvas) ------
 
@@ -1267,7 +1083,7 @@ class CharacterSheetViewModel(QObject):
         self.inline_changed.emit(field_id)
 
     @Slot()
-    def commit_inline(self) -> None:
+    def apply_inline(self) -> None:
         """Close inline editing keeping the current content (already written
         into the single buffer through ``set_content``)."""
         if self._inline_id is None:
@@ -1277,11 +1093,7 @@ class CharacterSheetViewModel(QObject):
             self._inline_before is not None
             and self._layout_snapshot() != self._inline_before
         ):
-            self._undo_stack.append(self._inline_before)
-            if len(self._undo_stack) > UNDO_STACK_LIMIT:
-                self._undo_stack.pop(0)
-            self._redo_stack.clear()
-            self.history_changed.emit()
+            self._push_undo(self._inline_before)
         self._inline_id = None
         self._inline_before = None
         self.inline_changed.emit(None)
@@ -1316,22 +1128,25 @@ class CharacterSheetViewModel(QObject):
 
     @Slot()
     def undo(self) -> None:
-        if not self._undo_stack or self._template is None:
+        if not self._history.can_undo or self._template is None:
             return
-        current = self._layout_snapshot()
-        self._redo_stack.append(current)
-        self._restore_layout(self._undo_stack.pop())
+        self._history.push_redo(self._layout_snapshot())
+        self._restore_layout(self._history.take_undo())
         self.history_changed.emit()
 
     @Slot()
     def redo(self) -> None:
-        if not self._redo_stack or self._template is None:
+        if not self._history.can_redo or self._template is None:
             return
-        current = self._layout_snapshot()
-        self._undo_stack.append(current)
-        if len(self._undo_stack) > UNDO_STACK_LIMIT:
-            self._undo_stack.pop(0)
-        self._restore_layout(self._redo_stack.pop())
+        self._push_undo(self._layout_snapshot(), clear_redo=False)
+        self._restore_layout(self._history.take_redo())
+
+    def _push_undo(
+        self, snap: tuple[str, str], *, clear_redo: bool = True
+    ) -> None:
+        """The one sink into the undo stack (audit B4, task 6.5.1 replaces
+        four copies); the trimming rules live in :class:`LayoutHistory`."""
+        self._history.push_undo(snap, clear_redo=clear_redo)
         self.history_changed.emit()
 
     _UNSET = object()
@@ -1342,12 +1157,7 @@ class CharacterSheetViewModel(QObject):
         if self._template is None:
             return
         if not self._in_gesture:
-            snap = self._layout_snapshot()
-            self._undo_stack.append(snap)
-            if len(self._undo_stack) > UNDO_STACK_LIMIT:
-                self._undo_stack.pop(0)
-            self._redo_stack.clear()
-            self.history_changed.emit()
+            self._push_undo(self._layout_snapshot())
         self._in_gesture = True
         if snap_override is not self._UNSET:
             self._snap_override = snap_override  # type: ignore[assignment]
@@ -1362,9 +1172,7 @@ class CharacterSheetViewModel(QObject):
 
     @Slot()
     def end_gesture(self) -> None:
-        current = self._layout_snapshot()
-        if self._undo_stack and self._undo_stack[-1] == current:
-            self._undo_stack.pop()
+        if self._history.drop_top_if_matches(self._layout_snapshot()):
             self.history_changed.emit()
         self._in_gesture = False
         self._snap_override = None
@@ -1406,7 +1214,7 @@ class CharacterSheetViewModel(QObject):
 
     @Slot(float, float, float, float)
     @Slot(float, float, float, float, "QVariant")
-    def commit_drag_selection(
+    def apply_drag_selection(
         self,
         drop_scene_x: float,
         drop_scene_y: float,
@@ -1414,48 +1222,12 @@ class CharacterSheetViewModel(QObject):
         grab_dy: float,
         ref_id: str | None = None,
     ) -> None:
-        if self._template is None or not self._selected_ids:
-            return
-        if not self._in_gesture:
-            self.begin_gesture()
-        ids = list(self._selected_ids)
-        origins = {}
-        for field_id in ids:
-            field = self._field(field_id)
-            page = self.page_of(field_id)
-            if field is None or page is None:
-                continue
-            origins[field_id] = (page, field.x, field.y)
-        if not origins:
-            self.end_gesture()
-            return
-        ref = ref_id if ref_id in origins else next(i for i in ids if i in origins)
-        ref_page, ref_x, ref_y = origins[ref]
-        page_w, page_h = self._template.page_size
-        hit = scene_to_page(
-            drop_scene_x, drop_scene_y, page_w, page_h, len(self._template.pages)
+        # The multi-member case of the one release core (task 6.5.3); the
+        # landing page is not surfaced to the selection flow (void slot).
+        self._drag_release(
+            list(self._selected_ids), ref_id, drop_scene_x, drop_scene_y,
+            grab_dx, grab_dy, multi=True,
         )
-        if hit is not None and hit[0] != ref_page:
-            dst, local_x, local_y = hit
-            dx = (local_x - grab_dx) - ref_x
-            dy = (local_y - grab_dy) - ref_y
-            self._suppress_checkpoint = True
-            try:
-                for field_id, (_page, ox, oy) in origins.items():
-                    self.relocate_field(field_id, dst, ox + dx, oy + dy)
-            finally:
-                self._suppress_checkpoint = False
-        else:
-            _, origin_y = page_origin(ref_page, page_h)
-            dx = (drop_scene_x - grab_dx) - ref_x
-            dy = (drop_scene_y - grab_dy - origin_y) - ref_y
-            self._suppress_checkpoint = True
-            try:
-                for field_id, (_page, ox, oy) in origins.items():
-                    self.move(field_id, ox + dx, oy + dy)
-            finally:
-                self._suppress_checkpoint = False
-        self.end_gesture()
 
     @Slot(float, float, float, float)
     @Slot(float, float, float, float, "QVariant")
@@ -1467,31 +1239,11 @@ class CharacterSheetViewModel(QObject):
         grab_dy: float,
         ref_id: str | None = None,
     ) -> None:
-        if self._template is None or not self._selected_ids:
-            return
-        if not self._in_gesture:
-            self.begin_gesture()
-        ref = ref_id if ref_id in self._selected_ids else self._selected_ids[0]
-        field = self._field(ref)
-        src = self.page_of(ref)
-        if field is None or src is None:
-            return
-        page_w, page_h = self._template.page_size
-        hit = scene_to_page(scene_x, scene_y, page_w, page_h, len(self._template.pages))
-        if hit is None or hit[0] != src:
-            return
-        _, origin_y = page_origin(src, page_h)
-        dx = (scene_x - grab_dx) - field.x
-        dy = (scene_y - grab_dy - origin_y) - field.y
-        self._suppress_checkpoint = True
-        try:
-            for field_id in list(self._selected_ids):
-                f = self._field(field_id)
-                if f is None:
-                    continue
-                self.move(field_id, f.x + dx, f.y + dy)
-        finally:
-            self._suppress_checkpoint = False
+        # The multi-member case of the one live-move core (task 6.5.3).
+        self._drag_live(
+            list(self._selected_ids), ref_id, scene_x, scene_y,
+            grab_dx, grab_dy, multi=True,
+        )
 
     # -- z-order (D4) -------------------------------------------------------
 
@@ -1648,8 +1400,7 @@ class CharacterSheetViewModel(QObject):
         self._refresh_dirty()
 
     def _clear_history(self) -> None:
-        self._undo_stack.clear()
-        self._redo_stack.clear()
+        self._history.clear()
         self._in_gesture = False
         self._snap_override = None
         self.history_changed.emit()
@@ -1661,12 +1412,7 @@ class CharacterSheetViewModel(QObject):
             or self._suppress_checkpoint
         ):
             return
-        snap = self._layout_snapshot()
-        self._undo_stack.append(snap)
-        if len(self._undo_stack) > UNDO_STACK_LIMIT:
-            self._undo_stack.pop(0)
-        self._redo_stack.clear()
-        self.history_changed.emit()
+        self._push_undo(self._layout_snapshot())
 
     def _maybe_snap_rect(
         self,

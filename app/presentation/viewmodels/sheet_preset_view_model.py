@@ -23,7 +23,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.presentation.views.character_sheet.presets.catalog import PresetCatalog
+from app.domain.character_sheets.preset_catalog import PresetCatalog
 
 
 class SheetPresetViewModel(QObject):

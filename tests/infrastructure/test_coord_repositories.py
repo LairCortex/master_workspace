@@ -26,9 +26,11 @@ from app.domain.game_calendar import (
     IntercalarySpec,
     MonthDay,
     MonthSpec,
-    encode_coord,
     reset_current_calendar,
     set_current_calendar,
+)
+from app.infrastructure.calendar_storage import (
+    encode_coord,
 )
 from app.infrastructure.db.database import create_session_factory
 from app.domain.game_calendar import DateField

@@ -105,6 +105,16 @@ class TestSyncRelated:
         assert [o.name for o in w.item.organizations] == ["Guild"]
         assert [loc.name for loc in w.item.locations] == ["Tavern"]
 
+    async def test_event_and_rating_collections_are_noop(self, async_session):
+        # registry dispatch (wave 3): the event/rating collections are never
+        # card relations, so their explicit match arms must skip, not sync
+        w = await _world(async_session)
+        await w.item_svc.sync_related(w.item, "events", {1, 2, 3})
+        await w.item_svc.sync_related(w.item, "ratings", {1, 2, 3})
+        await async_session.refresh(w.item, attribute_names=["organizations", "locations"])
+        assert [o.name for o in w.item.organizations] == ["Guild"]
+        assert [loc.name for loc in w.item.locations] == ["Tavern"]
+
     async def test_missing_sibling_service_is_noop(self, async_session):
         w = await _world(async_session)
         bare_svc = EntityService(ItemRepository(async_session), w.desc_repo)

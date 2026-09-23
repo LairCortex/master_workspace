@@ -35,7 +35,11 @@ from app.presentation.viewmodels.character_sheet_fill_viewmodel import (
 )
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     CharacterSheetViewModel,
+)
+from app.presentation.viewmodels.sheet_field_model import (
+    SheetDesignSource,
     SheetFieldModel,
+    SheetFillSource,
 )
 
 
@@ -525,3 +529,16 @@ async def test_data_and_get_answer_quietly_outside_the_row_space(vm):
     # the get() seam mirrors the same guard for the panel/bridge callers
     assert model.get(-1) == {}
     assert model.get(model.rowCount(QModelIndex())) == {}
+
+
+def test_protocol_source_contracts_stay_inert_placeholders():
+    """6.5.4 pin: SheetDesignSource/SheetFillSource are type contracts, not behavior.
+
+    Their getters must keep placeholder bodies (return ``None``, touch no state)
+    — real sources are the view models themselves; a protocol that grew logic
+    would mean the contract started implementing behavior for consumers.
+    """
+    assert SheetDesignSource.template.fget(None) is None
+    assert SheetFillSource.template.fget(None) is None
+    assert SheetFillSource.values.fget(None) is None
+    assert SheetFillSource.read_only.fget(None) is None

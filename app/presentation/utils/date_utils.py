@@ -28,6 +28,8 @@ from app.domain.game_calendar import (
     MonthDay,
     as_game_coord,
     current_calendar,
+)
+from app.infrastructure.calendar_storage import (
     encode_coord,
 )
 

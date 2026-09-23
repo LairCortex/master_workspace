@@ -24,8 +24,8 @@ Division of labour (design D2):
   ``_on_instances_tab``/``_selected_id`` helpers did from the widgets);
 * every session-touching flow (create/open/rename/delete and the list
   refresh) is still a coroutine on the qasync loop wrapped in ``run_locked``
-  — the application's session lock, since the shared AsyncSession must not be
-  used by concurrent tasks; the native popups
+  — the application's session lock, since the one shared game session must
+  not be used by concurrent tasks; the native popups
   (``QInputDialog``/``QMessageBox``) stay Python-side (D5);
 * the island marks «Открыть» through its root ``defaultButton``; the wrapper
   answers Enter by clicking that marker (D5).
@@ -46,9 +46,8 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -67,10 +66,9 @@ from app.application.services.character_sheet_service import (
     CharacterSheetService,
 )
 from app.presentation.qml import setup_qml_shell
-from app.presentation.qml.engine import QML_IMPORT_PATH, island_context, load_island, release_island
+from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.viewmodels.sheet_list_view_model import (
     TAB_INSTANCES,
     SheetListViewModel,
@@ -89,7 +87,7 @@ async def _run_now(coro: Coroutine) -> Any:
     return await coro
 
 
-class CharacterSheetListDialog(QDialog):
+class CharacterSheetListDialog(IslandDialogMixin, QDialog):
     """List of the current game's sheet templates (QML island inside QDialog).
 
     The availability rules (open the sheet open in the editor, delete the
@@ -98,6 +96,8 @@ class CharacterSheetListDialog(QDialog):
     them to the buttons' enabled/visible states, so the dialog itself keeps no
     widget flags.
     """
+
+    island_context_names = {"sheetListVm": "vm"}
 
     open_requested = Signal(int)
     open_instance_requested = Signal(int)
@@ -149,31 +149,17 @@ class CharacterSheetListDialog(QDialog):
         # The island shares the one process-wide engine (spec qml-shell
         # «Движок один на приложение»); ``setup_qml_shell`` is idempotent, and
         # the reference keeps the engine alive under a live island.
-        engine = setup_qml_shell(QApplication.instance(), self._theme)
-        self._engine = engine
-        self.quick = QQuickWidget(engine, self)
-        self.quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
         # Q3a apply-time correction, pinned empirically: a QQuickWidget built
         # on the shared engine reports the ENGINE's root context from
         # rootContext(), so a name written there is visible to — and owned by —
-        # every island on the process engine. A dialog must not write into it
-        # at all: when this one closes, the shared ``islandPalette`` entry it
-        # had overwritten dies with the dialog and strands the timeline (and
-        # every other live island) on the off-skin fallbacks. Both names go
-        # into a dialog-owned child context instead, the seam the detail panel
-        # and the newer dialog islands already use; the bridge is parented to
-        # that context so the scene (a child created BEFORE it) always dies
-        # first, and ``done()`` releases the island earlier anyway.
-        self._palette = QmlPalette(self._theme, parent=self)
-        self._context = island_context(
-            engine, self, sheetListVm=self.vm, islandPalette=self._palette
-        )
-        self._palette.setParent(self._context)
-        self._component = load_island(self.quick, self._context, ROOT_QML)
-        assert self.quick.status() == QQuickWidget.Status.Ready, self.quick.errors()
+        # every island on the process engine; both names therefore go into the
+        # dialog-owned child context the IslandDialogMixin builds (the bridge
+        # is parented there too, so the scene, a child created BEFORE it,
+        # always dies first).
+        self._engine = setup_qml_shell(QApplication.instance(), self._theme)
+        self.setup_island()
         layout.addWidget(self.quick)
 
-        self._root = self.quick.rootObject()
         fit_dialog_to_island(self, self._root, floor=self._size_floor)
         self._wire_island()
 
@@ -324,9 +310,9 @@ class CharacterSheetListDialog(QDialog):
         # re-evaluates bindings against the dead context objects mid-sweep and
         # Qt aborts («shared QObject was deleted directly»). The widgets-era
         # handler could delete directly because QListWidget held no declarative
-        # bindings. ``_release_island`` is idempotent (setSource(QUrl()) twice
+        # bindings. ``release_island`` is idempotent (setSource(QUrl()) twice
         # is a no-op), so dialogs that also went through done() are fine.
-        dialog._release_island()
+        dialog.release_island()
         dialog.deleteLater()
 
     def _on_preset_created(self, sheet_id: int) -> None:
@@ -506,24 +492,12 @@ class CharacterSheetListDialog(QDialog):
 
     # ---- island teardown (the Q1-accepted launcher pattern) ---------------
 
-    def _release_island(self) -> None:
-        release_island(self.quick)
+    def island_source(self) -> str:
+        return ROOT_QML
 
-    def done(self, result: int) -> None:  # QDialog API: accept/reject/close-event
-        """Release the island against its VM/palette before the dialog dies.
-
-        ``QDialog.closeEvent`` calls ``reject()`` and both accept/reject funnel
-        through ``done()``. Clearing the QML source tears the island down while
-        ``vm``/``_palette`` (children of the dialog) are still alive, so its
-        bindings never observe a half-destroyed context.
-
-        The release is deferred one loop turn: every QML-originated close —
-        «Закрыть» click included — lands here while the island's own
-        ``onClicked`` handler is still on the stack, and destroying the scene
-        synchronously there is fatal («Object destroyed while one of its QML
-        signal handlers is in progress»). The one-shot is bound to ``self``:
-        it runs when the JS stack has unwound and never after the dialog is
-        gone.
-        """
-        QTimer.singleShot(0, self, self._release_island)
-        super().done(result)
+    # Island release — IslandDialogMixin. ``QDialog.closeEvent`` calls
+    # ``reject()`` and both accept/reject funnel through ``done()``; the
+    # release is deferred one loop turn because every QML-originated close —
+    # «Закрыть» click included — would otherwise destroy the scene inside its
+    # own ``onClicked`` frame (Qt: «Object destroyed while one of its QML
+    # signal handlers is in progress»).

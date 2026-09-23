@@ -24,6 +24,7 @@ from app.application.services.xlsx_import_service import (
     XlsxImportService,
 )
 from app.domain.game_calendar import MonthDay
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db.models import CharacterModel, ItemModel, OrganizationModel
 
 
@@ -430,7 +431,7 @@ class TestNameIndex:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", ["Имя", "Дата начала", "Характеристики", "Предыстория"],
                [["Уникал", "2001-01-01", "новое", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         row = plan.lookup_row("character", "Уникал")
         assert row.is_update and row.existing_id == unique_char.id
         # Update touches only non-empty cells (spec «Пустая ячейка не затирает»).
@@ -441,7 +442,7 @@ class TestNameIndex:
         unique_char, _ = await _seed_db(async_session)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["уникал", "2001-01-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         row = plan.lookup_row("character", "уникал")
         assert row.existing_id == unique_char.id
 
@@ -449,7 +450,7 @@ class TestNameIndex:
         await _seed_db(async_session)
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["иван", "2001-01-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         row = plan.lookup_row("character", "иван")
         assert not row.is_update and row.existing_id is None
         # The GROUP BY lower(name) HAVING COUNT(*)>1 result is visible on the plan.
@@ -459,7 +460,7 @@ class TestNameIndex:
         await _seed_db(async_session)
         wb = _new_workbook()
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "1815-01-10", "иван"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         assert plan.planned_rows == []
         issue, = plan.skipped_rows
         assert (issue.sheet, issue.row_number) == ("События", 2)
@@ -471,7 +472,7 @@ class TestNameIndex:
         wb = _new_workbook()
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "1815-01-10", "иван"]])
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["Иван", "1800-01-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         event = plan.lookup_row("event", "Бал")
         assert not event.skipped           # file priority → no planned skip
         link = event.links["character"][0]
@@ -486,7 +487,7 @@ class TestNameIndex:
         wb = _new_workbook()
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами"],
                [["Бал", "1815-01-10", "фонарь"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         link = plan.lookup_row("event", "Бал").links["item"][0]
         assert link.resolution == LINK_TO_DB
         assert link.db_id == item.id
@@ -499,7 +500,7 @@ class TestNameIndex:
         # Spec scenario: «Бал» 1820-05-01 (no end) → ghost item 1820-05-01–1820-05-01.
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами", "Дата конца"],
                [["Бал", "1820-05-01", "Амулет", None]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         link = plan.lookup_row("event", "Бал").links["item"][0]
         assert link.resolution == LINK_TO_GHOST and link.db_id is None
         ghost = plan.ghosts[("item", "амулет")]
@@ -518,7 +519,7 @@ class TestNameIndex:
                    ["Бал", "1820-05-01", None, "Амулет"],
                    ["Охота", "1815-01-10", "1816-06-01", "Амулет"],
                ])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         ghost = plan.ghosts[("item", "амулет")]
         assert ghost.min_start == MonthDay(1815, 1, 10)
         assert ghost.max_end == MonthDay(1820, 5, 1)
@@ -537,7 +538,7 @@ class TestNameIndex:
                    ["Раньше в до н.э.", "-0500-06-01", "-0499-12-31", "Амулет"],
                    ["Наша эра", "2026-08-01", None, "Амулет"],
                ])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         ghost = plan.ghosts[("item", "амулет")]
         assert (ghost.min_start, ghost.min_start_bc) == (MonthDay(500, 6, 1), True)
         assert (ghost.max_end, ghost.max_end_bc) == (MonthDay(2026, 8, 1), False)
@@ -546,7 +547,7 @@ class TestNameIndex:
         _, item = await _seed_db(async_session)  # «Фонарь» is an ITEM in DB
         wb = _new_workbook()
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "1815-01-10", "Фонарь"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         link = plan.lookup_row("event", "Бал").links["character"][0]
         # Same name exists in DB but of another type → not a match → ghost.
         assert link.resolution == LINK_TO_GHOST
@@ -560,7 +561,7 @@ class TestNameIndex:
         wb = _new_workbook()
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами"],
                [["Бал", "1820-05-01", "Фонарь"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         assert not plan.has_fatal
         assert plan.name_index_built and plan.name_index == {}
         assert plan.ghosts[("item", "фонарь")].min_start == MonthDay(1820, 5, 1)
@@ -579,7 +580,7 @@ class TestNameIndex:
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "1815-01-10", "Глеб"]])
         _sheet(wb, "Персонажи", ["Имя", "Дата начала", "Связь организациями"],
                [["Глеб", "1800-01-01", "цех"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
 
         gleb = plan.lookup_row("character", "Глеб")
         assert gleb.skipped                            # its own ambiguous reference
@@ -600,7 +601,7 @@ class TestNameIndex:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["Новый", "2001-01-01"]])
         _sheet(wb, "События", EVENT_HEADERS, [["Бал", "1815-01-10", "иван"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         assert not plan.has_fatal  # some rows skipped, the DB itself untouched
         chars = (await async_session.execute(
             select(func.count()).select_from(CharacterModel)

@@ -172,13 +172,13 @@ async def test_instance_service_edges(async_session):
     async def boom_commit():
         raise IntegrityError("UPDATE", {}, Exception("x"))
 
-    orig_commit = inst_svc._session.commit
-    inst_svc._session.commit = boom_commit  # type: ignore[method-assign]
+    orig_commit = inst_svc._uow.session.commit
+    inst_svc._uow.session.commit = boom_commit  # type: ignore[method-assign]
     try:
         with pytest.raises(InstanceNameConflictError):
             await inst_svc.rename(iid2, "Новое")
     finally:
-        inst_svc._session.commit = orig_commit
+        inst_svc._uow.session.commit = orig_commit
 
     from datetime import date
     from app.infrastructure.repositories.character_repository import CharacterRepository
@@ -197,13 +197,13 @@ async def test_instance_service_edges(async_session):
         return SimpleNamespace(id=iid2, character_id=cid)
 
     orig_get = inst_svc._repo.get_by_character_id
-    inst_svc._session.commit = boom_bind  # type: ignore[method-assign]
+    inst_svc._uow.session.commit = boom_bind  # type: ignore[method-assign]
     inst_svc._repo.get_by_character_id = get_char  # type: ignore[method-assign]
     try:
         with pytest.raises(CharacterAlreadyBoundError):
             await inst_svc.bind_character(iid, char.id)
     finally:
-        inst_svc._session.commit = orig_commit
+        inst_svc._uow.session.commit = orig_commit
         inst_svc._repo.get_by_character_id = orig_get
 
 
@@ -226,7 +226,7 @@ async def test_viewmodel_edges(async_session, qapp):
     unloaded = CharacterSheetViewModel(svc)
     await unloaded.save()
     unloaded.drag_move_selection(0, 0, 0, 0)
-    unloaded.commit_drag_selection(0, 0, 0, 0)
+    unloaded.apply_drag_selection(0, 0, 0, 0)
     unloaded.begin_gesture()
     unloaded.redo()
     unloaded.undo()
@@ -312,10 +312,10 @@ async def test_viewmodel_edges(async_session, qapp):
     vm.paste(visible_center=(40.0, 40.0))
     vm.select(fid)
     vm.begin_gesture()
-    vm.commit_drag_selection(10, PAGE_HEIGHT_PT + GUTTER_PT / 2, 0, 0)
+    vm.apply_drag_selection(10, PAGE_HEIGHT_PT + GUTTER_PT / 2, 0, 0)
     vm.select(fid)
     vm.begin_gesture()
-    vm.commit_drag_selection(10, 20, 0, 0)
+    vm.apply_drag_selection(10, 20, 0, 0)
     vm.select(fid)
     vm.drag_move_selection(20, 30, 0, 0)
     vm.select_ids([])
@@ -329,18 +329,18 @@ async def test_viewmodel_edges(async_session, qapp):
     vm.duplicate()
     vm.open_inline(fid)
     vm.set_content(fid, "1")
-    vm.commit_inline()
-    vm._undo_stack = [vm._layout_snapshot() for _ in range(UNDO_STACK_LIMIT)]
+    vm.apply_inline()
+    vm._history._undo[:] = [vm._layout_snapshot() for _ in range(UNDO_STACK_LIMIT)]
     vm.open_inline(fid)
     vm.set_content(fid, "2")
-    vm.commit_inline()
+    vm.apply_inline()
     vm._template = None
     vm.undo()
     vm.redo()
     vm.begin_gesture()
     vm._refresh_dirty()
     vm._selected_ids = ["ghost"]
-    vm.commit_drag_selection(1, 1, 0, 0)
+    vm.apply_drag_selection(1, 1, 0, 0)
 
 
 async def test_fill_dialog_and_panels(async_session, qapp, monkeypatch, tmp_path):

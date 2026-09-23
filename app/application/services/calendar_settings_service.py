@@ -42,6 +42,9 @@ the ``calendar_wizard_seen`` flag text for the presentation's first-entry
 check; :meth:`promote_draft` raises a finished assembly to the active
 calendar — record transfer, settings overwrite, draft deletion and the
 optional «seen» flag in one transaction, activation after the commit.
+Since nri-0005 wave 1 :meth:`record_names` also resolves the display names
+a shift report touches, so the wizard's view model keeps no direct DB read
+of its own.
 """
 from __future__ import annotations
 
@@ -55,17 +58,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.date_era import era_key
 from app.domain.game_calendar import (
-    CALENDAR_DRAFT_KEY,
-    CALENDAR_SETTINGS_KEY,
-    CALENDAR_WIZARD_SEEN_KEY,
-    CALENDAR_WIZARD_SEEN_YES,
     DEFAULT_MONTH_NAMES,
-    CalendarCorrupted,
-    CalendarDecoded,
-    CalendarDraft,
     DateField,
-    DraftCorrupted,
-    DraftDecoded,
     GameCalendar,
     GameCoord,
     MonthDay,
@@ -75,23 +69,39 @@ from app.domain.game_calendar import (
     StandardCalendar,
     build_shift_report,
     current_calendar,
+    set_current_calendar,
+)
+from app.infrastructure.calendar_storage import (
+    CalendarCorrupted,
+    CalendarDecoded,
+    CalendarDraft,
+    DraftCorrupted,
+    DraftDecoded,
     decode_calendar,
     decode_draft,
     encode_calendar,
     encode_coord,
     encode_draft,
-    set_current_calendar,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    CALENDAR_DRAFT_KEY,
+    CALENDAR_SETTINGS_KEY,
+    CALENDAR_WIZARD_SEEN_KEY,
+    CALENDAR_WIZARD_SEEN_NO,
+    CALENDAR_WIZARD_SEEN_YES,
 )
 from app.infrastructure.db.models import (
     CharacterModel,
     EventModel,
-    GameSettingsModel,
     ItemModel,
     LocationModel,
     OrganizationModel,
     RatingModel,
     assign_coord,
     resolve_coord,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    GameSettingsRepository,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -181,30 +191,31 @@ class CalendarSettingsService:
         :attr:`LoadOutcome.reasons` (the row's own data must survive a manual
         DB edit, so the service never fixes it here).
         """
-        game_row = await self._get_setting(session, CALENDAR_SETTINGS_KEY)
-        legacy_row = await self._get_setting(session, LEGACY_MONTHS_KEY)
+        settings = GameSettingsRepository(session)
+        game_value = await settings.get(CALENDAR_SETTINGS_KEY)
+        legacy_value = await settings.get(LEGACY_MONTHS_KEY)
 
         reasons: tuple[SpecProblem, ...] = ()
-        if game_row is not None:
-            if legacy_row is not None:
+        if game_value is not None:
+            if legacy_value is not None:
                 # D3: the new key wins; the deprecated one goes either way.
-                await session.delete(legacy_row)
+                await settings.delete(LEGACY_MONTHS_KEY)
                 await session.commit()
-            decoded = decode_calendar(game_row.value)
+            decoded = decode_calendar(game_value)
             if isinstance(decoded, CalendarCorrupted):
                 reasons = decoded.reasons
                 _LOGGER.warning(
                     "Ignoring corrupted %s setting (%s): %s",
                     CALENDAR_SETTINGS_KEY,
                     "; ".join(f"{p.code}: {p.message}" for p in reasons),
-                    game_row.value,
+                    game_value,
                 )
                 calendar: GameCalendar = StandardCalendar()
             else:
                 assert isinstance(decoded, CalendarDecoded)
                 calendar = decoded.calendar
-        elif legacy_row is not None:
-            calendar = await self._migrate_legacy_months(session, legacy_row)
+        elif legacy_value is not None:
+            calendar = await self._migrate_legacy_months(session, legacy_value)
         else:
             # Old game without either key: preset, and no key is written
             # "just in case" (spec «Старая игра без ключа»).
@@ -214,13 +225,14 @@ class CalendarSettingsService:
         return LoadOutcome(calendar=calendar, reasons=reasons)
 
     async def _migrate_legacy_months(
-        self, session: AsyncSession, legacy_row: GameSettingsModel
+        self, session: AsyncSession, legacy_value: str
     ) -> StandardCalendar:
         """One-shot ``custom_months`` → ``game_calendar`` transfer (design D3)."""
-        months = _decode_legacy_months(legacy_row.value)
+        settings = GameSettingsRepository(session)
+        months = _decode_legacy_months(legacy_value)
         if months is None:
             _LOGGER.warning(
-                "Dropping unreadable %s setting: %r", LEGACY_MONTHS_KEY, legacy_row.value
+                "Dropping unreadable %s setting: %r", LEGACY_MONTHS_KEY, legacy_value
             )
         else:
             overrides = {
@@ -229,44 +241,13 @@ class CalendarSettingsService:
                 if DEFAULT_MONTH_NAMES.get(number) != name
             }
             if overrides:
-                session.add(
-                    GameSettingsModel(
-                        key=CALENDAR_SETTINGS_KEY,
-                        value=encode_calendar(
-                            StandardCalendar(month_names=overrides)
-                        ),
-                    )
+                await settings.upsert(
+                    CALENDAR_SETTINGS_KEY,
+                    encode_calendar(StandardCalendar(month_names=overrides)),
                 )
-        await session.delete(legacy_row)
+        await settings.delete(LEGACY_MONTHS_KEY)
         await session.commit()
         return StandardCalendar(month_names=months)
-
-    @staticmethod
-    async def _get_setting(
-        session: AsyncSession, key: str
-    ) -> GameSettingsModel | None:
-        result = await session.execute(
-            select(GameSettingsModel).where(GameSettingsModel.key == key)
-        )
-        return result.scalars().first()
-
-    async def _upsert_setting(
-        self, session: AsyncSession, key: str, value: str
-    ) -> None:
-        """Write ``key`` through the row that may already exist (the C4
-        overwrite also cures a corrupted stored value — design D9: an
-        existing row simply receives the new text)."""
-        row = await self._get_setting(session, key)
-        if row is None:
-            session.add(GameSettingsModel(key=key, value=value))
-        else:
-            row.value = value
-
-    async def _delete_setting(self, session: AsyncSession, key: str) -> None:
-        """Delete ``key`` when present; an absent key is a silent no-op."""
-        row = await self._get_setting(session, key)
-        if row is not None:
-            await session.delete(row)
 
     # ── C4: wizard draft and wizard-seen flag (designs D6/D9) ─────────────
 
@@ -280,16 +261,16 @@ class CalendarSettingsService:
         damaged ``game_calendar``).  The draft never enters the active
         calendar: this is a plain read for the wizard flow only (task 4.5).
         """
-        row = await self._get_setting(session, CALENDAR_DRAFT_KEY)
-        if row is None:
+        raw = await GameSettingsRepository(session).get(CALENDAR_DRAFT_KEY)
+        if raw is None:
             return None
-        decoded = decode_draft(row.value)
+        decoded = decode_draft(raw)
         if isinstance(decoded, DraftCorrupted):
             _LOGGER.warning(
                 "Ignoring corrupted %s setting (%s): %r",
                 CALENDAR_DRAFT_KEY,
                 "; ".join(f"{p.code}: {p.message}" for p in decoded.reasons),
-                row.value,
+                raw,
             )
             return None
         assert isinstance(decoded, DraftDecoded)
@@ -299,22 +280,54 @@ class CalendarSettingsService:
         """Persist the wizard's draft after a passed stage (design D6): the
         assembled spec runs through the codec's gate, so only a spec that
         itself validates is ever stored; a previous draft is overwritten."""
-        await self._upsert_setting(session, CALENDAR_DRAFT_KEY, encode_draft(draft))
+        # The overwrite also cures a corrupted stored value — design D9: an
+        # existing row simply receives the new text (repository upsert).
+        await GameSettingsRepository(session).upsert(
+            CALENDAR_DRAFT_KEY, encode_draft(draft)
+        )
         await session.commit()
 
     async def discard_draft(self, session: AsyncSession) -> None:
         """Drop the draft — the wizard finished with it (cancelled flow or,
         atomically inside :meth:`promote_draft`, a promotion)."""
-        await self._delete_setting(session, CALENDAR_DRAFT_KEY)
+        await GameSettingsRepository(session).delete(CALENDAR_DRAFT_KEY)
         await session.commit()
+
+    # ── first-entry wizard status (task 6.3, design D6) ──────────────────────
+
+    async def wizard_should_open_on_start(self, session: AsyncSession) -> bool:
+        """Whether the startup flow must run the first-entry modal.
+
+        Pure status read of the wizard-seen flag (spec «Мастер первого
+        запуска»): only the seeded «не показан» value opens it, an old
+        keyless game and a shown game both do not (a live draft never
+        suppresses the modal — draft continuation is the menu wizard's).
+        """
+        return await self.load_wizard_seen(session) == CALENDAR_WIZARD_SEEN_NO
+
+    async def finish_first_run_flow(self, session: AsyncSession) -> None:
+        """Post-close status step of the first-entry modal (task 6.3): a
+        draft left behind keeps the flag at «не показан» so the next launch
+        calls the wizard back (spec «Брошенный черновик зовёт обратно»); an
+        already-shown flag means the modal applied something itself; anything
+        else is the close-as-preset application — «Стандартный» promoted with
+        the wizard marked shown (trivial transaction over a new game).
+        """
+        if await self.load_draft(session) is not None:
+            return  # abandoned draft: the flag stays «не показан»
+        if await self.load_wizard_seen(session) == CALENDAR_WIZARD_SEEN_YES:
+            return  # the modal applied inside its own flow
+        await self.promote_draft(
+            session, StandardCalendar(), mark_wizard_seen=True,
+        )
 
     async def load_wizard_seen(self, session: AsyncSession) -> str | None:
         """The raw ``calendar_wizard_seen`` text, or ``None`` for an old game
         created before the wizard existed (that absence itself means "never
-        auto-show" — spec «Флаг просмотра мастера календаря»).  Presentation
-        compares against ``CALENDAR_WIZARD_SEEN_NO``; nothing here decides."""
-        row = await self._get_setting(session, CALENDAR_WIZARD_SEEN_KEY)
-        return row.value if row is not None else None
+        auto-show" — spec «Флаг просмотра мастера календаря»).  The
+        comparison against ``CALENDAR_WIZARD_SEEN_NO`` moved here with the
+        first-run status methods (task 6.3)."""
+        return await GameSettingsRepository(session).get(CALENDAR_WIZARD_SEEN_KEY)
 
     async def promote_draft(
         self,
@@ -341,15 +354,14 @@ class CalendarSettingsService:
         """
         checks, rows = await self._collect_checks(session)
         report = build_shift_report(checks, calendar)
+        settings = GameSettingsRepository(session)
         try:
             await self._write_applied_storage(session, rows, calendar, report)
-            await self._upsert_setting(
-                session, CALENDAR_SETTINGS_KEY, encode_calendar(calendar)
-            )
-            await self._delete_setting(session, CALENDAR_DRAFT_KEY)
+            await settings.upsert(CALENDAR_SETTINGS_KEY, encode_calendar(calendar))
+            await settings.delete(CALENDAR_DRAFT_KEY)
             if mark_wizard_seen:
-                await self._upsert_setting(
-                    session, CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_YES
+                await settings.upsert(
+                    CALENDAR_WIZARD_SEEN_KEY, CALENDAR_WIZARD_SEEN_YES
                 )
             await session.commit()
         except Exception:
@@ -493,6 +505,28 @@ class CalendarSettingsService:
             raise
         session.expire_all()  # the straight UPDATEs skipped the identity map
         return report
+
+    async def record_names(
+        self, session: AsyncSession, report: ShiftReport
+    ) -> dict[tuple[str, int], str]:
+        """Display names of the records one report touches — one ``GET`` per
+        distinct row of the (already traversed) report, keys ``(table, id)``.
+
+        Rows without a (non-empty) name are absent from the result; how they
+        get captioned instead (``«<таблица> №<id>»``) is the report screen's
+        presentation business.  The read moved out of
+        ``CalendarWizardViewModel`` with nri-0005 wave 1 — the presentation
+        layer must not touch ORM models or sessions directly.
+        """
+        names: dict[tuple[str, int], str] = {}
+        for table, row_id in sorted({(e.table, e.row_id) for e in report.records}):
+            row = await session.get(_ERA_MODELS[table], row_id)
+            if row is None:
+                continue
+            name = getattr(row, "name", None)
+            if name:
+                names[(table, row_id)] = name
+        return names
 
     @staticmethod
     async def _write_applied_storage(

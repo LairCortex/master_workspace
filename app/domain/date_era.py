@@ -24,6 +24,7 @@ normalization).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -51,6 +52,24 @@ def _gregorian_key(d: date, is_bc: bool = False) -> int:
     return d.toordinal()
 
 
+#: Resolution strategy injected once by ``app.domain.game_calendar`` at its
+#: module import: maps a (coordinate, is_bc) pair through the ACTIVE game
+#: calendar.  ``game_calendar`` imports this module top-level, so the former
+#: lazy ``date_era ↔ game_calendar`` cycle is gone — the dependency is now
+#: passed explicitly instead of imported back inside ``era_key`` (wave-6,
+#: task 6.7; audit finding «скрытая связанность» in docs/refactoring-audit.md).
+_ERA_KEY_RESOLVER: Callable[[GameCoord | date, bool], int] | None = None
+
+
+def bind_era_key_resolver(resolver: Callable[[GameCoord | date, bool], int]) -> None:
+    """Install the calendar dispatch used by :func:`era_key`.
+
+    Called by ``app.domain.game_calendar`` when it loads; importing the
+    calendar module is the one requirement of using the dispatcher."""
+    global _ERA_KEY_RESOLVER
+    _ERA_KEY_RESOLVER = resolver
+
+
 def era_key(coord: GameCoord | date, is_bc: bool = False) -> int:
     """Chronological key of a (coordinate, era) pair through the active calendar.
 
@@ -59,16 +78,17 @@ def era_key(coord: GameCoord | date, is_bc: bool = False) -> int:
     numbers, so every pre-C3a call keeps its bit-identical result.  A
     coordinate absent from the active calendar (e.g. an intercalary day
     under the standard preset) is refused by the calendar's own
-    ``InvalidGameDateError`` — no silent normalization.
+    ``InvalidGameDateError`` — no silent normalization.  The coercion and
+    dispatch themselves live in ``game_calendar`` and arrive through
+    :func:`bind_era_key_resolver` (task 6.7), so this module keeps no import
+    edge of its own into the calendar.
     """
-    # Lazy import breaks the load-order cycle: game_calendar imports this
-    # module at module level, so importing it back here is the one edge that
-    # must stay inside the function (documented in design D2).
-    from app.domain.game_calendar import MonthDay, current_calendar
-
-    if isinstance(coord, date):
-        coord = MonthDay(coord.year, coord.month, coord.day)
-    return current_calendar().to_key(coord, is_bc)
+    if _ERA_KEY_RESOLVER is None:
+        raise RuntimeError(
+            "the era-key calendar resolver is not bound — import "
+            "app.domain.game_calendar before using era_key"
+        )
+    return _ERA_KEY_RESOLVER(coord, is_bc)
 
 
 def cmp_era_dates(

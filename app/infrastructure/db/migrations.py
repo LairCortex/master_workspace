@@ -15,11 +15,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.game_calendar import (
+    StandardCalendar,
+)
+from app.infrastructure.calendar_storage import (
+    encode_calendar,
+)
+from app.infrastructure.repositories.game_settings_repository import (
     CALENDAR_SETTINGS_KEY,
     CALENDAR_WIZARD_SEEN_KEY,
     CALENDAR_WIZARD_SEEN_NO,
-    StandardCalendar,
-    encode_calendar,
 )
 from app.infrastructure.db.models import Base, CharacterModel, LocationModel, OrganizationModel
 from app.infrastructure.images.store import ImageStore

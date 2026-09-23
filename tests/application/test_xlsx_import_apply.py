@@ -27,6 +27,7 @@ from PySide6.QtWidgets import QApplication
 from sqlalchemy import func, select
 
 from app.application.services.xlsx_import_service import LINK_TO_DB, XlsxImportService
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.db.database import create_engine, create_session_factory
 from app.infrastructure.db import models
 from app.infrastructure.db.models import (
@@ -111,8 +112,8 @@ class TestPass1Entities:
                  [["Парк", "1700-01-01", None, "Х-Л", "Б-Л", "Т2"]])
         _sheet(wb, "Организации", full, [["Цех", "1750-01-01", None, "Х-О", "Б-О"]])
         _sheet(wb, "Предметы", full, [["Амулет", "1600-01-01", None, "Х-П", "Б-П"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert (report.created, report.updated) == (5, 0)
         event = await _one(async_session, EventModel, name="Бал")
@@ -131,9 +132,9 @@ class TestPass1Entities:
     ):
         wb = _new_workbook()
         _sheet(wb, "События", CHAR_HEADERS + ["Рейтинг"], [["Бал", "1815-01-10", 4]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         assert plan.planned_rows[0].fields["rating"] == 4  # carried by the plan
-        report = await _svc().apply_plan(plan, async_session)
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert report.created == 1
         event = await _one(async_session, EventModel, name="Бал")
         assert not hasattr(event, "rating")  # the events model has no rating field
@@ -144,8 +145,8 @@ class TestPass1Entities:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS + ["Рейтинг"], [["Иван", "2001-01-01", 3]])
         _sheet(wb, "Предметы", CHAR_HEADERS + ["Рейтинг"], [["Амулет", "2001-01-01", 5]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert (await _one(async_session, CharacterModel, name="Иван")).rating == 3
         assert (await _one(async_session, ItemModel, name="Амулет")).rating == 5
 
@@ -158,8 +159,8 @@ class TestPass1Entities:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS + ["Дата конца", "Характеристики"],
                  [["уникал", "1901-02-02", None, "новые"]])  # Дата конца/Предыстория пустые
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert (report.created, report.updated) == (0, 1)
         assert await _count(async_session, CharacterModel) == 1  # no duplicate row
@@ -181,8 +182,8 @@ class TestPass1Entities:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS + ["Характеристики", "Предыстория"],
                [["уникал", "1901-02-02", "новые", "новая"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert (report.created, report.updated) == (0, 1)
         char = await async_session.get(CharacterModel, existing.id)
@@ -197,8 +198,8 @@ class TestPass1Entities:
         await async_session.flush()
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["Иван", "2001-01-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert (report.created, report.updated) == (1, 0)
         assert await _count(async_session, CharacterModel) == 3
 
@@ -212,8 +213,8 @@ class TestPass1Entities:
                    ["Бал", "1820-05-01", None, "Амулет"],
                    ["Охота", "1815-01-10", "1816-06-01", "Амулет"],
                ])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert report.created == 3  # two events + one ghost item
         item = await _one(async_session, ItemModel, name="Амулет")
@@ -229,8 +230,8 @@ class TestPass1Entities:
         wb = _new_workbook()
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами"],
                [["Бал", "1820-05-01", "Амулет"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         decision, = report.decisions
         assert "Амулет" in decision
         assert "1820-05-01" in decision
@@ -243,8 +244,8 @@ class TestPass1Entities:
         wb = _new_workbook()
         _sheet(wb, "Персонажи", ["Имя", "Дата начала", "Дата конца", "Связь событиями"],
                [["Иван", "1800-01-01", "1850-01-01", "Тайна"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         ghost = await _one(async_session, EventModel, name="Тайна")
         assert (ghost.start_date, ghost.end_date) == (date(1800, 1, 1), date(1850, 1, 1))
         assert any("Тайна" in d for d in report.decisions)
@@ -259,8 +260,8 @@ class TestPass1Entities:
                [["Амулет", "1800-01-01", "Бал"]])
         _sheet(wb, "События", CHAR_HEADERS + ["Связь предметами"],
                [["Бал", "1820-05-01", "Амулет"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         # Both referencing rows are honoured; the second one sees the edge
         # already established from the other side and deduplicates it.
         assert report.links == 1
@@ -289,8 +290,8 @@ class TestPass1EventTypes:
     ):
         await self._seed_types(async_session, ("Битва", 1), ("Пир", 2), ("Свадьба", 3))
         path = await self._one_event_row_wb(tmp_path, "Дуэль")
-        plan = await _svc().analyze_file(path, async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(path, GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         duel = await _one(async_session, EventTypeModel, name="Дуэль")
         assert duel.color_index == 4        # smallest free index of 1..8
@@ -305,8 +306,8 @@ class TestPass1EventTypes:
         wb = _new_workbook()
         _sheet(wb, "События", CHAR_HEADERS + ["Тип"],
                [["Бал", "1815-01-10", "Дуэль"], ["Охота", "1815-02-10", "Маскарад"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
         duel = await _one(async_session, EventTypeModel, name="Дуэль")
         mask = await _one(async_session, EventTypeModel, name="Маскарад")
         assert {duel.color_index, mask.color_index} == {1, 2}
@@ -315,8 +316,8 @@ class TestPass1EventTypes:
     async def test_all_colors_taken_cycles_into_palette_range(self, tmp_path, async_session):
         await self._seed_types(async_session, *[(f"T{i}", i) for i in range(1, 9)])
         path = await self._one_event_row_wb(tmp_path, "Дуэль")
-        plan = await _svc().analyze_file(path, async_session)
-        await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(path, GameSessionUoW(async_session))
+        await _svc().apply_plan(plan, GameSessionUoW(async_session))
         duel = await _one(async_session, EventTypeModel, name="Дуэль")
         assert 1 <= duel.color_index <= 8
         assert duel.color_index == 1  # rotate past the highest used (8 % 8) + 1
@@ -324,8 +325,8 @@ class TestPass1EventTypes:
     async def test_existing_type_reused_case_insensitively(self, tmp_path, async_session):
         await self._seed_types(async_session, ("дуэль", 3))
         path = await self._one_event_row_wb(tmp_path, "Дуэль")
-        plan = await _svc().analyze_file(path, async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(path, GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert await _count(async_session, EventTypeModel) == 1
         assert report.decisions == []
         ball = await _one(async_session, EventModel, name="Бал")
@@ -335,8 +336,8 @@ class TestPass1EventTypes:
         async_session.add(EventModel(name="Бал", start_date=date(1700, 1, 1)))
         await async_session.flush()
         path = await self._one_event_row_wb(tmp_path, "Дуэль")
-        plan = await _svc().analyze_file(path, async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(path, GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert (report.created, report.updated) == (0, 1)
         ball = await _one(async_session, EventModel, name="Бал")
         assert ball.event_type.name == "Дуэль"
@@ -368,8 +369,8 @@ class TestPass2Links:
         _sheet(wb, "Локации", ["Имя", "Дата начала"], [["Л", "2000-01-01"]])
         _sheet(wb, "Предметы", ["Имя", "Дата начала", "Связь локациями"],
                [["П", "2000-01-01", "Л"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
         assert report.created == 5
         assert report.links == 10
@@ -386,8 +387,8 @@ class TestPass2Links:
                [["Е", "2000-01-01", "Ч"]])
         _sheet(wb, "Персонажи", ["Имя", "Дата начала", "Связь событиями"],
                [["Ч", "2000-01-01", "Е"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert report.links == 1
         assert (await async_session.execute(
             select(func.count()).select_from(models.event_character)
@@ -411,7 +412,8 @@ class TestPass2Links:
         path = _save(tmp_path, wb)
 
         report = await _svc().apply_plan(
-            await _svc().analyze_file(path, async_session), async_session
+            await _svc().analyze_file(path, GameSessionUoW(async_session)),
+            GameSessionUoW(async_session),
         )
         assert report.updated == 1
         assert report.links == 1  # only Иван is new, Пётр already linked
@@ -424,7 +426,8 @@ class TestPass2Links:
 
         # Повторный импорт того же файла: ничего не отвязывается и не дублируется.
         report2 = await _svc().apply_plan(
-            await _svc().analyze_file(path, async_session), async_session
+            await _svc().analyze_file(path, GameSessionUoW(async_session)),
+            GameSessionUoW(async_session),
         )
         assert report2.links == 0
         assert (await async_session.execute(
@@ -440,8 +443,8 @@ class TestPass2Links:
         wb = _new_workbook()
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами"],
                [["Бал", "1820-05-01", "фонарь"]])  # LINK_TO_DB, case-insensitive
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert report.links == 1
         ball = await _one(async_session, EventModel, name="Бал")
         assert [i.id for i in ball.items] == [item.id]
@@ -457,14 +460,14 @@ class TestPass2Links:
         wb = _new_workbook()
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь предметами"],
                [["Бал", "1820-05-01", "фонарь"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         ref = plan.lookup_row("event", "Бал").links["item"][0]
         assert ref.resolution == LINK_TO_DB and ref.db_id == item.id
 
         await async_session.delete(item)
         await async_session.flush()
 
-        report = await _svc().apply_plan(plan, async_session)
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert (report.created, report.links) == (1, 0)
         warning, = report.warnings
         assert "«фонарь»" in warning and "цель связи" in warning
@@ -475,8 +478,8 @@ class TestPass2Links:
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь персонажами"],
                [["Бал", None, "Иван"], ["Охота", "1815-01-10", "Мария"]])
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["Иван", "1800-01-01"], ["Мария", "1800-01-01"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
-        report = await _svc().apply_plan(plan, async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert report.created == 3  # one event + both characters
         assert report.links == 1
         assert [i.sheet for i in report.skipped] == ["События"]
@@ -491,23 +494,27 @@ class TestTransaction:
         _sheet(wb, "События", ["Имя", "Дата начала", "Связь персонажами"],
                [["Бал", "1820-05-01", "Иван"]])
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["Иван", "1800-01-01"]])
-        return await _svc().analyze_file(_save(tmp_path, wb), session)
+        return await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(session))
 
     async def test_success_commits_exactly_once_and_rolls_back_nothing(
-        self, tmp_path, async_session
+        self, tmp_path, async_session, monkeypatch
     ):
+        # Since task 5.11 the finish is the GameSessionUoW's — the spies now
+        # sit on the session the unit runs over (what the dropped callback
+        # parameters used to intercept).
         commits, rollbacks = [], []
-        async def commit():
+        real_commit, real_rollback = async_session.commit, async_session.rollback
+        async def spy_commit():
             commits.append(True)
-            await async_session.commit()
-        async def rollback():
+            await real_commit()
+        async def spy_rollback():
             rollbacks.append(True)
-            await async_session.rollback()
+            await real_rollback()
+        monkeypatch.setattr(async_session, "commit", spy_commit)
+        monkeypatch.setattr(async_session, "rollback", spy_rollback)
 
         plan = await self._plan(tmp_path, async_session)
-        report = await _svc().apply_plan(
-            plan, async_session, commit=commit, rollback=rollback
-        )
+        report = await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert commits == [True] and rollbacks == []
         assert (report.created, report.links) == (2, 1)
         # The data is visible through the same (now committed) session.
@@ -518,13 +525,18 @@ class TestTransaction:
         )).scalar() == 1
 
     async def test_failure_in_pass_2_rolls_everything_back(self, tmp_path, async_session, monkeypatch):
+        # The unit of work owns the finish since task 5.11 — the spies moved
+        # from the removed callback parameters onto that session.
         commits, rollbacks = [], []
-        async def commit():
+        real_commit, real_rollback = async_session.commit, async_session.rollback
+        async def spy_commit():
             commits.append(True)
-            await async_session.commit()
-        async def rollback():
+            await real_commit()
+        async def spy_rollback():
             rollbacks.append(True)
-            await async_session.rollback()
+            await real_rollback()
+        monkeypatch.setattr(async_session, "commit", spy_commit)
+        monkeypatch.setattr(async_session, "rollback", spy_rollback)
 
         svc = _svc()
         async def boom(ref, instances, session):
@@ -533,7 +545,7 @@ class TestTransaction:
 
         plan = await self._plan(tmp_path, async_session)
         with pytest.raises(RuntimeError, match="сбой"):
-            await svc.apply_plan(plan, async_session, commit=commit, rollback=rollback)
+            await svc.apply_plan(plan, GameSessionUoW(async_session))
 
         assert commits == [] and rollbacks == [True]
         # База остаётся в состоянии до импорта (spec «Откат при сбое»).
@@ -550,7 +562,7 @@ class TestTransaction:
         await async_session.flush()
         wb = _new_workbook()
         _sheet(wb, "Персонажи", CHAR_HEADERS, [["уникал", "1901-02-02"]])
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         assert plan.lookup_row("character", "уникал").is_update
 
         await async_session.delete(existing)
@@ -558,29 +570,38 @@ class TestTransaction:
         async_session.expunge_all()  # никаких ответов из identity map
 
         with pytest.raises(ValueError, match="исчезла из базы"):
-            await _svc().apply_plan(plan, async_session)
+            await _svc().apply_plan(plan, GameSessionUoW(async_session))
 
     async def test_fatal_plan_is_refused_without_touching_the_database(
-        self, tmp_path, async_session
+        self, tmp_path, async_session, monkeypatch
     ):
         commits = []
-        async def commit():
+        real_commit = async_session.commit
+        async def spy_commit():
             commits.append(True)
-            await async_session.commit()
+            await real_commit()
+        monkeypatch.setattr(async_session, "commit", spy_commit)
 
         wb = _new_workbook()
         _sheet(wb, "Персонажи", ["Дата начала"], [[date(2001, 1, 1)]])  # no «Имя»
-        plan = await _svc().analyze_file(_save(tmp_path, wb), async_session)
+        plan = await _svc().analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
         with pytest.raises(ValueError, match="Импорт невозможен"):
-            await _svc().apply_plan(plan, async_session, commit=commit)
+            await _svc().apply_plan(plan, GameSessionUoW(async_session))
         assert commits == []
         assert await _count(async_session, CharacterModel) == 0
 
-    async def test_progress_counts_all_units_and_ends_at_total(self, tmp_path, async_session):
+    async def test_progress_counts_all_units_and_ends_at_total(
+        self, tmp_path, async_session
+    ):
         plan = await self._plan(tmp_path, async_session)  # 2 entities + 1 link
         calls: list[tuple[int, int]] = []
-        await _svc().apply_plan(plan, async_session,
-                                progress_callback=lambda done, total: calls.append((done, total)))
+
+        def on_progress(done: int, total: int) -> None:
+            calls.append((done, total))
+
+        await _svc().apply_plan(
+            plan, GameSessionUoW(async_session), progress_callback=on_progress
+        )
         assert calls[-1] == (3, 3)
 
     async def test_committed_data_visible_to_a_fresh_session_and_engine(
@@ -602,8 +623,8 @@ class TestTransaction:
             await conn.run_sync(Base.metadata.create_all)
         factory = create_session_factory(engine)
         async with factory() as session:
-            plan = await _svc().analyze_file(path, session)
-            report = await _svc().apply_plan(plan, session)
+            plan = await _svc().analyze_file(path, GameSessionUoW(session))
+            report = await _svc().apply_plan(plan, GameSessionUoW(session))
             assert report.created == 3 and report.links == 2
         await engine.dispose()
 
@@ -649,8 +670,8 @@ class TestImages:
         store = ImageStore(async_session, tmp_path / "images")
         svc = _svc(image_store=store)
         path = _char_image_wb(tmp_path, cell_value)
-        plan = await svc.analyze_file(path, async_session)
-        report = await svc.apply_plan(plan, async_session)
+        plan = await svc.analyze_file(path, GameSessionUoW(async_session))
+        report = await svc.apply_plan(plan, GameSessionUoW(async_session))
         return store, report, await _one(async_session, CharacterModel, name="Иван")
 
     async def test_relative_path_ingested(self, tmp_path, async_session, qapp):
@@ -683,8 +704,8 @@ class TestImages:
     ):
         (tmp_path / "p.png").write_bytes(_png_bytes())
         svc = _svc()  # ImageStore не подключён — колонка «Изображение» не игнорируется молча
-        plan = await svc.analyze_file(_char_image_wb(tmp_path, "p.png"), async_session)
-        report = await svc.apply_plan(plan, async_session)
+        plan = await svc.analyze_file(_char_image_wb(tmp_path, "p.png"), GameSessionUoW(async_session))
+        report = await svc.apply_plan(plan, GameSessionUoW(async_session))
         assert report.created == 1
         assert (await _one(async_session, CharacterModel, name="Иван")).image_id is None
         warning, = report.warnings
@@ -723,10 +744,89 @@ class TestImages:
         new_bytes = _png_bytes(50, 50, color=Qt.GlobalColor.blue)
         (tmp_path / "new.png").write_bytes(new_bytes)
         svc = _svc(image_store=store)
-        plan = await svc.analyze_file(_char_image_wb(tmp_path, "new.png"), async_session)
-        report = await svc.apply_plan(plan, async_session)
+        plan = await svc.analyze_file(_char_image_wb(tmp_path, "new.png"), GameSessionUoW(async_session))
+        report = await svc.apply_plan(plan, GameSessionUoW(async_session))
 
         assert report.updated == 1 and report.warnings == []
         assert char.image_id is not None and char.image_id != old_id
         # Post-commit GC: the replaced, unreferenced image row is reclaimed.
         assert await async_session.get(ImageModel, old_id) is None
+
+    async def test_failing_post_commit_gc_keeps_the_import_successful(
+        self, tmp_path, async_session, qapp, monkeypatch, caplog
+    ):
+        """Audit Q14 scenario 4, task 5.5: the post-commit image collector run
+        outside the apply transaction's try, so its crash turned a fully
+        committed import into «импорт не удался». It now has its own try and
+        only logs; the report still reaches the user."""
+        store = ImageStore(async_session, tmp_path / "images")
+        old_id = await store.store(_png_bytes(color=Qt.GlobalColor.red))
+        char = CharacterModel(name="Иван", start_date=date(1900, 1, 1))
+        char.image_id = old_id
+        async_session.add(char)
+        await async_session.flush()
+
+        new_bytes = _png_bytes(50, 50, color=Qt.GlobalColor.blue)
+        (tmp_path / "new.png").write_bytes(new_bytes)
+        svc = _svc(image_store=store)
+        plan = await svc.analyze_file(_char_image_wb(tmp_path, "new.png"), GameSessionUoW(async_session))
+
+        async def exploding_gc(*old_image_ids):
+            raise RuntimeError("gc went boom")
+
+        monkeypatch.setattr(store, "gc_after_commit", exploding_gc)
+
+        report = await svc.apply_plan(plan, GameSessionUoW(async_session))  # must NOT raise
+
+        assert report.updated == 1 and report.warnings == []
+        # The update landed and stayed committed.
+        refetched = await _one(async_session, CharacterModel, name="Иван")
+        assert refetched.image_id is not None and refetched.image_id != old_id
+        # The collector's crash is reported to the log only.
+        assert "gc went boom" in caplog.text
+
+    async def test_checksum_collision_mid_import_keeps_created_rows(
+        self, tmp_path, async_session, qapp, monkeypatch
+    ):
+        """Audit Q14 scenario 2 (task 5.3): a duplicate-``sha256`` crash in
+        ``ImageStore`` used to roll back the whole shared session — every row
+        the import had accumulated up to that point silently vanished while
+        the report still claimed success. The savepoint containment must keep
+        those rows: the import ends fully written."""
+        data = _png_bytes()
+        (tmp_path / "shared.png").write_bytes(data)
+
+        store = ImageStore(async_session, tmp_path / "images")
+        committed_id = await store.store(data)  # row already in the DB
+        await async_session.commit()
+
+        # Force the TOCTOU window during the import's first existence check,
+        # so the ingest collides on the UNIQUE sha256 for real.
+        real_get_by_sha = store._get_by_sha
+        call_count = {"n": 0}
+
+        async def blind_first_check(sha256):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None
+            return await real_get_by_sha(sha256)
+
+        monkeypatch.setattr(store, "_get_by_sha", blind_first_check)
+
+        wb = _new_workbook()
+        _sheet(wb, "Персонажи", CHAR_HEADERS + ["Изображение"], [
+            ["Пётр", "1900-01-01", ""],
+            ["Марья", "1901-01-01", "shared.png"],
+        ])
+        svc = _svc(image_store=store)
+        plan = await svc.analyze_file(_save(tmp_path, wb), GameSessionUoW(async_session))
+        report = await svc.apply_plan(plan, GameSessionUoW(async_session))
+
+        assert report.created == 2 and report.warnings == []
+        # The row created *before* the collision survived the failed savepoint…
+        assert await _one(async_session, CharacterModel, name="Пётр") is not None
+        # …and the collided content resolved to the existing image row.
+        maria = await _one(async_session, CharacterModel, name="Марья")
+        assert maria.image_id == committed_id
+        assert await _count(async_session, CharacterModel) == 2
+        assert await _count(async_session, ImageModel) == 1

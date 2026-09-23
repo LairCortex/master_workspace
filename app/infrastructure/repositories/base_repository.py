@@ -16,6 +16,18 @@ class BaseRepository(Generic[T]):
         self._session = session
         self._model = model
 
+    # Public read accessors (nri-0005 D1): services need the session for their
+    # own transactional statements and the model for type lookups — the private
+    # attributes stay private, callers go through these properties.
+
+    @property
+    def session(self) -> AsyncSession:
+        return self._session
+
+    @property
+    def model(self) -> Type[T]:
+        return self._model
+
     async def get_by_id(self, entity_id: int) -> T | None:
         stmt = select(self._model).where(self._model.id == entity_id)
         result = await self._session.execute(stmt)

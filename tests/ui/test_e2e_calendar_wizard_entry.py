@@ -30,18 +30,22 @@ from pathlib import Path
 from PySide6.QtCore import QPoint, QRect, QSize
 
 from app.domain.game_calendar import (
-    CALENDAR_DRAFT_KEY,
-    CALENDAR_SETTINGS_KEY,
-    CALENDAR_WIZARD_SEEN_KEY,
-    CalendarDraft,
     CalendarSpec,
     CustomCalendar,
-    DRAFT_STAGE_MONTHS,
     MonthSpec,
     StandardCalendar,
     current_calendar,
+)
+from app.infrastructure.calendar_storage import (
+    CalendarDraft,
+    DRAFT_STAGE_MONTHS,
     encode_calendar,
     encode_draft,
+)
+from app.infrastructure.repositories.game_settings_repository import (
+    CALENDAR_DRAFT_KEY,
+    CALENDAR_SETTINGS_KEY,
+    CALENDAR_WIZARD_SEEN_KEY,
 )
 from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.migrations import init_db

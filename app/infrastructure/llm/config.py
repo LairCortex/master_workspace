@@ -6,7 +6,9 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".nri_manager"
+from app.infrastructure.paths import NRI_MANAGER_DIR
+
+CONFIG_DIR = NRI_MANAGER_DIR
 CONFIG_FILE = CONFIG_DIR / "llm_config.json"
 
 _CONFIG_KEYS = ("base_url", "model", "api_key")
