@@ -168,27 +168,55 @@ class ApplicationWiring:
 
         dialog.image_picked.connect(lambda data: self._spawn(on_image_picked(data)))
 
+    # ── Timeline bridge (wave B3, findings B3/C6) ───────────────────────────
+    # The connector's single point of contact with the window's timeline
+    # scale. Reading ``window.timeline_widget`` lives ONLY here; the two
+    # re-model operations (push the visible sample, move the highlight) go
+    # through the helpers below, so the wiring reads as intent, not as panel
+    # traversal (the law-of-Demeter chains of the old connect() end here).
+
+    @property
+    def _timeline(self):
+        """The timeline scale widget — the one access point."""
+        return self._window.timeline_widget
+
+    def _timeline_update_events(self) -> None:
+        """Push the ViewModel's current visible sample onto the scale."""
+        self._timeline.update_events(self._timeline_vm.events)
+
+    def _timeline_set_selected(self, event_id: int | None) -> None:
+        """Move (or clear with None) the scale's highlight to ``event_id``."""
+        self._timeline.set_selected(event_id)
+
     def connect(self) -> None:
-        """Connect all signals (called once from Application.start)."""
+        """Connect all signals (called once from Application.start).
+
+        Thin dispatcher (wave B3): every wiring area lives in its private
+        ``_connect_*`` section below, called in exactly the linear order the
+        connections took inside the old single-body method.
+        """
+        self._connect_timeline()
+        self._connect_xlsx_import()
+        self._connect_event_types()
+        self._connect_event_dialogs()
+        self._connect_entity_cards()
+        self._connect_search()
+        self._connect_snapshot()
+
+    # ── connect() sections (wave B3) ────────────────────────────────────────
+    # One private section per wiring area. The section order above is the
+    # original per-line connect order; within a section the order is kept too.
+    # Closures shared by several areas are the promoted private handlers in
+    # the next block — every area references the same objects.
+
+    def _connect_timeline(self) -> None:
+        """Timeline widget <-> view models / detail panel signals."""
         window = self._window
         timeline_vm = self._timeline_vm
-        detail_vm = self._detail_vm
-        search_vm = self._search_vm
-        event_service = self._event_service
-        event_dialog_vm = self._event_dialog_vm
 
         # Timeline selection -> detail panel (W3: the signal carries event ids)
-        async def on_event_selected(event_id):
-            timeline_vm.select_event_by_id(event_id)
-            event = timeline_vm.selected_event
-            if event:
-                await detail_vm.load_details(event.id)
-                window.detail_panel.show_event(detail_vm.event)
-            else:
-                window.detail_panel.clear()
-
-        window.timeline_widget.event_selected.connect(
-            lambda event_id: self._spawn(on_event_selected(event_id))
+        self._timeline.event_selected.connect(
+            lambda event_id: self._spawn(self._on_event_selected(event_id))
         )
 
         # «Выбор даты» window (task 7.1): the panel's single window_changed
@@ -198,9 +226,9 @@ class ApplicationWiring:
         # sample.
         def on_window_changed(start, end):
             timeline_vm.window = (start, end)
-            window.timeline_widget.update_events(timeline_vm.events)
+            self._timeline_update_events()
 
-        window.timeline_widget.window_changed.connect(on_window_changed)
+        self._timeline.window_changed.connect(on_window_changed)
 
         # A selection the ViewModel had to prune (the event fell out of the
         # visible set, e.g. after a window move) must leave the detail panel
@@ -209,11 +237,15 @@ class ApplicationWiring:
         def on_selected_event_changed():
             if timeline_vm.selected_event is None:
                 window.detail_panel.clear()
-                window.timeline_widget.set_selected(None)
+                self._timeline_set_selected(None)
 
         timeline_vm.selected_event_changed.connect(on_selected_event_changed)
 
-        # ── XLSX import (rework 4.3): one menu entry, one flow ─────────────
+    def _connect_xlsx_import(self) -> None:
+        """XLSX import (rework 4.3): one menu entry, one flow."""
+        window = self._window
+        timeline_vm = self._timeline_vm
+
         # analyze → (problems in the dialog) → confirm → apply, every step a
         # _spawn task so all of them serialize on the same _session_lock as
         # every other session-touching task. The analyzed plan is carried on
@@ -250,7 +282,7 @@ class ApplicationWiring:
                     dlg.publish_import_failure(str(exc))
                     return
                 await timeline_vm.load_events()
-                window.timeline_widget.update_events(timeline_vm.events)
+                self._timeline_update_events()
                 dlg.publish_report(report)
 
             dlg.analyze_requested.connect(lambda path: self._spawn(_analyze(path)))
@@ -263,46 +295,28 @@ class ApplicationWiring:
 
         window.import_xlsx_action.triggered.connect(_run_import)
 
-        # ── Helper: load available entities and set them on dialog sections ──
-        async def _load_available_into_dialog(dialog):
-            """Load all entities from DB and set them as available for linking."""
-            dialog.set_available_entities(
-                "organizations",
-                list(await self._app._entity_services["organization"].get_all()),
-            )
-            dialog.set_available_entities(
-                "characters",
-                list(await self._app._entity_services["character"].get_all()),
-            )
-            dialog.set_available_entities(
-                "items",
-                list(await self._app._entity_services["item"].get_all()),
-            )
-            dialog.set_available_entities(
-                "locations",
-                list(await self._app._entity_services["location"].get_all()),
-            )
+    def _connect_event_types(self) -> None:
+        """Event types (W4 6.1/6.2): dialog entry in the panel's «+» menu."""
+        window = self._window
+        event_service = self._event_service
 
-        async def _load_types_into_dialog(dialog):
-            """Fill the event dialog's type selector with the game's set (W4)."""
-            dialog.set_event_types(list(await event_service.get_event_types()))
-
-        async def _reload_timeline():
-            """Re-read events and re-render the scale (selection/window kept)."""
-            await timeline_vm.load_events()
-            window.timeline_widget.update_events(timeline_vm.events)
-
-        # ── Event types (W4 6.1/6.2): dialog entry in the panel's «+» menu ──
         def on_event_types():
             dialog = EventTypesDialog(
                 event_service, run=self._spawn, parent=window,
                 theme=self._app._theme,
             )
 
-            dialog.types_changed.connect(lambda: self._spawn(_reload_timeline()))
+            dialog.types_changed.connect(lambda: self._spawn(self._reload_timeline()))
             dialog.open()
 
-        window.timeline_widget.event_types_requested.connect(on_event_types)
+        self._timeline.event_types_requested.connect(on_event_types)
+
+    def _connect_event_dialogs(self) -> None:
+        """The timeline's event dialog flows: add, related create, edit."""
+        window = self._window
+        detail_vm = self._detail_vm
+        event_service = self._event_service
+        event_dialog_vm = self._event_dialog_vm
 
         # ── Event save (task 5.10, design D5): ONE apply path for both ──────
         # dialog flows. The dialogs emit frozen contracts (dialog_results), so
@@ -341,7 +355,7 @@ class ApplicationWiring:
                 # (no undo here — the finish is the unit's). Reload the
                 # timeline BEFORE the blocking modal so the state under it is
                 # consistent (the same move as every other save handler).
-                await _reload_timeline()
+                await self._reload_timeline()
                 QMessageBox.critical(
                     window, "Ошибка", f"Не удалось сохранить событие: {exc}",
                 )
@@ -351,21 +365,21 @@ class ApplicationWiring:
         # Add event button
         def on_add_event():
             dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
-            self._spawn(_load_available_into_dialog(dialog))
-            self._spawn(_load_types_into_dialog(dialog))
-            self._app._wire_mentions_for_dialog(dialog, on_entity_click)
+            self._spawn(self._load_available_into_dialog(dialog))
+            self._spawn(self._load_types_into_dialog(dialog))
+            self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
             self._app._wire_ai_buttons(dialog)
 
             async def on_saved(result: EventDialogResult) -> None:
                 if not await _apply_event_result(result):
                     dialog.finish_saving(False)
                     return
-                await _reload_timeline()
+                await self._reload_timeline()
                 dialog.finish_saving(True)
 
             dialog.saved.connect(lambda result: self._spawn(on_saved(result)))
             dialog.create_related_requested.connect(
-                lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
+                lambda a, t: self._spawn(self._open_related_create_dialog(dialog, a, t))
             )
             dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
             dialog.rejected.connect(
@@ -373,7 +387,7 @@ class ApplicationWiring:
             )
             dialog.open()
 
-        window.timeline_widget.add_event_requested.connect(on_add_event)
+        self._timeline.add_event_requested.connect(on_add_event)
 
         # Create standalone entities from timeline "+" context menu
         async def on_add_entity(entity_type: str):
@@ -404,7 +418,7 @@ class ApplicationWiring:
                         return
                     dialog.finish_saving(True)
 
-                dialog = await open_entity_card(
+                dialog = await self._open_entity_card(
                     entity_type, parent=window, on_saved=on_entity_saved,
                     load_available=False,
                 )
@@ -418,7 +432,7 @@ class ApplicationWiring:
                     "Не удалось открыть диалог создания сущности: %s", exc,
                 )
 
-        window.timeline_widget.add_entity_requested.connect(
+        self._timeline.add_entity_requested.connect(
             lambda t: self._spawn(on_add_entity(t))
         )
 
@@ -429,12 +443,12 @@ class ApplicationWiring:
                 if not event:
                     return
                 dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
-                await _load_available_into_dialog(dialog)
+                await self._load_available_into_dialog(dialog)
                 # Types before populate: the selector gets the game's set, then
                 # populate() preselects this event's current type (W4 6.3).
                 dialog.set_event_types(list(await event_service.get_event_types()))
                 dialog.populate(event)
-                self._app._wire_mentions_for_dialog(dialog, on_entity_click)
+                self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
                 self._app._wire_ai_buttons(dialog)
 
                 async def on_event_updated(result: EventDialogResult) -> None:
@@ -444,7 +458,7 @@ class ApplicationWiring:
                         # previous state — an "updated" version does not exist.
                         dialog.finish_saving(False)
                         return
-                    await _reload_timeline()
+                    await self._reload_timeline()
                     # Refresh detail panel
                     await detail_vm.load_details(result.event_id)
                     window.detail_panel.show_event(detail_vm.event)
@@ -452,7 +466,7 @@ class ApplicationWiring:
 
                 dialog.saved.connect(lambda result: self._spawn(on_event_updated(result)))
                 dialog.create_related_requested.connect(
-                    lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
+                    lambda a, t: self._spawn(self._open_related_create_dialog(dialog, a, t))
                 )
                 dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
                 dialog.rejected.connect(
@@ -468,9 +482,28 @@ class ApplicationWiring:
 
         self._on_edit_event = on_edit_event
 
-        window.timeline_widget.event_double_clicked.connect(
+        self._timeline.event_double_clicked.connect(
             lambda eid: self._spawn(on_edit_event(eid))
         )
+
+    def _connect_entity_cards(self) -> None:
+        """Entity-card flows: double-click on an entity row in the detail panel.
+
+        The card factory, the related-create popup and the character-sheet
+        glue are closure handlers shared by several wiring areas — they are
+        promoted private handlers below; this section keeps the plain connect.
+        """
+        window = self._window
+
+        window.detail_panel.entity_clicked.connect(
+            lambda t, i: self._spawn(self._on_entity_click(t, i))
+        )
+
+    def _connect_search(self) -> None:
+        """Search bar: the query dispatch and the result-open flows."""
+        window = self._window
+        timeline_vm = self._timeline_vm
+        search_vm = self._search_vm
 
         # Search
         async def on_search(query):
@@ -493,189 +526,29 @@ class ApplicationWiring:
                 # окна сбрасывает окно»). An id the timeline never held
                 # stays a plain miss — the list untouched.
                 if any(ev.id == entity_id for ev in timeline_vm.all_events):
-                    await on_event_selected(entity_id)
-                    scale = window.timeline_widget
+                    await self._on_event_selected(entity_id)
                     # The window reset may have re-modelled the list to
                     # «Все дни»: the list repaints from the ViewModel before
                     # the highlight — the same sample push every other
                     # mutation path performs, otherwise the re-modelled row
                     # would exist in the VM but not on the panel.
-                    scale.update_events(timeline_vm.events)
-                    scale.set_selected(entity_id)
-                    scale.scroll_to_event(entity_id)
+                    self._timeline_update_events()
+                    self._timeline_set_selected(entity_id)
+                    self._timeline.scroll_to_event(entity_id)
             else:
                 # Plain await, not a new spawn: on_search_result's own task
                 # already holds the session lock (see _spawn at the connect
                 # site below), and on_entity_click never acquires it itself.
-                await on_entity_click(entity_type, entity_id)
+                await self._on_entity_click(entity_type, entity_id)
 
         window.search_bar.result_selected.connect(
             lambda t, i: self._spawn(on_search_result(t, i))
         )
 
-        async def _wire_open_character_sheet(dialog, entity_type, entity_id):
-            if entity_type != "character":
-                return
-            svc = self._app._instance_service
-            if svc is None:
-                return
-
-            async def _refresh_button():
-                inst = await svc.get_by_character_id(entity_id)
-                dialog.set_character_sheet_available(inst is not None)
-
-            async def _open_bound_sheet():
-                inst = await svc.get_by_character_id(entity_id)
-                if inst is None:
-                    dialog.set_character_sheet_available(False)
-                    return
-                self._app._on_instance_open(inst.id)
-
-            dialog.open_character_sheet_requested.connect(
-                lambda: self._spawn(_open_bound_sheet())
-            )
-            await _refresh_button()
-
-        # ── Shared entity-card factory (task 5.10, design D5) ──────────────
-        # One place for the card's opening ceremony: creation, populate, the
-        # mention/AI/image wiring, the linkable-sections load and the save
-        # pump. Callers only add their own save handler and the window-local
-        # extras (the popup-cleanup pair for a parent dialog).
-        async def open_entity_card(
-            entity_type: str,
-            *,
-            parent,
-            on_saved,
-            entity: Any = None,
-            load_available: bool = True,
-            popup_cleanup: bool = False,
-        ):
-            dialog = EntityCardDialog(
-                None, entity_type=entity_type, parent=parent,
-                theme=self._app._theme,
-            )
-            if entity is not None:
-                dialog.populate(entity)
-            self._app._wire_mentions_for_dialog(dialog, on_entity_click)
-            self._app._wire_ai_buttons(dialog)
-            self._wire_image_picked(dialog)
-            if load_available:
-                # Load available related entities for linking (registry, wave 3).
-                # Plain awaits: every caller runs inside its own locked task.
-                for cfg in entity_registry.related_refs_for_key(entity_type):
-                    rel_svc = self._app._get_entity_service(cfg.entity_type.value)
-                    if rel_svc:
-                        available = await rel_svc.get_all()
-                        dialog.set_available_entities(cfg.attr, list(available))
-            dialog.saved.connect(lambda result: self._spawn(on_saved(result)))
-            if popup_cleanup:
-                dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
-                dialog.rejected.connect(
-                    lambda: self._spawn(self._cleanup_popup_entities(dialog))
-                )
-            return dialog
-
-        # Entity card double-click
-        async def on_entity_click(entity_type, entity_id):
-            try:
-                entity_service = self._app._get_entity_service(entity_type)
-                if not entity_service:
-                    return
-                entity = await entity_service.get_entity(entity_id)
-                if not entity:
-                    return
-
-                # Handle save (update entity fields + sync relationships)
-                async def on_entity_saved(result: EntityEditResult) -> None:
-                    try:
-                        await entity_service.update_entity_with_relations(
-                            entity_id, result.fields, result.characteristics,
-                            result.backstory, result.related_changes,
-                        )
-                    except Exception as exc:  # noqa: BLE001 — the modal names the reason
-                        # The service's unit of work already undid the partial
-                        # write; reload the timeline before the blocking modal
-                        # (the same move as every other save handler); the
-                        # detail stays previous — no "updated" version exists.
-                        await _reload_timeline()
-                        QMessageBox.critical(
-                            window, "Ошибка", f"Не удалось сохранить сущность: {exc}",
-                        )
-                        dialog.finish_saving(False)
-                        return
-
-                    # Refresh detail panel if an event is selected
-                    if detail_vm.event:
-                        await detail_vm.load_details(detail_vm.event.id)
-                        window.detail_panel.show_event(detail_vm.event)
-                    dialog.finish_saving(True)
-
-                dialog = await open_entity_card(
-                    entity_type, parent=window, entity=entity,
-                    on_saved=on_entity_saved, popup_cleanup=True,
-                )
-                dialog.create_related_requested.connect(
-                    lambda a, t: self._spawn(_open_related_create_dialog(dialog, a, t))
-                )
-                await _wire_open_character_sheet(dialog, entity_type, entity_id)
-                dialog.open()
-            except Exception as exc:
-                # Open-failure path (reads only happened): the unit of work
-                # owns every transaction finish — plain log, no undo here.
-                logging.getLogger("app.wiring").warning(
-                    "Не удалось открыть карточку сущности: %s", exc,
-                )
-
-        # ── Shared helper: popup for creating a related entity ─────────────
-        # One card window opened from the parent dialog (event or entity card)
-        # through open_entity_card (task 5.10). On save the entity and its own
-        # links are written as one unit of work (task 5.8): the row never
-        # rides a later unrelated finish, and rejecting the parent deletes it
-        # through the cleanup's own transaction (tasks 5.4/5.6, audit Q14
-        # scenario 1 stays closed). Nested «Создать нового» is intentionally
-        # not wired (depth = 1).
-        async def _open_related_create_dialog(parent_dialog, attr_name: str, entity_type: str):
-            async def on_sub_saved(result: EntityCreateResult) -> None:
-                sub_svc = self._app._get_entity_service(entity_type)
-                if not sub_svc:
-                    sub_dialog.finish_saving(False)
-                    return
-                try:
-                    async with self._uow.transaction():
-                        new_entity = await sub_svc.create_entity(
-                            characteristics=result.characteristics,
-                            backstory=result.backstory,
-                            **result.fields,
-                        )
-                        # The one related_changes sync loop (C3), link-only.
-                        # Inside the same transaction: the entity and its
-                        # links are one atomic write (task 5.8).
-                        await sub_svc.apply_related_changes(
-                            new_entity, result.related_changes,
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    # The unit of work rolled the partial state (description
-                    # row, failed entity) back so the shared session is left
-                    # usable; the user gets the reason.
-                    QMessageBox.critical(
-                        self._window, "Ошибка создания сущности", str(exc)
-                    )
-                    sub_dialog.finish_saving(False)
-                    return
-                parent_dialog.add_related_entity(attr_name, new_entity)
-                self._popup_created.setdefault(parent_dialog, []).append(
-                    (entity_type, new_entity.id, new_entity.description_id)
-                )
-                sub_dialog.finish_saving(True)
-
-            sub_dialog = await open_entity_card(
-                entity_type, parent=parent_dialog, on_saved=on_sub_saved,
-            )
-            sub_dialog.open()
-
-        window.detail_panel.entity_clicked.connect(
-            lambda t, i: self._spawn(on_entity_click(t, i))
-        )
+    def _connect_snapshot(self) -> None:
+        """World-snapshot panel: the date query and the entity double-click."""
+        window = self._window
+        event_service = self._event_service
 
         # World snapshot — date query. The bridge carries a (date, era) pair
         # (task 3.4); the query itself is key-based, so era_key translates it
@@ -694,10 +567,220 @@ class ApplicationWiring:
             lambda d: self._spawn(on_snapshot_requested(d))
         )
 
-        # World snapshot — entity double-click (reuse on_entity_click)
+        # World snapshot — entity double-click (reuse _on_entity_click)
         window.world_snapshot.entity_clicked.connect(
-            lambda t, i: self._spawn(on_entity_click(t, i))
+            lambda t, i: self._spawn(self._on_entity_click(t, i))
         )
+
+    # ── Shared handlers (the closures the old connect() shared between its
+    # areas, promoted to private methods in wave B3) ─────────────────────────
+    # Bodies moved unchanged; they all read the same connector state through
+    # ``self``, so every wiring area references the same objects.
+
+    async def _on_event_selected(self, event_id) -> None:
+        """Select the event by id and show it in the detail panel."""
+        window = self._window
+        timeline_vm = self._timeline_vm
+        detail_vm = self._detail_vm
+        timeline_vm.select_event_by_id(event_id)
+        event = timeline_vm.selected_event
+        if event:
+            await detail_vm.load_details(event.id)
+            window.detail_panel.show_event(detail_vm.event)
+        else:
+            window.detail_panel.clear()
+
+    async def _reload_timeline(self) -> None:
+        """Re-read events and re-render the scale (selection/window kept)."""
+        await self._timeline_vm.load_events()
+        self._timeline_update_events()
+
+    # ── Helper: load available entities and set them on dialog sections ──
+    async def _load_available_into_dialog(self, dialog) -> None:
+        """Load all entities from DB and set them as available for linking."""
+        dialog.set_available_entities(
+            "organizations",
+            list(await self._app._entity_services["organization"].get_all()),
+        )
+        dialog.set_available_entities(
+            "characters",
+            list(await self._app._entity_services["character"].get_all()),
+        )
+        dialog.set_available_entities(
+            "items",
+            list(await self._app._entity_services["item"].get_all()),
+        )
+        dialog.set_available_entities(
+            "locations",
+            list(await self._app._entity_services["location"].get_all()),
+        )
+
+    async def _load_types_into_dialog(self, dialog) -> None:
+        """Fill the event dialog's type selector with the game's set (W4)."""
+        dialog.set_event_types(list(await self._event_service.get_event_types()))
+
+    # ── Shared entity-card factory (task 5.10, design D5) ──────────────
+    # One place for the card's opening ceremony: creation, populate, the
+    # mention/AI/image wiring, the linkable-sections load and the save pump.
+    # Callers only add their own save handler and the window-local extras
+    # (the popup-cleanup pair for a parent dialog).
+    async def _open_entity_card(
+        self,
+        entity_type: str,
+        *,
+        parent,
+        on_saved,
+        entity: Any = None,
+        load_available: bool = True,
+        popup_cleanup: bool = False,
+    ):
+        dialog = EntityCardDialog(
+            None, entity_type=entity_type, parent=parent,
+            theme=self._app._theme,
+        )
+        if entity is not None:
+            dialog.populate(entity)
+        self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
+        self._app._wire_ai_buttons(dialog)
+        self._wire_image_picked(dialog)
+        if load_available:
+            # Load available related entities for linking (registry, wave 3).
+            # Plain awaits: every caller runs inside its own locked task.
+            for cfg in entity_registry.related_refs_for_key(entity_type):
+                rel_svc = self._app._get_entity_service(cfg.entity_type.value)
+                if rel_svc:
+                    available = await rel_svc.get_all()
+                    dialog.set_available_entities(cfg.attr, list(available))
+        dialog.saved.connect(lambda result: self._spawn(on_saved(result)))
+        if popup_cleanup:
+            dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
+            dialog.rejected.connect(
+                lambda: self._spawn(self._cleanup_popup_entities(dialog))
+            )
+        return dialog
+
+    async def _wire_open_character_sheet(self, dialog, entity_type, entity_id):
+        if entity_type != "character":
+            return
+        svc = self._app._instance_service
+        if svc is None:
+            return
+
+        async def _refresh_button():
+            inst = await svc.get_by_character_id(entity_id)
+            dialog.set_character_sheet_available(inst is not None)
+
+        async def _open_bound_sheet():
+            inst = await svc.get_by_character_id(entity_id)
+            if inst is None:
+                dialog.set_character_sheet_available(False)
+                return
+            self._app._on_instance_open(inst.id)
+
+        dialog.open_character_sheet_requested.connect(
+            lambda: self._spawn(_open_bound_sheet())
+        )
+        await _refresh_button()
+
+    # Entity card double-click
+    async def _on_entity_click(self, entity_type, entity_id):
+        window = self._window
+        detail_vm = self._detail_vm
+        try:
+            entity_service = self._app._get_entity_service(entity_type)
+            if not entity_service:
+                return
+            entity = await entity_service.get_entity(entity_id)
+            if not entity:
+                return
+
+            # Handle save (update entity fields + sync relationships)
+            async def on_entity_saved(result: EntityEditResult) -> None:
+                try:
+                    await entity_service.update_entity_with_relations(
+                        entity_id, result.fields, result.characteristics,
+                        result.backstory, result.related_changes,
+                    )
+                except Exception as exc:  # noqa: BLE001 — the modal names the reason
+                    # The service's unit of work already undid the partial
+                    # write; reload the timeline before the blocking modal
+                    # (the same move as every other save handler); the
+                    # detail stays previous — no "updated" version exists.
+                    await self._reload_timeline()
+                    QMessageBox.critical(
+                        window, "Ошибка", f"Не удалось сохранить сущность: {exc}",
+                    )
+                    dialog.finish_saving(False)
+                    return
+
+                # Refresh detail panel if an event is selected
+                if detail_vm.event:
+                    await detail_vm.load_details(detail_vm.event.id)
+                    window.detail_panel.show_event(detail_vm.event)
+                dialog.finish_saving(True)
+
+            dialog = await self._open_entity_card(
+                entity_type, parent=window, entity=entity,
+                on_saved=on_entity_saved, popup_cleanup=True,
+            )
+            dialog.create_related_requested.connect(
+                lambda a, t: self._spawn(self._open_related_create_dialog(dialog, a, t))
+            )
+            await self._wire_open_character_sheet(dialog, entity_type, entity_id)
+            dialog.open()
+        except Exception as exc:
+            # Open-failure path (reads only happened): the unit of work
+            # owns every transaction finish — plain log, no undo here.
+            logging.getLogger("app.wiring").warning(
+                "Не удалось открыть карточку сущности: %s", exc,
+            )
+
+    # ── Shared helper: popup for creating a related entity ─────────────
+    # One card window opened from the parent dialog (event or entity card)
+    # through _open_entity_card (task 5.10). On save the entity and its own
+    # links are written as one unit of work (task 5.8): the row never
+    # rides a later unrelated finish, and rejecting the parent deletes it
+    # through the cleanup's own transaction (tasks 5.4/5.6, audit Q14
+    # scenario 1 stays closed). Nested «Создать нового» is intentionally
+    # not wired (depth = 1).
+    async def _open_related_create_dialog(self, parent_dialog, attr_name: str, entity_type: str):
+        async def on_sub_saved(result: EntityCreateResult) -> None:
+            sub_svc = self._app._get_entity_service(entity_type)
+            if not sub_svc:
+                sub_dialog.finish_saving(False)
+                return
+            try:
+                async with self._uow.transaction():
+                    new_entity = await sub_svc.create_entity(
+                        characteristics=result.characteristics,
+                        backstory=result.backstory,
+                        **result.fields,
+                    )
+                    # The one related_changes sync loop (C3), link-only.
+                    # Inside the same transaction: the entity and its
+                    # links are one atomic write (task 5.8).
+                    await sub_svc.apply_related_changes(
+                        new_entity, result.related_changes,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                # The unit of work rolled the partial state (description
+                # row, failed entity) back so the shared session is left
+                # usable; the user gets the reason.
+                QMessageBox.critical(
+                    self._window, "Ошибка создания сущности", str(exc)
+                )
+                sub_dialog.finish_saving(False)
+                return
+            parent_dialog.add_related_entity(attr_name, new_entity)
+            self._popup_created.setdefault(parent_dialog, []).append(
+                (entity_type, new_entity.id, new_entity.description_id)
+            )
+            sub_dialog.finish_saving(True)
+
+        sub_dialog = await self._open_entity_card(
+            entity_type, parent=parent_dialog, on_saved=on_sub_saved,
+        )
+        sub_dialog.open()
 
     async def _cleanup_popup_entities(self, parent_dialog) -> None:
         """Delete popup-created rows when the parent dialog is rejected.

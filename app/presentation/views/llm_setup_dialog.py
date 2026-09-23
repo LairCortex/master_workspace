@@ -2,9 +2,10 @@
 
 The dialog keeps its public contract (``saved``, ``get_connection``,
 ``get_world_prompt``, ``get_field_prompts``, ``page_count``,
-``finish_saving``) and stays the effect boundary: the HTTP client, the
-provider and the connection check live here, the island only shows the view
-model and emits synchronous requests (design D2/D4).
+``finish_saving``) and stays the effect boundary: the island only shows the
+view model and emits synchronous requests (design D2/D4). The connection
+check itself is directed by the LLM view model through its injected provider
+factory (nri-0011, design D2) — the facade only displays the outcome.
 """
 from __future__ import annotations
 
@@ -14,15 +15,13 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout, QWidget
 
-from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
-from app.infrastructure.llm.errors import LlmError
-from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH
 from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.theme import get_default_theme
 from app.presentation.viewmodels.llm_setup_view_model import LlmSetupViewModel
+from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "LlmSetupRoot.qml")
 
@@ -40,7 +39,7 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
         config: LlmConfig,
         world_prompt: str = "",
         field_prompts: dict[str, dict[str, str]] | None = None,
-        http: AppHttpClient | None = None,
+        llm_vm: LlmViewModel | None = None,
         parent: QWidget | None = None,
         theme=None,
     ) -> None:
@@ -48,7 +47,7 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
         self.setWindowTitle("Настройка AI-ассистента (LLM)")
         self.setMinimumSize(620, 480)
         self._theme = theme if theme is not None else get_default_theme()
-        self._http = http
+        self._llm_vm = llm_vm
         self._saving = False
 
         initial = config or LlmConfig()
@@ -126,18 +125,21 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
     # ---- effects the island only asks for ----
 
     async def _on_check(self) -> None:
-        """Run a minimal test request (1 token) against the entered settings."""
+        """Run a minimal test request (1 token) against the entered settings.
+
+        The check itself lives on the LLM view model (nri-0011, design D2);
+        the facade only drives it and shows the outcome with the old texts.
+        """
         config = self.get_connection()
         if not config.is_complete:
             return
 
         self.vm.set_check_running("Проверка соединения…")
-        provider = RemoteLlmProvider(config, self._http)
-        try:
-            await provider.check_connection()
+        error = await self._llm_vm.check_connection(config)
+        if error is None:
             self.vm.set_check_result("Соединение установлено", "ok")
-        except LlmError as exc:
-            self.vm.set_check_result(f"Ошибка: {exc}", "error")
+        else:
+            self.vm.set_check_result(f"Ошибка: {error}", "error")
 
     def _on_save(self) -> None:
         if self._saving:

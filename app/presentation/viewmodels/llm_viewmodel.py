@@ -3,16 +3,18 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
 from app.application.services.llm_service import LlmService
+from app.application.services.llm_status import LlmStatus
 from app.domain import entity_registry
-from app.infrastructure.http import AppHttpClient
+from app.infrastructure.llm.base_provider import BaseLlmProvider
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
-from app.infrastructure.llm.remote_provider import RemoteLlmProvider
+from app.infrastructure.llm.errors import LlmError
 
 
 @dataclass(frozen=True)
@@ -51,32 +53,29 @@ class LlmViewModel(QObject):
     generation_finished = Signal(object, str, str)
     generation_error = Signal(object, str, str)
 
-    STATUS_NOT_CONFIGURED = "not_configured"
-    STATUS_READY = "ready"
-
     def __init__(
         self,
         llm_service: LlmService,
         config_manager: LlmConfigManager,
-        http: AppHttpClient,
+        provider_factory: Callable[[LlmConfig], BaseLlmProvider],
         parent: QObject | None = None,
     ) -> None:
+        """``provider_factory`` comes from the composition root (nri-0011, D2):
+        the ViewModel never names a concrete provider class itself.
+        """
         super().__init__(parent)
         self._service = llm_service
         self._config_manager = config_manager
-        self._http = http
+        self._provider_factory = provider_factory
         self._world_prompt: str = ""
         self._field_prompts: dict[str, dict[str, str]] = _default_field_prompts()
 
         loaded = config_manager.load()
         self._config: LlmConfig = loaded if loaded is not None else LlmConfig()
-        self._service.provider = self._create_provider(self._config)
+        self._service.provider = self._provider_factory(self._config)
         self._status: str = (
-            self.STATUS_READY if self._config.is_complete else self.STATUS_NOT_CONFIGURED
+            LlmStatus.READY if self._config.is_complete else LlmStatus.NOT_CONFIGURED
         )
-
-    def _create_provider(self, config: LlmConfig) -> RemoteLlmProvider:
-        return RemoteLlmProvider(config, self._http)
 
     def apply_config(self, config: LlmConfig) -> None:
         """Apply a new connection config: recreate provider, update status.
@@ -84,8 +83,23 @@ class LlmViewModel(QObject):
         Readiness depends only on the stored config values (no network).
         """
         self._config = config
-        self._service.provider = self._create_provider(config)
-        self.set_status(self.STATUS_READY if config.is_complete else self.STATUS_NOT_CONFIGURED)
+        self._service.provider = self._provider_factory(config)
+        self.set_status(LlmStatus.READY if config.is_complete else LlmStatus.NOT_CONFIGURED)
+
+    async def check_connection(self, config: LlmConfig) -> str | None:
+        """Probe the entered settings with a throwaway provider (nri-0011, D2).
+
+        Checks are owned by the ViewModel, not the dialog: the provider is
+        built through the injected factory, used once and dropped. Returns
+        ``None`` on success, otherwise the displayable error text (every
+        provider failure is an ``LlmError`` whose ``str`` is user-facing).
+        """
+        provider = self._provider_factory(config)
+        try:
+            await provider.check_connection()
+        except LlmError as exc:
+            return str(exc)
+        return None
 
     @property
     def config(self) -> LlmConfig:
@@ -130,7 +144,7 @@ class LlmViewModel(QObject):
         return self._field_prompts.get(entity_type, {}).get(field_name, "")
 
     def is_generation_available(self) -> bool:
-        return self._status == self.STATUS_READY and self.has_world_prompt
+        return self._status == LlmStatus.READY and self.has_world_prompt
 
     async def request_generation(self, target: GenerationTarget) -> None:
         log = logging.getLogger(__name__)

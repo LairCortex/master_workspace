@@ -54,6 +54,7 @@ from app.application.services.character_sheet_service import (
 from app.domain.character_sheet_pdf import write_sheet_pdf
 from app.domain.entities.character_sheet import SheetTemplate
 from app.domain.enums.field_type import FieldType
+from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.images.store import ImageStore
 from app.presentation.dialog_utils import IMAGE_FILE_FILTER
 from app.presentation.qml import setup_qml_shell
@@ -105,6 +106,7 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         run_locked: Callable[[Coroutine], Awaitable] | None = None,
         image_store: ImageStore | None = None,
         theme=None,
+        uow: GameSessionUoW | None = None,
     ) -> None:
         super().__init__(parent)
         self._sheet_id = sheet_id
@@ -113,6 +115,12 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         self._closing = False
         self._run_locked = run_locked or _run_now
         self._image_store = image_store
+        # Q14 (design D4): the game's unit of work, injected by ``main.py``.
+        # ``None`` keeps the bare (no-transaction) ingest alive for out-of-DB
+        # unit tests; with it, the image ingest commits right through the
+        # single finish point.
+        self._uow = uow
+        self._tasks: set[asyncio.Task] = set()
         # The island is skinned by the token bridge only; the widgets-era
         # ``None`` falls back to the process default (the Q3a seam).
         self._theme = theme if theme is not None else get_default_theme()
@@ -155,6 +163,31 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         # the live engine's provider and remembered for later registrations
         bind_sheet_image_store(self._image_store)
 
+    # ── managed background tasks (Q14, design D4) ────────────────────────────
+
+    def _run_task(self, coro: Coroutine) -> asyncio.Task:
+        """Run ``coro`` as a task owned by this dialog: tracked while active,
+        cancelled on close, its uncaught error surfaced to the user instead of
+        dropped into an unreferenced future."""
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+        return task
+
+    def _on_task_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if task.cancelled():
+            return  # a close cancelled it on purpose — nothing to report
+        exc = task.exception()
+        if exc is None:
+            return
+        log.error("character-sheet editor task failed: %s", exc, exc_info=True)
+        QMessageBox.critical(self, "Ошибка", str(exc))
+
+    def _cancel_tasks(self) -> None:
+        for task in list(self._tasks):
+            task.cancel()
+
     # ── island seam (IslandDialogMixin owns the lifecycle) ──────────────────
 
     def island_source(self) -> str:
@@ -187,12 +220,8 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
 
     def _wire_island(self) -> None:
         root = self._root
-        root.saveRequested.connect(
-            lambda: asyncio.ensure_future(self.save())
-        )
-        root.exportPdfRequested.connect(
-            lambda: asyncio.ensure_future(self.export_pdf())
-        )
+        root.saveRequested.connect(lambda: self._run_task(self.save()))
+        root.exportPdfRequested.connect(lambda: self._run_task(self.export_pdf()))
         root.imagePickRequested.connect(self._pick_image)
         # the delete-page confirm is a native QMessageBox (D1)
         root.pageRemoveRequested.connect(self._confirm_page_remove)
@@ -397,6 +426,7 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
                 event.ignore()
                 return
         self._closing = True  # the window is going away (a close in flight marks this)
+        self._cancel_tasks()
         self._teardown_vm_links()
         super().closeEvent(event)
 
@@ -421,7 +451,21 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         )
         if not path:
             return
-        asyncio.ensure_future(self._store_and_set_image(field_id, path))
+        self._run_task(self._store_and_set_image(field_id, path))
+
+    async def _store_image(self, data: bytes) -> int:
+        """Image ingest through the unit of work (Q14, design D4).
+
+        The transaction covers EXACTLY ``store(...)``: the row is committed
+        the moment the ingest succeeds (previously it waited for some later
+        commit). The ``image_id`` write onto the sheet lives outside — sheet
+        memory is not the database. With no ``uow`` (out-of-DB unit tests) the
+        store runs bare, exactly as before.
+        """
+        if self._uow is None:
+            return await self._image_store.store(data)
+        async with self._uow.transaction():
+            return await self._image_store.store(data)
 
     async def _store_and_set_image(self, field_id: str, path: str) -> None:
         if self._image_store is None:
@@ -435,7 +479,7 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
             QMessageBox.warning(self, "Изображение", f"Файл не удалось прочитать: {exc}")
             return
         try:
-            image_id = await self._run_locked(self._image_store.store(data))
+            image_id = await self._run_locked(self._store_image(data))
         except ValueError:
             # undecodable file: the field stays empty, the error is visible
             QMessageBox.warning(

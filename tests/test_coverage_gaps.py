@@ -46,7 +46,7 @@ async def test_llm_viewmodel_json_fallbacks(qapp):
     vm = LlmViewModel(
         llm_service=SimpleNamespace(),
         config_manager=SimpleNamespace(load=lambda: None),
-        http=SimpleNamespace(),
+        provider_factory=lambda config: SimpleNamespace(),
     )
     vm.world_prompt_from_json("{{{not json")
     assert vm.world_prompt == ""

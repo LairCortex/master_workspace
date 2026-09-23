@@ -7,6 +7,7 @@ from typing import Any, Callable
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
+from app.application.services.llm_status import LlmStatus
 from app.domain.date_era import era_key
 from app.domain.game_calendar import GameCoord, as_game_coord
 from app.presentation.utils.date_utils import format_game_date, iso_or_coord
@@ -123,9 +124,43 @@ class MentionEditProxy(QObject):
         self.host.storage = value
 
 
-class AiFieldProxy(QObject):
-    generate_requested = Signal(str, str, str, str)
+class AiStateHolder(QObject):
+    """Shared QObject mixin behind both AI proxies (NRI-0011 D3, precedent
+    IslandDialogMixin): the single ``aiState`` contract (the string values and
+    the QML-facing property paths stay exactly as before, ``ai_state_is()``
+    keeps reading them), the LLM-context fields and the state refresh.
+
+    Only a signal declared in the very same class can notify a PySide6
+    ``Property`` (a cross-class ``notify`` registers as non-bindable), so all
+    five QML-facing proxy properties and ``stateChanged`` live here while each
+    proxy keeps its own rules through the hooks referenced from below.
+    """
+
     stateChanged = Signal()
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._status = LlmStatus.NOT_CONFIGURED
+        self._has_world_prompt = False
+        self._ai_state = AI_STATE_DISABLED
+
+    aiState = Property(str, lambda self: self._ai_state, notify=stateChanged)
+    generating = Property(bool, lambda self: self._is_generating(), notify=stateChanged)
+    clickable = Property(bool, lambda self: self._is_clickable(), notify=stateChanged)
+    currentText = Property(str, lambda self: self._current_text(), notify=stateChanged)
+
+    def update_llm_state(self, status: str, has_world_prompt: bool) -> None:
+        self._status = status
+        self._has_world_prompt = has_world_prompt
+        self._refresh_ai_state()
+
+    def _refresh_ai_state(self) -> None:
+        self._ai_state = AI_STATE_ACTIVE if self._is_ai_active() else AI_STATE_DISABLED
+        self.stateChanged.emit()
+
+
+class AiFieldProxy(AiStateHolder):
+    generate_requested = Signal(str, str, str, str)
 
     def __init__(
         self,
@@ -144,10 +179,7 @@ class AiFieldProxy(QObject):
         self._getter = getter
         self._setter = setter
         self._owner = owner
-        self._status = "not_configured"
-        self._has_world_prompt = False
         self._generating = False
-        self._ai_state = AI_STATE_DISABLED
 
     @property
     def entity_type(self) -> str:
@@ -169,21 +201,23 @@ class AiFieldProxy(QObject):
     def current_text(self) -> str:
         return self._getter()
 
-    currentText = Property(str, lambda self: self.current_text, notify=stateChanged)
-    aiState = Property(str, lambda self: self._ai_state, notify=stateChanged)
-    generating = Property(bool, lambda self: self._generating, notify=stateChanged)
-    clickable = Property(bool, lambda self: not self._generating, notify=stateChanged)
+    # The aiState/generating/clickable/currentText properties and the LLM-state
+    # refresh are inherited from AiStateHolder; this proxy keeps its own rules:
+    # a field generation never overlaps itself, and AI is offered only while the
+    # assistant is ready and a world prompt exists (the generating guard for
+    # clicks lives in requestGenerate/isEnabled, unchanged).
 
-    def update_llm_state(self, status: str, has_world_prompt: bool) -> None:
-        self._status = status
-        self._has_world_prompt = has_world_prompt
-        state = (
-            AI_STATE_ACTIVE
-            if status == "ready" and has_world_prompt
-            else AI_STATE_DISABLED
-        )
-        self._ai_state = state
-        self.stateChanged.emit()
+    def _is_ai_active(self) -> bool:
+        return self._status == LlmStatus.READY and self._has_world_prompt
+
+    def _is_generating(self) -> bool:
+        return self._generating
+
+    def _is_clickable(self) -> bool:
+        return not self._generating
+
+    def _current_text(self) -> str:
+        return self._getter()
 
     def set_generating(self, generating: bool) -> None:
         self._generating = generating
@@ -203,7 +237,7 @@ class AiFieldProxy(QObject):
     def requestGenerate(self) -> None:  # noqa: N802
         if self._generating:
             return
-        if self._status != "ready":
+        if self._status != LlmStatus.READY:
             QMessageBox.information(self._owner, "AI-ассистент", NOT_CONFIGURED_MESSAGE)
             return
         if not self._has_world_prompt:
@@ -217,33 +251,24 @@ class AiFieldProxy(QObject):
         )
 
 
-class EntityGenerateProxy(QObject):
+class EntityGenerateProxy(AiStateHolder):
     batch_requested = Signal()
     batch_cancel_requested = Signal()
-    stateChanged = Signal()
 
     def __init__(self, owner, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._owner = owner
-        self._status = "not_configured"
-        self._has_world_prompt = False
         self._wave = False
         self._single = False
-        self._ai_state = AI_STATE_DISABLED
 
     @property
     def is_cancelling(self) -> bool:
         return self._wave
 
-    aiState = Property(str, lambda self: self._ai_state, notify=stateChanged)
-    generating = Property(bool, lambda self: self._wave, notify=stateChanged)
-    clickable = Property(bool, lambda self: not self._single, notify=stateChanged)
-    currentText = Property(str, lambda self: "", constant=True)
-
-    def update_llm_state(self, status: str, has_world_prompt: bool) -> None:
-        self._status = status
-        self._has_world_prompt = has_world_prompt
-        self._refresh()
+    # aiState/generating/clickable/currentText and update_llm_state come from
+    # AiStateHolder; the package rule stays here: AI is offered while a batch
+    # wave is running (the button doubles as stop) or when neither a wave nor a
+    # single-field generation is in flight and the assistant is configured.
 
     def isEnabled(self) -> bool:
         return not self._single
@@ -256,18 +281,25 @@ class EntityGenerateProxy(QObject):
 
     def set_wave_running(self, running: bool) -> None:
         self._wave = running
-        self._refresh()
+        self._refresh_ai_state()
 
     def set_single_in_flight(self, running: bool) -> None:
         self._single = running
-        self._refresh()
+        self._refresh_ai_state()
 
-    def _refresh(self) -> None:
-        active = self._wave or (
-            not self._single and self._status == "ready" and self._has_world_prompt
+    def _is_ai_active(self) -> bool:
+        return self._wave or (
+            not self._single and self._status == LlmStatus.READY and self._has_world_prompt
         )
-        self._ai_state = AI_STATE_ACTIVE if active else AI_STATE_DISABLED
-        self.stateChanged.emit()
+
+    def _is_generating(self) -> bool:
+        return self._wave
+
+    def _is_clickable(self) -> bool:
+        return not self._single
+
+    def _current_text(self) -> str:
+        return ""
 
     @Slot()
     def requestGenerate(self) -> None:  # noqa: N802
@@ -275,7 +307,7 @@ class EntityGenerateProxy(QObject):
             self.batch_cancel_requested.emit()
         elif self._single:
             return
-        elif self._status != "ready":
+        elif self._status != LlmStatus.READY:
             QMessageBox.information(self._owner, "AI-ассистент", NOT_CONFIGURED_MESSAGE)
         elif not self._has_world_prompt:
             QMessageBox.information(self._owner, "AI-ассистент", NO_WORLD_PROMPT_MESSAGE)

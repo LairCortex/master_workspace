@@ -96,6 +96,10 @@ async def dlg(qtbot, service, row):
     yield d
     # force_close: some tests leave the window open and dirty (no prompt in teardown)
     d.force_close()
+    # Q14 (nri-0011, design D4): closing cancels the dialog's tracked tasks —
+    # give the cancelled unwinds a loop turn to finish while the session is
+    # still open, before the DB fixtures tear down.
+    await asyncio.sleep(0.05)
     d.deleteLater()  # a closed dialog otherwise lingers as a top-level widget
     qtbot.wait(1)
 

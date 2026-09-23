@@ -2,13 +2,14 @@
 
 The dialog is a QDialog frame around one QQuickWidget island (R3 pack 2), so
 the tests address state through the island's view model and the facade's
-public API; the async HTTP check and the save lifecycle stay on the facade.
+public API; the connection check is directed by the LLM view model through
+its provider factory (nri-0011, design D2), the save lifecycle stays facade.
 """
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -23,11 +24,15 @@ from PySide6.QtWidgets import (
     QTextEdit,
 )
 
+from app.application.services.llm_service import LlmService
 from app.infrastructure.http import AppHttpClient
-from app.infrastructure.llm.config import LlmConfig
+from app.infrastructure.llm.base_provider import BaseLlmProvider
+from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
+from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.qml.engine import qml_engine
 from app.presentation.views import llm_setup_dialog as dialog_module
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
+from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
 
 _DEFAULT_PROMPTS = {
     "event": {"name": "Evt name", "characteristics": "", "backstory": ""},
@@ -46,7 +51,7 @@ def _error_response(status: int, message: str):
 
 
 @pytest.fixture
-async def make_dialog(qtbot):
+async def make_dialog(qtbot, tmp_path):
     created: list[tuple[LlmSetupDialog, AppHttpClient]] = []
 
     def _make(handler=None, config: LlmConfig | None = None):
@@ -54,11 +59,21 @@ async def make_dialog(qtbot):
             handler = _ok_response
         transport = httpx.MockTransport(handler)
         holder = AppHttpClient(client=httpx.AsyncClient(transport=transport))
+        # The check goes through the LLM view model's provider factory now
+        # (nri-0011, design D2) — the dialog itself knows no provider/http.
+        def make_provider(cfg: LlmConfig) -> BaseLlmProvider:
+            return RemoteLlmProvider(cfg, holder)
+
+        llm_vm = LlmViewModel(
+            MagicMock(spec=LlmService),
+            LlmConfigManager(tmp_path / "llm_config.json"),
+            make_provider,
+        )
         dlg = LlmSetupDialog(
             config=config or LlmConfig("https://api.openai.com/v1", "gpt-4o-mini", "sk-123"),
             world_prompt="Test world",
             field_prompts=_DEFAULT_PROMPTS,
-            http=holder,
+            llm_vm=llm_vm,
         )
         qtbot.addWidget(dlg)
         created.append((dlg, holder))

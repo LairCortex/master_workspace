@@ -13,6 +13,7 @@ import httpx
 import pytest_asyncio
 from PySide6.QtWidgets import QDialog
 
+from app.application.services.llm_status import LlmStatus
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
 from app.main import Application
@@ -41,7 +42,7 @@ MODEL = "test-model"
 async def test_llm_wizard_check_connection_and_field_generation(app, llm_client, tmp_llm_config, wait_for):
     application, window = app
     llm_vm = application._llm_vm
-    assert llm_vm.status == llm_vm.STATUS_NOT_CONFIGURED
+    assert llm_vm.status == LlmStatus.NOT_CONFIGURED
 
     # ── Open the event dialog first: AI button is inactive until the LLM is configured
     timeline_probe.click_object(window, "addButton")
@@ -74,7 +75,7 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
         _click(wizard, "nextButton")
     _click(wizard, "saveButton")
 
-    await wait_for(lambda: llm_vm.status == llm_vm.STATUS_READY)
+    await wait_for(lambda: llm_vm.status == LlmStatus.READY)
     # The dialog accepts only after the async save (config + per-game prompts) finishes
     await wait_for(lambda: wizard.result() == QDialog.DialogCode.Accepted)
     # Connection config is saved to the (tmp) global config file
@@ -253,7 +254,7 @@ async def test_single_generation_error_shows_warning_with_field_name(
 
     llm_vm.world_prompt = WORLD_PROMPT
     llm_vm.apply_config(LlmConfig(base_url=ENDPOINT, model=MODEL))
-    await wait_for(lambda: llm_vm.status == llm_vm.STATUS_READY)
+    await wait_for(lambda: llm_vm.status == LlmStatus.READY)
     assert ai_state_is(name_btn, AI_STATE_ACTIVE)
 
     name_btn.click()

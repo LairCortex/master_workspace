@@ -69,6 +69,7 @@ from app.presentation.utils.calendar_warnings import (
 )
 from app.presentation.utils.image_utils import set_image_dir
 from app.infrastructure.http import AppHttpClient
+from app.infrastructure.llm.base_provider import BaseLlmProvider
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.views.main_window import MainWindow
@@ -288,10 +289,18 @@ class Application:
         search_vm = SearchViewModel(search_service)
         event_dialog_vm = EventDialogViewModel(event_service)
 
-        # LLM: shared http client (injected in tests) + provider from the global connection config
+        # LLM: shared http client (injected in tests) + the ONE provider
+        # factory (nri-0011, design D2): a closure over the client, handed to
+        # both the service and the view model — presentation never names the
+        # concrete provider class.
         self._http = self._http_injected if self._http_injected is not None else AppHttpClient()
-        self._llm_service = LlmService(RemoteLlmProvider(LlmConfig(), self._http))
-        self._llm_vm = LlmViewModel(self._llm_service, self._config_manager, self._http)
+        http_client = self._http
+
+        def make_provider(config: LlmConfig) -> BaseLlmProvider:
+            return RemoteLlmProvider(config, http_client)
+
+        self._llm_service = LlmService(make_provider(LlmConfig()))
+        self._llm_vm = LlmViewModel(self._llm_service, self._config_manager, make_provider)
         self._ai_controller = AiGenerationController(self._llm_vm, self._llm_service)
 
         # Load LLM settings
@@ -366,6 +375,9 @@ class Application:
             window=window,
             table_host=self._table_host,
             spawn=self._wiring.run_locked,
+            # Q14 (nri-0011, design D4): the editor/fill dialogs receive the
+            # SAME unit — their image ingest commits through the single point.
+            uow=self._uow,
         )
         window.char_sheets_requested.connect(self._on_char_sheets)
         window.table_host_requested.connect(self._on_table_host)
@@ -770,7 +782,7 @@ class Application:
             config=llm_vm.config,
             world_prompt=llm_vm.world_prompt,
             field_prompts=llm_vm.field_prompts,
-            http=self._http,
+            llm_vm=llm_vm,
             parent=window,
             theme=self._theme,
         )

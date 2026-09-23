@@ -51,6 +51,7 @@ class SheetWindowsManager:
         window,
         table_host,
         spawn,
+        uow=None,
     ) -> None:
         self._sheet_service = sheet_service
         self._instance_service = instance_service
@@ -60,6 +61,10 @@ class SheetWindowsManager:
         self._window = window
         self._table_host = table_host
         self._spawn = spawn
+        # Q14 (nri-0011, design D4): the game's unit of work, threaded into
+        # the editor/fill dialogs so their image ingest finishes through the
+        # single transaction point. Default None keeps out-of-DB tests bare.
+        self._uow = uow
         # At most one list + one editor + one fill (D6/D4 single windows).
         self.list_dialog: CharacterSheetListDialog | None = None
         self.editor: CharacterSheetEditorDialog | None = None
@@ -184,6 +189,7 @@ class SheetWindowsManager:
             run_locked=self._spawn,
             image_store=self._image_store,
             theme=self._theme,
+            uow=self._uow,
         )
         self.editor = editor
         # A closed window must not keep its stale reference (D6 single editor).
@@ -284,6 +290,7 @@ class SheetWindowsManager:
             character_service=self._character_service,
             read_only=read_only,
             theme=self._theme,
+            uow=self._uow,
         )
         self.fill = fill
         fill.finished.connect(lambda _r, _f=fill: self._forget_fill(_f))

@@ -2,6 +2,30 @@
 
 ## [0.17.2] — 2026-09-16
 
+### Хвост аудита закрыт: тонкий connect() с помощником таймлайна, фабрика LLM-провайдеров с единственным LlmStatus, примесь AiStateHolder, приём картинок листов в единице работы (change `nri-0011-refactor-tail`; закрывает переносы находок `docs/refactoring-audit.md` B3/C6 — волна 1, C2 — волна 2, C5 — волна 3, Q14-остаток — волна 4; версии не трогаем)
+
+#### Изменено
+- **Волна 1 (B3/C6):** `ApplicationWiring.connect()` стал тонким диспетчером (~15 строк): области подключения разнесены по приватным `_connect_timeline/_connect_xlsx_import/_connect_event_types/_connect_event_dialogs/_connect_entity_cards/_connect_search/_connect_snapshot` того же класса в прежнем линейном порядке; вся цепочка закона Деметры `window.timeline_widget.*` (11 обращений, включая `scale = window.timeline_widget` в обработчике поиска) локализована в приватном помощнике таймлайна (`_timeline`/`_timeline_update_events`/`_timeline_set_selected`) — греп `timeline_widget` по `wiring.py` находит чтение виджета только в помощнике; публичный контракт `ApplicationWiring` (`connect`, `run_locked`, `open_event_editor`, акцессоры) не менялся (1.1–1.2)
+- **Волна 2 (C2):** вьюмодели LLM больше не конструируют `RemoteLlmProvider`: фабрика `LlmConfig → BaseLlmProvider` собирается в `Application.start()` (замыкание на общий HTTP-клиент) и внедряется в `LlmViewModel` обязательным параметром, `main.py` собирает `LlmService` через ту же фабрику; проверка соединения переехала из диалога в `LlmViewModel.check_connection` (одноразовый провайдер, успех/отобразимая ошибка, прежние тексты диалога); единственный источник статусов подключения — перечисление `LlmStatus(str, Enum)` (`not_configured`/`ready`) в новом модуле `app/application/services/llm_status.py`, старые константы `LlmViewModel.STATUS_*` и литеральные дубли удалены, QML-совместимость сохранена наследованием от `str` (2.1–2.3)
+- **Волна 3 (C5):** задвоение контракта `aiState` свёрнуто примесью `AiStateHolder` (QObject: `_ai_state`/`_status`/`_has_world_prompt`, единственное объявление `aiState = Property(str, …)`, обновление состояния) для `AiFieldProxy` и `EntityGenerateProxy`; правило «когда AI активен» осталось у каждого прокси своим; значения `active`/`disabled`, имена сигналов, пути QML и тестовый маркер `ai_state_is()` неизменны, `app/presentation/qml/` не тронут (3.1)
+- **Волна 4 (Q14-остаток):** `fill_dialog`/`editor_dialog` получают `uow: GameSessionUoW | None` из точки сборки; приём картинки (`ImageStore.store` + запись `image_id` в лист) выполняется в `async with uow.transaction()` — строка `ImageModel` коммитится сразу после приёма, при падении приёма откатывается единицей работы (запись `image_id` остаётся в памяти листа, вне транзакции); все сырые `asyncio.ensure_future` этих диалогов (сохранение, экспорт PDF, приём картинки, привязка/отвязка персонажа) переведены на управляемый `_run_task`: диалог хранит задачи, отменяет их при закрытии, ошибку из задачи показывает видимым сообщением (4.1–4.2)
+
+#### Новое
+- **Хранители R5/R6 в `tests/test_architecture_layers.py` (design D5):** запрет любой формы импорта конкретного LLM-провайдера из `app/presentation/**` и запрет строковых литералов статусов подключения LLM в `app/` вне модуля-источника `llm_status.py` — на том же AST-дереве, что R1–R4, с самопроверками на подложном нарушителе и кейсами отсутствия ложных срабатываний
+
+#### Данные — без миграций (alembic не используется)
+- **Схема и данные не меняются:** сдвинулся лишь момент фиксации строки `ImageModel` при приёме картинки листа — с «случайного следующего коммита» на немедленный при успехе (откат при отказе); неиспользованная строка при отмене диалога — принятое поведение, **самоизлечивается: сирот картинок собирает `startup_gc` при следующем открытии игры** (фиксация в статусной таблице аудита волной 4); версии в `pyproject.toml` и `CFBundleShortVersionString` не тронуты; откат — revert коммитов отдельной волны
+
+#### Тесты
+- **Новые:** `tests/presentation/test_character_sheet_dialog_tasks.py` (8 кейсов: приём картинки немедленно коммитит строку `ImageModel` и откатывает её при падении приёма — оба диалога; закрытие диалога отменяет незавершённую задачу; ошибка из задачи доходит до пользователя видимым сообщением — оба диалога)
+- **Расширены:** `tests/test_architecture_layers.py` (правила R5/R6 с тестами-самопроверками на подложном нарушителе и ложные срабатывания), `tests/presentation/test_llm_viewmodel.py` (фабрика вместо `http`-параметра, `check_connection`: успех и отобразимая ошибка), `tests/presentation/test_llm_setup_dialog.py` («Проверить соединение» через модель с прежними текстами); фикстуры, конструирующие `LlmViewModel`, переведены на `provider_factory`, сравнения `STATUS_*` — на члены `LlmStatus` (`test_coverage_gaps.py`, `test_boot_stub.py`, `test_e2e_llm.py`)
+- **Поведение не менялось:** QML-файлы не тронуты (git diff пуст по `app/presentation/qml/`), пользовательские сценарии подтверждают прежние e2e (`test_e2e_wiring_gaps.py`, `test_e2e_llm.py`, комплекты листов)
+
+#### Проверено
+- `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --cov=app --cov-report=term` — **3615 passed, 3 skipped**, гейт `fail_under=100` выполнен (покрытие 100%)
+- `openspec validate --all` — зелёный; синк дельты `architecture-integrity` выполнен `openspec archive`, заявка архивирована
+- Статусная таблица `docs/refactoring-audit.md`: переносов не осталось (кроме строки «Флак среды»); `git diff -- pyproject.toml nri_manager.spec` — пусто (версии не тронуты)
+
 ### Архитектурная волна nri-0005: односторонние слои, единый реестр типов, единица работы и хранители границ (change `nri-0005-architecture-refactor`; закрывает находки аудита `docs/refactoring-audit.md` A1–A5, B1–B6 (B2/B6 — целью; B3/B5 — закрыты частично, явные переносы в статусной таблице аудита), C1–C7(кроме явных переносов), D1–D2; версии не трогаем)
 
 #### Изменено

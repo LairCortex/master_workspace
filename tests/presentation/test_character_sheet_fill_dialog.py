@@ -187,6 +187,10 @@ async def dlg(qtbot, services):
     _pump(qtbot)  # the island fits its width on the first frames (like fit_width)
     yield d, ids, inst_svc, instance_id
     d.force_close()
+    # Q14 (nri-0011, design D4): closing cancels the dialog's tracked tasks —
+    # give the cancelled unwinds a loop turn to finish while the session is
+    # still open, before the DB fixtures tear down.
+    await asyncio.sleep(0.05)
     d.deleteLater()
     qtbot.wait(1)
 
