@@ -38,3 +38,4 @@ TitleText TitleText.qml
 HintText HintText.qml
 CardPanel CardPanel.qml
 RowItem RowItem.qml
+ThemeSheetHeader ThemeSheetHeader.qml

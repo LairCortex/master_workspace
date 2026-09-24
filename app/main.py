@@ -8,6 +8,7 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -24,6 +25,7 @@ from app.infrastructure.db.models import (
     OrganizationModel,
 )
 from app.infrastructure.images.store import ImageStore
+from app.infrastructure.localization import install_russian_localization
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
 from app.infrastructure.repositories.event_type_repository import EventTypeRepository
@@ -82,6 +84,11 @@ from app.presentation.theme import ThemeRuntime, get_default_theme
 from app.presentation.qml import setup_qml_shell
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 from app.presentation.sheet_windows import SheetWindowsManager
+from app.presentation.window_registry import (
+    LAUNCHER_SWITCH_KEY,
+    LLM_SETUP_KEY,
+    MenuWindowRegistry,
+)
 from app.presentation.views.table_host.panel import TableHostPanel
 from app.infrastructure.table_host.http import TableHostHttp, create_table_host_app
 from app.infrastructure.repositories.character_sheet_repository import (
@@ -156,6 +163,11 @@ class Application:
         self._sheets: SheetWindowsManager | None = None
         self._table_host: TableHostService | None = None
         self._table_host_panel: TableHostPanel | None = None
+        # NRI-0014 (design D1): the one registry of single-instance menu
+        # windows, built once and surviving game switches; start() hands it
+        # to MainWindow, so the docs entries and the launcher switch entry
+        # share the mechanism instead of re-inventing dedup per usage site.
+        self._window_registry = MenuWindowRegistry()
 
     # The three window refs stay readable/writable under their historical
     # private names: the suite's e2e tests observe the open windows through
@@ -314,6 +326,9 @@ class Application:
             llm_vm=self._llm_vm,
             game_name=game_name,
             theme=self._theme,
+            # NRI-0014 1.2: the window's docs entries and this application's
+            # launcher entry share ONE open-window registry (design D1).
+            window_registry=self._window_registry,
         )
 
         self._search_service = search_service
@@ -419,6 +434,9 @@ class Application:
             "Экспорт игры",
             service.suggested_file_name(),
             "NRI архив (*.nri);;Все файлы (*)",
+            # L1 (NRI-0014): the native panel is untranslatable and differs
+            # between dev and the .app — always the Russian Qt panel.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not dest:
             return
@@ -431,10 +449,36 @@ class Application:
             QMessageBox.critical(self._window, "Ошибка экспорта", str(e))
 
     async def _on_switch_game(self) -> None:
-        """Show launcher, switch to selected game."""
-        dialog = GameLauncherDialog(parent=self._window, theme=self._theme)
-        dialog.game_selected.connect(lambda p: asyncio.ensure_future(self._on_game_selected(p)))
-        dialog.open()
+        """Show the launcher as a non-modal window, switch to the selected game.
+
+        NRI-0014 3.1 (A1/A2, spec game-launcher «Формат лаунчера зависит от
+        точки входа»): from «Сменить игру…» the launcher opens as a REAL
+        non-modal window — titled, closable, the rest of the menu stays
+        alive. (``QDialog.open()`` under a parent is a WindowModal sheet:
+        no title bar, the menu silently greyed out — it contradicted this
+        method's old "non-modal" comment, defect A1.) The first-run chooser
+        in ``main()`` is untouched and stays modal. Presentation goes
+        through the registry (key ``launcher_switch``, AB4): a repeated
+        entry raises the live window instead of stacking, closing releases
+        the key and returns to the same game. The switch mechanics are
+        unchanged: the accepted dialog emits ``game_selected`` and the
+        shutdown→start flow runs as before.
+        """
+        def make_launcher() -> GameLauncherDialog:
+            dialog = GameLauncherDialog(parent=self._window, theme=self._theme)
+            dialog.game_selected.connect(
+                lambda p: asyncio.ensure_future(self._on_game_selected(p))
+            )
+            # Parent stays (taskbar/cohesion) but NOT window-modal: the
+            # sheet format was the defect. show()+raise_() foreground the
+            # fresh window on first open (the registry raises on reuse;
+            # its own show() here is then a no-op).
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.show()
+            dialog.raise_()
+            return dialog
+
+        self._window_registry.open(LAUNCHER_SWITCH_KEY, make_launcher)
 
     async def _on_game_selected(self, path: str) -> None:
         """Game switch with the character-sheet windows (D6).
@@ -502,7 +546,13 @@ class Application:
             lambda _r, _d=dialog: self._forget_calendar_wizard(_d)
         )
         self._calendar_wizard = dialog
-        dialog.open()
+        # NRI-0014 D5/D6 (live audit D6): an own application-modal top-level,
+        # not the parent-attached sheet `open()` gave (WindowModal; macOS drew
+        # it sheet-style over the window, and the wizard being wider than the
+        # window moved the main window on open). The parent stays for the
+        # task bar; no nested event loop is entered here.
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.show()
         # Draft continuation (spec «Черновик мастера») reads the session —
         # a locked spawn; its state_changed repaints the already-visible
         # dialog onto the saved stage.
@@ -777,42 +827,61 @@ class Application:
         self._ai_controller.wire(dialog)
 
     def _on_llm_setup(self, window) -> None:
+        """Show the LLM setup as a non-modal, single-instance window.
+
+        NRI-0014 (spec qml-shell «Формат диалогов задан точкой входа», design
+        D1): «Настройка LLM…» is one of the contract's non-modal windows —
+        its windowTitle becomes a visible title bar, the native close
+        button stays available and the rest of the menu stays alive while
+        the config is read or edited (the old ``open()`` under the parent
+        drew a sheet and greyed the menu — the AB3-class pattern). The
+        registry holds the single instance (key ``llm_setup``): a repeated
+        entry raises the open window instead of stacking a second one (AB4).
+        """
         llm_vm = self._llm_vm
-        dialog = LlmSetupDialog(
-            config=llm_vm.config,
-            world_prompt=llm_vm.world_prompt,
-            field_prompts=llm_vm.field_prompts,
-            llm_vm=llm_vm,
-            parent=window,
-            theme=self._theme,
-        )
 
-        async def _on_saved(config, world_prompt, field_prompts):
-            ok = True
-            try:
-                self._config_manager.save(config)
-                llm_vm.world_prompt = world_prompt
-                llm_vm.field_prompts = field_prompts
-                llm_vm.apply_config(config)
-                if self._session is not None:
-                    await self._save_llm_settings()
-                else:
-                    # App is shutting down: global config file is saved,
-                    # per-game prompts are dropped — nothing to surface.
-                    logging.getLogger("llm.setup").info(
-                        "LLM session closed before per-game prompts saved"
-                    )
-            except Exception as exc:
-                logging.getLogger("llm.setup").error("Failed to save LLM settings: %s", exc)
-                ok = False
-            dialog.finish_saving(ok)
+        def make_setup() -> LlmSetupDialog:
+            dialog = LlmSetupDialog(
+                config=llm_vm.config,
+                world_prompt=llm_vm.world_prompt,
+                field_prompts=llm_vm.field_prompts,
+                llm_vm=llm_vm,
+                parent=window,
+                theme=self._theme,
+            )
 
-        # The save touches the shared session (per-game prompts): schedule it
-        # through the wiring's lock like every other session-touching task —
-        # a raw ensure_future here raced that session with concurrent dialog
-        # flows (audit Q14 scenario 6).
-        dialog.saved.connect(lambda c, wp, fp: self._wiring.run_locked(_on_saved(c, wp, fp)))
-        dialog.open()
+            async def _on_saved(config, world_prompt, field_prompts):
+                ok = True
+                try:
+                    self._config_manager.save(config)
+                    llm_vm.world_prompt = world_prompt
+                    llm_vm.field_prompts = field_prompts
+                    llm_vm.apply_config(config)
+                    if self._session is not None:
+                        await self._save_llm_settings()
+                    else:
+                        # App is shutting down: global config file is saved,
+                        # per-game prompts are dropped — nothing to surface.
+                        logging.getLogger("llm.setup").info(
+                            "LLM session closed before per-game prompts saved"
+                        )
+                except Exception as exc:
+                    logging.getLogger("llm.setup").error("Failed to save LLM settings: %s", exc)
+                    ok = False
+                dialog.finish_saving(ok)
+
+            # The save touches the shared session (per-game prompts): schedule
+            # it through the wiring's lock like every other session-touching
+            # task — a raw ensure_future here raced that session with
+            # concurrent dialog flows (audit Q14 scenario 6).
+            dialog.saved.connect(lambda c, wp, fp: self._wiring.run_locked(_on_saved(c, wp, fp)))
+            # Explicit NonModal pins the contract (the registry shows with
+            # show(); open()-under-parent WindowModal was the defect); the
+            # titled window already carries «Настройка AI-ассистента (LLM)».
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            return dialog
+
+        self._window_registry.open(LLM_SETUP_KEY, make_setup)
 
     async def _load_llm_settings(self) -> None:
         # Per-game prompts read through the infrastructure repository
@@ -881,6 +950,12 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
     # instantiated in tests and run_forever() never returns, so it is exercised
     # by the manual smoke instead of the automated suite
     app = QApplication(sys.argv)
+    # L1 (NRI-0014, spec interface-language): Russian standard elements from
+    # the first window on — the one QTranslator(qtbase_ru) is installed right
+    # here, before the launcher opens and before Application.__init__ builds
+    # any chrome. The test suite mirrors this state via the session fixture in
+    # tests/conftest.py.
+    install_russian_localization(app)
     # Product name: the macOS app menu (a source checkout has no bundle plist,
     # so Qt reads this), plus any place Qt falls back to the application name.
     app.setApplicationName("Master Workspace")

@@ -31,6 +31,17 @@ from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
 
+# NRI-0014 task 4.3 (CR5), the sheet-stack dim: every sheet opened over a
+# parent sheet adds this share to the parent's color.scrim overlay alpha —
+# «лист под ним явно темнее», a deeper layer darkens by one share more than
+# the layer above it. The cap keeps even a deeply covered sheet readable (the
+# dim is a depth cue, never a black wall). This is the one owner of the depth
+# arithmetic (design D3): the palette only carries the dim COLOR (qml_palette),
+# the islands only paint the alpha they are handed, and no second place
+# counts sheets.
+SHEET_SCRIM_ALPHA_PER_SHEET = 0.25
+SHEET_SCRIM_ALPHA_MAX = 0.75
+
 
 class ApplicationWiring:
     """Connects main-window signals to services/viewmodels.
@@ -81,6 +92,11 @@ class ApplicationWiring:
         # of work (task 5.8), so they are explicitly deleted (and that delete
         # persisted) when the parent dialog is rejected.
         self._popup_created: dict[Any, list[tuple[str, int, int]]] = {}
+        # Sheet stack (nri-0014 task 4.3, CR5): parent sheet → how many sheets
+        # are currently open under it (see _dim_sheet_stack). The connector is
+        # its only reader/writer; entries die with the last sheet that made
+        # them, and a game switch rebuilds the connector anyway.
+        self._sheet_scrim_units: dict[Any, int] = {}
         # Unified five-sheet import (rework 4.3): writes through the session/
         # ORM in apply_plan, only the image ingest pipeline is a dependency.
         self._xlsx_import = XlsxImportService(image_store=app._image_store)
@@ -735,6 +751,52 @@ class ApplicationWiring:
                 "Не удалось открыть карточку сущности: %s", exc,
             )
 
+    # ── Sheet stack (nri-0014 task 4.3, CR5): the one owner of stack depth ──
+    # This connector opens every dialog of the sheet flows, so it is the only
+    # place that sees when a child sheet goes over a parent sheet and which
+    # sheets are under it. The islands receive the finished alpha, never a
+    # layer count (design D3): the dim is painted by their sheetScrim layer.
+
+    def _dim_sheet_stack(self, child_sheet) -> None:
+        """Add one scrim share to every sheet ``child_sheet`` was opened over.
+
+        The stack is the dialogs' Qt parent chain: a sheet opened over a sheet
+        has that parent sheet as ``parent()`` (the related-create popup and
+        any future sheet-over-sheet flow pass it), so the walk dims every
+        ancestor one share deeper than the sheet under it — the reading rule
+        «нижний лист затемнён сильнее верхнего» falls out of the arithmetic.
+        """
+        host = child_sheet.parent()
+        while isinstance(host, (EventDialog, EntityCardDialog)):
+            units = self._sheet_scrim_units.get(host, 0) + 1
+            self._sheet_scrim_units[host] = units
+            host.set_sheet_scrim_alpha(
+                min(units * SHEET_SCRIM_ALPHA_PER_SHEET, SHEET_SCRIM_ALPHA_MAX)
+            )
+            host = host.parent()
+
+    def _lift_sheet_stack(self, child_sheet) -> None:
+        """Undo :meth:`_dim_sheet_stack` for the one sheet that just closed.
+
+        Every way a QDialog leaves the screen (reject via Esc/«Отмена»/header
+        ✕, accept after a save, the window-manager close through done) emits
+        ``finished`` — the single release channel hooked at the opening site
+        below, so a scrim can never outlive the sheet that caused it.
+        """
+        host = child_sheet.parent()
+        while isinstance(host, (EventDialog, EntityCardDialog)):
+            units = self._sheet_scrim_units.get(host, 1) - 1
+            if units > 0:
+                self._sheet_scrim_units[host] = units
+            else:
+                self._sheet_scrim_units.pop(host, None)
+            host.set_sheet_scrim_alpha(
+                min(units * SHEET_SCRIM_ALPHA_PER_SHEET, SHEET_SCRIM_ALPHA_MAX)
+                if units > 0
+                else 0.0
+            )
+            host = host.parent()
+
     # ── Shared helper: popup for creating a related entity ─────────────
     # One card window opened from the parent dialog (event or entity card)
     # through _open_entity_card (task 5.10). On save the entity and its own
@@ -779,6 +841,13 @@ class ApplicationWiring:
 
         sub_dialog = await self._open_entity_card(
             entity_type, parent=parent_dialog, on_saved=on_sub_saved,
+        )
+        # NRI-0014 task 4.3 (CR5): the child sheet darkens the sheets under it
+        # for exactly as long as it is open — finished is the one channel every
+        # close route (reject/accept/window close) passes through.
+        self._dim_sheet_stack(sub_dialog)
+        sub_dialog.finished.connect(
+            lambda _r, _c=sub_dialog: self._lift_sheet_stack(_c)
         )
         sub_dialog.open()
 

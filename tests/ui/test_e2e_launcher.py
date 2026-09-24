@@ -113,3 +113,78 @@ async def test_switch_game_from_menu(qapp, llm_client, tmp_games_dir, tmp_llm_co
     finally:
         application._window.close()
         await application.shutdown()
+
+
+async def test_switch_game_entry_shows_visible_non_modal_titled_window(app, wait_for):
+    """NRI-0014 3.1 (A1/A2): «Сменить игру…» gives a REAL non-modal window.
+
+    spec game-launcher «Формат лаунчера зависит от точки входа»: opened from
+    the menu the launcher is a visible titled window whose modality is
+    NonModal (open() under a parent was a WindowModal sheet that silently
+    blocked the rest of the menu, contradicting the code comment). Closing
+    it without a choice returns to the same game, unchanged.
+    """
+    from PySide6.QtCore import Qt
+
+    application, window = app
+    title_before = window.windowTitle()
+
+    window.switch_game_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
+    launcher = window.findChildren(GameLauncherDialog)[0]
+    assert launcher.windowModality() == Qt.WindowModality.NonModal
+    assert not launcher.isModal()
+    assert launcher.isVisible()
+    assert launcher.windowTitle()  # non-empty: A2 wanted a visible title bar
+    assert window.isEnabled()  # A1: the caller's window/menu stays alive
+
+    # Closing without a choice: the key is released and the very same game
+    # stays open — the switch flow was entered but never left.
+    launcher.close()
+    assert application._window is window
+    assert window.windowTitle() == title_before
+    assert window.isVisible()
+
+
+async def test_switch_game_second_click_reuses_launcher_window(app, wait_for, monkeypatch):
+    """NRI-0014 1.2: повторный «Сменить игру…» поднимает открытый лаунчер.
+
+    The entry goes through MenuWindowRegistry (key ``launcher_switch``): a
+    repeated click must not stack a second dialog (AB4); closing releases
+    the key and the next open builds a fresh window again.
+    """
+    import asyncio
+
+    import app.main as main_mod
+    from app.presentation.window_registry import LAUNCHER_SWITCH_KEY
+
+    application, window = app
+    created: list[GameLauncherDialog] = []
+
+    class CountingLauncher(GameLauncherDialog):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(main_mod, "GameLauncherDialog", CountingLauncher)
+
+    window.switch_game_action.trigger()
+    await wait_for(lambda: bool(created))
+    launcher = created[0]
+
+    # Second click while the launcher is open: the handler is synchronous,
+    # so one loop turn drains it — no second dialog may have been created.
+    window.switch_game_action.trigger()
+    await asyncio.sleep(0)
+    assert len(created) == 1
+    assert application._window_registry.get(LAUNCHER_SWITCH_KEY) is launcher
+
+    # Closing releases the key …
+    launcher.close()
+    assert application._window_registry.get(LAUNCHER_SWITCH_KEY) is None
+
+    # … and the entry opens a fresh window again.
+    window.switch_game_action.trigger()
+    await wait_for(lambda: len(created) == 2)
+    assert created[1] is not launcher
+    created[1].close()

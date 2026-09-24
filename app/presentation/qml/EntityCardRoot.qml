@@ -22,23 +22,51 @@ Rectangle {
     readonly property color accentColor:
         Tokens.token(islandTokens, "color.accent", "black")
 
+    // NRI-0014 task 4.2 (E1): the card's visible title line, outside the
+    // scroll — the title and the cross must stay reachable without scrolling.
+    // The dialog threads its windowTitle («Карточка: <тип>») in; closing the
+    // header runs the same view-model cancel as «Отмена» (guarded reject),
+    // there is no second close path on this island.
+    property string sheetTitle: ""
+
+    // NRI-0014 task 4.3 (CR5): the stack depth. The stack owner (the wiring
+    // that opened a child sheet over this one) threads the already-computed
+    // dim alpha in; the island never sees layer counts, it only paints the
+    // color.scrim overlay at this opacity on top. A top sheet stays at 0 and
+    // the layer is not even painted — the wireframe pixel contract holds.
+    property real sheetScrimAlpha: 0.0
+
     color: surfaceColor
     // Natural content size (island_size.py mirrors it onto the window), so the
     // dialog opens big enough to show the related section and the action row
     // instead of pushing them under the scroll. The sizes the port pinned
     // (750/550 with an image, 550 without) stay as the floors; the content is
-    // measured plus the scroll bar's track, which the scene never owns.
+    // measured plus the scroll bar's track, which the scene never owns, plus
+    // the header strip (task 4.2: the wireframe recomputed with the header).
     readonly property real scrollbarReserve: 16
     implicitWidth: Math.max(
         entityCardVm.hasImage ? 750 : 550,
         cardColumn.implicitWidth + scrollbarReserve)
     implicitHeight: Math.max(
-        550, cardColumn.implicitHeight + scrollbarReserve)
+        550, cardColumn.implicitHeight + scrollbarReserve) + cardSheetHeader.implicitHeight
+
+    ThemeSheetHeader {
+        id: cardSheetHeader
+        objectName: "entitySheetHeader"
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        title: root.sheetTitle
+        onCloseRequested: entityCardVm.requestCancel()
+    }
 
     ScrollView {
         id: scroll
         objectName: "entityCardScroll"
-        anchors.fill: parent
+        anchors.top: cardSheetHeader.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
         contentWidth: availableWidth
 
         ColumnLayout {
@@ -386,5 +414,16 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // Declared last so the dim paints over the whole sheet (header included);
+    // a bare Item accepts no mouse, so the scrim can never trap the sheet's
+    // own input.
+    Rectangle {
+        objectName: "sheetScrim"
+        anchors.fill: parent
+        color: Tokens.token(root.islandTokens, "color.scrim", "black")
+        opacity: root.sheetScrimAlpha
+        visible: root.sheetScrimAlpha > 0
     }
 }

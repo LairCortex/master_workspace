@@ -73,6 +73,8 @@ def save_template_as(parent) -> Path | None:
     """
     target, _selected_filter = QFileDialog.getSaveFileName(
         parent, "Сохранить шаблон", TEMPLATE_FILE_NAME, XLSX_FILTER,
+        # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+        options=QFileDialog.Option.DontUseNativeDialog,
     )
     if not target:
         return None  # user cancelled — no generation work, nothing written
@@ -375,6 +377,8 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
             "Выберите файл",
             "",
             XLSX_FILTER,
+            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if path:
             self.vm.path = path

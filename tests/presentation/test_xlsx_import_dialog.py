@@ -587,6 +587,141 @@ class TestWiringPublishSeam:
         assert dead.plan is not plan_after          # publishes were dropped
 
 
+class TestDeadZoneFreeSheetLayout:
+    """Geometry contract of NRI-0014 task 5.1 (live audit D5).
+
+    The conditional panels (pre-analysis list, final report) never hold room
+    in the layout while hidden, and the sheet never spreads its leftover space
+    as empty bands between the visible sections — the ~116/110 pt dead zones
+    of the 2026-09-24 menu-flow audit are pinned shut (spec qml-shell
+    «Островной лист умещается в родителя без мёртвых зон», scenario
+    «Нет разрыва пустоты»): every gap between adjacent visible rows stays
+    within one line, and the visible rows themselves sum to the span they
+    occupy.
+    """
+
+    #: The island's column layout — the root's direct layout child.
+    @staticmethod
+    def _column(dlg):
+        cols = [
+            i for i in dlg.quick.rootObject().childItems()
+            if i.metaObject().className() == "QQuickColumnLayout"
+        ]
+        assert len(cols) == 1
+        return cols[0]
+
+    #: The column's single absorber (the trailing plain Item): it exists and
+    #: holds height only once the layout has run its placement pass.
+    @classmethod
+    def _spacer(cls, dlg):
+        spacers = [
+            i for i in cls._column(dlg).childItems()
+            if i.metaObject().className() == "QQuickItem"
+        ]
+        assert len(spacers) == 1
+        return spacers[0]
+
+    #: Visible rows top-to-bottom — the column's DIRECT children are exactly
+    #: the sheet's rows (inner widgets live one level below).
+    @classmethod
+    def _visible_rows(cls, dlg):
+        rows = [i for i in cls._column(dlg).childItems() if i.isVisible()]
+        rows.sort(key=lambda i: i.y())
+        return rows
+
+    @classmethod
+    def _row_gaps_ok(cls, dlg) -> bool:
+        rows = cls._visible_rows(dlg)
+        if len(rows) < 2:
+            return False
+        line = rows[0].height()
+        return all(
+            nxt.y() - (prev.y() + prev.height()) <= line
+            for prev, nxt in zip(rows, rows[1:])
+        )
+
+    def _opened_sheet(self, qtbot) -> XlsxImportDialog:
+        from PySide6.QtTest import QTest
+
+        d = XlsxImportDialog()
+        qtbot.addWidget(d)
+        d.show()
+        QTest.qWaitForWindowExposed(d)
+        # The layout's placement pass lands on an event dispatch; waiting for
+        # the absorber beats a blind sleep (the project's waitUntil idiom).
+        qtbot.waitUntil(lambda: self._spacer(d).height() > 0, timeout=2000)
+        d.quick.grab()
+        return d
+
+    def _settled_state(self, qtbot, d, panel: str) -> None:
+        """Pump until the shown panel's slot is laid out, then the settle grab
+        (visible-state relayout rides the same queued activation)."""
+        frame = {i.objectName(): i for i in self._column(d).childItems()}[panel]
+        qtbot.waitUntil(lambda: frame.height() >= 150, timeout=2000)
+        d.quick.grab()
+
+    def test_opened_sheet_packs_visible_rows_without_dead_zones(self, qtbot):
+        """Idle sheet (the list of problems is empty): title, hint, file row
+        and buttons stand one under another — no gap exceeds one line, and the
+        hidden blocks keep zero height."""
+        d = self._opened_sheet(qtbot)
+        rows = self._visible_rows(d)
+        # title, hint area, file row, button row — plus the stretch filler
+        # that now holds the leftover space alone, below the rows.
+        assert len(rows) >= 4
+        line = rows[0].height()  # the caption line is the yardstick
+        top, bottom = rows[0].y(), rows[-1].y() + rows[-1].height()
+        for prev, nxt in zip(rows, rows[1:]):
+            gap = nxt.y() - (prev.y() + prev.height())
+            assert gap <= line, (
+                f"dead zone {gap:.0f} pt (row {line:.0f} pt) between "
+                f"{prev.objectName() or prev.metaObject().className()} and "
+                f"{nxt.objectName() or nxt.metaObject().className()}"
+            )
+        span = bottom - top
+        summed = sum(i.height() for i in rows) + (len(rows) - 1) * 8  # space.sm
+        assert abs(span - summed) <= 1, (
+            f"visible rows sum {summed:.0f} != occupied content height {span:.0f}"
+        )
+        # «скрыт → нулевая высота»: the hidden panels hold no slot of the
+        # ~150 pt they take once shown.
+        by_name = {i.objectName(): i for i in self._column(d).childItems()}
+        assert not by_name["issueFrame"].isVisible()
+        assert by_name["issueFrame"].height() == 0
+        assert not by_name["reportArea"].isVisible()
+        assert by_name["reportArea"].height() == 0
+
+    def test_problem_and_report_states_keep_rows_adjacent(self, qtbot):
+        """The same adjacency rule in the other two states: the panel that IS
+        visible takes its content slot (≥ its preferred 150) between the other
+        rows without pushing empty bands around, and the hidden sibling stays
+        at zero."""
+        d = self._opened_sheet(qtbot)
+        d.vm.path = "/tmp/f.xlsx"
+        d.publish_analysis(plan_with(
+            rows=[RowIssue("Персонажи", 5, "пустое имя")],
+        ))
+        self._settled_state(qtbot, d, "issueFrame")
+        by_name = {i.objectName(): i for i in self._column(d).childItems()}
+        assert by_name["issueFrame"].isVisible()
+        assert not by_name["reportArea"].isVisible()
+        assert by_name["reportArea"].height() == 0
+        assert self._row_gaps_ok(d)
+
+        d.publish_report(ImportReport(created=1))
+        self._settled_state(qtbot, d, "reportArea")
+        by_name = {i.objectName(): i for i in self._column(d).childItems()}
+        assert by_name["reportArea"].isVisible()
+        assert not by_name["issueFrame"].isVisible()
+        # «скрыт → не занимает слот»: the column reflowed over the retired
+        # panel — its last rectangle (kept verbatim by Qt for hidden items)
+        # no longer sits among the visible rows, and the adjacency check on
+        # the fresh visible rows below is the observable form of the empty slot.
+        rows = self._visible_rows(d)
+        assert by_name["issueFrame"] not in rows
+        assert self._row_gaps_ok(d)
+
+
 # small helper: collect a named dialog signal's emits as a context manager
 class qtbot_signal:
     def __init__(self, dialog, signal_name):

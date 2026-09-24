@@ -14,7 +14,7 @@ import json
 import pytest
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QAccessible, QKeySequence
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.domain.enums.field_type import FieldType
@@ -371,9 +371,12 @@ async def test_export_pdf_cancel_does_not_write(dlg, monkeypatch):
 async def test_export_pdf_suggested_name(dlg, monkeypatch):
     captured: dict = {}
 
-    def fake_save(parent, caption, directory="", filter=""):
+    def fake_save(parent, caption, directory="", filter="", **kw):
+        # L1 (NRI-0014): the app always passes options=DontUseNativeDialog —
+        # the fake mirrors the new call contract.
         captured["directory"] = directory
         captured["filter"] = filter
+        captured["options"] = kw.get("options")
         return "", ""
 
     monkeypatch.setattr(
@@ -384,12 +387,13 @@ async def test_export_pdf_suggested_name(dlg, monkeypatch):
     await asyncio.sleep(0.05)
     assert captured["directory"].endswith("Лист героя.pdf")
     assert "pdf" in captured["filter"].lower()
+    assert captured["options"] == QFileDialog.Option.DontUseNativeDialog
 
 
 async def test_export_pdf_uses_dirty_canvas(dlg, monkeypatch, tmp_path):
     written: list = []
 
-    def fake_save(parent, caption, directory="", filter=""):
+    def fake_save(parent, caption, directory="", filter="", **kw):
         return str(tmp_path / "out.pdf"), "PDF (*.pdf)"
 
     def fake_write(template, dest, images):

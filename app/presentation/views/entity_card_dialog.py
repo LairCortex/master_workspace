@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+import shiboken6
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
@@ -315,6 +316,11 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         layout.addWidget(self.quick)
         fit_dialog_to_island(self, self._root, floor=self._size_floor)
 
+        # NRI-0014 task 4.2 (E1): replay the pre-island window title into the
+        # header's titled thread (the setWindowTitle override below carries any
+        # later rename; the constructor sets the title before the scene loads).
+        self.setWindowTitle(self.windowTitle())
+
         for host in self.vm.hosts.values():
             host.attachWidget(self.quick)
         for proxy in self.vm.mention_proxies.values():
@@ -398,6 +404,25 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     def entity_type(self) -> str:
         return self._entity_type
 
+    def setWindowTitle(self, title: str) -> None:
+        # NRI-0014 task 4.2 (E1): the header title is the windowTitle threaded
+        # into the scene as a single value.
+        super().setWindowTitle(title)
+        if getattr(self, "_root", None) is not None:
+            self._root.setProperty("sheetTitle", title)
+
+    def set_sheet_scrim_alpha(self, alpha: float) -> None:
+        # NRI-0014 task 4.3 (CR5): the stack owner (ApplicationWiring counts
+        # the sheets opened under this one) hands the finished dim alpha to
+        # the sheetScrim layer; the dialog judges no depth, it only publishes
+        # the value the scene paints. Closing a game releases the scene one
+        # turn after the dialog dies while child sheets may still cascade
+        # closed around it — a lift aimed at a released island drops silently
+        # (the XlsxImportDialog publish_* contract): paint has nowhere to go.
+        root = getattr(self, "_root", None)
+        if root is not None and shiboken6.isValid(root):
+            root.setProperty("sheetScrimAlpha", alpha)
+
     @property
     def populated_entity_id(self) -> int | None:
         return self._populated_entity_id
@@ -418,7 +443,9 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
 
     def _on_pick_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите изображение", "", _IMAGE_FILTERS
+            self, "Выберите изображение", "", _IMAGE_FILTERS,
+            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not path:
             return

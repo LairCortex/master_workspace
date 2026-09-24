@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
@@ -44,6 +45,13 @@ class DocViewerDialog(IslandDialogMixin, QDialog):
                     tokens_path=tokens_file_path(),
                 )
         self.setWindowTitle(title)
+        # NRI-0014 task 2.2 (defect AB3): a document opens as a real non-modal
+        # window — title bar + close button, the main window and its menu stay
+        # alive while one reads. Explicit NonModal pins the contract: the
+        # registry presents with show() (never QDialog.open(), which under a
+        # parent becomes a WindowModal sheet that silently greys out the
+        # menu).
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setMinimumSize(640, 480)
         self.resize(720, 560)
 

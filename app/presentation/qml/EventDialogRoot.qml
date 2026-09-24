@@ -15,12 +15,42 @@ Rectangle {
     readonly property color surfaceColor:
         Tokens.token(islandTokens, "color.bg.surface", "white")
 
+    // NRI-0014 task 4.2 (E1): the sheet's visible title line. The dialog
+    // threads its windowTitle in (the windowTitleChanged feed in
+    // event_dialog.py is the only writer); the header itself rides the
+    // library ThemeSheetHeader and cancels through the very view-model
+    // request the «Отмена» button uses — no second close path.
+    property string sheetTitle: ""
+
+    // NRI-0014 task 4.3 (CR5): the stack depth. The stack owner (the wiring
+    // that opened a child sheet over this one) threads the already-computed
+    // dim alpha in; the island never sees layer counts, it only paints the
+    // color.scrim overlay at this opacity on top. A top sheet stays at 0 and
+    // the layer is not even painted — the wireframe pixel contract holds.
+    property real sheetScrimAlpha: 0.0
+
     color: surfaceColor
     implicitWidth: 700
-    implicitHeight: 620
+    // The 620 the port pinned stays the CONTENT share; the header row is the
+    // wireframe's own strip on top (the wireframe recomputed with the header,
+    // task 4.2 — the pixel grab contract keeps the surface token at the edge).
+    implicitHeight: 620 + eventSheetHeader.implicitHeight
+
+    ThemeSheetHeader {
+        id: eventSheetHeader
+        objectName: "eventSheetHeader"
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        title: root.sheetTitle
+        onCloseRequested: eventDialogVm.requestCancel()
+    }
 
     ColumnLayout {
-        anchors.fill: parent
+        anchors.top: eventSheetHeader.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
         anchors.margins: Tokens.px(root.islandTokens, "space.md", 16)
         spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
@@ -228,5 +258,15 @@ Rectangle {
                 onClicked: eventDialogVm.requestCancel()
             }
         }
+    }
+
+    // Declared last so the dim paints over the whole sheet; a bare Item
+    // accepts no mouse, so the scrim can never trap the sheet's own input.
+    Rectangle {
+        objectName: "sheetScrim"
+        anchors.fill: parent
+        color: Tokens.token(root.islandTokens, "color.scrim", "black")
+        opacity: root.sheetScrimAlpha
+        visible: root.sheetScrimAlpha > 0
     }
 }

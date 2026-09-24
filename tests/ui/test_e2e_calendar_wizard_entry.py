@@ -27,7 +27,7 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QSize
+from PySide6.QtCore import QPoint, QRect, Qt, QSize
 
 from app.domain.game_calendar import (
     CalendarSpec,
@@ -204,6 +204,41 @@ async def test_menu_entry_preselects_custom_and_old_game_stays_old(
         window2.close()
         await application.shutdown()
     assert CALENDAR_WIZARD_SEEN_KEY not in _settings_rows(db_path)
+
+
+# ── NRI-0014 5.2: the menu wizard's window format (D6) ───────────────────────
+
+
+async def test_menu_wizard_is_application_modal_without_parent_geometry_jump(
+    app, wait_for
+):
+    """The «Календарь…» wizard is its own application-modal top-level, not a
+    parent-attached sheet (spec qml-shell «Формат диалогов задан точкой
+    входа»: the entry is modal; design D5/D6): ``open()`` under the parent set
+    WindowModal and macOS drew it as a title-less sheet attached to the main
+    window — wider than the window, moving it on open and back on close (D6).
+    The format check: ``windowModality()`` is ApplicationModal, and the main
+    window's geometry does not budge while the wider wizard is open."""
+    application, window = app
+    window.setGeometry(140, 120, 1100, 700)
+    await helpers.wait_until_settled()
+    geometry_before = window.geometry()
+
+    window.calendar_wizard_action.trigger()
+    await wait_for(lambda: _visible_wizard(window) is not None)
+    wizard = _visible_wizard(window)
+    await helpers.wait_until_settled()
+
+    assert wizard.windowModality() == Qt.WindowModality.ApplicationModal
+    assert wizard.isModal()
+    # An own window, not an attached sheet: the wizard itself is its window.
+    assert wizard.window() is wizard
+    # D6: opening something wider than the parent must not shove the parent.
+    assert window.geometry() == geometry_before
+
+    wizard.reject()
+    await wait_for(lambda: application._calendar_wizard is None)
+    assert window.geometry() == geometry_before
 
 
 # ── 7.2: first entry of a newly created game ────────────────────────────────

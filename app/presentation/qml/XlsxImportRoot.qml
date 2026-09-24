@@ -110,12 +110,16 @@ Rectangle {
         }
 
         // ── pre-analysis problem list (sheet / row / reason) ─────────────
+        // Hidden blocks take no layout room: `visible: false` drops them from
+        // the column outright, and the leftover space rides the trailing
+        // stretch below — never scattered as ~116/110 pt bands between the
+        // visible rows (NRI-0014 D5, spec «Нет разрыва пустоты»).
         Rectangle {
             objectName: "issueFrame"
             visible: root.issuesShown()
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.preferredHeight: 150
+            Layout.fillHeight: root.issuesShown()
+            Layout.preferredHeight: root.issuesShown() ? 150 : 0
             radius: Tokens.px(root.islandTokens, "radius.sm", 6)
             color: root.canvasColor
             border.color: root.borderColor
@@ -187,6 +191,8 @@ Rectangle {
         }
 
         // ── final report panel (created/updated/links/skipped/…) ──────────
+        // Hidden → zero height, shown → its own slot; the column's leftover
+        // space lives in the trailing stretch, not between the rows (D5).
         Flickable {
             objectName: "reportArea"
             // `report` arrives as QML `undefined` until the import finishes
@@ -194,8 +200,8 @@ Rectangle {
             // every report read below goes through the plain truthiness test.
             visible: xlsxImportVm.state === "done" && !!xlsxImportVm.report
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.preferredHeight: 150
+            Layout.fillHeight: visible
+            Layout.preferredHeight: visible ? 150 : 0
             contentHeight: reportColumn.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
             clip: true
@@ -321,6 +327,12 @@ Rectangle {
                 onClicked: root.cancelRequested()
             }
         }
+
+        // The column's single absorber (old addStretch, the LlmSetupRoot
+        // precedent): while neither conditional panel stretches, the leftover
+        // height rides here, below the visible rows, instead of qGeomCalc
+        // spreading it into empty bands between the sections (NRI-0014 D5).
+        Item { Layout.fillHeight: true }
     }
 
     signal cancelRequested()

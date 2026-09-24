@@ -184,6 +184,9 @@ def test_qmldir_declares_module_and_future_component_entries():
             "HintText",
             "CardPanel",
             "RowItem",
+            # nri-0014 task 4.1: the island-sheet title row joins the module
+            # (spec qml-components «Компонент строки заголовка листа»).
+            "ThemeSheetHeader",
         )
     ]
     assert TOKENS_JS.is_file()

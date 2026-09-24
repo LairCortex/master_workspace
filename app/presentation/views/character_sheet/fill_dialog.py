@@ -357,7 +357,9 @@ class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
         if self._vm.read_only:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите изображение", "", _IMAGE_FILTER
+            self, "Выберите изображение", "", _IMAGE_FILTER,
+            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not path:
             return

@@ -29,6 +29,23 @@ from app.infrastructure.db.database import create_engine as app_create_engine
 from app.infrastructure.db.models import Base
 
 
+@pytest.fixture(scope="session", autouse=True)
+def russian_localization_from_startup(qapp):
+    """Every test starts in the same state as the launched app: the Russian
+    translator already on (NRI-0014, spec interface-language).
+
+    ``main()`` installs it right after creating the QApplication and before
+    the first window; the suite cannot run ``main()`` (pragma: no cover), so
+    this session fixture — the first thing touching the session app — applies
+    the same single installer. Standard buttons («Отмена», «Да», «Нет», «ОК»)
+    and file panels then read Russian in tests exactly like at runtime, and
+    texts pinning tests can rely on the post-startup contract.
+    """
+    from app.infrastructure.localization import install_russian_localization
+
+    return install_russian_localization(qapp)
+
+
 @pytest.fixture(autouse=True)
 def isolated_ui_theme_defaults(tmp_path, monkeypatch):
     """No test may read or write the developer's real ~/.nri_manager/ui.json.

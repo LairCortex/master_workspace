@@ -331,7 +331,9 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         if template is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Экспорт в PDF", f"{template.name}.pdf", "PDF (*.pdf)"
+            self, "Экспорт в PDF", f"{template.name}.pdf", "PDF (*.pdf)",
+            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not path:
             return
@@ -447,7 +449,9 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
     def _pick_image(self, field_id: str) -> None:
         """File dialog first (sync UI), then the ingest on the loop."""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите изображение", "", _IMAGE_FILTER
+            self, "Выберите изображение", "", _IMAGE_FILTER,
+            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not path:
             return

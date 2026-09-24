@@ -18,6 +18,11 @@ from app.presentation.views.doc_viewer_dialog import DocViewerDialog as _DocView
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_island import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
+from app.presentation.window_registry import (
+    DOCS_CHANGELOG_KEY,
+    DOCS_README_KEY,
+    MenuWindowRegistry,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,11 +60,17 @@ class MainWindow(QMainWindow):
         game_name: str = "",
         parent: QWidget | None = None,
         theme=None,
+        window_registry: MenuWindowRegistry | None = None,
     ) -> None:
         super().__init__(parent)
         self._base_title = "Master Workspace"
         self.llm_vm = llm_vm
         self._theme = theme
+        # NRI-0014 (design D1): single-instance menu windows live in one
+        # registry; the composition root shares the application-wide one
+        # (the launcher entry uses the SAME instance), a bare MainWindow
+        # falls back to its own.
+        self._window_registry = window_registry or MenuWindowRegistry()
         self.set_game_name(game_name)
         self.setMinimumSize(1024, 680)
 
@@ -68,7 +79,7 @@ class MainWindow(QMainWindow):
 
         # Файл
         file_menu = menu_bar.addMenu("Файл")
-        self.switch_game_action = QAction("Сменить игру", self)
+        self.switch_game_action = QAction("Сменить игру…", self)
         self.switch_game_action.triggered.connect(self.switch_game_requested.emit)
         file_menu.addAction(self.switch_game_action)
 
@@ -139,6 +150,22 @@ class MainWindow(QMainWindow):
         self._file_handler: logging.FileHandler | None = None
 
         menu_bar.setObjectName("themeMenu")  # test identifier, not a style hook (W2a)
+        # NRI-0014 live audit (L2): Qt's macOS menu-role heuristic reads the
+        # translated role words, and with the Russian QTranslator (L1) the
+        # action «Настройка LLM…» matches the Preferences keyword — the role
+        # promotes to its whole container menu and the native menu bar drops
+        # the «LLM» item from the bar (reproduced: 6 bar items instead of 7,
+        # the LLM menu vanished and a ghost «Настройки…» appeared in the app
+        # menu). The app never asks for native special-menu items (About/
+        # Preferences/Quit come from Qt's own defaults), so every menu action
+        # is pinned to NoRole: titles stay verbatim on every platform.
+        for top in menu_bar.actions():
+            top.setMenuRole(QAction.MenuRole.NoRole)
+            submenu = top.menu()
+            if submenu is not None:
+                for action in submenu.actions():
+                    if action.menu() is None:  # plain item (separators have no role anyway)
+                        action.setMenuRole(QAction.MenuRole.NoRole)
         self.setMenuBar(menu_bar)
 
         central = QWidget()
@@ -233,13 +260,21 @@ class MainWindow(QMainWindow):
         self.theme_toggle_action.blockSignals(False)
 
     def _show_readme(self) -> None:
-        dlg = _DocViewerDialog(
-            "Документация", _docs_dir() / "README.md", parent=self, theme=self._theme,
+        # NRI-0014 1.2: registry presentation — a repeated entry raises the
+        # open document window instead of stacking a second one (AB4).
+        self._window_registry.open(
+            DOCS_README_KEY,
+            lambda: _DocViewerDialog(
+                "Документация", _docs_dir() / "README.md", parent=self,
+                theme=self._theme,
+            ),
         )
-        dlg.open()
 
     def _show_changelog(self) -> None:
-        dlg = _DocViewerDialog(
-            "Changelog", _docs_dir() / "CHANGELOG.md", parent=self, theme=self._theme,
+        self._window_registry.open(
+            DOCS_CHANGELOG_KEY,
+            lambda: _DocViewerDialog(
+                "Changelog", _docs_dir() / "CHANGELOG.md", parent=self,
+                theme=self._theme,
+            ),
         )
-        dlg.open()

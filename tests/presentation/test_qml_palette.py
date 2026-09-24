@@ -38,6 +38,11 @@ DERIVED_KEYS = frozenset({
     "color.accent.ghost",
     "opacity.accent.rowHover",
     "opacity.accent.ghost",
+    # The sheet-stack dim (change nri-0014-window-contract-and-docs, task 4.3,
+    # CR5): the neutral materialization black the dialog roots' sheetScrim
+    # overlay paints with; the depth alpha is the wiring stack owner's, not a
+    # palette entry.
+    "color.scrim",
     "style.mention",
 })
 
@@ -49,6 +54,9 @@ PRESSED_ALPHA = 0.7
 # the ghost's 0.35 is pinned by the spec itself).
 ROW_HOVER_ALPHA = 0.25
 GHOST_ALPHA = 0.35
+# The stack dim color (qml_palette.SCRIM_COLOR): theme-neutral black, pinned
+# literally so a re-tint (which would break the dark theme's dimming) fails.
+SCRIM_COLOR = "#000000"
 
 
 @pytest.fixture
@@ -104,6 +112,8 @@ def test_derived_keys_match_the_qss_compiler_output(runtime):
     assert palette["color.accent.ghost"] == tokens["color.accent"][runtime.theme]
     assert palette["opacity.accent.rowHover"] == f"{ROW_HOVER_ALPHA:g}"
     assert palette["opacity.accent.ghost"] == f"{GHOST_ALPHA:g}"
+    # The stack dim (nri-0014 CR5): the neutral black, not a theme derivative.
+    assert palette["color.scrim"] == SCRIM_COLOR
     assert palette["style.mention"] == mention_style(tokens, runtime.theme)
     # The island washes with the very accent and alphas compile_qss embeds in
     # its :hover/:pressed rules — one derivation, two serializations (D3).
@@ -158,6 +168,8 @@ def test_live_switch_reemits_with_values_of_the_new_theme(runtime):
     assert palette.tokens["color.bg.surface"] == tokens["color.bg.surface"]["light"]
     assert palette.tokens["color.accent"] == tokens["color.accent"]["light"]
     assert palette.tokens["color.accent.hover"] == accent_argb(tokens, "light", HOVER_ALPHA)
+    # The stack dim is theme-neutral: light and dark dim with the same black.
+    assert palette.tokens["color.scrim"] == SCRIM_COLOR
     assert accent_rgba(tokens, "light", HOVER_ALPHA) in runtime.qss()
 
     assert runtime.toggle() is True  # light → dark (both themes proven)

@@ -24,7 +24,14 @@ from app.infrastructure.http import AppHttpClient
 from app.main import Application
 
 CANNED_LLM_CONTENT = "Сгенерированный текст из mock-LLM"
-DEFAULT_WAIT_TIMEOUT_S = 10.0
+# Budget for every ``wait_for`` in the UI layer. 10 s is comfortable on an
+# idle machine, but the heavy E2E flows (e.g. the xlsx-import pre-analysis:
+# openpyxl parses synchronously on the event loop) stretch by the CPU-contention
+# factor when other suites run in parallel on the same machine — the flow then
+# legitimately lands past the old 10 s cap (observed as a one-off
+# test_e2e_import flake in a loaded full run). 30 s keeps the margin ~3x for
+# contention while only delaying the report of a genuine hang.
+DEFAULT_WAIT_TIMEOUT_S = 30.0
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

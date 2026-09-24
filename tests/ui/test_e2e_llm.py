@@ -863,3 +863,68 @@ async def test_nested_card_cancel_only_stops_nested_generation(
     assert parent.name_input.text() == "done-1"
     assert parent.save_button.isEnabled()
     assert not any(kind in ("warning", "critical") for kind, _t, _x in message_boxes)
+
+
+async def test_llm_setup_entry_is_a_visible_non_modal_titled_window(app, wait_for):
+    """NRI-0014 (spec qml-shell «Формат диалогов задан точкой входа»):
+    «Настройка LLM…» from the menu is a REAL non-modal window.
+
+    The old ``open()`` under the parent drew a sheet that greyed the rest of
+    the menu; the contract format is a titled, closable window whose
+    modality is NonModal with the main window staying enabled. Closing it
+    releases the registry key.
+    """
+    from PySide6.QtCore import Qt
+
+    from app.presentation.window_registry import LLM_SETUP_KEY
+
+    application, window = app
+    window.llm_setup_action.trigger()
+    await wait_for(lambda: bool(window.findChildren(LlmSetupDialog)))
+    wizard = window.findChildren(LlmSetupDialog)[0]
+    assert wizard.windowModality() == Qt.WindowModality.NonModal
+    assert not wizard.isModal()
+    assert wizard.isVisible()
+    assert wizard.windowTitle()  # «Настройка AI-ассистента (LLM)» in the title bar
+    assert window.isEnabled()  # the rest of the app stays alive
+
+    assert application._window_registry.get(LLM_SETUP_KEY) is wizard
+    wizard.close()
+
+
+async def test_llm_setup_second_entry_reuses_the_single_window(app, wait_for, monkeypatch):
+    """NRI-0014 (AB4, design D1, key ``llm_setup``): a repeated «Настройка
+    LLM…» raises the open wizard instead of stacking a second one; closing
+    releases the key and the next entry opens a fresh window."""
+    import app.main as main_mod
+
+    from app.presentation.window_registry import LLM_SETUP_KEY
+
+    application, window = app
+    created: list[LlmSetupDialog] = []
+
+    class CountingSetup(LlmSetupDialog):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(main_mod, "LlmSetupDialog", CountingSetup)
+
+    window.llm_setup_action.trigger()
+    await wait_for(lambda: bool(created))
+    wizard = created[0]
+
+    # Repeated entry while the wizard is open: the handler is synchronous,
+    # one loop turn is plenty — no second dialog may have been built.
+    window.llm_setup_action.trigger()
+    await asyncio.sleep(0)
+    assert len(created) == 1
+    assert application._window_registry.get(LLM_SETUP_KEY) is wizard
+
+    wizard.close()
+    assert application._window_registry.get(LLM_SETUP_KEY) is None
+
+    window.llm_setup_action.trigger()
+    await wait_for(lambda: len(created) == 2)
+    assert created[1] is not wizard
+    created[1].close()

@@ -51,6 +51,16 @@ PRESSED_ALPHA = 0.7
 ROW_HOVER_ALPHA = 0.25
 GHOST_ALPHA = 0.35
 
+# The sheet-stack dim (nri-0014 task 4.3, CR5: «нижний лист затемнён сильнее
+# верхнего»): the neutral materialization black every sheet under an opened
+# child sheet is washed with — theme-neutral on purpose (a wash of the active
+# theme's ink would BRIGHTEN the dark theme instead of dimming it; an accent
+# wash would tint, and a dim of a sheet is not a tint). Only the COLOR is the
+# palette's; the depth arithmetic (layers × alpha, capped) belongs to the one
+# stack owner (ApplicationWiring), and the islands only paint the alpha they
+# are handed — QML never derives it (same division as the timeline washes).
+SCRIM_COLOR = "#000000"
+
 # Key names of the derived entries appended to the token dictionary. They live
 # in the palette vocabulary (dot-namespaced, never colliding with a token
 # key) and are the contract with the qml code, spelled out once here.
@@ -64,6 +74,9 @@ DERIVED_TOKEN_KEYS: tuple[str, ...] = (
     "color.accent.ghost",
     "opacity.accent.rowHover",
     "opacity.accent.ghost",
+    # The sheet-stack dim consumed by the dialog roots' sheetScrim layer
+    # (nri-0014 CR5) — see SCRIM_COLOR above.
+    "color.scrim",
     "style.mention",
 )
 
@@ -104,6 +117,9 @@ class QmlPalette(QObject):
         palette["color.accent.ghost"] = palette["color.accent"]
         palette["opacity.accent.rowHover"] = f"{ROW_HOVER_ALPHA:g}"
         palette["opacity.accent.ghost"] = f"{GHOST_ALPHA:g}"
+        # The stack dim is theme-neutral (SCRIM_COLOR) — deliberately not a
+        # per-theme derivative, see the constant's comment.
+        palette["color.scrim"] = SCRIM_COLOR
         palette["style.mention"] = mention_style(tokens, theme)
         return palette
 

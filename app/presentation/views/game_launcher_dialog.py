@@ -151,6 +151,8 @@ class GameLauncherDialog(IslandDialogMixin, QDialog):
         path, _ = QFileDialog.getOpenFileName(
             self, "Импорт игры", "",
             "NRI архив (*.nri);;Все файлы (*)",
+            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not path:
             return  # cancelled: no-op

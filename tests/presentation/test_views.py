@@ -8,7 +8,7 @@ import zipfile
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QMessageBox, QSplitter
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QSplitter
 
 from app.domain.game_calendar import MonthDay
 from app.presentation.views.main_window import MainWindow
@@ -44,6 +44,39 @@ class TestMainWindow:
         )
         qtbot.addWidget(w)
         assert w.windowTitle() != ""
+
+    def test_menu_bar_actions_have_no_native_roles(self, qtbot):
+        """NRI-0014 L2 (live audit): the macOS role heuristic must stay off.
+
+        With the Russian QTranslator installed (L1) Qt's TextHeuristicRole
+        reads the translated role words; «Настройка LLM…» matched the macOS
+        Preferences keyword, the role promoted to the whole «LLM» menu and
+        the native menu bar dropped the menu entirely (6 bar items instead
+        of 7). The app never uses native special roles, so every menu-bar
+        action is pinned to NoRole — this is the offscreen half of that
+        invariant (the native bar itself is the live-audit half).
+        """
+        from PySide6.QtGui import QAction
+
+        w = MainWindow(
+            timeline_vm=MagicMock(),
+            detail_vm=MagicMock(),
+            search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+
+        def walk(actions):
+            seen = 0
+            for action in actions:
+                if action.isSeparator():
+                    continue
+                assert action.menuRole() == QAction.MenuRole.NoRole, action.text()
+                seen += 1
+                if action.menu() is not None:
+                    seen += walk(action.menu().actions())
+            return seen
+
+        assert walk(w.menuBar().actions()) > 0
 
     def test_main_window_has_search_bar(self, qtbot):
         w = MainWindow(
@@ -147,6 +180,39 @@ class TestMainWindow:
         qtbot.addWidget(w)
         assert w.menuBar() is not None
 
+    def test_guaranteed_dialog_entries_end_with_ellipsis(self, qtbot):
+        """NRI-0014 3.2 (A3): every menu entry with a guaranteed dialog ends «…».
+
+        «Сменить игру…» joins the convention pinned here (the other entries —
+        «Экспорт игры…», «Календарь…» etc. — already followed it and must stay
+        untouched). Checkable toggles and the doc-viewer entries are not part
+        of this convention.
+        """
+        w = MainWindow(
+            timeline_vm=MagicMock(),
+            detail_vm=MagicMock(),
+            search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        assert w.switch_game_action.text() == "Сменить игру…"
+        for action in (
+            w.switch_game_action,
+            w.export_action,
+            w.char_sheets_action,
+            w.table_host_action,
+            w.calendar_wizard_action,
+            w.import_xlsx_action,
+            w.llm_setup_action,
+        ):
+            assert action.text().endswith("…"), action.text()
+        # Source-level pin: the bare, ellipsis-less caption must not come
+        # back as a QAction literal in the view module.
+        import inspect
+
+        from app.presentation.views import main_window as mw
+
+        assert 'QAction("Сменить игру",' not in inspect.getsource(mw)
+
     # -- log file toggle -----------------------------------------------------
 
     def test_log_toggle_on_enables_file_handler(self, qtbot, mocker, tmp_path):
@@ -202,8 +268,11 @@ class TestMainWindow:
                 super().__init__(title, file_path, parent, theme=theme)
                 captured.append((title, self.vm.text))
 
-            def open(self):
-                return True
+            def show(self):
+                # NRI-0014: entry windows go through the registry, which
+                # shows them non-modally; offscreen the presentation stays
+                # hidden, only the content path is pinned here.
+                return None
 
         mocker.patch.object(mw, "_DocViewerDialog", Spy)
         w = MainWindow(
@@ -213,6 +282,118 @@ class TestMainWindow:
         w._show_readme()
         w._show_changelog()
         assert captured == [("Документация", "DOC CONTENT"), ("Changelog", "CH TEXT")]
+
+    def test_docs_entries_use_registry_second_click_single_instance(
+        self, qtbot, mocker, tmp_path,
+    ):
+        """NRI-0014 1.2: the docs entries route through MenuWindowRegistry.
+
+        Second click of the same entry → one window, different entries →
+        two windows (each its own key), close → the key is released and the
+        next open recreates the window.
+        """
+        from app.presentation.views import main_window as mw
+        from app.presentation.window_registry import (
+            DOCS_CHANGELOG_KEY,
+            DOCS_README_KEY,
+            MenuWindowRegistry,
+        )
+
+        (tmp_path / "README.md").write_text("DOC", encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text("CH", encoding="utf-8")
+        mocker.patch.object(mw, "_docs_dir", return_value=tmp_path)
+        created: list[QDialog] = []
+
+        class Spy(QDialog):  # bare dialog: only the entry wiring is pinned
+            def __init__(self, title, file_path, parent=None, theme=None):
+                super().__init__(parent)
+                created.append(self)
+
+        mocker.patch.object(mw, "_DocViewerDialog", Spy)
+        registry = MenuWindowRegistry()
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+            window_registry=registry,
+        )
+        qtbot.addWidget(w)
+        assert w._window_registry is registry
+
+        w._show_readme()
+        w._show_readme()  # second click of the same entry
+        assert len(created) == 1
+        readme = created[0]
+        assert registry.get(DOCS_README_KEY) is readme
+
+        w._show_changelog()
+        assert len(created) == 2
+        assert created[1] is not readme
+        assert registry.get(DOCS_CHANGELOG_KEY) is created[1]
+
+        created[0].close()  # closing releases the key …
+        assert registry.get(DOCS_README_KEY) is None
+        w._show_readme()  # … and the next open builds a fresh window
+        assert len(created) == 3
+        assert registry.get(DOCS_README_KEY) is created[2]
+
+    def test_doc_entries_open_titled_non_modal_distinct_windows(
+        self, qtbot, mocker, tmp_path,
+    ):
+        """NRI-0014 2.2 format check (spec document-viewer «Не-модальное окно в
+        единственном экземпляре», qml-shell «Формат диалогов задан точкой
+        входа»): each docs entry shows a REAL titled non-modal window through
+        the registry — no ``dlg.open()`` sheet: ``windowModality()`` is
+        NonModal and the doc never blocks the main window; ``windowTitle``
+        matches the menu entry; a repeated entry raises the live window
+        instead of building a second one; README and Changelog are two
+        distinct windows."""
+        from app.presentation.views import main_window as mw
+        from app.presentation.window_registry import (
+            DOCS_CHANGELOG_KEY,
+            DOCS_README_KEY,
+        )
+
+        (tmp_path / "README.md").write_text("DOC", encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text("CH", encoding="utf-8")
+        mocker.patch.object(mw, "_docs_dir", return_value=tmp_path)
+
+        built: list[QDialog] = []
+        real_cls = mw._DocViewerDialog
+
+        class Counting(real_cls):  # real windows, just counted at creation
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                built.append(self)
+
+        mocker.patch.object(mw, "_DocViewerDialog", Counting)
+
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        w.show()
+        qtbot.waitExposed(w)
+
+        w._show_readme()
+        readme = w._window_registry.get(DOCS_README_KEY)
+        assert readme.windowTitle() == "Документация"
+        # Not a sheet: a real non-modal window (open() with a parent would be
+        # WindowModal), visible and never disabling the main window.
+        assert readme.windowModality() == Qt.WindowModality.NonModal
+        assert not readme.isModal()
+        assert readme.isVisible()
+        assert w.isEnabled()
+
+        w._show_readme()  # repeated entry → the same live window, no second one
+        assert w._window_registry.get(DOCS_README_KEY) is readme
+        assert len(built) == 1
+
+        w._show_changelog()
+        changelog = w._window_registry.get(DOCS_CHANGELOG_KEY)
+        assert changelog.windowTitle() == "Changelog"
+        assert changelog.windowModality() == Qt.WindowModality.NonModal
+        assert changelog.isVisible()
+        assert changelog is not readme
+        assert len(built) == 2
 
     def test_doc_viewer_missing_file_placeholder(self, qtbot, tmp_path):
         from app.presentation.views.main_window import _DocViewerDialog

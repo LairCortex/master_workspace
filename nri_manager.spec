@@ -11,6 +11,8 @@ The result is a directory-based bundle in dist/nri_manager/
 import os
 import sys
 
+from PySide6.QtCore import QLibraryInfo
+
 block_cipher = None
 
 # Application icons (see app/resources/). The .icns carries the macOS grid
@@ -20,6 +22,18 @@ block_cipher = None
 ICON_DIR = os.path.join("app", "resources")
 EXE_ICON = os.path.join(ICON_DIR, "app_icon.ico") if sys.platform == "win32" else None
 BUNDLE_ICON = os.path.join(ICON_DIR, "app_icon.icns")
+
+# Russian Qt chrome (NRI-0014, spec interface-language): the startup installer
+# (app/infrastructure/localization.py) loads qtbase_ru.qm from
+# QLibraryInfo(TranslationsPath) — resolved with the very same lookup here, so
+# dev wheel and bundle stay one mechanism. The PySide6 runtime hook anchors the
+# bundled Qt prefix at sys._MEIPASS/PySide6/Qt (embedded qt.conf), so that
+# lookup points at PySide6/Qt/translations inside the payload and the wheel's
+# translations folder must ship verbatim there. PyInstaller's own Qt hook only
+# collects translations as a version-internal side effect; pinning the folder
+# explicitly keeps the frozen app Russian even if that hook narrows
+# (checked by tests/test_interface_language.py).
+QT_TRANSLATIONS_DIR = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
 
 a = Analysis(
     ["app/main.py"],
@@ -31,6 +45,10 @@ a = Analysis(
     # with PresetCatalog.list() (checked by tests/test_spec_presets_bundle.py).
     datas=[
         ("docs", "docs"),
+        # Qt translation catalogs for the Russian standard chrome (see
+        # QT_TRANSLATIONS_DIR above): destination = the PySide6/Qt/translations
+        # dir the frozen QLibraryInfo derives from its own prefix.
+        (QT_TRANSLATIONS_DIR, "PySide6/Qt/translations"),
         # The import template is NOT bundled: since piece C5 «Скачать шаблон»
         # regenerates the workbook under the active game calendar at save time
         # (app/application/services/xlsx_template.py; tests/test_spec_no_import_*
@@ -122,6 +140,8 @@ a = Analysis(
         ("app/presentation/qml/nri/components/HintText.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/RowItem.qml",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/ThemeSheetHeader.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/ThemeButton.qml",
          "app/presentation/qml/nri/components"),

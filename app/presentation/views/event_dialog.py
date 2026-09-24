@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+import shiboken6
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -278,6 +279,11 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.vm.cancelRequested.connect(self._on_cancel_clicked)
         self.vm.datePopupRequested.connect(self._open_date_popup)
 
+        # NRI-0014 task 4.2 (E1): the scene only exists from here, so replay
+        # the window title the constructor set before the island loaded. The
+        # setWindowTitle override threads every later rename (populate) too.
+        self.setWindowTitle(self.windowTitle())
+
         self.date_popup = ThemeDatePopup(self)
         self.date_popup.date_selected.connect(self._set_selected_date)
         for _widget_attr, attr, entity_type, label in _TABS:
@@ -307,6 +313,27 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     @property
     def event_id(self) -> int | None:
         return self._event_id
+
+    def setWindowTitle(self, title: str) -> None:
+        # NRI-0014 task 4.2 (E1): the header's title is the windowTitle, single
+        # threaded value — a rename (populate → «Редактировать событие») lands
+        # in the scene without a second owner. The guarded replay in the
+        # constructor publishes the pre-island title once after the load.
+        super().setWindowTitle(title)
+        if getattr(self, "_root", None) is not None:
+            self._root.setProperty("sheetTitle", title)
+
+    def set_sheet_scrim_alpha(self, alpha: float) -> None:
+        # NRI-0014 task 4.3 (CR5): the stack owner (ApplicationWiring counts
+        # the sheets opened under this one) hands the finished dim alpha to
+        # the sheetScrim layer; the dialog judges no depth, it only publishes
+        # the value the scene paints. Closing a game releases the scene one
+        # turn after the dialog dies while child sheets may still cascade
+        # closed around it — a lift aimed at a released island drops silently
+        # (the XlsxImportDialog publish_* contract): paint has nowhere to go.
+        root = getattr(self, "_root", None)
+        if root is not None and shiboken6.isValid(root):
+            root.setProperty("sheetScrimAlpha", alpha)
 
     def populate(self, event: Any) -> None:
         self._event_id = getattr(event, "id", None)
