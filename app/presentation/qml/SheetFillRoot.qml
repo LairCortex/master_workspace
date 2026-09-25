@@ -1,7 +1,9 @@
 // Character-sheet fill window island (change port-character-sheet-canvas-qml-q3b,
-// task 3.2; designs D1/D2/D9) — everything under the native «Правка» menu of
-// the fill dialog: navigation rail | canvas (fill mode) | value panel |
-// action row, replacing the widgets rail + FillPropertiesPanel 1:1.
+// task 3.2; designs D1/D2/D9) — everything the fill window shows including its
+// «Правка» row (nri-0017 task 3.2, finding B2 — the QDialog's QMenuBar projected
+// nowhere): action row | navigation rail | canvas (fill mode) | value panel |
+// bottom row, replacing the widgets rail + FillPropertiesPanel 1:1. The row is
+// hidden in read-only exactly like the menu used to be ``hide()``-d.
 //
 // Context/injection contract (the QDialog facade wires exactly this):
 //   * injection — ``vm`` (the fill ViewModel) arrives as the root's DECLARED
@@ -17,7 +19,9 @@
 //     ``imagePickRequested(fieldId)`` (``QFileDialog`` + ImageStore ingest) /
 //     ``dropdownRequested(fieldId, x, y)`` — the canvas' option-choice bridge
 //     relayed unchanged: the facade shows the native ``QMenu`` in coordinates
-//     mapped from the island and answers through ``vm.set_dropdown``;
+//     mapped from the island and answers through ``vm.set_dropdown``; the
+//     «Правка» row's ``undoRequested`` / ``redoRequested`` reach the same VM
+//     entrances the dialog's hotkey QActions trigger;
 //   * Enter marker — ``defaultButton`` («Сохранить»), clicked by the wrapper
 //     when the island has not consumed Enter (inline editing owns the key).
 //
@@ -68,6 +72,10 @@ Rectangle {
     // the canvas' native-QMenu bridge, relayed unchanged (scene coordinates —
     // the facade maps them through the QQuickWidget like the old globalPosition)
     signal dropdownRequested(string fieldId, real x, real y)
+    // the «Правка» row (nri-0017 task 3.2, design F2): the facade wires these
+    // to the same VM entrances its Undo/Redo hotkeys call
+    signal undoRequested()
+    signal redoRequested()
 
     // ── tokens (chrome colors come from the bridge only) ────────────────────
     readonly property var islandTokens:
@@ -99,6 +107,31 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: Tokens.px(root.islandTokens, "space.md")
         spacing: Tokens.px(root.islandTokens, "space.sm")
+
+        // «Правка» inside the window (nri-0017 F2): the same named buttons the
+        // dialog's Undo/Redo hotkeys drive, hidden without a right to edit —
+        // the read-only view keeps no edit affordance at all (the old native
+        // menu was ``hide()``-d here).
+        RowLayout {
+            objectName: "editActionsRow"
+            visible: !root.readOnly
+            Layout.fillWidth: true
+            spacing: Tokens.px(root.islandTokens, "space.sm")
+
+            ThemeButton {
+                objectName: "editUndoButton"
+                text: "Отменить"
+                enabled: root.vmReady && root.vm.canUndo
+                onClicked: root.undoRequested()
+            }
+            ThemeButton {
+                objectName: "editRedoButton"
+                text: "Повторить"
+                enabled: root.vmReady && root.vm.canRedo
+                onClicked: root.redoRequested()
+            }
+            Item { Layout.fillWidth: true }
+        }
 
         RowLayout {
             Layout.fillWidth: true

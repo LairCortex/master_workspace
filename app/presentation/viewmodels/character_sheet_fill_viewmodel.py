@@ -144,6 +144,14 @@ class CharacterSheetFillViewModel(QObject):
     # feeds to the canvas — added projection, the contract above unchanged).
     readOnly = Property(bool, lambda self: self._read_only,
                         notify=read_only_changed)
+    # the «Правка» row of the fill island gates its two buttons on the same
+    # stacks the Python ``can_undo`` / ``can_redo`` read (nri-0017 task 3.2 —
+    # projections of the one history, ``history_changed`` already fires on
+    # every push, pop, clear and undo-stack trim).
+    canUndo = Property(bool, lambda self: bool(self._undo_stack),
+                       notify=history_changed)
+    canRedo = Property(bool, lambda self: bool(self._redo_stack),
+                       notify=history_changed)
     # ``snapOn`` is absent on purpose: the fill canvas draws no grid, and the
     # model's ``disabled`` role is the single read-only gate (D4 — one source).
 

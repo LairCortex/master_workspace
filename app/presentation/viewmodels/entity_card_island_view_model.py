@@ -7,7 +7,11 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.domain import entity_registry
 from app.domain.game_calendar import GameCoord, as_game_coord
-from app.presentation.utils.date_utils import format_game_date, iso_or_coord
+from app.presentation.utils.date_utils import (
+    format_game_date,
+    iso_or_coord,
+    worst_case_date_caption,
+)
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     AiFieldProxy,
     EntityGenerateProxy,
@@ -132,6 +136,13 @@ class EntityCardIslandViewModel(QObject):
         str,
         lambda self: format_game_date(self._end_date, is_bc=self._end_bc),
         notify=stateChanged,
+    )
+    # Width floor (nri-0017 task 1.1, design F1): the widest caption the
+    # active calendar can print, handed to both ThemeDateFields as their
+    # worstCaseText so their minimum width never lets the elide eat the year
+    # (M2); it depends on the calendar, not on the dates.
+    worstCaseDisplay = Property(
+        str, lambda self: worst_case_date_caption(), notify=stateChanged
     )
     # Era facets (add-era-aware-dates, task 4.1 / design D6): the display
     # strings already carry the «N г. до н.э.» suffix — QML mirrors these flags,

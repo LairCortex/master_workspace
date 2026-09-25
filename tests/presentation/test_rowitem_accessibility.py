@@ -29,6 +29,7 @@ from app.presentation.theme.runtime import ThemeRuntime
 from tests.presentation.qml_helpers import click_item, find_item
 
 ROW_TEXT = "Игровка (01.01)"
+ROW_DESCRIPTION = "Открывает игру"
 
 PROBE_SCENE = """
 import QtQuick
@@ -38,7 +39,7 @@ Item {
     id: probeRoot
     objectName: "rowItemProbe"
     implicitWidth: 320
-    implicitHeight: 80
+    implicitHeight: 120
 
     // QML-side signal counters — the component's signals reach the island's
     // handlers, so the handlers pin the emit counts (test_qml_components
@@ -54,6 +55,18 @@ Item {
         height: implicitHeight
         onSelectedRequested: probeRoot.taps += 1
         onActivateRequested: probeRoot.activations += 1
+    }
+
+    // NRI-0017 task 4.1 (FI-3): the usage-site description slot — the island
+    // spells the hidden meaning of the row's activation here («Открывает
+    // игру» at the launcher), the component only passes it through.
+    RowItem {
+        objectName: "probeRowDescribed"
+        text: "Погоня (02.01)"
+        accessibleDescription: "Открывает игру"
+        x: 10; y: 60
+        width: 260
+        height: implicitHeight
     }
 }
 """
@@ -80,7 +93,7 @@ def load_row_probe(qtbot, qapp, runtime, palette: "QmlPalette | None", tmp_path)
     engine = setup_qml_shell(qapp, runtime)
     widget = QQuickWidget(engine, None)
     qtbot.addWidget(widget)
-    widget.resize(320, 80)
+    widget.resize(320, 120)
     if palette is not None:
         palette.setParent(widget)
         widget.rootContext().setContextProperty("islandPalette", palette)
@@ -118,6 +131,27 @@ def test_row_exposes_list_item_role_and_row_text_name(qtbot, qapp, runtime, tmp_
     # row's own text — an island list renames every row through it).
     row.setProperty("text", "Багир")
     assert accessible_of(row).text(QAccessible.Name) == "Багир"
+    assert widget.errors() == []
+
+
+def test_description_property_slots_to_the_description_slot(qtbot, qapp, runtime, tmp_path):
+    """NRI-0017 task 4.1 (FI-3): the row carries a passing-through description
+    slot — the usage-site fills the hidden meaning of the activation (the
+    launcher spells «Открывает игру»), the component only relays it into
+    ``Accessible.description``. Rows without the property keep the slot empty
+    (design NRI-0012 D5: only where the name doesn't spell the action)."""
+    widget = load_row_probe(qtbot, qapp, runtime, QmlPalette(runtime), tmp_path)
+    described = find_item(widget, "probeRowDescribed")
+
+    assert accessible_of(described).text(QAccessible.Description) == ROW_DESCRIPTION
+
+    # The slot follows the property (a binding, not a one-shot copy).
+    described.setProperty("accessibleDescription", "Открывает карточку")
+    assert accessible_of(described).text(QAccessible.Description) == "Открывает карточку"
+
+    # The unannotated row: empty slot — no fabricated description.
+    assert accessible_of(find_item(widget, "probeRow")).text(
+        QAccessible.Description) == ""
     assert widget.errors() == []
 
 

@@ -351,6 +351,16 @@ class CharacterSheetViewModel(QObject):
     inlineFieldId = Property("QVariant", lambda self: self._inline_id,
                              notify=inline_changed)
     snapOn = Property(bool, lambda self: self._snap_enabled, notify=snap_changed)
+    # The «Правка» action row of the island chrome (nri-0017 task 3.1) reads
+    # its enabled states off the same carriers the Python ``can_*`` /
+    # ``has_clipboard`` properties use — projections, no second source (the
+    # notify signals already fire on every transition of each value).
+    canUndo = Property(bool, lambda self: self._history.can_undo,
+                       notify=history_changed)
+    canRedo = Property(bool, lambda self: self._history.can_redo,
+                       notify=history_changed)
+    hasClipboard = Property(bool, lambda self: bool(self._clipboard),
+                            notify=clipboard_changed)
 
     @Slot(int)
     def set_current_page(self, index: int) -> None:

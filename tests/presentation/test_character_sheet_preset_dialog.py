@@ -29,7 +29,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAccessible
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.infrastructure.repositories.character_sheet_repository import (
@@ -297,3 +297,58 @@ def test_license_and_name_zones_carry_map_names(dlg):
     assert name is not None
     assert name.role() == QAccessible.Role.EditableText
     assert name.text(QAccessible.Name) == "Имя листа"
+
+
+# ── activation wiring (change nri-0017-accessibility-completers, task 2.2) ───
+#
+# Live finding B3: RowItem emits ``activateRequested`` on its accessibility
+# press (the double-click mirror), the island listened only to
+# ``selectedRequested`` — the tree press of a preset row was a silent no-op.
+# The contract pinned here: tree press = accept (the OK path, design F3 —
+# select the activated row first, then the facade creates and closes with the
+# Accepted result), while the mouse keeps its old split: single click selects
+# and highlights, nothing is accepted yet.
+
+
+def _press_preset_row(dlg, index: int) -> None:
+    rows = island_rows(dlg.quick, "presetRow")
+    assert index < len(rows)
+    iface = QAccessible.queryAccessibleInterface(rows[index])
+    assert iface is not None
+    actions = iface.actionInterface()
+    assert "Press" in actions.actionNames()
+    actions.doAction("Press")
+
+
+async def test_single_click_on_a_row_selects_without_accepting(dlg, service, boxes, qtbot):
+    created: list[int] = []
+    dlg.created.connect(created.append)
+
+    _select_row_through_island(dlg, 1)
+    qtbot.wait(10)
+
+    # Selection/highlight only: the VM moved, nothing was created, the window
+    # is still open with no result yet (the pre-B3 mouse behavior preserved).
+    assert dlg.vm.selected_index == 1
+    assert _license_text(dlg) == MORK_BORG_LICENSE_TEXT
+    assert dlg.isVisible() is True
+    assert dlg.result() == QDialog.DialogCode.Rejected
+    assert created == []
+
+
+async def test_press_on_a_row_accepts_that_preset(dlg, service, qtbot):
+    """Spec «Пресет выбран активацией»: one tree press on an UNSELECTED row
+    does what a mouse double-click does — the dialog closes having chosen
+    that preset (create emitted, result Accepted)."""
+    created: list[int] = []
+    dlg.created.connect(created.append)
+
+    _press_preset_row(dlg, 1)
+    await pump(qtbot, lambda: created)
+
+    assert len(created) == 1
+    row = await service._repo.get_by_name("Mörk Borg")
+    assert row is not None
+    assert created[0] == row.id
+    assert dlg.result() == QDialog.DialogCode.Accepted
+    assert dlg.isVisible() is False

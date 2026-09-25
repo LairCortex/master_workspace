@@ -24,6 +24,7 @@ from app.presentation.utils.date_utils import (
     format_game_date,
     iso_or_coord,
     split_date_era,
+    worst_case_date_caption,
 )
 from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
 
@@ -194,6 +195,13 @@ class WorldSnapshotViewModel(QObject):
         str,
         lambda self: format_game_date(self._date, is_bc=self._date_bc),
         notify=dateChanged,
+    )
+    # Width floor (nri-0017 task 1.1, design F1): the widest caption the
+    # active calendar can print, handed to the ThemeDateField as its
+    # worstCaseText so the field's minimum width never lets the elide eat
+    # the year (M2); it depends on the calendar, not on the shown date.
+    worstCaseDisplay = Property(
+        str, lambda self: worst_case_date_caption(), notify=dateChanged
     )
     # Era facet (add-era-aware-dates, task 4.1 / design D6): the display string
     # above already carries the «N г. до н.э.» suffix — QML mirrors this flag,

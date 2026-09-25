@@ -134,6 +134,31 @@ async def test_headers_and_results_have_distinct_row_contracts_and_select(qtbot,
     assert vm.listVisible is False
 
 
+async def test_accessibility_press_on_result_row_jumps_like_the_click(qtbot, tmp_path):
+    """nri-0017 task 2.2 sweep (the B3 family): the result row's action IS the
+    jump (the click emits it and the list collapses with it) — RowItem's
+    press path emits ``activateRequested``, and without a listener here the
+    tree press was a silent no-op. One Press now runs the very same jump."""
+    event = SimpleNamespace(id=42, name="Battle", start_date=None)
+    vm = _vm({"events": [event]})
+    bar = _bar(qtbot, tmp_path, vm)
+    selected = track(bar.result_selected)
+    find_item(bar.quick, "searchInput").setProperty("text", "Ba")
+
+    await vm.search("Ba")
+    qtbot.waitUntil(lambda: len(island_rows(bar.quick, "searchResultRow")) == 1)
+
+    row = find_item(bar.quick, "searchResultRow")
+    iface = QAccessible.queryAccessibleInterface(row)
+    assert iface is not None
+    actions = iface.actionInterface()
+    assert "Press" in actions.actionNames()
+    actions.doAction("Press")
+
+    assert selected == [("event", 42)]
+    assert vm.listVisible is False
+
+
 async def test_empty_query_and_no_match_list_semantics(qtbot, tmp_path):
     vm = _vm({})
     bar = _bar(qtbot, tmp_path, vm)

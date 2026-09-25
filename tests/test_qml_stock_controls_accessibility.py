@@ -203,6 +203,10 @@ Item {
     Column {
         ThemeButton { objectName: "plainWord"; text: "Импорт" }
         ThemeButton { objectName: "clobbered"; text: "Отмена"; Accessible.name: "Clobber" }
+        TabBar {
+            TabButton { objectName: "plainTab"; text: "Листы" }
+        }
+        CheckBox { objectName: "plainCheck"; text: "Галка" }
     }
 }
 """
@@ -243,3 +247,33 @@ def test_offscreen_face_a_stock_button_is_unnamed_while_an_annotation_surfaces(
     clobbered = _iface(find_item(widget, "clobbered"))
     assert clobbered.role() == QAccessible.Role.Button
     assert clobbered.text(QAccessible.Name) == "Clobber"
+
+
+def test_offscreen_face_a_stock_tab_button_exposes_no_action_at_all(
+    qtbot, qapp, tmp_path: Path,
+) -> None:
+    """NRI-0017 (B1, design F4) rationale pinned offscreen: the Qt 6.10
+    accessibility bridge gives an unannotated stock TabButton an EMPTY action
+    list — a tree consumer cannot actuate a tab at all (live B1 was the same
+    hole) — while a plain CheckBox does expose its actions. This is why the
+    single-activation press lives INSIDE ThemeTabButton
+    (``Accessible.onPressAction: control.click()``; the switch itself is
+    pinned on the real island by test_sheet_list_accessibility.py). If a Qt
+    update starts exposing tab actions on the stock face, this pin fails and
+    the component handler gets re-examined — the quirk must never go
+    undocumented a second time."""
+    widget = _load_scratch_scene(qtbot, qapp, tmp_path)
+
+    tab = _iface(find_item(widget, "plainTab"))
+    assert tab.role() == QAccessible.Role.PageTab
+    actions = tab.actionInterface()
+    assert actions is not None
+    assert list(actions.actionNames()) == [], (
+        f"un-annotated stock TabButton now exposes {list(actions.actionNames())!r} "
+        "— re-check ThemeTabButton's component-owned onPressAction (NRI-0017 F4)"
+    )
+
+    # Contrast (the reason only tabs needed the component-side handler): the
+    # other stock families the islands use DO expose Press unannotated.
+    check_actions = _iface(find_item(widget, "plainCheck")).actionInterface()
+    assert "Press" in check_actions.actionNames()

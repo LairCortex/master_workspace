@@ -34,6 +34,18 @@ TabButton {
     rightPadding: padding
     font.pixelSize: Tokens.px(islandTokens, "font.size.md", 13)
 
+    // NRI-0017 (B1, design F4): the stock press path is dead for this control
+    // — the Qt6 accessibility bridge exposes NO action for an un-annotated
+    // checkable AbstractButton (probe: offscreen; live B1: VoiceOver never
+    // reached the tabs). The press machinery is the component's, per the
+    // NRI-0012 D2 rule (a forgetful usage-site must not be able to break the
+    // contract): a single accessibility Press clicks the tab exactly like a
+    // mouse click — the same click state machine toggles the exclusive
+    // checked state and drives the bar's currentIndex. Only the handler is
+    // attached; role and name stay the stock face (the name is the caption,
+    // never re-annotated — 4.2/4.1 guards stay green).
+    Accessible.onPressAction: control.click()
+
     // NRI-0015 (task 1.1): the button's natural minimum width is its text's
     // implicit width plus the button's own horizontal padding — the caption
     // floor never comes from a hand-tuned pt constant.

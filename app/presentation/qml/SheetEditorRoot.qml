@@ -1,7 +1,10 @@
 // Sheet editor window island (change port-character-sheet-canvas-qml-q3b,
-// task 3.1; designs D1/D9) — the whole content under the native «Правка»
-// menu: palette | page rail | canvas | property panel | action row,
-// replacing palette.py / page_rail.py / properties_panel.py 1:1.
+// task 3.1; designs D1/D9) — the whole content INCLUDING the «Правка» action
+// row (nri-0017 task 3.1, finding B2): action row | palette | page rail |
+// canvas | property panel | bottom row, replacing palette.py / page_rail.py /
+// properties_panel.py 1:1. The commands left the QDialog's QMenuBar (which
+// macOS projects nowhere) for this named row of buttons; the dialog keeps the
+// hotkeys on the very handlers these signals are wired to.
 //
 // Context/injection contract (the QDialog facade wires exactly this):
 //   * injection — ``vm`` (the design ViewModel) arrives as the root's
@@ -17,7 +20,10 @@
 //   * signals out — every flow that touches the session or opens a NATIVE
 //     popup (D1): ``saveRequested`` / ``exportPdfRequested`` /
 //     ``imagePickRequested(fieldId)`` / ``pageRemoveRequested(index)``
-//     (the delete-page confirm is a facade QMessageBox). The native QMenu
+//     (the delete-page confirm is a facade QMessageBox), plus the «Правка»
+//     row ``undoRequested`` / ``redoRequested`` / ``copyRequested`` /
+//     ``pasteActionRequested`` / ``duplicateRequested`` — the facade reruns
+//     the same VM entrances its hotkey QActions call. The native QMenu
 //     for a fill-mode dropdown is not this island's (design mode has no
 //     dropdown menu); the canvas bridges are still relayed unchanged.
 //   * Python → QML — ``pasteRequested(page)`` is EMITTED by the facade to
@@ -69,6 +75,14 @@ Rectangle {
     signal exportPdfRequested()
     signal imagePickRequested(string fieldId)
     signal pageRemoveRequested(int index)
+    // The «Правка» row (nri-0017 task 3.1, design F2): the facade wires each
+    // of these to the SAME handler its hotkey QAction calls — asking, never
+    // reimplementing (one command layer, the VM plus this window's bridge).
+    signal undoRequested()
+    signal redoRequested()
+    signal copyRequested()
+    signal pasteActionRequested()
+    signal duplicateRequested()
 
     // ── tokens (chrome colors come from the bridge only) ────────────────────
     readonly property var islandTokens:
@@ -110,6 +124,54 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: root.gap
         spacing: root.gapSm
+
+        // «Правка» as the window's top chrome row (nri-0017 F2, finding B2):
+        // five named buttons reachable by mouse, keyboard AND the tree (the
+        // text captions are their accessibility names — stock controls, no
+        // re-annotation), the hotkeys of the facade staying the second entry
+        // to the very same commands. Enabled states mirror the VM, exactly as
+        // the retired menu greyed its items.
+        RowLayout {
+            id: editActionsRow
+            objectName: "editActionsRow"
+            Layout.fillWidth: true
+            spacing: root.gapSm
+            // the copy/duplicate gate (the selection rule of the retired menu)
+            readonly property bool hasSelection:
+                root.vmReady && root.vm.selectedIds.length > 0
+
+            ThemeButton {
+                objectName: "editUndoButton"
+                text: "Отменить"
+                enabled: root.vmReady && root.vm.canUndo
+                onClicked: root.undoRequested()
+            }
+            ThemeButton {
+                objectName: "editRedoButton"
+                text: "Повторить"
+                enabled: root.vmReady && root.vm.canRedo
+                onClicked: root.redoRequested()
+            }
+            ThemeButton {
+                objectName: "editCopyButton"
+                text: "Копировать"
+                enabled: editActionsRow.hasSelection
+                onClicked: root.copyRequested()
+            }
+            ThemeButton {
+                objectName: "editPasteButton"
+                text: "Вставить"
+                enabled: root.vmReady && root.vm.hasClipboard
+                onClicked: root.pasteActionRequested()
+            }
+            ThemeButton {
+                objectName: "editDuplicateButton"
+                text: "Дублировать"
+                enabled: editActionsRow.hasSelection
+                onClicked: root.duplicateRequested()
+            }
+            Item { Layout.fillWidth: true }
+        }
 
         // Top row — the migrated «Ориентация: [combo]» strip (A-playable D4:
         // one orientation per template, the combo mirrors the VM and pushes

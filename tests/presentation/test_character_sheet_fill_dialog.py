@@ -3,10 +3,12 @@ addressing re-targeted onto the QML island in Q3b task 3.3, semantics unchanged)
 
 No palette; rail without add/delete/reorder; drag does not move geometry;
 click text → inline; click checkbox → toggle; click label — no inline;
-single selection; Save writes values; dirty-close confirm; Edit menu is
-Undo/Redo on StandardKey. The content lives in the SheetFillRoot island — the
-field clicks are island input (the migrated canvas semantics pinned once in
-test_sheet_canvas_island), the popups stay native facade dialogs.
+single selection; Save writes values; dirty-close confirm; the «Правка» row is
+Undo/Redo on StandardKey — visible inside the island, hidden in read-only
+(nri-0017 task 3.2, the QMenuBar of the dialog died in the audit as B2). The
+content lives in the SheetFillRoot island — the field clicks are island input
+(the migrated canvas semantics pinned once in test_sheet_canvas_island), the
+popups stay native facade dialogs.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QAccessible, QMouseEvent
 from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMenuBar, QMessageBox
 
 from app.application.services.character_sheet_instance_service import (
     CharacterSheetInstanceService,
@@ -272,14 +274,68 @@ async def test_close_dirty_no_keeps_window(dlg, confirm, qtbot):
     assert json.loads(row.values)[ids["text"]] == "Иван"
 
 
-async def test_edit_menu_only_undo_redo_standard_keys(dlg):
+async def test_edit_hotkeys_stay_undo_redo_on_the_dialog(dlg):
+    # NRI-0017 task 3.2: the dead «Правка» menu is gone, its two commands
+    # stayed as the dialog's own QActions — nothing else (no copy/duplicate).
     d, *_ = dlg
-    titles = [a.text() for a in d.edit_menu.actions() if not a.isSeparator()]
-    assert titles == ["Отменить", "Повторить"]
-    assert d.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
-    assert d.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
+    assert d.findChildren(QMenuBar) == []
+    assert not hasattr(d, "edit_menu")
+    actions = [a for a in d.actions() if not a.shortcut().isEmpty()]
+    assert [(a.text(), a.shortcut()) for a in actions] == [
+        ("Отменить", QKeySequence(QKeySequence.StandardKey.Undo)),
+        ("Повторить", QKeySequence(QKeySequence.StandardKey.Redo)),
+    ]
     assert not hasattr(d, "copy_action")
     assert not hasattr(d, "duplicate_action")
+
+
+async def test_edit_row_buttons_press_undo_and_redo_a_value(dlg, qtbot):
+    d, ids, *_ = dlg
+    d.view_model.set_text(ids["text"], "Пётр")
+    _pump(qtbot)
+    assert d.view_model.can_undo is True
+    assert d.view_model.values[ids["text"]] == "Пётр"
+
+    _press_accessible(d, "editUndoButton")
+    assert d.view_model.values[ids["text"]] == "Иван"     # the edit is undone
+    assert d.view_model.can_undo is False
+    assert d.view_model.can_redo is True
+
+    _press_accessible(d, "editRedoButton")
+    assert d.view_model.values[ids["text"]] == "Пётр"
+    assert d.view_model.can_redo is False
+
+
+async def test_undo_hotkey_still_reaches_the_fill_vm(dlg, qtbot):
+    d, ids, *_ = dlg
+    d.view_model.set_text(ids["text"], "Пётр")
+    _pump(qtbot)
+
+    combo = QKeySequence(QKeySequence.StandardKey.Undo)[0]
+    QTest.keyClick(d, combo.key(), combo.keyboardModifiers())
+    _pump(qtbot)
+
+    assert d.view_model.values[ids["text"]] == "Иван"
+    assert d.view_model.can_redo is True
+
+
+async def test_edit_action_row_is_hidden_in_read_only(qtbot, services):
+    """The state mirror of the old ``_menu_bar.hide()`` (spec character-sheet
+    -editor «Fill read-only без правки»): no edit affordance is visible."""
+    sheet_svc, inst_svc = services
+    instance_id, _ids = await _seed(sheet_svc, inst_svc)
+    d = CharacterSheetFillDialog(inst_svc, sheet_svc, instance_id, read_only=True)
+    await d.load()
+    d.show()
+    qtbot.addWidget(d)
+    _pump(qtbot)
+    try:
+        assert _item(d, "editActionsRow").property("visible") is False
+        d.set_read_only(False)
+        _pump(qtbot)
+        assert _item(d, "editActionsRow").property("visible") is True
+    finally:
+        d.force_close()
 
 
 async def test_bind_unbind_buttons(qtbot, services, async_session, monkeypatch):
@@ -595,6 +651,16 @@ def _iface(d, name: str):
     iface = QAccessible.queryAccessibleInterface(_item(d, name))
     assert iface is not None, f"no accessibility interface on {name!r}"
     return iface
+
+
+def _press_accessible(d, name: str) -> None:
+    """The NRI-0012 offscreen pin: one ``doAction("Press")`` on the button —
+    the same command path a mouse click takes (nri-0017 task 3.2)."""
+    actions = _iface(d, name).actionInterface()
+    assert "Press" in actions.actionNames(), (
+        f"{name!r} exposes {actions.actionNames()!r} — unreachable to a press"
+    )
+    actions.doAction("Press")
 
 
 async def test_value_editors_carry_map_names(dlg, qtbot):

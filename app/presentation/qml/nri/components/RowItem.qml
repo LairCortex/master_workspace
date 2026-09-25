@@ -24,6 +24,15 @@ Rectangle {
     property alias text: rowText.text
     property bool selected: false
 
+    // NRI-0017 task 4.1 (FI-3): the passing-through description slot — the
+    // usage-site spells the hidden meaning of the row's activation there
+    // («Открывает игру» at the launcher); the component only relays it. An
+    // empty string leaves the tree slot empty (NRI-0012 design D5: a
+    // description only where the name does not already spell the action).
+    // The attached Accessible.value does NOT exist (NRI-0012 F3) — a plain
+    // string property feeding Accessible.description is the sanctioned shape.
+    property string accessibleDescription: ""
+
     // Escape hatch for the island's objectName contracts (the launcher's
     // tests address the cell text by name): `textObjectName: "gameRowText"`.
     property alias textObjectName: rowText.objectName
@@ -48,6 +57,7 @@ Rectangle {
     // mouse paths below stay untouched.
     Accessible.role: Accessible.ListItem
     Accessible.name: rowText.text
+    Accessible.description: row.accessibleDescription
     Accessible.onPressAction: row.activateRequested()
 
     Text {

@@ -65,6 +65,9 @@ def test_bc_era_facet_and_the_suffix_reach_the_qml_date_field(qtbot):
     assert field.property("display") == widget.vm.dateDisplay
     assert field.property("display").endswith("44 г. до н.э.")
     assert field.property("isoDate") == "0044-03-05"
+    # nri-0017 1.1: the VM's worst-form caption arrives as the field's
+    # width floor.
+    assert field.property("worstCaseText") == widget.vm.worstCaseDisplay
 
 
 def test_actions_keep_public_signal_semantics(qtbot):

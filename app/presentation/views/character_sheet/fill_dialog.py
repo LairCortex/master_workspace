@@ -1,14 +1,21 @@
-"""Fill window: read-only layout canvas + value map as a QML island under the
-native «Правка» menu (design D3/D4).
+"""Fill window: read-only layout canvas + value map as a QML island carrying
+its own «Правка» row (design D3/D4).
 
-Q3b (change port-character-sheet-canvas-qml-q3b, task 3.3): the frame, Esc
-and the menu stay native; the whole content (navigation rail, canvas in fill
-mode, value panel, action row) is a ``QQuickWidget`` island loading
+Q3b (change port-character-sheet-canvas-qml-q3b, task 3.3): the frame and Esc
+stay native; the whole content (action row, navigation rail, canvas in fill
+mode, value panel, bottom row) is a ``QQuickWidget`` island loading
 ``app/presentation/qml/SheetFillRoot.qml`` — the widgets rail and
 FillPropertiesPanel are gone (no flag, no second copy). External contract
 unchanged: ``binding_changed``, ``view_model``, ``load``/``load_instance``,
 ``set_name``, ``save``, ``force_close``, ``set_read_only``, dirty
 ``closeEvent``; ``main.py`` imports this module verbatim.
+
+NRI-0017 (task 3.2, finding B2, design F2): the dialog's ``QMenuBar`` projected
+nowhere (a menu bar belongs to a QMainWindow), so Undo/Redo are two named
+buttons in the island's action row plus the two unchanged hotkey ``QAction``s
+registered on the dialog itself and bound to the same VM entrances. Where the
+menu used to be ``hide()``-n in the read-only master view, the row hides the
+same way — the read-only sheet keeps no edit affordance at all.
 
 Popup/menu rules (spec qml-shell): character binding stays a native
 ``QInputDialog``; image pick a ``QFileDialog``; the canvas dropdown bridge is
@@ -32,7 +39,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QInputDialog,
     QMenu,
-    QMenuBar,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -51,7 +57,6 @@ from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.catalog import attach_theme
 from app.presentation.viewmodels.character_sheet_fill_viewmodel import (
     CharacterSheetFillViewModel,
 )
@@ -121,26 +126,27 @@ class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
         self.setWindowTitle("Лист")
         self.resize(1100, 800)
 
-        self._menu_bar = QMenuBar(self)
-        self.edit_menu = self._menu_bar.addMenu("Правка")
+        # Undo/Redo as hotkeys (B2, NRI-0017): unchanged QActions with their
+        # standard shortcuts and VM handlers, registered on the dialog itself
+        # instead of the dialog menu that projected nowhere. Their visible
+        # twins are the island's «Правка» row (see ``_wire_island``); in
+        # read-only the row hides itself off ``vm.readOnly``, exactly like the
+        # menu used to be ``hide()``-d here.
         self.undo_action = QAction("Отменить", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self._vm.undo)
         self.redo_action = QAction("Повторить", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self._vm.redo)
-        self.edit_menu.addAction(self.undo_action)
-        self.edit_menu.addAction(self.redo_action)
+        self.addAction(self.undo_action)
+        self.addAction(self.redo_action)
         self._sync_edit_actions()
-        if read_only:
-            self._menu_bar.hide()
 
         outer = QVBoxLayout(self)
-        # The island reaches the dialog edges (its surface comes from the
-        # token palette); only the menu is chrome.
+        # The island reaches every dialog edge (its surface comes from the
+        # token palette); the «Правка» chrome is inside the island.
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        outer.setMenuBar(self._menu_bar)
         outer.addWidget(self._build_island())
         # the current game ImageStore feeds ``image://sheet`` (D7): bound for
         # the live engine's provider and remembered for later registrations
@@ -166,7 +172,6 @@ class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
         self.setup_island()
         self._wire_island()
         if self._theme is not None:
-            attach_theme(self._menu_bar, self._theme)
             self._theme.apply()
         return self.quick
 
@@ -178,6 +183,10 @@ class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
         root.imagePickRequested.connect(self._pick_image)
         # the native-QMenu bridge (spec: island menus are native popups)
         root.dropdownRequested.connect(self._popup_dropdown)
+        # the «Правка» row (NRI-0017 F2): the same VM entrances the Undo/Redo
+        # hotkeys above trigger — one command, two ways to reach it
+        root.undoRequested.connect(self._vm.undo)
+        root.redoRequested.connect(self._vm.redo)
         self._vm.history_changed.connect(self._sync_edit_actions)
         self._sync_bind_buttons()
 
@@ -210,10 +219,10 @@ class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
 
     def set_read_only(self, value: bool) -> None:
         """The master-view switch: the VM flag drives the island (panel
-        enabled, action buttons) through its bindings; the native menu is the
-        facade's own widget."""
+        enabled, action buttons, the «Правка» row) through its bindings — the
+        row hides itself off ``vm.readOnly``, exactly as the dead native menu
+        was hidden here before NRI-0017."""
         self._vm.set_read_only(value)
-        self._menu_bar.setVisible(not value)
         if not value:
             self._sync_bind_buttons()
         self._sync_edit_actions()

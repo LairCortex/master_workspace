@@ -6,7 +6,8 @@ EntityCardDialog (character type: the fullest composition — image, mention
 fields, extras, music, AI row). The roles are штатно component facts pinned
 here unchanged (TextField/EditableText face, Button, CheckBox, the MentionField
 role from task 1.3); the names come from the design map: «Название», date
-fields, «Рейтинг», «Ссылка на музыку», the mention fields by label, extras by
+fields, «Рейтинг», «Ссылка на музыку» and the «✎» edit button «Изменить ссылку
+на музыку» (NRI-0017 FI-4), the mention fields by label, extras by
 modelData.label, every AI button «Сгенерировать: <fieldLabel>» (the whole-
 entity wave carries the card's own registry label — «Персонаж» for this
 fixture since NRI-0015 task 3.3, the borrowed «Событие» is gone). «Сохранить» and
@@ -118,6 +119,12 @@ def test_music_input_and_music_open_button_names(card):
     opener = iface_of(quick, "entityMusicOpenButton")
     assert opener.role() == QAccessible.Role.Button
     assert opener.text(QAccessible.Name) == "Открыть ссылку на музыку"
+
+    # NRI-0017 task 4.2 (FI-4=CR2): the music-«✎» icon button — its text is a
+    # glyph, so nothing штатно names it; the usage-site spells the action.
+    pencil = iface_of(quick, "entityMusicEditButton")
+    assert pencil.role() == QAccessible.Role.Button
+    assert pencil.text(QAccessible.Name) == "Изменить ссылку на музыку"
 
 
 def test_text_carrying_controls_keep_their_names_untouched(card):

@@ -31,6 +31,16 @@ Rectangle {
             searchInput.text = searchBarVm.query
     }
 
+    // The result row's single action: jump to the hit (the VM emits
+    // resultSelected and collapses the list). NRI-0017 task 2.2 (B3 sweep):
+    // both row paths run through it — the single-click jump is the migrated
+    // behavior, and the RowItem press path emits activateRequested, which
+    // without a listener here was a silent no-op in the accessibility tree.
+    function jumpToRow(index) {
+        searchResultsList.currentIndex = index
+        searchBarVm.select(index)
+    }
+
     Connections {
         target: searchBarVm
         function onQueryChanged() { root.syncQuery() }
@@ -141,10 +151,8 @@ Rectangle {
                         width: searchResultsList.width
                         text: parent.rowData.text
                         selected: searchResultsList.currentIndex === parent.rowIndex
-                        onSelectedRequested: {
-                            searchResultsList.currentIndex = parent.rowIndex
-                            searchBarVm.select(parent.rowIndex)
-                        }
+                        onSelectedRequested: root.jumpToRow(parent.rowIndex)
+                        onActivateRequested: root.jumpToRow(parent.rowIndex)
                     }
                 }
 

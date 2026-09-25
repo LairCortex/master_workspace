@@ -2,9 +2,11 @@
 addressing re-targeted onto the QML island in Q3b task 3.3, semantics unchanged).
 
 One non-modal window per sheet: the DESIGN island (palette | canvas | properties
-+ explicit «Сохранить») under the native «Правка» menu. The VM (own instance per
-window) is the only layout buffer; close-with-dirty asks for confirmation; an
-external rename updates the title without touching the dirty flag.
++ explicit «Сохранить») with its «Правка» commands as a visible named action row
+inside the island (nri-0017 task 3.1; a QMenuBar on a QDialog reached neither the
+mouse nor the tree — finding B2). The VM (own instance per window) is the only
+layout buffer; close-with-dirty asks for confirmation; an external rename updates
+the title without touching the dirty flag.
 """
 from __future__ import annotations
 
@@ -14,7 +16,13 @@ import json
 import pytest
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QAccessible, QKeySequence
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QMenuBar,
+    QMessageBox,
+)
 
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.domain.enums.field_type import FieldType
@@ -25,6 +33,7 @@ from app.presentation.views.character_sheet.editor_dialog import (
     CharacterSheetEditorDialog,
 )
 from tests.presentation.qml_helpers import click_item, find_item, walk_items
+from tests.qml_a11y_scan import QML_ROOT, object_name_annotation_violation
 
 
 def _pump(qtbot) -> None:
@@ -273,18 +282,150 @@ async def test_set_name_before_load_is_noop(qtbot, service, row):
     qtbot.wait(1)
 
 
-# ── A-editor: Правка menu + snap / z-order ─────────────────────────────────
+# ── A-editor: «Правка» (action row + hotkeys) / snap / z-order ──────────────
+#
+# NRI-0017 (task 3.1, finding B2): the «Правка» commands are a permanent row of
+# named buttons inside the island AND the unchanged hotkey QActions on the
+# dialog — one command layer, no menu on the dialog.
 
-async def test_edit_menu_standard_shortcuts(dlg):
-    titles = [a.text() for a in dlg.edit_menu.actions() if not a.isSeparator()]
-    assert titles == [
-        "Отменить", "Повторить", "Копировать", "Вставить", "Дублировать",
-    ]
-    assert dlg.undo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Undo)
-    assert dlg.redo_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Redo)
-    assert dlg.copy_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Copy)
-    assert dlg.paste_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Paste)
-    assert dlg.duplicate_action.shortcut() == QKeySequence("Ctrl+D")
+EDIT_ROW_BUTTONS = (
+    ("editUndoButton", "Отменить"),
+    ("editRedoButton", "Повторить"),
+    ("editCopyButton", "Копировать"),
+    ("editPasteButton", "Вставить"),
+    ("editDuplicateButton", "Дублировать"),
+)
+
+
+def _press_accessible(dlg, name: str) -> None:
+    """The NRI-0012 offscreen pin: one ``doAction("Press")`` on the button."""
+    iface = QAccessible.queryAccessibleInterface(_item(dlg, name))
+    assert iface is not None, f"no accessibility interface on {name!r}"
+    actions = iface.actionInterface()
+    assert "Press" in actions.actionNames(), (
+        f"{name!r} exposes {actions.actionNames()!r} — unreachable to a press"
+    )
+    actions.doAction("Press")
+
+
+def _standard_key(key: QKeySequence.StandardKey):
+    """The window-system combo of a StandardKey for this platform (Ctrl on
+    Linux/Windows, Command on macOS) — the test presses what Qt registers."""
+    combo = QKeySequence(key)[0]
+    return combo.key(), combo.keyboardModifiers()
+
+
+async def test_no_menu_bar_and_the_hotkeys_stay_on_the_dialog(dlg):
+    # B2: the dead QMenuBar is gone…
+    assert dlg.findChildren(QMenuBar) == []
+    assert not hasattr(dlg, "edit_menu")
+    # …and the five hotkeys stayed the dialog's own, text + StandardKey intact.
+    for action, caption, key in (
+        (dlg.undo_action, "Отменить", QKeySequence(QKeySequence.StandardKey.Undo)),
+        (dlg.redo_action, "Повторить", QKeySequence(QKeySequence.StandardKey.Redo)),
+        (dlg.copy_action, "Копировать", QKeySequence(QKeySequence.StandardKey.Copy)),
+        (dlg.paste_action, "Вставить", QKeySequence(QKeySequence.StandardKey.Paste)),
+        (dlg.duplicate_action, "Дублировать", QKeySequence("Ctrl+D")),
+    ):
+        assert action in dlg.actions(), f"{caption} left the dialog's action list"
+        assert action.text() == caption
+        assert action.shortcut() == key
+
+
+async def test_edit_action_row_is_five_visible_named_buttons(dlg, qtbot):
+    row = _item(dlg, "editActionsRow")
+    assert row.property("visible") is True
+    source = (QML_ROOT / "SheetEditorRoot.qml").read_text(encoding="utf-8")
+
+    row_ys = []
+    for name, caption in EDIT_ROW_BUTTONS:
+        item = _item(dlg, name)
+        assert item.property("visible") is True
+        assert item.property("text") == caption
+        # the stock-text face (NRI-0012 4.2): Qt names the button from its
+        # caption, the source must not re-annotate the name slot.
+        iface = QAccessible.queryAccessibleInterface(item)
+        assert iface.role() == QAccessible.Role.Button
+        assert iface.text(QAccessible.Name) in ("", caption)
+        assert object_name_annotation_violation(
+            source, "ThemeButton", name
+        ) is None
+        row_ys.append(item.mapToScene(QPointF(0, 0)).y())
+
+    assert max(row_ys) - min(row_ys) < 2.0, "the five buttons share one row"
+    # the row is the top chrome of the window (design F2): above the strips
+    orientation_y = _item(dlg, "orientationCombo").mapToScene(QPointF(0, 0)).y()
+    assert max(row_ys) < orientation_y
+
+
+async def test_pressing_undo_button_undoes_the_last_command(dlg, qtbot):
+    vm = dlg.view_model
+    vm.place(FieldType.TEXT, 10.0, 10.0)             # one command, selected
+    _pump(qtbot)
+    assert len(vm.template.page.fields) == 1         # the VM/command counter
+    assert vm.can_undo is True and vm.can_redo is False
+
+    _press_accessible(dlg, "editUndoButton")
+
+    assert len(vm.template.page.fields) == 0
+    assert vm.can_undo is False and vm.can_redo is True
+
+    _press_accessible(dlg, "editRedoButton")
+    assert len(vm.template.page.fields) == 1
+
+
+async def test_pressing_copy_paste_duplicate_buttons_edits_through_the_vm(
+    dlg, qtbot
+):
+    vm = dlg.view_model
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)       # place selects the field
+    _pump(qtbot)
+    paste = _item(dlg, "editPasteButton")
+    assert _item(dlg, "editCopyButton").property("enabled") is True
+    assert paste.property("enabled") is False        # clipboard still empty
+
+    _press_accessible(dlg, "editCopyButton")
+    _pump(qtbot)
+    assert vm.has_clipboard is True
+    assert paste.property("enabled") is True
+    assert dlg.paste_action.isEnabled() is True      # the hotkey gates alike
+
+    _press_accessible(dlg, "editPasteButton")
+    _pump(qtbot)
+    assert len(vm.template.page.fields) == 2         # the paste landed
+    _press_accessible(dlg, "editDuplicateButton")
+    _pump(qtbot)
+    assert len(vm.template.page.fields) == 3
+    assert vm.template.get_field(fid) is not None    # the original survived
+
+
+async def test_copy_button_is_disabled_without_a_selection(dlg, qtbot):
+    vm = dlg.view_model
+    fid = vm.place(FieldType.TEXT, 10.0, 10.0)
+    vm.select(None)                                  # no selection (Esc)
+    _pump(qtbot)
+    assert _item(dlg, "editCopyButton").property("enabled") is False
+    assert _item(dlg, "editDuplicateButton").property("enabled") is False
+    vm.select(fid)
+    _pump(qtbot)
+    assert _item(dlg, "editCopyButton").property("enabled") is True
+
+
+async def test_undo_hotkey_still_reaches_the_vm(dlg, qtbot):
+    """The hotkeys are a second entry to the same command, not a second
+    implementation: the key event entering the window undoes exactly as the
+    «Отменить» button does."""
+    vm = dlg.view_model
+    vm.place(FieldType.TEXT, 10.0, 10.0)
+    _pump(qtbot)
+    assert vm.can_undo is True
+
+    key, modifiers = _standard_key(QKeySequence.StandardKey.Undo)
+    QTest.keyClick(dlg, key, modifiers)
+    _pump(qtbot)
+
+    assert vm.can_undo is False and vm.can_redo is True
+    assert len(vm.template.page.fields) == 0
 
 
 async def test_copy_enables_paste_action(dlg):

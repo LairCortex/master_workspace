@@ -13,6 +13,10 @@ import pytest
 from datetime import date
 
 from app.domain.game_calendar import (
+    CalendarSpec,
+    CustomCalendar,
+    IntercalarySpec,
+    MonthSpec,
     StandardCalendar,
     current_calendar,
     reset_current_calendar,
@@ -22,6 +26,7 @@ from app.presentation.utils.date_utils import (
     DEFAULT_MONTHS,
     format_game_date,
     month_name,
+    worst_case_date_caption,
 )
 
 
@@ -98,3 +103,82 @@ class TestFormatGameDate:
 
         assert DEFAULT_MONTHS is DEFAULT_MONTH_NAMES
         assert dict(DEFAULT_MONTHS) == {i: month_name(i) for i in range(1, 13)}
+
+
+# ── nri-0017 1.1: the widest printable caption (ThemeDateField width hint) ──
+
+
+class _NoSpecWorstCalendar:
+    """Protocol implementer without the structural ``spec`` view (same shape
+    as the coordinate presentation tests' stub): the worst caption of such a
+    calendar is built from its ``month_names``/``month_length`` alone."""
+
+    def __init__(self) -> None:
+        self._month_names = {1: "Абвгд", 2: "Длинноимяномер"}
+
+    @property
+    def month_names(self):
+        return self._month_names
+
+    def month_length(self, year: int, month: int) -> int:
+        return 30
+
+
+class TestWorstCaseDateCaption:
+    def test_standard_calendar_widest_form(self):
+        # Each month pairs its own name with its own length: «Сентябрь» is
+        # the longest default name and its 30-day field keeps the caption
+        # «30 …» at two digits; the BC era is the widest tail a real
+        # coordinate can print, and the year sits at the MAX_YEAR bound.
+        assert worst_case_date_caption() == "30 Сентябрь 9999 г. до н.э."
+
+    def test_custom_names_take_part(self):
+        set_current_calendar(
+            StandardCalendar(month_names={5: "Пятиименныйдлинномер"})
+        )
+        # Май is 31 days, so its own form is the widest printable caption.
+        assert worst_case_date_caption() == (
+            "31 Пятиименныйдлинномер 9999 г. до н.э."
+        )
+
+    def test_custom_calendar_pairs_each_month_with_its_own_length(self):
+        set_current_calendar(
+            CustomCalendar(
+                CalendarSpec(
+                    months=(
+                        MonthSpec("Коротк", 9),
+                        MonthSpec("Длинноимяномер", 31),
+                        MonthSpec("Три", 28),
+                    ),
+                    week_names=("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"),
+                    intercalary=(IntercalarySpec("Праздник длинный", 1),),
+                )
+            )
+        )
+        assert worst_case_date_caption() == (
+            "31 Длинноимяномер 9999 г. до н.э."
+        )
+
+    def test_intercalary_rule_name_can_be_the_widest_form(self):
+        set_current_calendar(
+            CustomCalendar(
+                CalendarSpec(
+                    months=(
+                        MonthSpec("Кр", 30),
+                        MonthSpec("Кр2", 30),
+                    ),
+                    week_names=("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"),
+                    intercalary=(
+                        IntercalarySpec("Праздник", 1),
+                        IntercalarySpec("Самый длинный вставной день", 2),
+                    ),
+                )
+            )
+        )
+        assert worst_case_date_caption() == (
+            "Самый длинный вставной день 9999 г. до н.э."
+        )
+
+    def test_calendar_without_spec_view_uses_visible_months(self):
+        set_current_calendar(_NoSpecWorstCalendar())
+        assert worst_case_date_caption() == "30 Длинноимяномер 9999 г. до н.э."

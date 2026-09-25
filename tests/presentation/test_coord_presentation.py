@@ -35,6 +35,7 @@ from app.infrastructure.calendar_storage import (
 from app.presentation.utils.date_utils import (
     format_game_date,
     iso_or_coord,
+    worst_case_date_caption,
 )
 from app.presentation.viewmodels.detail_panel_view_model import (
     DetailPanelViewModel,
@@ -411,6 +412,34 @@ class TestWorldSnapshotViewModelCarriesCoordinates:
     def test_delete_of_the_fictional_iso_slot_is_total(self, qapp):
         vm = WorldSnapshotViewModel()
         assert not hasattr(vm, "setDateIso")
+
+
+# ── nri-0017 1.1: worstCaseDisplay width hint for the QML date fields ──────
+
+
+class TestWorstCaseDisplayWidthHint:
+    """The three islands that host ThemeDateField hand its width floor down
+    from the active calendar: the widest printable caption (delegated to the
+    one formatter) reaches QML as the field's worstCaseText."""
+
+    def test_dialog_vms_delegate_to_the_active_calendar(self, qtbot):
+        _custom()
+        dialog = EventDialogIslandViewModel()
+        card = EntityCardIslandViewModel(
+            entity_type="item", field_specs=[], related_configs=[]
+        )
+        assert dialog.worstCaseDisplay == worst_case_date_caption()
+        assert card.worstCaseDisplay == worst_case_date_caption()
+        assert dialog.worstCaseDisplay.endswith(" 9999 г. до н.э.")
+
+    def test_snapshot_vm_delegates_to_the_active_calendar(self, qapp):
+        _custom()
+        vm = WorldSnapshotViewModel()
+        assert vm.worstCaseDisplay == worst_case_date_caption()
+
+    def test_standard_calendar_yields_the_default_worst_form(self, qapp):
+        vm = WorldSnapshotViewModel()
+        assert vm.worstCaseDisplay == "30 Сентябрь 9999 г. до н.э."
 
 
 # ── 5.2: pre-fill is the grid's own coordinate picture (no substitution) ─────

@@ -83,6 +83,10 @@ def test_bc_era_facets_and_the_suffix_reach_the_qml_date_fields(qtbot):
     assert start_field.property("display") == dialog.vm.startDisplay
     assert start_field.property("display").endswith("44 г. до н.э.")
     assert end_field.property("display").endswith("44 г. до н.э.")
+    # nri-0017 1.1: both date fields take the VM's worst-form caption as
+    # their width floor.
+    assert start_field.property("worstCaseText") == dialog.vm.worstCaseDisplay
+    assert end_field.property("worstCaseText") == dialog.vm.worstCaseDisplay
 
 
 def test_stable_proxy_order_and_roundtrip_for_character(qtbot):

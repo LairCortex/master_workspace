@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QMessageBox
 from app.application.services.llm_status import LlmStatus
 from app.domain.date_era import era_key
 from app.domain.game_calendar import GameCoord, as_game_coord
-from app.presentation.utils.date_utils import format_game_date, iso_or_coord
+from app.presentation.utils.date_utils import (
+    format_game_date,
+    iso_or_coord,
+    worst_case_date_caption,
+)
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 AI_STATE_PROPERTY = "aiState"
 AI_STATE_ACTIVE = "active"
@@ -412,6 +416,14 @@ class EventDialogIslandViewModel(QObject):
         str,
         lambda self: format_game_date(self._end_date, is_bc=self._end_bc),
         notify=stateChanged,
+    )
+    # Width floor (nri-0017 task 1.1, design F1): the widest caption the
+    # active calendar can print, handed to both ThemeDateFields as their
+    # worstCaseText so their minimum width never lets the elide eat the year
+    # (M2). It depends on the calendar, not on the dates, so one hint serves
+    # both fields; the dialog VM is rebuilt whenever the calendar is (C2).
+    worstCaseDisplay = Property(
+        str, lambda self: worst_case_date_caption(), notify=stateChanged
     )
     # Era facets (add-era-aware-dates, task 4.1 / design D6): the display
     # strings above already carry the «N г. до н.э.» suffix — QML never derives

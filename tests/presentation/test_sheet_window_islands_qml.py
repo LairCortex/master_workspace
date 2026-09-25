@@ -90,10 +90,15 @@ EDITOR_OBJECT_NAMES = (
     "propertiesPanel", "snapCheck", "bringFrontButton", "sendBackButton",
     "xField", "contentField", "saveButton", "exportPdfButton",
     "railUpButton", "railDownButton", "railDeleteButton", "railAddButton",
+    # the «Правка» action row (NRI-0017 task 3.1, finding B2)
+    "editActionsRow", "editUndoButton", "editRedoButton", "editCopyButton",
+    "editPasteButton", "editDuplicateButton",
 )
 FILL_OBJECT_NAMES = (
     "sheetFillCanvas", "pageListView", "fillPropertiesPanel",
     "saveButton", "bindButton", "unbindButton",
+    # the «Правка» action row (NRI-0017 task 3.2) — hidden in read-only
+    "editActionsRow", "editUndoButton", "editRedoButton",
 )
 
 
@@ -416,6 +421,62 @@ def test_editor_paste_bridge_answers_visible_center(qtbot, vm, palette):
     assert center.x() > 0
 
 
+def test_editor_edit_action_row_bridges_the_five_commands(qtbot, vm, palette):
+    """The «Правка» row (NRI-0017 3.1): exactly one signal per button, emitted
+    to the facade which owns the command; the island itself edits nothing. The
+    enabled gates mirror the VM (the empty sheet shows the row grayed out, the
+    old menu's disabled items)."""
+    widget = load_editor(qtbot, vm, palette)
+    root = widget.rootObject()
+    buttons = ("editUndoButton", "editRedoButton", "editCopyButton",
+               "editPasteButton", "editDuplicateButton")
+
+    for name in buttons:
+        item = find_item(widget, name)
+        assert item.property("visible") is True, name
+        assert item.property("enabled") is False, name   # an empty sheet: nothing
+
+    vm.place("text", 40.0, 40.0)   # a command enters the history; place selects
+    vm.copy()                      # …and the clipboard comes from the VM
+    _pump(2)
+    state = {name: find_item(widget, name).property("enabled") for name in buttons}
+    assert state == {
+        "editUndoButton": True, "editCopyButton": True,
+        "editPasteButton": True, "editDuplicateButton": True,
+        "editRedoButton": False,   # the redo branch opens only via an undo
+    }
+
+    emits = {
+        name: track(getattr(root, signal))
+        for name, signal in (
+            ("editUndoButton", "undoRequested"),
+            ("editRedoButton", "redoRequested"),
+            ("editCopyButton", "copyRequested"),
+            ("editPasteButton", "pasteActionRequested"),
+            ("editDuplicateButton", "duplicateRequested"),
+        )
+    }
+    for name in ("editUndoButton", "editCopyButton", "editPasteButton",
+                 "editDuplicateButton", "editRedoButton"):
+        click_item(widget, find_item(widget, name))   # the redo click is inert
+    _pump(2)
+    assert {name: seen for name, seen in emits.items() if name != "editRedoButton"} == {
+        name: [()] for name in buttons if name != "editRedoButton"
+    }
+    assert emits["editRedoButton"] == []
+    # the row asks, the facade commands: a design-mode island never edits
+    assert [f.id for f in vm.template.page.fields] == vm.selected_ids
+
+    # the second state of the same gate: after an undo (the facade's path) the
+    # redo button opens and the undo one closes
+    vm.undo()
+    _pump(2)
+    assert find_item(widget, "editUndoButton").property("enabled") is False
+    assert find_item(widget, "editRedoButton").property("enabled") is True
+    click_item(widget, find_item(widget, "editRedoButton"))
+    assert emits["editRedoButton"] == [()]
+
+
 # ── 3.2: SheetFillRoot.qml ───────────────────────────────────────────────────
 
 
@@ -557,6 +618,29 @@ def test_fill_action_buttons_emit_and_read_only_locks(qtbot, fill_case, palette)
     saves = track(root.saveRequested)
     binds = track(root.bindRequested)
     unbinds = track(root.unbindRequested)
+    undoes = track(root.undoRequested)
+    redoes = track(root.redoRequested)
+
+    # the «Правка» row (NRI-0017 3.2): editable → visible, presses asked out
+    undo = find_item(widget, "editUndoButton")
+    redo = find_item(widget, "editRedoButton")
+    assert find_item(widget, "editActionsRow").property("visible") is True
+    assert undo.property("enabled") is False        # nothing edited yet
+    assert redo.property("enabled") is False
+    fvm.set_text(ids["text"], "А")
+    _pump(2)
+    assert undo.property("enabled") is True         # the VM gate opened
+    click_item(widget, undo)
+    click_item(widget, redo)                        # the redo branch is closed
+    assert undoes == [()]
+    assert redoes == []
+    # after the facade's undo (the VM path) the row's second button wakes up
+    fvm.undo()
+    _pump(2)
+    assert undo.property("enabled") is False
+    assert redo.property("enabled") is True
+    click_item(widget, redo)
+    assert redoes == [()]
 
     click_item(widget, find_item(widget, "saveButton"))
     click_item(widget, find_item(widget, "bindButton"))
@@ -571,9 +655,11 @@ def test_fill_action_buttons_emit_and_read_only_locks(qtbot, fill_case, palette)
     click_item(widget, unbind)
     assert unbinds == [()]
 
-    # read-only: panel off, action buttons gone, canvas input select-only
+    # read-only: panel off, the «Правка» row and the action buttons gone,
+    # canvas input select-only
     fvm.set_read_only(True)
     _pump(2)
+    assert find_item(widget, "editActionsRow").property("visible") is False
     assert find_item(widget, "saveButton").property("visible") is False
     assert find_item(widget, "bindButton").property("visible") is False
     panel = find_item(widget, "fillPropertiesPanel")
@@ -583,6 +669,7 @@ def test_fill_action_buttons_emit_and_read_only_locks(qtbot, fill_case, palette)
     assert fvm.inline_field_id is None  # disabled rows never open the inline
     fvm.set_read_only(False)
     _pump(1)
+    assert find_item(widget, "editActionsRow").property("visible") is True
     assert find_item(widget, "saveButton").property("visible") is True
 
 
@@ -647,12 +734,20 @@ def test_editor_island_paints_surface_and_accent_tokens(qtbot, vm, palette):
         (surface_pixel, token_rgb(tokens["color.bg.surface"])),
         (lambda w, img: button_pixel(w, find_item(w, "saveButton"), img),
          token_rgb(tokens["color.accent"])),
+        # the «Правка» row (NRI-0017 3.1) is a flat library button, not the
+        # accent one — its background is the canvas token (re-captured grab:
+        # the top chrome row took over the role of the removed dialog menu)
+        (lambda w, img: button_pixel(w, find_item(w, "editUndoButton"), img),
+         token_rgb(tokens["color.bg.canvas"])),
     ])
     # Explicit re-read after the frame settled: the token equals the pixel.
     image = grab_rgb(widget)
     assert surface_pixel(widget, image) == token_rgb(tokens["color.bg.surface"])
     assert button_pixel(widget, find_item(widget, "saveButton"), image) == (
         token_rgb(tokens["color.accent"])
+    )
+    assert button_pixel(widget, find_item(widget, "editUndoButton"), image) == (
+        token_rgb(tokens["color.bg.canvas"])
     )
 
 

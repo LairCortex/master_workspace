@@ -23,6 +23,7 @@ from datetime import date
 
 from app.domain.game_calendar import (
     DEFAULT_MONTH_NAMES,
+    MAX_YEAR,
     GameCoord,
     IntercalaryDay,
     MonthDay,
@@ -105,6 +106,35 @@ def format_game_date(
     if isinstance(d, IntercalaryDay):
         return f"{_intercalary_caption(d)} {d.year}{era}"
     return f"{d.day:02d} {month_name(d.month)} {d.year}{era}"
+
+
+def worst_case_date_caption() -> str:
+    """The widest date caption the active calendar can print (NRI-0017
+    task 1.1, design F1 — ThemeDateField's width floor, spec qml-components
+    «Поле даты — именованную нажимаемую кнопку предсказуемой ширины»).
+
+    Every coordinate kind contributes its own widest print
+    (``format_game_date`` contracts): a regular month pairs its own name
+    with ``:02d``-padded field of its own length, an intercalary rule
+    prints its name and a year, and every caption is taken in the BC era —
+    the « г. до н.э.» tail is the widest tail there is, and the year sits at
+    the shared ``MAX_YEAR`` bound. The result is a width HINT measured by
+    the component's TextMetrics, never a displayed text, so character
+    length is the comparison; hosts pass it into ``worstCaseText`` so the
+    field's minimum width always contains the worst form and the display
+    elide stays the secondary fallback (M2: the year is no longer cut).
+    """
+    calendar = current_calendar()
+    widest_year = str(MAX_YEAR)
+    era = " г. до н.э."
+    captions = [
+        f"{calendar.month_length(MAX_YEAR, month):02d} {name} {widest_year}{era}"
+        for month, name in calendar.month_names.items()
+    ]
+    spec = getattr(calendar, "spec", None)
+    if spec is not None:
+        captions += [f"{rule.name} {widest_year}{era}" for rule in spec.intercalary]
+    return max(captions, key=len)
 
 
 def iso_or_coord(coord: GameCoord | date) -> str:

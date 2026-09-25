@@ -1,15 +1,23 @@
-"""Character-sheet editor window: DESIGN content as a QML island under the
-native «Правка» menu.
+"""Character-sheet editor window: DESIGN content as a QML island carrying its
+«Правка» commands as a visible action row.
 
 Q3b (change port-character-sheet-canvas-qml-q3b, task 3.3, designs D1/D6/D9):
-the frame, Esc and the menu stay native (``QDialog`` + ``QMenuBar``); the
-whole content (palette, page rail, canvas, property panel, action row) is a
-``QQuickWidget`` island loading ``app/presentation/qml/SheetEditorRoot.qml``.
+the frame and Esc stay native (``QDialog``); the whole content (action row,
+palette, page rail, canvas, property panel, bottom row) is a ``QQuickWidget``
+island loading ``app/presentation/qml/SheetEditorRoot.qml``.
 The widgets content (palette.py / page_rail.py / properties_panel.py /
 canvas.py) is gone — no flag, no second copy (precedent Q1/Q2.5a/Q3a). The
 external contract is unchanged: ``saved``, ``view_model``, ``load``,
 ``set_name``, ``save``, ``export_pdf``, ``force_close``, the dirty
 ``closeEvent`` — ``app/main.py`` imports this module verbatim.
+
+NRI-0017 (task 3.1, finding B2, design F2): the native menu is gone too. A
+``QMenuBar`` on a ``QDialog`` reaches neither the macOS menu bar nor the
+accessibility tree, so the five «Правка» commands are a permanent row of named
+buttons inside the island. The hotkeys survived untouched — the same ``QAction``
+objects, now parented to and registered ON the dialog (``addAction`` keeps the
+window-scoped shortcuts alive) — wired to exactly the VM entrances the new
+island signals are wired to: one command layer, one handler per command.
 
 Division of labour (D1):
 
@@ -41,7 +49,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
-    QMenuBar,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -62,7 +69,6 @@ from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.sheet_image_provider import bind_sheet_image_store
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.catalog import attach_theme
 from app.presentation.viewmodels.character_sheet_viewmodel import (
     CharacterSheetViewModel,
 )
@@ -128,8 +134,12 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         self.setWindowTitle("Чар-лист")
         self.resize(1280, 800)
 
-        self._menu_bar = QMenuBar(self)
-        self.edit_menu = self._menu_bar.addMenu("Правка")
+        # The «Правка» commands as hotkeys (B2, NRI-0017): the QActions stayed
+        # — with their standard shortcuts and their VM handlers — but they are
+        # no longer items of a dead dialog menu. Registered on the dialog
+        # itself (``addAction``), they keep firing for the whole window; the
+        # visible half of the contract is the island's named action row, whose
+        # signals ``_wire_island`` binds to these very handlers.
         self.undo_action = QAction("Отменить", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self._vm.undo)
@@ -149,15 +159,15 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
             self.undo_action, self.redo_action, self.copy_action,
             self.paste_action, self.duplicate_action,
         ):
-            self.edit_menu.addAction(action)
+            self.addAction(action)
         self._sync_edit_actions()
 
         outer = QVBoxLayout(self)
-        # The island reaches the dialog edges so no OS-palette band frames it
-        # (its surface comes from the token palette). Only the menu is chrome.
+        # The island reaches every dialog edge so no OS-palette band frames it
+        # (its surface comes from the token palette); the whole «Правка» chrome
+        # now lives inside the island, so there is no native chrome left here.
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        outer.setMenuBar(self._menu_bar)
         outer.addWidget(self._build_island())
         # the current game ImageStore feeds ``image://sheet`` (D7): bound for
         # the live engine's provider and remembered for later registrations
@@ -214,7 +224,6 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         self.setup_island()
         self._wire_island()
         if self._theme is not None:
-            attach_theme(self._menu_bar, self._theme)
             self._theme.apply()
         return self.quick
 
@@ -225,6 +234,14 @@ class CharacterSheetEditorDialog(IslandDialogMixin, QDialog):
         root.imagePickRequested.connect(self._pick_image)
         # the delete-page confirm is a native QMessageBox (D1)
         root.pageRemoveRequested.connect(self._confirm_page_remove)
+        # the «Правка» action row (NRI-0017 F2): bound to the same callables
+        # the hotkey QActions above trigger — pressing the button IS pressing
+        # the hotkey, no second command path exists.
+        root.undoRequested.connect(self._vm.undo)
+        root.redoRequested.connect(self._vm.redo)
+        root.copyRequested.connect(self._vm.copy)
+        root.pasteActionRequested.connect(self._on_paste)
+        root.duplicateRequested.connect(self._vm.duplicate)
         self._vm.history_changed.connect(self._sync_edit_actions)
         self._vm.selection_changed.connect(lambda _fid: self._sync_edit_actions())
         self._vm.clipboard_changed.connect(self._sync_edit_actions)

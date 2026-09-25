@@ -221,7 +221,11 @@ Rectangle {
                             // the tap opens the calendar popup; the name slot
                             // carries the field's purpose (D5 description not
                             // needed — the name spells the action's target).
+                            // nri-0017 1.1: role and press live inside the
+                            // component now (FI-1); the VM's worst-form
+                            // caption is the field's width floor (M2).
                             Accessible.name: "Дата начала"
+                            worstCaseText: entityCardVm.worstCaseDisplay
                             onClicked: {
                                 const point = startDate.mapToItem(root, 0, 0)
                                 entityCardVm.requestDatePopup(
@@ -242,6 +246,7 @@ Rectangle {
                                 isoDate: entityCardVm.endIso
                                 display: entityCardVm.endDisplay
                                 Accessible.name: "Дата конца"
+                                worstCaseText: entityCardVm.worstCaseDisplay
                                 onClicked: {
                                     const point = endDate.mapToItem(root, 0, 0)
                                     entityCardVm.requestDatePopup(
@@ -321,6 +326,11 @@ Rectangle {
                         ThemeButton {
                             objectName: "entityMusicEditButton"
                             text: "✎"
+                            // NRI-0017 task 4.2 (FI-4=CR2): glyph text is no
+                            // caption to a reader, so this icon button is an
+                            // icon button — named by the action at the
+                            // usage-site (the 4.1 guard's glyph allowance).
+                            Accessible.name: "Изменить ссылку на музыку"
                             onClicked: entityCardVm.toggleMusicEdit()
                         }
                     }

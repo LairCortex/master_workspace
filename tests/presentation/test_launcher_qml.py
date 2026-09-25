@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPointF, QPoint, Qt, QUrl
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QAccessible, QColor, QImage
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
@@ -336,6 +336,23 @@ def test_game_rows_follow_vm_without_any_qml_changes(qtbot, catalog, vm, palette
 
     vm.remove("/games/Дар/game.db")  # row disappears again
     assert len(rows(widget)) == 1
+
+
+def test_game_rows_carry_the_open_game_description(qtbot, catalog, vm, palette):
+    # NRI-0017 task 4.1 (FI-3): the RowItem description slot is filled at the
+    # launcher usage-site with the design-map wording «Открывает игру» and
+    # reads back through the raw QAccessible Description slot (the terminal
+    # tree tool not painting it is spec'd not to be a defect).
+    vm.create("Погоня")
+    vm.create("Дар")
+    widget = load_island(qtbot, vm=vm, palette=palette)
+
+    game_rows = rows(widget)
+    assert len(game_rows) == 2
+    for row in game_rows:
+        iface = QAccessible.queryAccessibleInterface(row)
+        assert iface is not None, "no accessibility interface on the game row"
+        assert iface.text(QAccessible.Description) == "Открывает игру"
 
 
 def test_row_tap_sets_selected_path_on_vm(qtbot, catalog, vm, palette):

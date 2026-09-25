@@ -123,6 +123,10 @@ Rectangle {
                     // Spec row format: «имя (дата_изменения)» — roles from the VM.
                     text: modelData.name + " (" + modelData.modifiedLabel + ")"
                     selected: vm.selectedIndex === index
+                    // NRI-0017 task 4.1 (design map): the press opens the game —
+                    // the row's name is its content, so the hidden meaning of
+                    // the activation goes into the description slot.
+                    accessibleDescription: "Открывает игру"
 
                     onSelectedRequested: {
                         gameList.currentIndex = index

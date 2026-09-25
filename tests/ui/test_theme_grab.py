@@ -284,6 +284,43 @@ def test_editor_chrome_is_tokens_and_canvas_keeps_its_own_colors(qtbot, tmp_path
     assert QColor(m.group(1)).isValid()
 
 
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_sheet_dialogs_have_no_menu_strip_after_the_action_row_moved_in(
+    qtbot, tmp_path, theme
+):
+    # Re-captured grab contract (NRI-0017 B2): the «Правка» QMenuBar left both
+    # sheet dialogs for an action row inside the islands, so the whole window
+    # edge-to-edge IS the island — the top strip that used to be native menu
+    # chrome now paints the island's surface token like every other edge
+    # (the launcher's «нет полосы палитры ОС» contract, spec character-sheet
+    # -editor «невидимого меню на диалоге SHALL не быть»).
+    from PySide6.QtWidgets import QMenuBar
+
+    from app.presentation.views.character_sheet.editor_dialog import (
+        CharacterSheetEditorDialog,
+    )
+    from app.presentation.views.character_sheet.fill_dialog import (
+        CharacterSheetFillDialog,
+    )
+
+    runtime = make_runtime(tmp_path, theme)
+    dialogs = [
+        CharacterSheetEditorDialog(MagicMock(), 1, theme=runtime),
+        CharacterSheetFillDialog(MagicMock(), MagicMock(), 1, theme=runtime),
+    ]
+    surface = token_color("color.bg.surface", theme)
+    for dlg in dialogs:
+        qtbot.addWidget(dlg)
+        assert dlg.findChildren(QMenuBar) == []        # the menu widget is gone
+        dlg.resize(800, 600)
+        dlg.show()
+        qtbot.waitExposed(dlg)
+        image = dlg.grab().toImage()
+        for x, y in ((1, 1), (2, 2), (image.width() - 2, 2)):
+            assert image.pixelColor(x, y) == surface, (dlg, x, y)
+        dlg.force_close()
+
+
 # ── NRI-0015 P3 («Все дни» не пестрит): the «Выбор даты» popover paints no
 # accent fill while the window is empty — the accent belongs to the selected
 # bound alone (spec event-timeline «Панель выбора даты имеет читаемые

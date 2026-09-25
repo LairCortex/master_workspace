@@ -106,7 +106,19 @@ Rectangle {
                     height: implicitHeight
                     text: modelData.label
                     selected: sheetPresetVm.selectedIndex === index
+                    // NRI-0017 (B3, design F3): single click = row selection/
+                    // highlight only; activation — the row library's press
+                    // path, the double-click mirror — is the migrated OK flow:
+                    // first the sync select of the ACTIVATED row (a tree press
+                    // reaches here without ever having clicked), then the
+                    // facade accepts the choice (create path, window closes).
+                    // Before this change activateRequested had no listener and
+                    // the press was silently dead.
                     onSelectedRequested: sheetPresetVm.selectPreset(index)
+                    onActivateRequested: {
+                        sheetPresetVm.selectPreset(index)
+                        root.createRequested()
+                    }
                 }
             }
         }

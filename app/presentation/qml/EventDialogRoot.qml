@@ -105,8 +105,12 @@ Rectangle {
                 isoDate: eventDialogVm.startIso
                 display: eventDialogVm.startDisplay
                 // nri-0012 task 3.5: the tap opens the calendar popup; the
-                // name slot carries the field's purpose (entity-card precedent).
+                // name slot carries the field's purpose (entity-card
+                // precedent). nri-0017 1.1: role and press moved inside the
+                // component (FI-1) — the name stays right here, and the VM's
+                // worst-form caption becomes the field's width floor (M2).
                 Accessible.name: "Дата начала"
+                worstCaseText: eventDialogVm.worstCaseDisplay
                 onClicked: {
                     const point = startDate.mapToItem(root, 0, 0)
                     eventDialogVm.requestDatePopup(
@@ -126,6 +130,7 @@ Rectangle {
                     isoDate: eventDialogVm.endIso
                     display: eventDialogVm.endDisplay
                     Accessible.name: "Дата конца"
+                    worstCaseText: eventDialogVm.worstCaseDisplay
                     onClicked: {
                         const point = endDate.mapToItem(root, 0, 0)
                         eventDialogVm.requestDatePopup(

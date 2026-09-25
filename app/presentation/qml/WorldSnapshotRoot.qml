@@ -47,6 +47,12 @@ Rectangle {
                 isoDate: worldSnapshotVm.dateIso
                 display: worldSnapshotVm.dateDisplay
                 Layout.fillWidth: true
+                // nri-0017 1.1 (FI-1/M2): role+press came inside the library
+                // component, so the usage-site name finally projects — the
+                // field's purpose is the row label's word; the VM's
+                // worst-form caption is the field's width floor.
+                Accessible.name: "Дата"
+                worstCaseText: worldSnapshotVm.worstCaseDisplay
                 onClicked: {
                     const point = dateField.mapToItem(root, 0, 0)
                     worldSnapshotVm.requestDatePopup(

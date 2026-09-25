@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from PySide6.QtGui import QAccessible
 
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
-from tests.presentation.qml_helpers import island_rows, track
+from tests.presentation.qml_helpers import find_item, island_rows, track
 
 
 def _entity(entity_id, name, rating=1):
@@ -148,3 +148,16 @@ def test_event_entity_row_has_the_list_item_face_too(qtbot):
 
     press(event_row)
     assert clicked == []
+
+
+def test_date_field_is_a_button_named_by_the_island(qtbot):
+    # FI-1 (nri-0017 task 1.1): the field used to carry only a usage-site
+    # name on a role-less Control and the live cocoa tree dropped the node
+    # entirely. The role now ships inside ThemeDateField, the name «Дата»
+    # is the usage site's — the node is addressable with both.
+    widget = _populated(qtbot)
+    field = find_item(widget.quick, "snapshotDateField")
+
+    iface = accessible_of(field)
+    assert iface.role() == QAccessible.Role.Button
+    assert iface.text(QAccessible.Name) == "Дата"
