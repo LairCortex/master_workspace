@@ -62,6 +62,28 @@ def test_field_pages_follow_field_config_order():
     assert pages[0]["fields"][1]["value"] == ""
 
 
+def test_field_pages_titles_use_the_unified_prompt_root():
+    """NRI-0016 4.3 (LS3, design V5): every field-page caption carries the one
+    dictionary root «промпт» — «Промпты полей — <тип>»."""
+    vm = _vm()
+    for desc in map(entity_registry.descriptor, entity_registry.LLM_TYPES):
+        title = next(p["title"] for p in vm.fieldPages if p["entityType"] == desc.key)
+        assert title == f"Промпты полей — {desc.plural_label}"
+
+
+def test_close_request_is_emitted_for_the_footer_exit():
+    """NRI-0016 4.2 (LS2): the persistent «Закрыть» asks for a plain close;
+    the save-in-progress gate stays on the facade (reject/closeEvent), so the
+    slot itself never gates — one knowledge, one place."""
+    vm = _vm()
+    closes: list[int] = []
+    vm.closeRequested.connect(lambda: closes.append(1))
+    vm.requestClose()
+    vm.set_saving(True)
+    vm.requestClose()  # the facade's reject() is the single leave-gate
+    assert closes == [1, 1]
+
+
 def test_page_count_is_connection_world_entities_warnings():
     vm = _vm()
     assert vm.pageCount == len(FIELD_CONFIG) + 3

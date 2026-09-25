@@ -170,8 +170,16 @@ class WorldSnapshotViewModel(QObject):
         # the equal month-day coordinate.
         self._date: GameCoord = as_game_coord(date.today())
         self._date_bc = False
-        if theme is not None:
-            theme.add_listener(self._on_theme_changed)
+        # DEFECT-1 (NRI-0016): handle kept for the explicit unsubscription
+        # (spec app-logging «Слушатели состояния не переживают окно»); the
+        # snapshot panel detaches the VM when its island releases.
+        self._theme_subscription = theme.add_listener(self._on_theme_changed) if theme is not None else None
+
+    def detach_theme_listener(self) -> None:
+        """Stop listening for theme swaps (island teardown); idempotent."""
+        if self._theme_subscription is not None:
+            self._theme.remove_listener(self._theme_subscription)
+            self._theme_subscription = None
 
     rowModel = Property(QObject, lambda self: self._model, constant=True)
     rows = Property(QObject, lambda self: self._model, constant=True)

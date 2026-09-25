@@ -1,8 +1,7 @@
 """Application wiring for the table host (tasks 5.3 / 5.4)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox
 
 from app.domain.enums.field_type import FieldType
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
@@ -20,9 +19,15 @@ from tests.ui.test_char_sheets_wiring import (
 )
 
 
+def _seat_box(panel: TableHostPanel, index: int) -> QCheckBox:
+    # NRI-0016 (TB3-ремонт): seating lives on the row's real QCheckBox widget.
+    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(index))
+    return row_widget.findChild(QCheckBox)
+
+
 def _check_all_seats(panel: TableHostPanel) -> None:
     for i in range(panel.seat_list.count()):
-        panel.seat_list.item(i).setCheckState(Qt.CheckState.Checked)
+        _seat_box(panel, i).setChecked(True)
 
 
 async def test_menu_opens_table_panel(app, wait_for):
@@ -154,9 +159,7 @@ async def test_restart_table_uses_current_checkboxes(
     await application._start_table()
     assert application._table_host.is_running
     await application._stop_table()
-    panel.seat_list.blockSignals(True)
-    panel.seat_list.item(1).setCheckState(Qt.CheckState.Unchecked)
-    panel.seat_list.blockSignals(False)
+    _seat_box(panel, 1).setChecked(False)  # stopped: the guard keeps the host untouched, no blockSignals needed
     await application._start_table()
     assert id_a in application._table_host.seated_ids
     assert id_b not in application._table_host.seated_ids

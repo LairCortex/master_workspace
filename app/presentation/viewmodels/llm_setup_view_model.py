@@ -53,6 +53,7 @@ class LlmSetupViewModel(QObject):
     savingChanged = Signal()
     checkRequested = Signal()
     saveRequested = Signal()
+    closeRequested = Signal()
 
     def __init__(
         self,
@@ -88,7 +89,9 @@ class LlmSetupViewModel(QObject):
                 })
             self._pages.append({
                 "entityType": desc.key,
-                "title": f"Промты полей — {desc.plural_label}",
+                # NRI-0016 LS3 (design V5): the one dictionary root «промпт»
+                # across the setup copy — the caption form this change pinned.
+                "title": f"Промпты полей — {desc.plural_label}",
                 "fields": fields,
             })
 
@@ -216,6 +219,14 @@ class LlmSetupViewModel(QObject):
     def requestSave(self) -> None:
         if not self._saving:
             self.saveRequested.emit()
+
+    @Slot()
+    def requestClose(self) -> None:
+        # NRI-0016 LS2 (design V5): the persistent «Закрыть» is a plain
+        # reject — no confirmation, nothing saved. The save-in-progress gate
+        # stays where every other leave path has it (the facade's reject/
+        # closeEvent), so this slot never contradicts that single gate.
+        self.closeRequested.emit()
 
     @Slot(int, int, str)
     def setFieldValue(self, page_index: int, field_index: int, value: str) -> None:

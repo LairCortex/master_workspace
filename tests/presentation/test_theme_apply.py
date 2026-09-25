@@ -139,7 +139,10 @@ def broken_runtime(tmp_path):
 
 def test_launcher_toggle_writes_pref_and_switches_palette(qtbot, runtime):
     from PySide6.QtGui import QColor
-    from tests.presentation.qml_helpers import island_toggle_text
+    from tests.presentation.qml_helpers import (
+        island_toggle_checked,
+        island_toggle_text,
+    )
 
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
@@ -153,8 +156,10 @@ def test_launcher_toggle_writes_pref_and_switches_palette(qtbot, runtime):
     assert runtime.theme == "light"
     assert runtime.prefs.config_file.exists()
     # The island re-syncs from the palette signal — no re-creation, no QSS.
+    # D2 (NRI-0016): the re-sync moves the tick, the caption stays put.
     assert dlg._root.property("currentTheme") == "light"
-    assert island_toggle_text(dlg.quick) == "Тёмная тема"
+    assert island_toggle_text(dlg.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.quick) is True
     light_surface = QColor(runtime.tokens["color.bg.surface"]["light"])
     assert light_surface != dark_surface
     qtbot.waitUntil(
@@ -186,7 +191,10 @@ def test_main_window_toggle_action_reflects_current_theme(qtbot, tmp_path):
 
 def test_launcher_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
     from PySide6.QtQuickWidgets import QQuickWidget
-    from tests.presentation.qml_helpers import island_toggle_text
+    from tests.presentation.qml_helpers import (
+        island_toggle_checked,
+        island_toggle_text,
+    )
 
     dlg = GameLauncherDialog(theme=broken_runtime)
     qtbot.addWidget(dlg)
@@ -198,8 +206,10 @@ def test_launcher_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
     assert not broken_runtime.prefs.config_file.exists()
     # No QSS anywhere (the launcher never attached the chrome).
     assert dlg.styleSheet() == ""
-    # Off-skin the toggle still names the theme it *would* switch to.
+    # Off-skin the checkbox contract is intact too: fixed caption, the tick
+    # still tracks (still-dark) theme — nothing flipped, so nothing is ticked.
     assert island_toggle_text(dlg.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.quick) is False
 
 
 def test_main_window_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
@@ -355,19 +365,32 @@ def test_launcher_toggle_updates_main_window_check_item(qtbot, runtime):
     assert window.theme_toggle_action.isChecked() is True
 
 
-def test_main_window_toggle_updates_launcher_island_label(qtbot, runtime):
-    # ui-theme «Смена из главного окна при открытом лаунчере»: the launcher
-    # repaints via the palette signal and its toggle shows the new target.
-    from tests.presentation.qml_helpers import island_toggle_text
+def test_main_window_toggle_updates_launcher_island_state(qtbot, runtime):
+    # ui-theme «Смена из главного окна при открытом лаунчере» + «Одно
+    # состояние — одна формулировка» (D2, NRI-0016): both switch points read
+    # identically — fixed «Светлая тема» caption, the tick is the state.
+    from tests.presentation.qml_helpers import (
+        island_toggle_checked,
+        island_toggle_text,
+    )
 
     window = make_main_window(runtime)
     qtbot.addWidget(window)
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     assert island_toggle_text(dlg.quick) == "Светлая тема"
-    window.theme_toggle_action.trigger()
-    assert island_toggle_text(dlg.quick) == "Тёмная тема"
+    assert island_toggle_checked(dlg.quick) is False
+    assert window.theme_toggle_action.text() == "Светлая тема"
+
+    window.theme_toggle_action.trigger()  # switch to light from the menu
+
+    # Light is active: in BOTH places the caption is the same and the switch
+    # is marked as on; the launcher repaints via the palette signal.
     assert dlg._root.property("currentTheme") == "light"
+    assert island_toggle_text(dlg.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.quick) is True
+    assert window.theme_toggle_action.text() == "Светлая тема"
+    assert window.theme_toggle_action.isChecked() is True
 
 
 def test_main_window_toggle_repaints_open_launcher(qtbot, runtime):
@@ -394,7 +417,10 @@ def test_main_window_toggle_repaints_open_launcher(qtbot, runtime):
 
 
 def test_broken_tokens_leave_both_switches_untouched(qtbot, broken_runtime):
-    from tests.presentation.qml_helpers import island_toggle_text
+    from tests.presentation.qml_helpers import (
+        island_toggle_checked,
+        island_toggle_text,
+    )
 
     window = make_main_window(broken_runtime)
     qtbot.addWidget(window)
@@ -403,7 +429,10 @@ def test_broken_tokens_leave_both_switches_untouched(qtbot, broken_runtime):
     dlg._root.themeToggleRequested.emit()
     window.theme_toggle_action.trigger()
     assert window.theme_toggle_action.isChecked() is False
+    assert window.theme_toggle_action.text() == "Светлая тема"
+    # Off-skin the checkbox keeps the same contract: fixed caption, no tick.
     assert island_toggle_text(dlg.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.quick) is False
 
 
 
@@ -585,3 +614,202 @@ def test_duplicate_listener_registration_is_deduplicated(runtime):
     assert len(runtime.subscribers) == 1
     assert runtime.set_theme("light") is True
     assert len(hits) == 1
+
+
+# ── D1 (NRI-0016): explicit unsubscription, listeners do not outlive windows ─
+
+def test_remove_listener_unsubscribes_a_live_listener_and_is_idempotent(runtime):
+    """add_listener hands back a handle; remove_listener drops it, and
+    unsubscribing twice (or with the never-subscribed ``None``) is silent."""
+    spy = ListenerSpy()
+    handle = runtime.add_listener(spy.on_theme)
+    assert handle is not None
+    assert len(runtime.subscribers) == 1
+    runtime.remove_listener(handle)
+    assert runtime.subscribers == ()
+    runtime.remove_listener(handle)  # idempotent: the handle is already gone
+    runtime.remove_listener(None)    # a window that never subscribed
+    assert runtime.set_theme("light") is True
+    assert spy.calls == 0
+
+
+def test_closed_launcher_is_silent_on_theme_change(qtbot, runtime, caplog):
+    """Spec «Закрытый лаунчер молчит при смене темы» (D1).
+
+    The closed dialog stays alive under its parent while its island is
+    already released — the old weak-only subscription kept firing
+    ``_sync_theme`` into half-dead content and the runtime swallowed the
+    RuntimeError into the log. Unsubscribing on ``finished`` means the
+    switch reaches the open windows with an empty journal.
+    """
+    import logging
+
+    import shiboken6
+
+    window = make_main_window(runtime)
+    qtbot.addWidget(window)
+    window.show()
+    dlg = GameLauncherDialog(parent=window, theme=runtime)
+    qtbot.addWidget(dlg)
+    dlg.show()
+
+    dlg.close()
+    # Let the deferred island release (QTimer.singleShot) land: after this
+    # turn the QML root is deleted while the dialog wrapper stays alive —
+    # exactly the crash window of the old bug (setProperty on the dead root
+    # raised RuntimeError, which the runtime swallowed into the log).
+    qtbot.wait(50)
+    assert not shiboken6.isValid(dlg._root)
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG)
+    assert runtime.set_theme("light") is True
+    assert caplog.records == []
+    # The theme really arrived where a window is still open.
+    assert window.theme_toggle_action.isChecked() is True
+
+
+def test_main_window_close_unsubscribes_its_theme_listener(qtbot, runtime):
+    """D1 inventory: a game switch closes and replaces the main window while
+    the runtime outlives it — closeEvent drops the handle explicitly, so the
+    dead window is not a listener until the collector gets to it."""
+    window = make_main_window(runtime)
+    qtbot.addWidget(window)
+    assert any(
+        getattr(cb, "__self__", None) is window for cb in runtime.subscribers
+    )
+    window.close()
+    assert not any(
+        getattr(cb, "__self__", None) is window for cb in runtime.subscribers
+    )
+    # The switch still works with the dropped subscription in place.
+    assert runtime.set_theme("light") is True
+
+
+# ── DEFECT-1 (NRI-0016): island teardowns, including the closed islands ──────
+
+
+def test_closed_llm_island_window_leaves_no_theme_listener(qtbot, runtime, caplog):
+    """The audited reproduction of DEFECT-1, pinned offscreen.
+
+    «Настройка LLM…» closes (QDialog close ⇒ the island release is deferred a
+    turn), and the window's C++ side goes away afterwards — leaving the
+    palette wrapper alive with a dead signal source behind it. Every later
+    theme change used to answer with a RuntimeError pair from that dead
+    listener (two closed windows ⇒ two pairs; spec app-logging «Слушатели
+    состояния не переживают окно»)."""
+    import logging
+
+    from app.infrastructure.llm.config import LlmConfig
+    from app.presentation.theme.qml_palette import QmlPalette
+    from app.presentation.views.llm_setup_dialog import LlmSetupDialog
+
+    def island_palettes() -> list:
+        return [
+            cb for cb in runtime.subscribers
+            if isinstance(getattr(cb, "__self__", None), QmlPalette)
+        ]
+
+    dlg = LlmSetupDialog(
+        config=LlmConfig("https://api.openai.com/v1", "gpt-4o-mini", ""),
+        theme=runtime,
+    )
+    qtbot.addWidget(dlg)
+    assert len(island_palettes()) == 2  # engine bridge + this island's own
+
+    dlg.show()
+    dlg.close()  # the «Закрыть»/native-close exit
+    qtbot.wait(50)  # the deferred island release lands
+    assert len(island_palettes()) == 1  # only the engine bridge stays
+
+    # The window object's C++ side leaving is what used to open the crash
+    # window between the dead signal source and the still-resolvable method.
+    QCoreApplication.sendPostedEvents(dlg, QEvent.Type.DeferredDelete)
+    dlg.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qtbot.wait(20)
+    assert len(island_palettes()) == 1
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG)
+    assert runtime.set_theme("light") is True
+    assert caplog.records == []
+
+
+def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, caplog):
+    """The island panels are child widgets: no closeEvent ever reaches them,
+    so MainWindow.closeEvent releases them too (palette + per-panel view
+    model subscriptions). Re-opening the main window with the same runtime
+    must find only the engine bridge palette subscribed (DEFECT-1).
+    """
+    import logging
+
+    from app.presentation.theme.qml_palette import QmlPalette
+
+    def palette_listeners() -> list:
+        return [
+            cb for cb in runtime.subscribers
+            if isinstance(getattr(cb, "__self__", None), QmlPalette)
+        ]
+
+    window = make_main_window(runtime)
+    qtbot.addWidget(window)
+    window.show()
+    # engine bridge + timeline/search/detail/world island palettes.
+    assert len(palette_listeners()) == 5
+
+    def bound_classes() -> set[str]:
+        return {
+            cb.__self__.__class__.__name__
+            for cb in runtime.subscribers
+            if hasattr(cb, "__self__")
+        }
+
+    # the two island view models sit on the runtime too
+    assert {"DetailPanelViewModel", "WorldSnapshotViewModel"} <= bound_classes()
+
+    window.close()  # closeEvent: own handle + every child island released
+    assert len(palette_listeners()) == 1
+    assert not {"DetailPanelViewModel", "WorldSnapshotViewModel"} & bound_classes()
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG)
+    assert runtime.set_theme("light") is True
+    assert caplog.records == []
+
+
+def test_dead_listener_failure_is_reported_without_formatting_the_callback(
+    runtime, caplog
+):
+    """The containment log must not lean on ``%r`` of the subscriber.
+
+    With the old ``%r`` a Qt wrapper whose C++ side is already gone raised
+    from inside the log record's own formatting, so each theme change
+    printed the real exception AND a second «--- Logging error ---» cascade
+    (DEFECT-1). The subscriber is identified by its qualified name instead,
+    and the failing switch must stay a single well-formed record."""
+    import logging
+
+    class Deadish:
+        def cb(self):
+            raise RuntimeError("Signal source has been deleted")
+
+        def __repr__(self):  # what a deleted Qt wrapper does to %r
+            raise RuntimeError("wrapper is dead; repr blows too")
+
+    dead = Deadish()
+    second_hits: list[str] = []
+
+    def second():
+        second_hits.append("second")
+
+    runtime.add_listener(dead.cb)
+    runtime.add_listener(second)
+
+    caplog.set_level(logging.ERROR)
+    assert runtime.set_theme("light") is True  # the switch succeeds anyway
+    assert second_hits == ["second"]
+
+    records = [r for r in caplog.records if "не дошло до подписчика" in r.getMessage()]
+    assert len(records) == 1  # one record, formatted — no logging-error cascade
+    assert "Deadish.cb" in records[0].getMessage()

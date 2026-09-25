@@ -149,6 +149,11 @@ def _imports_concrete_provider(module: str | None, level: int, alias_name: str) 
     return False
 
 
+def _is_dunder(name: str) -> bool:
+    """PEP 8: «__name__» — публичный системный протокол, а не приватное имя."""
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
 def _violations_in_tree(
     tree: ast.AST, path: Path, *,
     check_layers: bool = False, check_db: bool = False,
@@ -198,8 +203,15 @@ def _violations_in_tree(
                             f"«{module or alias.name}» в слой представления "
                             "запрещён (design D7)",
                         ))
-                # R3: приватное имя из чужого пакета
-                if check_private and alias.name.startswith("_") and alias.name != "*":
+                # R3: приватное имя из чужого пакета (dunder-имена — публичный
+                # протокол PEP 8, не приватное: app.__version__ импортируется
+                # открыто, nri-0016 design V7)
+                if (
+                    check_private
+                    and alias.name.startswith("_")
+                    and alias.name != "*"
+                    and not _is_dunder(alias.name)
+                ):
                     if source_package != own_package:
                         violations.append((
                             path, node.lineno,
@@ -470,6 +482,15 @@ def test_private_import_across_packages_reports_file_and_line():
     path, lineno, text = violations[0]
     assert path == Path("app/presentation/viewmodels/x.py") and lineno == 1
     assert "_gregorian_key" in text
+
+
+def test_dunder_import_across_packages_is_not_private():
+    """PEP 8 dunder (app.__version__, nri-0016 V7) — публичный протокол:
+    то же правило на «_single» имя ловит, на «__dunder__» — молчит."""
+    source = "from app import __version__\n"
+    assert _scan_source(
+        source, Path("app/presentation/views/main_window.py"), check_private=True
+    ) == []
 
 
 def test_parallel_type_dict_reports_file_and_line():

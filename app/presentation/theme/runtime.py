@@ -43,6 +43,19 @@ from app.presentation.theme.compiler import (
 
 log = logging.getLogger(__name__)
 
+
+def _listener_label(callback: object) -> str:
+    """Identification of a failing subscriber that NEVER formats the object.
+
+    A dead Qt wrapper raises from its own repr(): passing the callback as a
+    ``%r`` argument then broke the logging call itself — every theme change
+    after a closed window spewed a second ``--- Logging error ---`` cascade
+    on top of the real exception (NRI-0016 DEFECT-1). The qualified name is
+    available on functions and bound methods alike without touching ``self``.
+    """
+    return getattr(callback, "__qualname__", None) or type(callback).__qualname__
+
+
 # The web stylesheet body ships next to the table-host static assets; the
 # runtime only prepends the compiled ``:root`` block (D6).
 APP_CSS_PATH = (
@@ -175,19 +188,37 @@ class ThemeRuntime:
 
     # ---- change notifications ----
 
-    def add_listener(self, callback: Callable[[], None]) -> None:
+    def add_listener(self, callback: Callable[[], None]) -> weakref.ReferenceType:
         """Call ``callback()`` after a theme change was applied.
 
         Held weakly (bound methods included), so a closed window never keeps
         the subscription — nor is kept alive by it. Re-subscribing the same
         callback is a no-op (mirrors ``register`` de-duplication for widgets):
         a double ``refresh_content`` per switch would only double the work.
+
+        Returns the opaque subscription handle for :meth:`remove_listener`:
+        the weakness is the last line of defence, while the spec (D1) asks
+        a closing window to unsubscribe *explicitly*, not to wait for the
+        collector — a dialog outlives its island as a child of the main
+        window, and its handler then fires on half-dead content.
         """
         ref = weakref.WeakMethod(callback) if inspect.ismethod(callback) else weakref.ref(callback)
         # Bound methods re-create on attribute access, so compare with ``==``
         # (WeakMethod exposes the live bound method; identity would miss).
         self._listeners = [r for r in self._listeners if r() != callback]
         self._listeners.append(ref)
+        return ref
+
+    def remove_listener(self, handle: weakref.ReferenceType | None) -> None:
+        """Drop the subscription ``add_listener`` returned for its callback.
+
+        Unknown, already-dropped or ``None`` handles are a silent no-op:
+        unsubscribing twice (or from a window that never subscribed because
+        the theme was off) must be as safe as it is common on closing paths.
+        """
+        if handle is None:
+            return
+        self._listeners = [r for r in self._listeners if r is not handle]
 
     @property
     def subscribers(self) -> tuple:
@@ -209,7 +240,9 @@ class ThemeRuntime:
             try:
                 callback()
             except Exception:  # noqa: BLE001 — one broken screen must not stop the rest
-                log.exception("Обновление темы не дошло до подписчика %r", callback)
+                log.exception(
+                    "Обновление темы не дошло до подписчика %s", _listener_label(callback)
+                )
         self._listeners = alive
 
     def apply(self) -> None:

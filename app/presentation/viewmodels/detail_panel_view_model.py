@@ -194,8 +194,18 @@ class DetailPanelViewModel(QObject):
         self.models = [
             DetailRowsModel(runtime, self) for _ in self.TAB_TITLES
         ]
-        if runtime is not None:
-            runtime.add_listener(self.retheme)
+        # DEFECT-1 (NRI-0016): handle kept for the explicit unsubscription
+        # the spec app-logging «Слушатели состояния не переживают окно»
+        # demands — the panel detaches the VM when its island releases;
+        # weakness alone cannot here (the VM's C++ side may die with the
+        # island context while this wrapper lives on the facade).
+        self._theme_subscription = runtime.add_listener(self.retheme) if runtime is not None else None
+
+    def detach_theme_listener(self) -> None:
+        """Stop listening for theme swaps (island teardown); idempotent."""
+        if self._theme_subscription is not None:
+            self._runtime.remove_listener(self._theme_subscription)
+            self._theme_subscription = None
 
     title = Property(str, lambda self: self._title, notify=headerChanged)
     dateText = Property(str, lambda self: self._date_text, notify=headerChanged)

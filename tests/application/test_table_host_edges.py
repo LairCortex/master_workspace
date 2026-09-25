@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.character_sheet_instance_service import (
@@ -237,8 +237,9 @@ def test_lan_and_qr(qtbot, monkeypatch):
     qtbot.addWidget(panel)
     panel.set_instances([(1, "Лист")])
     assert panel.checked_seat_ids() == []
-    from PySide6.QtCore import Qt
-    panel.seat_list.item(0).setCheckState(Qt.CheckState.Checked)
+    # NRI-0016 (TB3-ремонт): seating lives on the row's real QCheckBox.
+    box = panel.seat_list.itemWidget(panel.seat_list.item(0)).findChild(QCheckBox)
+    box.setChecked(True)
     assert panel.checked_seat_ids() == [1]
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
@@ -357,12 +358,21 @@ async def test_ws_send_failure_is_swallowed(async_session: AsyncSession):
 
 
 def test_new_pin_retries_collision(monkeypatch):
+    # TB6 (NRI-0016): six digits — collisions are resolved against the
+    # six-digit render, and the draw space is the full 000000..999999.
     values = iter([1, 1, 2])
+    ranges: list[int] = []
+
+    def fake_randbelow(n: int) -> int:
+        ranges.append(n)
+        return next(values)
+
     monkeypatch.setattr(
         "app.application.services.table_host_service.secrets.randbelow",
-        lambda n: next(values),
+        fake_randbelow,
     )
-    assert _new_pin("0001") == "0002"
+    assert _new_pin("000001") == "000002"
+    assert ranges == [1_000_000, 1_000_000, 1_000_000]
 
 
 def test_lan_oserror(monkeypatch):

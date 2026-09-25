@@ -57,19 +57,20 @@ class TestStart:
             await host.start()
         assert not host.is_running
 
-    async def test_pin_is_four_digits_and_changes_on_restart(
+    async def test_pin_is_six_digits_and_changes_on_restart(
         self, async_session: AsyncSession
     ):
+        # TB6 (NRI-0016): every start issues a fresh six-digit PIN.
         sheet_svc, inst_svc, host = await _services(async_session)
         _tid, _fid, instances = await _seed(sheet_svc, inst_svc, 1)
         host.seat(instances[0].id)
         await host.start()
         pin1 = host.pin
-        assert pin1 is not None and len(pin1) == 4 and pin1.isdigit()
+        assert pin1 is not None and len(pin1) == 6 and pin1.isdigit()
         await host.stop()
         await host.start()
         pin2 = host.pin
-        assert pin2 is not None and len(pin2) == 4 and pin2.isdigit()
+        assert pin2 is not None and len(pin2) == 6 and pin2.isdigit()
         assert pin2 != pin1
 
     async def test_restart_replaces_seating_not_accumulates(
@@ -103,8 +104,12 @@ class TestJoin:
         _tid, _fid, instances = await _seed(sheet_svc, inst_svc, 1)
         host.seat(instances[0].id)
         await host.start()
+        # TB6: a wrong PIN of the *same* (six-digit) shape — the literal here
+        # must not lie about the length the web client sends.
+        wrong_pin = "000000" if host.pin != "000000" else "111111"
+        assert len(wrong_pin) == len(host.pin) == 6
         with pytest.raises(InvalidPinError):
-            await host.join("0000" if host.pin != "0000" else "1111", "Вася", instances[0].id)
+            await host.join(wrong_pin, "Вася", instances[0].id)
         row = await inst_svc.get(instances[0].id)
         stored = json.loads(row.values)
         assert stored[_fid] == "было"

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.character_sheet_instance_service import (
@@ -33,6 +33,12 @@ def qapp():
     return app
 
 
+def _seat_box(panel: TableHostPanel, index: int) -> QCheckBox:
+    """NRI-0016 (TB3-ремонт): the seating state lives on the row's QCheckBox."""
+    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(index))
+    return row_widget.findChild(QCheckBox)
+
+
 def test_menu_table_exists(qtbot):
     w = MainWindow(
         timeline_vm=MagicMock(),
@@ -55,8 +61,12 @@ def test_port_editable_before_start(qtbot):
     assert panel.port_spin.value() == 8000
 
 
-def test_urls_include_ipv4_and_loopback_and_qr(qtbot):
+async def test_urls_include_ipv4_and_loopback_and_qr(qtbot):
+    # NRI-0016 (TB2): the requisites are shown only for a running table, so
+    # the address contract is checked after start instead of before it.
     host = TableHostService(MagicMock(), MagicMock())
+    host.set_seating([1])
+    await host.start()
     panel = TableHostPanel(host, list_ipv4=lambda: ["192.168.1.5", "127.0.0.1"])
     qtbot.addWidget(panel)
     text = panel.urls_label.text()
@@ -64,6 +74,7 @@ def test_urls_include_ipv4_and_loopback_and_qr(qtbot):
     assert f"http://127.0.0.1:{DEFAULT_PORT}/" in text
     pix = panel.qr_label.pixmap()
     assert pix is not None and not pix.isNull()
+    await host.stop()  # NRI-0016: the cleanup close must not meet a running table
 
 
 async def test_player_list_and_kick(qtbot, async_session: AsyncSession):
@@ -93,6 +104,7 @@ async def test_player_list_and_kick(qtbot, async_session: AsyncSession):
     assert host.occupancy == {}
     await panel.kick_selected()
     panel._on_player_click()
+    await host.stop()  # NRI-0016: cleanup close must not meet a running table
 
 
 async def test_player_click_emits_selected(qtbot, async_session: AsyncSession):
@@ -121,6 +133,7 @@ async def test_player_click_emits_selected(qtbot, async_session: AsyncSession):
     panel.player_list.clearSelection()
     panel.player_list.setCurrentRow(0)
     await panel.kick_selected()
+    await host.stop()  # NRI-0016: cleanup close must not meet a running table
 
 
 def test_kick_disabled_and_pin_hidden_when_stopped(qtbot):
@@ -155,14 +168,16 @@ async def test_checkbox_seats_and_unseats_while_running(qtbot, async_session: As
     qtbot.addWidget(panel)
     panel.set_instances([(a.id, "Лист A"), (b.id, "Лист B")])
     assert b.id not in host.seated_ids
-    panel.seat_list.item(1).setCheckState(Qt.CheckState.Checked)
+    # NRI-0016 (TB3-ремонт): seating flips through the row's real QCheckBox.
+    assert _seat_box(panel, 0).isChecked()  # a was seated before the panel
+    _seat_box(panel, 1).setChecked(True)
     assert b.id in host.seated_ids
-    panel.seat_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    _seat_box(panel, 0).setChecked(False)
     for _ in range(20):
         if a.id not in host.seated_ids:
             break
         await asyncio.sleep(0)
     assert a.id not in host.seated_ids
     assert host.occupancy == {}
-    panel.seat_list.item(1).setData(Qt.ItemDataRole.UserRole, None)
-    panel.seat_list.item(1).setCheckState(Qt.CheckState.Unchecked)
+    assert panel.checked_seat_ids() == [b.id]
+    await host.stop()  # NRI-0016: cleanup close must not meet a running table

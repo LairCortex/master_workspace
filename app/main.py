@@ -454,10 +454,15 @@ class Application:
         if not self._db_path:
             return
         service = ExportService(self._db_path)
+        # A4 (NRI-0016): the panel opens in the CURRENT game's database
+        # directory (``games/<name>/`` through the session, never a literal)
+        # with the usual suggested name — the archive lands next to its
+        # source without any manual navigation.
+        start_path = Path(self._db_path).parent / service.suggested_file_name()
         dest, _ = QFileDialog.getSaveFileName(
             self._window,
             "Экспорт игры",
-            service.suggested_file_name(),
+            str(start_path),
             "NRI архив (*.nri);;Все файлы (*)",
             # L1 (NRI-0014): the native panel is untranslatable and differs
             # between dev and the .app — always the Russian Qt panel.
@@ -657,7 +662,9 @@ class Application:
         if self._sheets is not None:
             self._sheets.close_windows()
         if self._table_host_panel is not None:
-            self._table_host_panel.close()
+            # NRI-0016 (TB1): programmatic close (game switch / shutdown) must
+            # never ask «Остановить стол?» — only the user's X does.
+            self._table_host_panel.force_close()
             self._table_host_panel = None
 
     def _on_char_sheets(self) -> None:
@@ -910,7 +917,7 @@ class Application:
             dialog.saved.connect(lambda c, wp, fp: self._wiring.run_locked(_on_saved(c, wp, fp)))
             # Explicit NonModal pins the contract (the registry shows with
             # show(); open()-under-parent WindowModal was the defect); the
-            # titled window already carries «Настройка AI-ассистента (LLM)».
+            # titled window carries the entry text «Настройка LLM…» (4.2).
             dialog.setWindowModality(Qt.WindowModality.NonModal)
             return dialog
 

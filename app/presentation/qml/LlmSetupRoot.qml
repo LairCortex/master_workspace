@@ -25,6 +25,16 @@ Rectangle {
     readonly property color okColor: Tokens.token(islandTokens, "color.status.ok", "black")
     readonly property color errorColor: Tokens.token(islandTokens, "color.danger", "black")
 
+    // nri-0016 LS4: the field's accessibility caption is a root constant.
+    // Live cocoa fact (DEFECT-LS4 re-diagnosis, QA 2026-09-25): Qt zeroes
+    // Accessible.name of a password field the moment an AT attaches (and a
+    // helper text put into Accessible.description is overwritten by the
+    // placeholder), while the placeholder itself is maintained by Qt into
+    // the slot assistive tools fall back to. So the placeholder IS the
+    // caption — «Ключ API» is what every reader path shows; the explanatory
+    // hint lives in its own HintText next to the field.
+    readonly property string apiKeyFieldName: "Ключ API"
+
     color: surfaceColor
     implicitWidth: 620
     implicitHeight: 480
@@ -93,10 +103,24 @@ Rectangle {
                         objectName: "keyField"
                         Layout.fillWidth: true
                         echoPassword: true
-                        placeholderText: "Ключ API — необязательно для локальных серверов"
+                        placeholderText: root.apiKeyFieldName
                         text: llmSetupVm.apiKey
-                        Accessible.name: "Ключ API"
+                        // LS4: the name slot takes the root's stable caption,
+                        // never a hint (see the apiKeyFieldName comment for
+                        // why the placeholder carries the same caption).
+                        Accessible.name: root.apiKeyFieldName
                         onTextChanged: llmSetupVm.apiKey = text
+                    }
+                    // The explanation the placeholder used to carry lives in
+                    // plain text now (LS4 re-diagnosis: the placeholder IS the
+                    // accessible caption for this field).
+                    HintText {
+                        objectName: "apiKeyHint"
+                        Layout.columnSpan: 2
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        elide: Text.ElideNone
+                        text: "Необязательно для локальных серверов."
                     }
                 }
 
@@ -171,20 +195,32 @@ Rectangle {
                             + " Пустое поле — используется только название поля."
                     }
 
-                    GridLayout {
-                        columns: 2
-                        columnSpacing: Tokens.px(root.islandTokens, "space.sm", 8)
-                        rowSpacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                        Layout.fillWidth: true
+                    // NRI-0016 LS1 (spec «Подпись стоит у своего поля», design
+                    // V5): ONE Repeater whose row delegate paints the label and
+                    // its own field side by side (row objectName
+                    // «fieldPromptRow_<etype>_<field>» is the test seam). The
+                    // two Repeaters before put ALL labels into the left column
+                    // and ALL fields into the right one, so with a few rows a
+                    // label visually faced another setting's field on every
+                    // field page.
+                    Repeater {
+                        model: fieldPage.pageData.fields
 
-                        Repeater {
-                            model: fieldPage.pageData.fields
+                        RowLayout {
+                            objectName: "fieldPromptRow_" + fieldPage.pageData.entityType
+                                + "_" + modelData.name
+                            Layout.fillWidth: true
+                            spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
-                            TitleText { text: modelData.label + ":" }
-                        }
-
-                        Repeater {
-                            model: fieldPage.pageData.fields
+                            // Test-seam pair of the row: the label and the
+                            // field share the «_<etype>_<field>» suffix, so a
+                            // tree walk can read the alternation and compare
+                            // the painted caption with the field's name slot.
+                            TitleText {
+                                objectName: "fieldPromptLabel_" + fieldPage.pageData.entityType
+                                    + "_" + modelData.name
+                                text: modelData.label + ":"
+                            }
 
                             ThemeField {
                                 objectName: "fieldPrompt_" + fieldPage.pageData.entityType
@@ -192,9 +228,9 @@ Rectangle {
                                 Layout.fillWidth: true
                                 placeholderText: modelData.placeholder
                                 text: modelData.value
-                                // nri-0012 task 3.2: the repeater rows bind the
-                                // name to the same model label the TitleText
-                                // paints (D4: label is already a binding).
+                                // nri-0012 task 3.2: the row binds the field's
+                                // name to the very model label its own
+                                // TitleText paints (D4: label is a binding).
                                 Accessible.name: modelData.label
                                 onTextChanged: llmSetupVm.setFieldValue(
                                     fieldPage.pageIndex, index, text)
@@ -245,6 +281,17 @@ Rectangle {
                 onClicked: llmSetupVm.goBack()
             }
             Item { Layout.fillWidth: true }
+            // NRI-0016 LS2 (spec «Оконный формат wizard с постоянным выходом
+            // и счётчиком»): the page index and the exit live OUTSIDE the
+            // StackLayout, so every page — including the field-prompt pages —
+            // shows «N из M» and «Закрыть»; the buttons inside the pages only
+            // navigate or explicitly save.
+            Text {
+                objectName: "pageCounterLabel"
+                font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
+                color: root.mutedColor
+                text: (llmSetupVm.currentPage + 1) + " из " + llmSetupVm.pageCount
+            }
             ThemeButton {
                 objectName: "nextButton"
                 text: "Далее"
@@ -259,6 +306,15 @@ Rectangle {
                 visible: llmSetupVm.saveVisible
                 enabled: llmSetupVm.saveEnabled
                 onClicked: llmSetupVm.requestSave()
+            }
+            ThemeButton {
+                objectName: "setupCloseButton"
+                text: "Закрыть"
+                // D4's running-save rule stays: while the async save is in
+                // flight the window cannot leave (the same gate Esc and the
+                // native close meet) — no silently inert button.
+                enabled: !llmSetupVm.saving
+                onClicked: llmSetupVm.requestClose()
             }
         }
     }

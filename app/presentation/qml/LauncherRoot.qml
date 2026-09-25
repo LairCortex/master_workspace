@@ -26,8 +26,9 @@
 //
 // Embedding contract for the wrapper (group 6):
 //   * `currentTheme` — set to the runtime theme name ("dark"/"light") and
-//     re-synced on every theme change; it only labels the toggle with the
-//     theme it would switch *to*.
+//     re-synced on every theme change; it drives the theme checkbox state
+//     (D2/NRI-0016: the caption is fixed «Светлая тема», the tick carries
+//     the state — same semantics as the main-window menu item).
 //   * `themeToggleRequested()` — connect and call ThemeRuntime.toggle().
 //   * Qt 6's Basic Button exposes no «default» style property — the island
 //     marks the default action through `root.defaultButton`; the dialog
@@ -146,10 +147,16 @@ Rectangle {
                 text: "Импорт"
                 onClicked: vm.importRequested("")
             }
-            ThemeButton {
+            ThemeCheckBox {
                 objectName: "themeToggleButton"
-                // Label names the theme the toggle would switch TO.
-                text: root.currentTheme === "light" ? "Тёмная тема" : "Светлая тема"
+                // D2 (NRI-0016, spec ui-theme): one semantics everywhere —
+                // a checkbox with the FIXED caption and the tick as state,
+                // mirroring the menu item. The click only requests the
+                // toggle; ``checked`` rides ``currentTheme`` (Qt ≥6.3 keeps
+                // the binding across the user click), so the text can never
+                // mean two things.
+                text: "Светлая тема"
+                checked: root.currentTheme === "light"
                 onClicked: root.themeToggleRequested()
             }
 

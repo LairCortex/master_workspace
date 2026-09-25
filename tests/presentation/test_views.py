@@ -215,12 +215,15 @@ class TestMainWindow:
 
     # -- log file toggle -----------------------------------------------------
 
-    def test_log_toggle_on_enables_file_handler(self, qtbot, mocker, tmp_path):
+    def test_log_toggle_on_enables_file_handler(self, qtbot, monkeypatch, tmp_path):
         import logging as pylogging
 
         from app.presentation.views import main_window as mw
 
-        mocker.patch.object(mw, "_app_root", return_value=tmp_path)
+        # NRI-0016 AB5: the file lives in the app's config home (paths.py),
+        # never next to the checkout/exe.
+        home = tmp_path / ".nri_manager"  # absent — the toggle must create it
+        monkeypatch.setattr(mw, "NRI_MANAGER_DIR", home)
         w = MainWindow(
             timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
         )
@@ -229,18 +232,18 @@ class TestMainWindow:
         before = set(root.handlers)
         w.log_action.setChecked(True)
         assert w._file_handler is not None
-        assert (tmp_path / "nri_manager.log").exists()
+        assert (home / "nri_manager.log").exists()
         assert set(root.handlers) - before == {w._file_handler}
         # Clean up: disable again so the test does not pollute root logger.
         w.log_action.setChecked(False)
         assert w._file_handler is None
 
-    def test_log_toggle_off_removes_file_handler(self, qtbot, mocker, tmp_path):
+    def test_log_toggle_off_removes_file_handler(self, qtbot, monkeypatch, tmp_path):
         import logging as pylogging
 
         from app.presentation.views import main_window as mw
 
-        mocker.patch.object(mw, "_app_root", return_value=tmp_path)
+        monkeypatch.setattr(mw, "NRI_MANAGER_DIR", tmp_path)
         w = MainWindow(
             timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
         )
@@ -249,9 +252,113 @@ class TestMainWindow:
         w.log_action.setChecked(True)
         handler = w._file_handler
         assert handler is not None
+        stream = handler.stream
         w.log_action.setChecked(False)
         assert w._file_handler is None
         assert handler not in root.handlers
+        # Spec «Выключение снимает дескриптор»: the file stream is closed and
+        # the handler dropped it (close() releases the descriptor).
+        assert stream.closed and handler.stream is None
+
+    def test_log_handler_inherits_the_root_threshold(self, qtbot, monkeypatch, tmp_path):
+        """AB6: the handler promises exactly what the app-wide filter passes.
+
+        No ``setLevel`` on the handler (NOTSET — it inherits the root), the
+        spec-sized 2 MB × 3 rotation, and toggling does not move the
+        application threshold itself.
+        """
+        import logging as pylogging
+
+        from app.presentation.views import main_window as mw
+
+        monkeypatch.setattr(mw, "NRI_MANAGER_DIR", tmp_path)
+        root = pylogging.getLogger()
+        before = root.level
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        w.log_action.setChecked(True)
+        try:
+            assert w._file_handler.level == pylogging.NOTSET
+            assert w._file_handler.maxBytes == 2_000_000
+            assert w._file_handler.backupCount == 3
+        finally:
+            w.log_action.setChecked(False)
+        assert root.level == before
+
+    def test_log_file_survives_retoggle_appends_and_holds_no_secrets(
+        self, qtbot, monkeypatch, tmp_path, caplog,
+    ):
+        """on → writes to the tmp home, off → releases the stream and stops
+        writing, re-on → appends (no truncate); the written file carries no
+        secret-shaped strings (audit regression), while the Journal's own
+        enable/disable records stay in it."""
+        import logging as pylogging
+
+        from app.presentation.views import main_window as mw
+
+        home = tmp_path / "home"
+        monkeypatch.setattr(mw, "NRI_MANAGER_DIR", home)
+        log_path = home / "nri_manager.log"
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        with caplog.at_level(pylogging.DEBUG):
+            w.log_action.setChecked(True)
+            pylogging.getLogger("qa.log").info("первая строка")
+            first_handler = w._file_handler
+            first_stream = first_handler.stream
+            w.log_action.setChecked(False)
+            assert first_stream.closed and first_handler.stream is None
+            pylogging.getLogger("qa.log").warning("записано при выключенном журнале")
+            w.log_action.setChecked(True)
+            pylogging.getLogger("qa.log").info("вторая строка")
+            w.log_action.setChecked(False)
+        text = log_path.read_text(encoding="utf-8")
+        assert "первая строка" in text and "вторая строка" in text
+        assert text.index("первая строка") < text.index("вторая строка")
+        assert "Логирование в файл включено" in text
+        assert "Логирование в файл выключено" in text
+        # The switch-off already closed the stream and removed itself from
+        # root — the record emitted while off never reaches the file.
+        assert "записано при выключенном журнале" not in text
+        for secret in ("api_key", "Bearer ", "sk-"):
+            assert secret not in text
+
+    def test_log_rotation_keeps_at_most_three_archives(
+        self, qtbot, monkeypatch, tmp_path,
+    ):
+        """Spec «Ротация»: over the threshold the old file moves to an
+        archive copy and writing restarts; no more than three archives."""
+        import logging as pylogging
+
+        from app.presentation.views import main_window as mw
+
+        monkeypatch.setattr(mw, "NRI_MANAGER_DIR", tmp_path)
+        monkeypatch.setattr(mw, "_LOG_MAX_BYTES", 400)  # shrunk pinch for the test
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        w.log_action.setChecked(True)
+        try:
+            for i in range(60):
+                pylogging.getLogger("qa.rotate").warning("R%02d-%s", i, "x" * 60)
+        finally:
+            w.log_action.setChecked(False)
+        names = {p.name for p in tmp_path.iterdir()}
+        assert {
+            "nri_manager.log", "nri_manager.log.1",
+            "nri_manager.log.2", "nri_manager.log.3",
+        } <= names
+        assert "nri_manager.log.4" not in names
+        # The live file restarted fresh after the roll: the newest record is
+        # in it, the oldest was shifted into the oldest surviving archive.
+        live = (tmp_path / "nri_manager.log").read_text(encoding="utf-8")
+        assert "R59-" in live
+        assert "R00-" not in live
 
     # -- docs dialogs ---------------------------------------------------------
 
@@ -425,8 +532,9 @@ class TestMainWindowLogToggleCleanup:
 # ``*Requested`` signals with native popups. The dialog is driven through its
 # view model and root object — the addresses QML and the app actually use.
 
-ISLAND_TOGGLE_OFFER_LIGHT = "Светлая тема"   # app default is dark
-ISLAND_TOGGLE_OFFER_DARK = "Тёмная тема"
+# D2 (NRI-0016): the island theme switch is a checkbox — the caption never
+# depends on the theme, the tick does (same semantics as the menu item).
+ISLAND_TOGGLE_CAPTION = "Светлая тема"
 
 
 class TestGameLauncherDialog:
@@ -858,43 +966,63 @@ class TestGameLauncherDialog:
         w.vm.importRequested.emit("")
         crit.assert_called_once()
 
-    # -- theme toggle (label = the theme it would switch to) -------------------
+    # -- theme toggle (checkbox: fixed caption, tick = state) -------------------
 
-    def test_theme_toggle_started_label_and_sync_after_other_change(self, qtbot, runtime):
-        from tests.presentation.qml_helpers import island_toggle_text
+    def test_theme_toggle_started_state_and_sync_after_other_change(self, qtbot, runtime):
+        from tests.presentation.qml_helpers import (
+            island_toggle_checked,
+            island_toggle_text,
+        )
 
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        # App default is dark → the toggle offers light, seeded from the runtime.
+        # App default is dark → unchecked tick, seeded from the runtime.
         assert w._root.property("currentTheme") == "dark"
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_LIGHT
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_checked(w.quick) is False
 
         # Someone else (e.g. the main window) changes the theme → the wrapper
-        # re-syncs the island label through the runtime listener.
+        # re-syncs the checkbox tick through the runtime listener; the caption
+        # (D2) never depends on the theme.
         assert runtime.toggle() is True  # dark → light
         assert w._root.property("currentTheme") == "light"
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_DARK
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_checked(w.quick) is True
 
     def test_island_toggle_click_switches_theme(self, qtbot, runtime):
-        from tests.presentation.qml_helpers import island_toggle_text
+        from tests.presentation.qml_helpers import (
+            click_item,
+            island_toggle_checked,
+            island_toggle_text,
+        )
 
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w._root.themeToggleRequested.emit()  # the island's toggle drives this
+        w.show()
+        # A genuine press on the checkbox (not a signal emit): the island's
+        # click handler drives the same set_theme contour.
+        click_item(w.quick, find_item(w.quick, "themeToggleButton"))
         assert runtime.theme == "light"
-        assert runtime.prefs.config_file.exists()
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_DARK
+        assert runtime.prefs.config_file.exists()   # ui.json written as before
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
+        # The tick follows the state AFTER the user action — the checked
+        # binding survives the click (Qt ≥6.3 restore), text never flipped.
+        assert island_toggle_checked(w.quick) is True
 
     def test_theme_toggle_is_noop_with_broken_tokens(self, qtbot, broken_runtime):
-        from tests.presentation.qml_helpers import island_toggle_text
+        from tests.presentation.qml_helpers import (
+            island_toggle_checked,
+            island_toggle_text,
+        )
 
         w = GameLauncherDialog(theme=broken_runtime)
         qtbot.addWidget(w)
         w._root.themeToggleRequested.emit()
         assert broken_runtime.theme == "dark"
         assert not broken_runtime.prefs.config_file.exists()
-        # Off-skin: palette empty, but the label contract is intact.
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_OFFER_LIGHT
+        # Off-skin: palette empty, but the checkbox contract is intact.
+        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_checked(w.quick) is False
 
     # -- one engine for all islands --------------------------------------------
 

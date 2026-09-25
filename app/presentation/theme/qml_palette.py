@@ -90,8 +90,18 @@ class QmlPalette(QObject):
         super().__init__(parent)
         self._runtime = runtime
         self._tokens: dict[str, str] = self._compile()
-        # Weak listener held by the runtime: dies with this palette.
-        runtime.add_listener(self._on_theme_change)
+        # Weak listener held by the runtime — but weakness alone is NOT the
+        # teardown (NRI-0016 DEFECT-1, spec app-logging «Слушатели состояния
+        # не переживают окно»): the palette's C++ side dies with the island's
+        # context/widget while the Python wrapper keeps living (held by the
+        # window or the JS context property) — the weak method then still
+        # resolves and the runtime calls emit() on a deleted signal source,
+        # raising RuntimeError on every later theme change. Neither the GC
+        # timing nor destroyed-signal delivery can be trusted here (measured
+        # on PySide 6.10: no Python delivery during a parent teardown), so
+        # the teardown calls :meth:`detach` explicitly — the 5.2
+        # remove_listener mechanism, from the paths that close the window.
+        self._subscription = runtime.add_listener(self._on_theme_change)
 
     # ---- QML surface ----
 
@@ -122,6 +132,21 @@ class QmlPalette(QObject):
         palette["color.scrim"] = SCRIM_COLOR
         palette["style.mention"] = mention_style(tokens, theme)
         return palette
+
+    # ---- teardown ----
+
+    def detach(self) -> None:
+        """Drop the theme subscription permanently (DEFECT-1, spec app-logging
+        «Слушатели состояния не переживают окно»).
+
+        Called by a window on the way out: the palette may then be destroyed
+        with its QML context or widget as far as C++ is concerned, while the
+        Python wrapper still lives — the runtime must no longer call into it,
+        or every later theme change raises on the dead signal source.
+        Idempotent (the handle goes away with the first call).
+        """
+        self._runtime.remove_listener(self._subscription)
+        self._subscription = None
 
     def _on_theme_change(self) -> None:
         """Rebuild from the runtime state; emit only when the content changed."""

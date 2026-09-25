@@ -136,7 +136,18 @@ class IslandDialogMixin:
     def _release_island(self) -> None:
         """Unbind the island; facades with per-window resources override
         their cleanup and chain to this (image maps the scene may still
-        reference are cleared before the island dies)."""
+        reference are cleared before the island dies).
+
+        The window-owned palette is unsubscribed from the theme runtime here
+        (DEFECT-1, spec app-logging «Слушатели состояния не переживают окно»):
+        once released, this island never paints again, and its palette's C++
+        side is on the way out with the context — the wrapper surviving it
+        must not stay a live theme listener (weakness and destroyed-signals
+        are both unreliable; see qml_palette for the measurements).
+        """
+        palette = getattr(self, "_palette", None)
+        if palette is not None:
+            palette.detach()
         release_island(getattr(self, self.island_attribute, None))
 
     def _schedule_island_release(self) -> None:

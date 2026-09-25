@@ -890,7 +890,9 @@ async def test_llm_setup_entry_is_a_visible_non_modal_titled_window(app, wait_fo
     assert wizard.windowModality() == Qt.WindowModality.NonModal
     assert not wizard.isModal()
     assert wizard.isVisible()
-    assert wizard.windowTitle()  # «Настройка AI-ассистента (LLM)» in the title bar
+    # NRI-0016 4.2: the visible title is the entry text (format defined by the
+    # point of entry, spec qml-shell «Формат диалогов задан точкой входа»).
+    assert wizard.windowTitle() == "Настройка LLM…"
     assert window.isEnabled()  # the rest of the app stays alive
 
     assert application._window_registry.get(LLM_SETUP_KEY) is wizard
@@ -933,3 +935,42 @@ async def test_llm_setup_second_entry_reuses_the_single_window(app, wait_for, mo
     await wait_for(lambda: len(created) == 2)
     assert created[1] is not wizard
     created[1].close()
+
+
+async def test_close_button_discards_edit_without_confirmation_or_write(
+    app, tmp_llm_config, wait_for, message_boxes
+):
+    """NRI-0016 4.2 (spec llm-configuration, scenario «Закрыть не трогает
+    сохранённое»): an edited endpoint plus the footer «Закрыть» on the FIRST
+    page — the window rejects with no confirmation dialog, the registry key
+    releases, and the connection file is byte-identical with the same mtime
+    (navigation and closing never write; saving stays an explicit action)."""
+    from app.infrastructure.llm.config import LlmConfigManager
+    from app.presentation.window_registry import LLM_SETUP_KEY
+
+    application, window = app
+    LlmConfigManager(tmp_llm_config).save(LlmConfig(base_url=ENDPOINT, model=MODEL))
+    before_bytes = tmp_llm_config.read_bytes()
+    before_mtime = tmp_llm_config.stat().st_mtime_ns
+
+    wizard = _open_wizard(window)
+    # Footers exist already here, on page one: «N из M» and «Закрыть».
+    assert find_item(wizard.quick, "pageCounterLabel").property("text") == (
+        f"1 из {wizard.page_count}"
+    )
+    _type(wizard, "endpointField", "http://not-to-be-saved.example/v1")
+
+    _click(wizard, "setupCloseButton")
+    await wait_for(lambda: not wizard.isVisible())
+
+    assert wizard.result() == QDialog.DialogCode.Rejected
+    assert application._window_registry.get(LLM_SETUP_KEY) is None
+    # No confirmation box stood before the exit…
+    assert not message_boxes
+    # …the saved connection survived byte-for-byte, file untouched…
+    assert tmp_llm_config.read_bytes() == before_bytes
+    assert tmp_llm_config.stat().st_mtime_ns == before_mtime
+    assert LlmConfigManager(tmp_llm_config).load().base_url == ENDPOINT
+    # …and the discarded island edit propagated to neither the session VM
+    # nor the wizard's own re-open state.
+    assert application._llm_vm.config.base_url != "http://not-to-be-saved.example/v1"

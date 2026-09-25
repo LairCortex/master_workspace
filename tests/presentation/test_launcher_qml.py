@@ -294,17 +294,21 @@ def test_island_reads_only_palette_and_vm_from_context(qtbot, catalog, palette):
     assert row_texts(widget) == [f"Проверка ({stamp})"]
 
 
-def test_theme_toggle_label_shows_the_target_theme(qtbot, vm, palette):
+def test_theme_toggle_is_a_fixed_caption_checkbox(qtbot, vm, palette):
+    # D2 (NRI-0016, spec ui-theme): the toggle is a checkbox with FIXED
+    # «Светлая тема» caption; the tick is the state (menu-item semantics).
     widget = load_island(qtbot, vm=vm, palette=palette)
     toggle = find_item(widget, "themeToggleButton")
-    # App defaults to dark → the toggle offers the light theme.
+    # App defaults to dark → unchecked, caption identical in both states.
     assert widget.rootObject().property("currentTheme") == "dark"
     assert toggle.property("text") == "Светлая тема"
+    assert toggle.property("checked") is False
 
     # The embedding syncs the current theme whenever anything changes it;
-    # the island re-labels the toggle with the new *target* theme.
+    # the checkbox follows with its tick — the caption never flips.
     widget.rootObject().setProperty("currentTheme", "light")
-    assert toggle.property("text") == "Тёмная тема"
+    assert toggle.property("text") == "Светлая тема"
+    assert toggle.property("checked") is True
 
 
 # ── 5.2: e2e binding, selection, open signal on the real VM ──────────────────

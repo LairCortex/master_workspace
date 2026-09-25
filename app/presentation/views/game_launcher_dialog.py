@@ -82,7 +82,19 @@ class GameLauncherDialog(IslandDialogMixin, QDialog):
 
         self._wire_island()
         self._sync_theme()
-        theme.add_listener(self._sync_theme)
+        # D1 (NRI-0016): the dialog C++ object survives the close under its
+        # parent while the island under it is already released — the weak
+        # subscription alone would keep firing ``_sync_theme`` into half-dead
+        # content (the swallowed RuntimeError of the audit). Unsubscribing on
+        # ``finished`` covers every way this window leaves the screen
+        # (accept/reject/close, first-run exec and the switch-game window).
+        self._theme_listener = theme.add_listener(self._sync_theme)
+        self.finished.connect(self._drop_theme_listener)
+
+    def _drop_theme_listener(self) -> None:
+        """Unsubscribe from the process-wide runtime when the window closes."""
+        self._theme.remove_listener(self._theme_listener)
+        self._theme_listener = None
 
     # ---- island -> controller wiring ----
 
@@ -94,8 +106,8 @@ class GameLauncherDialog(IslandDialogMixin, QDialog):
         self._root.themeToggleRequested.connect(self._on_theme_toggle)
 
     def _sync_theme(self) -> None:
-        """Seed the toggle's target-theme label from the runtime and re-sync
-        on every change — whoever made it (this dialog, the main window)."""
+        """Seed the theme checkbox state from the runtime and re-sync on
+        every change — whoever made it (this dialog, the main window)."""
         if self._root is not None:
             self._root.setProperty("currentTheme", self._theme.theme)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from aiohttp.test_utils import TestClient, TestServer
+from PySide6.QtWidgets import QCheckBox
 
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.table_host.http import create_table_host_app
@@ -35,10 +36,11 @@ async def test_e2e_start_join_field_persists_then_stop(
     window.table_host_action.trigger()
     await wait_for(lambda: application._table_host_panel is not None)
     panel = application._table_host_panel
-    from PySide6.QtCore import Qt
     panel.set_instances([(inst_id, "Лист")])
+    # NRI-0016 (TB3-ремонт): seats are ticked through the rows' real QCheckBoxes.
     for i in range(panel.seat_list.count()):
-        panel.seat_list.item(i).setCheckState(Qt.CheckState.Checked)
+        row_widget = panel.seat_list.itemWidget(panel.seat_list.item(i))
+        row_widget.findChild(QCheckBox).setChecked(True)
     await application._start_table()
     host = application._table_host
     assert host.is_running

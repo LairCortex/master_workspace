@@ -44,7 +44,10 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
         theme=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Настройка AI-ассистента (LLM)")
+        # NRI-0016 4.2 (spec llm-configuration, design D1 of nri-0014): the
+        # title is the entry text «Настройка LLM…» — the same phrase the menu
+        # item and the error boxes use, so the window is unambiguous.
+        self.setWindowTitle("Настройка LLM…")
         self.setMinimumSize(620, 480)
         self._theme = theme if theme is not None else get_default_theme()
         self._llm_vm = llm_vm
@@ -72,6 +75,10 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
 
         self.vm.checkRequested.connect(lambda: asyncio.ensure_future(self._on_check()))
         self.vm.saveRequested.connect(self._on_save)
+        # NRI-0016 LS2: the persistent footer «Закрыть» — a plain reject, no
+        # confirmation and no write; the only guard is the running-save one
+        # below, the same gate Esc and the native close already meet.
+        self.vm.closeRequested.connect(self.reject)
 
     # ---- closing is blocked while the async save runs (spec D4) ----
 

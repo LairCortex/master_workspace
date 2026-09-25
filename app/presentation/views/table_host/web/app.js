@@ -47,7 +47,7 @@
 
   async function loadSeats() {
     var pin = pinInput.value.trim();
-    if (pin.length !== 4) {
+    if (pin.length !== 6) {
       seatsEl.innerHTML = "";
       return;
     }

@@ -21,9 +21,9 @@ NOT_CONFIGURED_MESSAGE = (
     "(укажите endpoint, модель и при необходимости ключ API)."
 )
 NO_WORLD_PROMPT_MESSAGE = (
-    "Не задан промт мира.\n"
+    "Не задан промпт мира.\n"
     "Перейдите в меню LLM → Настройка LLM… и опишите ваш мир."
-)
+)  # NRI-0016 LS3: the one dictionary root «промпт» (design V5)
 
 
 def ai_state_is(obj: QObject, state: str) -> bool:

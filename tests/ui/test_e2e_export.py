@@ -61,3 +61,32 @@ async def test_export_edge_cases(app, file_dialogs, message_boxes, monkeypatch, 
     window.export_action.trigger()
     application._db_path = original
     assert not (tmp_path / "never.nri").exists()
+
+
+async def test_export_panel_opens_at_the_game_directory(
+    app, message_boxes, monkeypatch, tmp_path,
+):
+    # A4 (NRI-0016): the save panel is configured with the CURRENT game's
+    # database directory and the usual suggested name — no manual move to
+    # the games area, and the NRI-0014 non-native panel option stays put.
+    # Intercepted at the class-static seam: the real panel never opens.
+    from pathlib import Path
+    from PySide6.QtWidgets import QFileDialog
+
+    _, window = app
+    seen: dict = {}
+
+    def spy_save(parent, caption, directory, selected_filter, **kwargs):
+        seen["directory"] = directory
+        seen["options"] = kwargs.get("options")
+        return ("", "")  # cancelled: the handler stops before the packager
+
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(spy_save))
+    window.export_action.trigger()
+
+    target = Path(seen["directory"])
+    # The app fixture boots the game at tmp_path/"game"/game.db.
+    assert target.parent == tmp_path / "game"
+    assert target.name == "game.nri"
+    assert seen["options"] == QFileDialog.Option.DontUseNativeDialog
+    assert message_boxes == []

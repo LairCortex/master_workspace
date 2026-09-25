@@ -76,9 +76,11 @@ class Occupancy:
 
 
 def _new_pin(previous: str | None) -> str:
-    pin = f"{secrets.randbelow(10000):04d}"
+    # TB6 (NRI-0016): six digits — the web client's maxlength/check (see
+    # table_host/web) are pinned to this length in tests/ui.
+    pin = f"{secrets.randbelow(1_000_000):06d}"
     while pin == previous:
-        pin = f"{secrets.randbelow(10000):04d}"
+        pin = f"{secrets.randbelow(1_000_000):06d}"
     return pin
 
 

@@ -205,3 +205,39 @@ def test_file_corruption_empties_the_palette_on_next_notification(runtime, token
     for notify in runtime.subscribers:
         notify()
     assert len(emits) == 1  # afterwards: empty stays empty, «изменений нет»
+
+
+# ── DEFECT-1 (NRI-0016): the palette unsubscribes before it can die ──────────
+
+
+def test_palette_detach_drops_subscription_and_a_later_death_is_silent(runtime, caplog):
+    """Spec app-logging «Слушатели состояния не переживают окно» (DEFECT-1).
+
+    The island palettes die with their QML context while the Python wrapper
+    lives on elsewhere; the runtime's weak method then kept resolving into a
+    deleted C++ signal source, so every later theme change logged a
+    RuntimeError pair per closed window. PySide 6.10 delivers no
+    destroyed-signal to Python during such a teardown (measured), and GC
+    timing is not a contract — leaving only the explicit detach(), the 5.2
+    remove_listener mechanism, which the island release calls on close.
+    """
+    import logging
+
+    import shiboken6
+    from PySide6.QtCore import QObject
+
+    owner = QObject()
+    palette = QmlPalette(runtime, parent=owner)
+    assert len(runtime.subscribers) == 1
+
+    palette.detach()  # what the window's island release calls on close
+    assert runtime.subscribers == ()
+
+    palette.detach()  # idempotent: the handle went with the first call
+    shiboken6.delete(owner)  # C++ teardown arrives later (context death)
+    assert not shiboken6.isValid(palette)
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG)
+    assert runtime.set_theme("light") is True
+    assert caplog.records == []

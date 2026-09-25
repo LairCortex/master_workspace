@@ -58,11 +58,19 @@ def island_row_texts(widget, row_object_name: str, text_object_name: str) -> lis
 def island_toggle_text(widget) -> str:
     """The current label of the island's theme toggle (its ``text`` property).
 
+    Since NRI-0016 (D2) the caption is fixed («Светлая тема»); the state is
+    the checkbox's ``checked`` — see :func:`island_toggle_checked`.
+
     QML ``Text``/``Button`` expose the bindable ``text`` property directly, so
     the label is readable without a render pass (the property binding is
     evaluated as soon as its inputs change).
     """
     return find_item(widget, "themeToggleButton").property("text")
+
+
+def island_toggle_checked(widget) -> bool:
+    """The theme checkbox's tick state (``checked == (theme == light)``)."""
+    return bool(find_item(widget, "themeToggleButton").property("checked"))
 
 
 def click_item(widget, item: QQuickItem, *, double: bool = False) -> None:

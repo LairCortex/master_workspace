@@ -43,6 +43,8 @@ def test_root_object_names_cover_every_control(dialog):
     for expected in (
         "endpointField", "modelField", "keyField", "checkButton", "checkStatusText",
         "worldPromptArea", "warningsPage", "backButton", "nextButton", "saveButton",
+        # nri-0016 4.2: the persistent footer pair (page counter + «Закрыть»).
+        "pageCounterLabel", "setupCloseButton",
     ):
         assert expected in names, expected
     assert root.property("defaultButton").objectName() == "saveButton"

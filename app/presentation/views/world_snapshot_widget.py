@@ -69,6 +69,14 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
     def island_source(self) -> str:
         return ROOT_QML
 
+    def _release_island(self) -> None:
+        # DEFECT-1 (NRI-0016): the VM is parented into the island context,
+        # so it leaves with the island while its wrapper lives here — the
+        # theme subscription must not outlive the closed panel (spec
+        # app-logging «Слушатели состояния не переживают окно»).
+        self.vm.detach_theme_listener()
+        super()._release_island()
+
     def load_island_scene(self, quick) -> None:
         # The bridge and the VM must be in the context BEFORE the scene
         # compiles (hand-written order preserved): both are raw context

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-import sys
+import logging.handlers
 from pathlib import Path
 
 from PySide6.QtCore import Signal
@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QMenuBar, QSplitter, QVBoxLayout, QWidget,
 )
 
+from app import __version__
+from app.infrastructure.paths import NRI_MANAGER_DIR
 from app.presentation.bundle_resources import bundle_resource_path
 from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
@@ -28,12 +30,10 @@ log = logging.getLogger(__name__)
 
 
 _LOG_FILENAME = "nri_manager.log"
-
-
-def _app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent.parent.parent
+# AB5 (NRI-0016): the log lives in the one configuration home (paths.py),
+# not next to the checkout/exe; ~2 MB × 3 archives bound its growth.
+_LOG_MAX_BYTES = 2_000_000
+_LOG_BACKUP_COUNT = 3
 
 
 def _docs_dir() -> Path:
@@ -147,7 +147,18 @@ class MainWindow(QMainWindow):
         self.log_action.toggled.connect(self._on_log_toggle)
         about_menu.addAction(self.log_action)
 
-        self._file_handler: logging.FileHandler | None = None
+        # AB7 (NRI-0016, design V7): the one live place where the user reads
+        # the version — a disabled display line, never Changelog-parsed and
+        # never a literal; the number comes from app.__version__, which the
+        # consistency test pins to pyproject.
+        self.version_action = QAction(f"Версия {__version__}", self)
+        self.version_action.setEnabled(False)
+        about_menu.addAction(self.version_action)
+
+        self._file_handler: logging.handlers.RotatingFileHandler | None = None
+        # D1 (NRI-0016): the runtime listener's handle, dropped in closeEvent
+        # — a closed window must unsubscribe explicitly, not via the collector.
+        self._theme_listener = None
 
         menu_bar.setObjectName("themeMenu")  # test identifier, not a style hook (W2a)
         # NRI-0014 live audit (L2): Qt's macOS menu-role heuristic reads the
@@ -213,7 +224,7 @@ class MainWindow(QMainWindow):
             attach_theme(self.menuBar(), self._theme)
             # The check item mirrors the current theme even when some other
             # window switched it (e.g. the launcher on top of this window).
-            self._theme.add_listener(self._sync_theme_action)
+            self._theme_listener = self._theme.add_listener(self._sync_theme_action)
             self._theme.apply()
 
     def set_game_name(self, name: str) -> None:
@@ -222,16 +233,44 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(self._base_title)
 
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
+        # D1 (NRI-0016): a game switch closes and replaces this window while
+        # the runtime outlives it — the theme subscription is released here
+        # by handle instead of leaning on the collector (spec app-logging
+        # «Слушатели состояния не переживают окно»).
+        if self._theme is not None:
+            self._theme.remove_listener(self._theme_listener)
+        self._theme_listener = None
+        # DEFECT-1 (NRI-0016): the island panels are child widgets, so no
+        # closeEvent of their own ever reaches them — release them from the
+        # window: each island unbinds its scene and drops its theme
+        # subscriptions (palette, panel view models) synchronously, before
+        # their C++ sides leave with this window (idempotent on re-close).
+        for island in (
+            self.search_bar,
+            self.timeline_widget,
+            self.detail_panel,
+            self.world_snapshot,
+        ):
+            island.release_island()
+        super().closeEvent(event)
+
     # ------ О приложении ------
 
     def _on_log_toggle(self, enabled: bool) -> None:
         root_logger = logging.getLogger()
         if enabled:
-            log_path = _app_root() / _LOG_FILENAME
-            self._file_handler = logging.FileHandler(
-                str(log_path), encoding="utf-8",
+            # AB5: the file lives under the app's config home, created on
+            # demand; AB6: no handler.setLevel — the file inherits the
+            # root-wide threshold and promises exactly what it will get.
+            log_path = NRI_MANAGER_DIR / _LOG_FILENAME
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._file_handler = logging.handlers.RotatingFileHandler(
+                str(log_path),
+                maxBytes=_LOG_MAX_BYTES,
+                backupCount=_LOG_BACKUP_COUNT,
+                encoding="utf-8",
             )
-            self._file_handler.setLevel(logging.DEBUG)
             self._file_handler.setFormatter(
                 logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
             )

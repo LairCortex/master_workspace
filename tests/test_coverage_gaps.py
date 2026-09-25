@@ -132,15 +132,14 @@ def test_search_bar_hides_empty_short_query(qapp):
 def test_main_window_path_helpers(tmp_path, monkeypatch):
     import app.presentation.views.main_window as mw
 
-    # Dev mode
-    assert mw._app_root() == Path(__file__).resolve().parent.parent
+    # Dev mode (NRI-0016 removed the log's _app_root(): only the docs
+    # resolver is left to distinguish dev from a frozen bundle).
     assert mw._docs_dir().is_dir()
 
     # Frozen: executable inside a bundle that ships docs
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     exe = tmp_path / "app" / "nri"
     monkeypatch.setattr(sys, "executable", str(exe), raising=False)
-    assert mw._app_root() == tmp_path / "app"
     (tmp_path / "app" / "_internal" / "docs").mkdir(parents=True)
     assert mw._docs_dir() == tmp_path / "app" / "_internal" / "docs"
 

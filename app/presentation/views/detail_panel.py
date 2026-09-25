@@ -54,6 +54,14 @@ class DetailPanel(IslandDialogMixin, QWidget):
         self.vm.entityActivated.connect(self.entity_clicked)
         self.vm.imageRequested.connect(self._open_image_viewer)
 
+    def _release_island(self) -> None:
+        # DEFECT-1 (NRI-0016): the VM is parented into the island context,
+        # so its C++ side leaves with the island while the wrapper lives on
+        # this facade — unsubscribe it before that window opens (the release
+        # runs when this panel's window closes, see the mixin contract).
+        self.vm.detach_theme_listener()
+        super()._release_island()
+
     def island_source(self) -> str:
         return ROOT_QML
 
