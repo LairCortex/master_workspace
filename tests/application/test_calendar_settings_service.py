@@ -1214,7 +1214,7 @@ class TestRecordNames:
 class TestFirstRunWizardStatus:
     """The wizard-seen decision of «Мастер первого запуска» as two service
     steps (task 6.3): the startup predicate and the modal close handling.
-    These pin the exact behavior ``Application._maybe_show_calendar_wizard``
+    These pin the exact behavior the boot decision in ``Application.start()``
     used to inline."""
 
     async def test_status_is_open_only_for_the_seeded_never_shown_flag(

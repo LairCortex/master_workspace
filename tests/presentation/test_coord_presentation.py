@@ -537,6 +537,11 @@ class TestDialogPopupCoordinatePrefill:
         # The snapshot's own coordinate reaches the grid un-substituted.
         assert opened == [(IntercalaryDay(44, 0), True)]
         assert widget.vm._date == IntercalaryDay(44, 0)
+        # P3 (NRI-0015): the popup is NOT a widget child of the panel — under
+        # the chrome-attached central widget the generic QPushButton chrome
+        # rule would leak through the stylesheet parent chain and accent-fill
+        # every cell; only the app-wide popup sheet may skin it.
+        assert widget.date_popup.parent() is None
 
 
 # ── 5.2: the mixed-era window still rides the single chronological key ─────

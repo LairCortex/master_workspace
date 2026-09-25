@@ -334,7 +334,10 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.vm.musicOpenRequested.connect(self._open_music_url)
         self.vm.characterSheetRequested.connect(self.open_character_sheet_requested)
 
-        self.date_popup = ThemeDatePopup(self)
+        # P3 (NRI-0015): parent-less — under a chrome-attached ancestor the
+        # generic QPushButton chrome rule would accent-fill every day cell
+        # through the stylesheet parent chain; the popup sheet is its only skin.
+        self.date_popup = ThemeDatePopup()
         self.date_popup.date_selected.connect(self._set_selected_date)
 
         self._related_sections: dict[str, _SectionProxy] = {}

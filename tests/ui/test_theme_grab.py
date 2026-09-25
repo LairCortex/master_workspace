@@ -282,3 +282,57 @@ def test_editor_chrome_is_tokens_and_canvas_keeps_its_own_colors(qtbot, tmp_path
     m = re.search(r'gutterColor:\s*"(#[0-9a-fA-F]{6})"', qml)
     assert m is not None, "SheetCanvas.qml must carry the gutter constant"
     assert QColor(m.group(1)).isValid()
+
+
+# ── NRI-0015 P3 («Все дни» не пестрит): the «Выбор даты» popover paints no
+# accent fill while the window is empty — the accent belongs to the selected
+# bound alone (spec event-timeline «Панель выбора даты имеет читаемые
+# состояния»). The leak this pins was the chrome-QPushButton accent rule
+# reaching the popup through the stylesheet PARENT chain (a widget-parented
+# top level inherits its ancestors' sheets); the popup stays parent-less, so
+# these are grabs of the plain app-sheet skin, not of exact new colors and
+# not through parented cells.
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_date_window_popup_empty_window_paints_no_accent_fill(qtbot, tmp_path, theme):
+    from datetime import date
+
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+
+    from app.domain.game_calendar import MonthDay
+    from app.presentation.views.timeline_date_popup import _DateWindowPopup
+
+    runtime = make_runtime(tmp_path, theme)
+    app = QApplication.instance()
+    app.setStyleSheet("")
+    runtime.attach_app(app)
+    runtime.apply()
+    try:
+        accent = token_color("color.accent", theme)
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(0, 0, 10, 10), None)
+        image = popup.start_calendar.grab().toImage()
+        assert not _contains_pixel(image, accent), (
+            "пустое окно: обычная ячейка не имеет права на accent-заливку"
+        )
+        # The accent half survives where it belongs: the seeded bound marks
+        # exactly its cell and that fill is the accent token. (A fresh popup:
+        # a second open_at on a live Qt::Popup re-polishes the regenerated
+        # cells lazily, and the offscreen backing store only ever painted the
+        # selection on the first show — the probe pins the FIRST open state
+        # of each shape, which is exactly what the user sees on open.)
+        today = date.today()
+        coord = MonthDay(today.year, today.month, today.day)
+        marked_popup = _DateWindowPopup()
+        qtbot.addWidget(marked_popup)
+        marked_popup.open_at(QRect(0, 0, 10, 10), (coord, coord))
+        marked = marked_popup.start_calendar.grab().toImage()
+        assert _contains_pixel(marked, accent), (
+            "выбранная граница обязана заливать свою клетку accent-токеном"
+        )
+        popup.close()
+        marked_popup.close()
+    finally:
+        app.setStyleSheet("")

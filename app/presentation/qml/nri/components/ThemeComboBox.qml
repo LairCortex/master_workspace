@@ -70,9 +70,18 @@ ComboBox {
     // The arrow is a token-colored triangle: the Canvas paints by assigning
     // the bridge's fg value to the context (a value pass-through — the same
     // way every other slot binds color — never a computation).
+    //
+    // Positioning is the component's own job (nri-0015, E4=B5): a hand-assigned
+    // style slot carries no style bindings with it, and unanchored the arrow
+    // floated at (0,0) — over the frame's top-left corner. These are exactly
+    // the Basic combo's anchors: the row's right end inside the horizontal
+    // padding, vertically centred in the available height — in every theme
+    // the indicator can no longer leave the field's rect.
     Canvas {
         id: themedArrow
         visible: control.skinned  // floats invisible while off-skin
+        x: control.width - width - control.rightPadding
+        y: control.topPadding + (control.availableHeight - height) / 2
         implicitWidth: control.arrowSize
         implicitHeight: control.arrowSize
         onPaint: {

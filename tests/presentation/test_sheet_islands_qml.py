@@ -212,6 +212,20 @@ def test_list_island_loads_with_object_name_contract(qtbot, list_vm, palette):
     assert widget.rootObject().property("defaultButton") is find_item(widget, "openButton")
 
 
+def test_empty_templates_tab_hints_at_the_next_action(qtbot, list_vm, palette):
+    # NRI-0015 (B6, spec character-sheet-editor «Пустые списки вкладок объясняют
+    # себя»): the templates tab in a game without templates shows the muted
+    # hint, and the first row replaces it.
+    widget = load_island(qtbot, SHEET_LIST_QML, list_vm, palette, (420, 520))
+    hint = find_item(widget, "templatesListHint")
+    assert hint.property("visible") is True
+    # same face as the timeline emptiness: the library's muted HintText
+    assert hint.metaObject().className().startswith("HintText")
+
+    list_vm.set_rows(templates=TEMPLATES, instances=[])
+    assert hint.property("visible") is False
+
+
 def test_list_rows_are_addressable_and_taps_land_in_vm(qtbot, list_vm, palette):
     list_vm.set_rows(templates=TEMPLATES, instances=INSTANCES)
     widget = load_island(qtbot, SHEET_LIST_QML, list_vm, palette, (420, 520))

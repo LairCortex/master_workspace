@@ -78,7 +78,10 @@ def test_detail_root_contract_and_minimal_child_context(qtbot):
     context = QQmlEngine.contextForObject(root)
     assert context.contextProperty("detailPanelVm") is panel.vm
     assert context.contextProperty("islandPalette") is panel._palette
-    assert context.contextProperty("tooltipBridge") is None
+    # NRI-0015 (M1): the detail island shows the tab tooltips now, so its
+    # private context carries the island's own tooltip bridge (the
+    # timeline/editor pattern).
+    assert context.contextProperty("tooltipBridge") is panel._tooltip_bridge
 
 
 def test_detail_rows_activate_and_image_click_reach_facade(
@@ -156,6 +159,29 @@ def test_live_retheme_keeps_tab_and_scroll_state(qtbot, tmp_path):
 
     assert root.property("currentTab") == 2
     assert root.property("organizationContentY") == 11.0
+
+
+def test_empty_detail_panel_shows_the_action_hint(qtbot):
+    # NRI-0015 (M4, spec «Пустая панель деталей объясняет себя»): no row
+    # picked -> the muted hint names the next action; an opened event replaces
+    # it, and clearing the selection brings it back.
+    panel = DetailPanel(SimpleNamespace())
+    qtbot.addWidget(panel)
+    panel.resize(500, 500)
+    panel.show()
+    qtbot.wait(20)
+
+    hint = _item(panel.quick.rootObject(), "detailEmptyHint")
+    assert hint.property("visible") is True
+    assert hint.property("text") == "Выберите строку — тут появятся детали"
+    # same face as the timeline hint: the library's muted HintText
+    assert hint.metaObject().className().startswith("HintText")
+
+    panel.show_event(_event(_entity()))
+    assert hint.property("visible") is False
+
+    panel.clear()
+    assert hint.property("visible") is True
 
 
 def test_detail_island_teardown_is_deferred(qtbot):

@@ -845,6 +845,11 @@ async def test_nested_card_cancel_only_stops_nested_generation(
     for btn in child.get_ai_buttons():
         assert not btn.is_generating
         assert btn.isEnabled()
+    # The cancel released the child from the generation lock; under the
+    # NRI-0015 sheet-parity gate the still-unnamed card (cancelled results
+    # never landed) enables «Сохранить» only once the mandatory name exists.
+    assert not child.save_button.isEnabled()
+    child.name_input.setText("Вложенный")
     assert child.save_button.isEnabled()
     await wait_for(lambda: not application._llm_service.any_active(child))
     # Cancellation is not an error: no message box of any kind

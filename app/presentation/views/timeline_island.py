@@ -190,9 +190,11 @@ class TimelineWidget(IslandDialogMixin, QWidget):
         self.event_types_action.setObjectName("eventTypesAction")
 
         # Live window popover for the «Выбор даты» chip: top-level, skinned
-        # through the app-wide popup sheet; parented to the panel for
-        # lifetime only.
-        self.window_popup = _DateWindowPopup(self)
+        # through the app-wide popup sheet; parent-less on purpose (NRI-0015
+        # P3 — a widget parent would leak the chrome QPushButton rule into
+        # every day cell through the stylesheet parent chain), held alive by
+        # this attribute (the tooltip bridge keeps its owner the same way).
+        self.window_popup = _DateWindowPopup()
         self.window_popup.range_applied.connect(self._on_window_range)
 
         # Seed the chrome surface from the ViewModel's knob: the chip caption

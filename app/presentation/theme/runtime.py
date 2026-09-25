@@ -31,7 +31,7 @@ import weakref
 from pathlib import Path
 from typing import Callable, Optional
 
-from app.infrastructure.ui_prefs.config import UiPrefs, UiPrefsManager
+from app.infrastructure.ui_prefs.config import UiPrefsManager
 from app.presentation.theme.compiler import (
     Tokens,
     compile_css_root,
@@ -246,7 +246,11 @@ class ThemeRuntime:
         if self._tokens is None:
             log.warning("Тема не переключена: токены невалидны")
             return False
-        self._prefs.save(UiPrefs(theme=theme))
+        # NRI-0015 (T3): read-modify-write — the same file also carries the
+        # window geometry memory, a theme switch must not wipe those roles.
+        prefs = self._prefs.load()
+        prefs.theme = theme
+        self._prefs.save(prefs)
         self._theme = theme
         self.apply()
         self._notify_listeners()

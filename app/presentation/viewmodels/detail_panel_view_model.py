@@ -175,6 +175,12 @@ class DetailPanelViewModel(QObject):
     # domain entity registry (wave 3, finding A4/C5): the same EVENT relation
     # order as the event dialog, so both views of one event always agree.
     TAB_TITLES = tuple(_ref.label for _ref in _event_refs)
+    # NRI-0015 (T1): the tab strip shows the registry's short caption, while
+    # TAB_TITLES (plural_label) stay the tab's accessibility name + tooltip.
+    TAB_LABELS = tuple(
+        entity_registry.descriptor(_ref.entity_type).tab_label
+        for _ref in _event_refs
+    )
     ENTITY_TYPES = tuple(_ref.entity_type.value for _ref in _event_refs)
     EVENT_ATTRS = tuple(_ref.attr for _ref in _event_refs)
 
@@ -183,6 +189,8 @@ class DetailPanelViewModel(QObject):
         self._runtime = runtime
         self._title = ""
         self._date_text = ""
+        # NRI-0015 (M4): drives the empty-panel hint — no timeline row picked.
+        self._event_shown = False
         self.models = [
             DetailRowsModel(runtime, self) for _ in self.TAB_TITLES
         ]
@@ -191,8 +199,14 @@ class DetailPanelViewModel(QObject):
 
     title = Property(str, lambda self: self._title, notify=headerChanged)
     dateText = Property(str, lambda self: self._date_text, notify=headerChanged)
+    eventSelected = Property(
+        bool, lambda self: self._event_shown, notify=headerChanged
+    )
     tabTitles = Property(
         "QVariant", lambda self: list(self.TAB_TITLES), constant=True
+    )
+    tabLabels = Property(
+        "QVariant", lambda self: list(self.TAB_LABELS), constant=True
     )
     organizations = Property(QObject, lambda self: self.models[0], constant=True)
     characters = Property(QObject, lambda self: self.models[1], constant=True)
@@ -201,6 +215,7 @@ class DetailPanelViewModel(QObject):
 
     def show_event(self, event: Any) -> None:
         self._title = getattr(event, "name", "")
+        self._event_shown = True
         start = format_game_date(
             getattr(event, "start_date", None),
             is_bc=era_flag(getattr(event, "start_bc", False)),
@@ -220,6 +235,7 @@ class DetailPanelViewModel(QObject):
     def clear(self) -> None:
         self._title = ""
         self._date_text = ""
+        self._event_shown = False
         self.headerChanged.emit()
         for model in self.models:
             model.clear()

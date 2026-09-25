@@ -52,6 +52,7 @@ class SheetWindowsManager:
         table_host,
         spawn,
         uow=None,
+        geometries=None,
     ) -> None:
         self._sheet_service = sheet_service
         self._instance_service = instance_service
@@ -65,12 +66,42 @@ class SheetWindowsManager:
         # the editor/fill dialogs so their image ingest finishes through the
         # single transaction point. Default None keeps out-of-DB tests bare.
         self._uow = uow
+        # NRI-0015 (1.3): the app-wide window geometry memory; roles
+        # sheet_list / sheet_editor / sheet_fill. Default None (tests that
+        # build the manager bare) skips the restore/remember hooks.
+        self._geometries = geometries
         # At most one list + one editor + one fill (D6/D4 single windows).
         self.list_dialog: CharacterSheetListDialog | None = None
         self.editor: CharacterSheetEditorDialog | None = None
         self.fill: CharacterSheetFillDialog | None = None
 
     # ── closing / single-window helpers ──────────────────────────────────────
+
+    def place_window(self, window, role: str) -> None:
+        """Restore & start remembering one window's placement (NRI-0015 1.3).
+
+        A bare (test) manager carries no geometry memory — the role is then
+        simply not remembered, and the window opens wherever Qt puts it.
+        """
+        if self._geometries is not None:
+            self._geometries.attach(window, role)
+
+    def place_first_open(self, window, role: str) -> bool:
+        """Pre-show half of the B4 roles (editor/Fill, NRI-0015 1.3): a
+        remembered placement is applied while hidden, a first opening is at
+        most shrunk into the screen. A bare manager behaves as remembered
+        (nothing to restore, nothing to center)."""
+        if self._geometries is None:
+            return True
+        return self._geometries.restore(window, role, center_when_absent=True)
+
+    def place_after_show(self, window, role: str, remembered: bool) -> None:
+        """Post-show half: a first opening finally moves to the screen center
+        (its frame exists only now — a move never relays out the scene), then
+        the placement tracker takes over. Resizing shown heavyweight dialogs
+        offscreen churns their islands, so centering is move-only."""
+        if self._geometries is not None:
+            self._geometries.post_show_place(window, role, remembered=remembered)
 
     def close_windows(self) -> None:
         """Close the list and the editor without prompts (app shutdown / game switch)."""
@@ -103,6 +134,8 @@ class SheetWindowsManager:
             # so the instance is single-use: the next open builds a fresh one
             # (the editor/fill ``_forget_*`` contract).
             dialog.finished.connect(lambda _r, _d=dialog: self._forget_sheet_list(_d))
+            # NRI-0015 (1.3): remember/restore the list window's placement.
+            self.place_window(dialog, "sheet_list")
             self.list_dialog = dialog
         self.list_dialog.show()
         self.list_dialog.raise_()
@@ -195,7 +228,11 @@ class SheetWindowsManager:
         # A closed window must not keep its stale reference (D6 single editor).
         editor.finished.connect(lambda _r, _e=editor: self._forget_editor(_e))
         editor.saved.connect(lambda _e=editor: self.on_design_saved(_e))
+        # NRI-0015 (1.3, B4): role "sheet_editor" — remembered placement or,
+        # on the very first opening, the deterministic safe center.
+        remembered_editor = self.place_first_open(editor, "sheet_editor")
         editor.show()
+        self.place_after_show(editor, "sheet_editor", remembered_editor)
         try:
             await editor.load()
         except CharacterSheetError as exc:
@@ -297,7 +334,11 @@ class SheetWindowsManager:
         fill.binding_changed.connect(
             lambda: self._spawn(self.refresh_character_cards())
         )
+        # NRI-0015 (1.3, B4): role "sheet_fill" — same safe-center contract
+        # as the editor: a first opening is never born outside the screen.
+        remembered_fill = self.place_first_open(fill, "sheet_fill")
         fill.show()
+        self.place_after_show(fill, "sheet_fill", remembered_fill)
         try:
             await fill.load()
         except (CharacterSheetError, CharacterSheetInstanceError) as exc:

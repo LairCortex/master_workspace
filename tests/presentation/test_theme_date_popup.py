@@ -320,3 +320,146 @@ def test_range_low_screen_fallback_keeps_one_grid(qtbot, room, both_visible):
     qtbot.addWidget(popup)
     popup._fit_low_screen(room)
     assert popup.end_calendar.isHidden() is (not both_visible)
+
+
+# ── NRI-0015 group 4: readable states of the «Выбор даты» popover ──────────
+# (spec event-timeline «Панель выбора даты имеет читаемые состояния»:
+#  P1 opens the empty window on today, P2 captions both grids from the
+#  first frame, P3 shows no accent fill while the window is «Все дни».)
+
+
+def _grid_page(grid: GameCalendarGrid) -> tuple[int, int]:
+    """The page the grid shows, read through its own navigation widgets."""
+    return grid._year_spin.value(), grid._month_combo.currentIndex() + 1
+
+
+class TestEmptyWindowOpensOnTheCurrentDate:
+    """P1: an absent bound opens its grid on the page containing the current
+    game date, not at the head of calendar history («январь, год 1»);
+    seeded bounds keep pre-filling exactly as before."""
+
+    def test_reopened_empty_window_pages_both_grids_to_today(self, qtbot):
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        # Land the grids somewhere far from today first, so the second open
+        # proves a real navigation and not the construction default.
+        popup.open_at(
+            QRect(0, 0, 10, 10),
+            ((MonthDay(500, 1, 1), False), (MonthDay(9000, 12, 31), False)),
+        )
+        popup.close()
+        popup.open_at(QRect(0, 0, 10, 10), (None, None))
+        today = date.today()
+        for grid in (popup.start_calendar, popup.end_calendar):
+            assert _grid_page(grid) == (today.year, today.month)
+            # …as a page only: an empty window selects nothing (P3's model
+            # half — «нет состояния «залита» при пустом окне»).
+            assert grid.selection() is None
+            assert grid.is_bc() is False
+        popup.close()
+
+    def test_empty_window_falls_to_year_one_without_a_room_for_today(
+        self, qtbot
+    ):
+        # The wizard preview's «текущая игровая дата, иначе год 1» convention:
+        # a calendar that cannot host today's numbers pages to year 1.
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(0, 0, 10, 10), ((MonthDay(44, 1, 1), False), None))
+        with active(CustomCalendar(ONE_MASK)):
+            popup.open_at(QRect(0, 0, 10, 10), None)
+            # ONE_MASK has two months — September simply does not exist there.
+            assert _grid_page(popup.start_calendar) == (1, 1)
+            assert _grid_page(popup.end_calendar) == (1, 1)
+            assert popup.start_calendar.selection() is None
+        popup.close()
+
+    def test_seeded_bounds_still_own_their_pages(self, qtbot):
+        """Regression of the spec scenarios «c границами — как было»: a bound
+        pre-fills its own page and today does not intrude."""
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(
+            QRect(0, 0, 10, 10),
+            ((MonthDay(500, 4, 3), False), (MonthDay(100, 12, 31), False)),
+        )
+        assert _grid_page(popup.start_calendar) == (500, 4)
+        assert _grid_page(popup.end_calendar) == (100, 12)
+        assert popup.start_calendar.selection() == MonthDay(500, 4, 3)
+        assert popup.end_calendar.selection() == MonthDay(100, 12, 31)
+        popup.close()
+
+    def test_partial_window_pages_only_the_boundless_grid_to_today(self, qtbot):
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(0, 0, 10, 10), (None, (MonthDay(100, 12, 31), True)))
+        today = date.today()
+        assert _grid_page(popup.start_calendar) == (today.year, today.month)
+        assert popup.start_calendar.selection() is None
+        assert _grid_page(popup.end_calendar) == (100, 12)
+        assert popup.end_calendar.selection() == MonthDay(100, 12, 31)
+        assert popup.end_calendar.is_bc() is True
+        popup.close()
+
+
+class TestGridCaptionsBeforeAnyPick:
+    """P2: every grid carries its own orienting caption, visible from the
+    very first frame of the open — the second grid included."""
+
+    def test_both_captions_are_there_before_the_first_tap(self, qtbot):
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(0, 0, 10, 10), None)
+        assert popup.start_hint_label.text() == "Начало окна"
+        assert popup.end_hint_label.text() == "Конец окна"
+        assert popup.start_hint_label.isVisible()
+        assert popup.end_hint_label.isVisible()
+        popup.close()
+
+    def test_captions_stay_in_place_after_a_choice(self, qtbot):
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(0, 0, 10, 10), None)
+        popup._fit_low_screen(10_000)  # two grids take the taps
+        popup.start_calendar.day_selected.emit(MonthDay(1200, 1, 5))
+        # The tip moved to the second half, the captions stayed constant.
+        assert popup.tip_label.text() == "Кликните дату окончания"
+        assert popup.start_hint_label.text() == "Начало окна"
+        assert popup.end_hint_label.text() == "Конец окна"
+        assert popup.start_hint_label.isVisible()
+        assert popup.end_hint_label.isVisible()
+        popup.close()
+
+    def test_low_screen_fallback_hides_the_end_caption_with_its_grid(
+        self, qtbot
+    ):
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup._fit_low_screen(10_000)
+        assert popup.end_hint_label.isHidden() is False
+        popup._fit_low_screen(0)
+        assert popup.end_hint_label.isHidden() is True  # caption follows its grid
+        assert popup.start_hint_label.isHidden() is False
+
+
+class TestEmptyWindowCarriesNoFillState:
+    """P3 (delegate-model half): an empty window marks nobody — the selected
+    property is the fill state, and only a seeded/armed bound may set it."""
+
+    def test_all_days_window_leaves_no_cell_or_chip_marked(self, qtbot):
+        with active(CustomCalendar(ONE_MASK)):
+            popup = _DateWindowPopup()
+            qtbot.addWidget(popup)
+            popup.open_at(QRect(0, 0, 10, 10), None)
+            shown = (
+                popup.start_calendar.findChildren(GameCalendarCell)
+                + popup.end_calendar.findChildren(GameCalendarCell)
+            )
+            assert shown  # the grids really painted their cells
+            assert [w.text() for w in shown if w.selected] == []
+            chips = (
+                popup.start_calendar.findChildren(GameCalendarIntercalaryChip)
+                + popup.end_calendar.findChildren(GameCalendarIntercalaryChip)
+            )
+            assert [chip.text() for chip in chips if chip.selected] == []
+            popup.close()

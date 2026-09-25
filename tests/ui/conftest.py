@@ -18,6 +18,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 import pytest_asyncio
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMenu
 
 from app.infrastructure.http import AppHttpClient
@@ -176,6 +177,25 @@ async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     theme = ThemeRuntime(prefs=UiPrefsManager(tmp_path / "ui.json"))
     application = Application(qapp, http=llm_client, theme=theme)
     window = await application.start(str(db_path))
+    # NRI-0015 (2.4, W3): a fresh game's first-run wizard is no longer run
+    # inside start() — it opens deferred over the SHOWN window. Give the loop
+    # its turn, let begin() finish, then dismiss the wizard exactly the way
+    # the old in-start exec stub dismissed it: close-as-preset, the «seen»
+    # flag written through the still-live session; every shared-boot test
+    # starts with the startup flow completed.
+    from tests.ui import helpers
+    for _ in range(1000):
+        if application._calendar_wizard is not None:
+            break
+        await asyncio.sleep(0)
+    assert application._calendar_wizard is not None, "deferred first-run wizard never opened"
+    await helpers.wait_until_settled()  # the draft read of begin() done
+    application._calendar_wizard.reject()
+    await helpers.wait_until_settled()  # the service close step committed
+    # The dismissal queues the dialog's ``deleteLater``; a still-parented,
+    # just-closed boot dialog would otherwise linger in the window's object
+    # tree (and its child counts) until the next nested loop exit.
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     yield application, window
     window.close()
     # Drain the wiring's spawned session tasks before closing the session:
@@ -183,7 +203,6 @@ async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     # ``session.close()`` mid-query (IllegalStateChangeError at teardown).
     # Tests that click into session-touching flows already wait when they
     # assert on the effect; this covers tasks nobody waited on.
-    from tests.ui import helpers
     await helpers.wait_until_settled()
     await application.shutdown()
 

@@ -395,6 +395,7 @@ class TestDialogSaveLock:
     def test_entity_card_save_locked(self, qtbot):
         d = EntityCardDialog(MagicMock(), entity_type="character")
         qtbot.addWidget(d)
+        d.name_input.setText("Гильдия")  # the parity gate (3.2) needs the name
         assert d.save_button.isEnabled()
         d.set_save_locked(True)
         assert not d.save_button.isEnabled()

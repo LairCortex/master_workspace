@@ -6,9 +6,10 @@ island (DetailPanel + real DetailPanelViewModel, the island-test fixtures):
 the row is a ListItem named by the entity name whose single Press is the
 double-click open (`activate` → the facade's ``entity_clicked``; D3), the
 picture is the «open the image» Button driving ``requestImage`` (the name
-falls back to «Изображение» when the entity has none). The tabs are штатно
-text-named TabButtons and stay UNannotated (map + the 4.1 guard forbids a
-usage-site name there) — pinned here by their name remaining the text itself.
+falls back to «Изображение» when the entity has none). NRI-0015 (task 1.1)
+moved the tabs onto the registry short caption; the live tab name/description
+pin lives in ``tests/presentation/test_detail_panel_island.py`` and the
+caption/annotation unit pins in ``tests/presentation/test_detail_tabs_labels.py``.
 """
 from __future__ import annotations
 
@@ -27,7 +28,6 @@ from tests.presentation.qml_helpers import (
     find_item,
     island_rows,
     track,
-    walk_items,
 )
 
 
@@ -151,18 +151,3 @@ def test_picture_without_entity_name_falls_back_to_image(qtbot, image_monkey):
 
     assert row.property("entityName") == ""
     assert accessible_of(image).text(QAccessible.Name) == "Изображение"
-
-
-def test_tabs_stay_unannotated_their_names_are_not_overridden(qtbot):
-    panel = _panel(qtbot)
-    tab_buttons = [
-        item
-        for item in walk_items(find_item(panel.quick, "detailTabBar"))
-        if item.metaObject().className().startswith("ThemeTabButton")
-    ]
-    assert tab_buttons
-    for tab in tab_buttons:
-        iface = QAccessible.queryAccessibleInterface(tab)
-        # No usage-site Accessible.name: offscreen the штатно face answers an
-        # EMPTY name (an annotation would surface its string here, F4).
-        assert iface is None or iface.text(QAccessible.Name) == ""

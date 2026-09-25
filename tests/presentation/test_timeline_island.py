@@ -516,6 +516,21 @@ class TestDateWindowPopupEntry:
         assert popup._pending_start is None
         popup.close()
 
+    def test_window_popup_has_no_opener_parent_so_chrome_rules_stay_out(
+        self, qtbot, root_qml
+    ):
+        """P3 (NRI-0015): a widget-parented top level inherits its parent's
+        stylesheet chain, and under the chrome-attached panel the generic
+        ``QWidget[uiRole="chrome"] QPushButton`` accent rule filled EVERY day
+        cell («Все дни» пестрело, live audit P3). The popover is therefore a
+        parent-less popup skinned only by the app-wide popup sheet."""
+        panel = _island(qtbot, _StubVM(), root_qml)
+        assert panel.window_popup.parent() is None
+        popup = _open_via_chip(panel)
+        assert popup.parent() is None
+        assert popup.isVisible()
+        popup.close()
+
     def test_low_screen_fallback_assigns_both_dates(self, qtbot, root_qml):
         """Fallback mechanics moved intact: one calendar, two taps assign both."""
         panel = _island(qtbot, _StubVM(), root_qml)

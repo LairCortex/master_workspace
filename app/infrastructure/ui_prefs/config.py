@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from app.domain.theme import DEFAULT_THEME, THEMES
@@ -32,9 +32,32 @@ CONFIG_FILE: Path = default_config_file()
 
 @dataclass
 class UiPrefs:
-    """Global UI preference. In W1 the only field is the theme name."""
+    """Global UI preference: the theme name plus the window-role geometries.
+
+    ``windows`` maps a window role (``"main"``, ``"sheet_editor"``…) to its
+    last placement ``[x, y, w, h]`` (NRI-0015 design T3 — the geometry memory
+    of the named windows lives in the same 0600 file, one manager).
+    """
 
     theme: str = DEFAULT_THEME
+    windows: dict[str, list[int]] = field(default_factory=dict)
+
+
+def _window_placements(raw: object) -> dict[str, list[int]]:
+    """Keep only the well-shaped ``role -> [x, y, w, h]`` entries (a half
+    corrupt ``windows`` section must not poison the usable ones)."""
+    placements: dict[str, list[int]] = {}
+    if not isinstance(raw, dict):
+        return placements
+    for role, value in raw.items():
+        if (
+            isinstance(role, str)
+            and isinstance(value, list)
+            and len(value) == 4
+            and all(isinstance(n, int) and not isinstance(n, bool) for n in value)
+        ):
+            placements[role] = list(value)
+    return placements
 
 
 class UiPrefsManager:
@@ -67,7 +90,7 @@ class UiPrefsManager:
         theme = data.get("theme")
         if theme not in THEMES:
             return UiPrefs(DEFAULT_THEME)
-        return UiPrefs(theme=theme)
+        return UiPrefs(theme=theme, windows=_window_placements(data.get("windows")))
 
     def save(self, prefs: UiPrefs) -> None:
         self._config_file.parent.mkdir(parents=True, exist_ok=True)

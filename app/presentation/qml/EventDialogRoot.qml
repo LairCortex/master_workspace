@@ -60,7 +60,7 @@ Rectangle {
             rowSpacing: Tokens.px(root.islandTokens, "space.xs", 4)
             Layout.fillWidth: true
 
-            TitleText { text: "Название *:" }
+            TitleText { text: "Название: *" }
             ThemeField {
                 objectName: "eventNameField"
                 Layout.fillWidth: true
@@ -71,18 +71,33 @@ Rectangle {
                 Accessible.name: "Название события"
                 onTextEdited: eventDialogVm.name = text
             }
-            ThemeAiButton {
-                objectName: "eventNameAiButton"
-                proxy: eventDialogVm.nameAiProxy
-                entityType: "event"
-                fieldName: "name"
-                fieldLabel: "Название"
-                // nri-0012 task 3.5: the «✨» glyph is mute in the tree; the
-                // name follows the fieldLabel the proxy prompt already uses.
-                Accessible.name: "Сгенерировать: " + fieldLabel
+            RowLayout {
+                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+                ThemeAiButton {
+                    objectName: "eventNameAiButton"
+                    proxy: eventDialogVm.nameAiProxy
+                    entityType: "event"
+                    fieldName: "name"
+                    fieldLabel: "Название"
+                    // nri-0012 task 3.5: the «✨» glyph is mute in the tree; the
+                    // name follows the fieldLabel the proxy prompt already uses.
+                    Accessible.name: "Сгенерировать: " + fieldLabel
+                }
+                ThemeAiButton {
+                    objectName: "eventEntityAiButton"
+                    proxy: eventDialogVm.entityAiProxy
+                    // nri-0012 task 3.5: the wave generates the event as a whole
+                    // — the labelled target surfaces in the tree (the label is
+                    // QML-side only here: this button has no fieldName, the wave
+                    // rides the proxy unchanged). E3 (NRI-0015 task 3.3): the
+                    // button belongs to the identity field's block, so it sits
+                    // in this row instead of floating between blocks.
+                    fieldLabel: "Событие"
+                    Accessible.name: "Сгенерировать: " + fieldLabel
+                }
             }
 
-            TitleText { text: "Дата начала *:" }
+            TitleText { text: "Дата начала: *" }
             ThemeDateField {
                 id: startDate
                 objectName: "eventStartDateField"
@@ -151,7 +166,7 @@ Rectangle {
             }
             Item { implicitWidth: 24 }
 
-            TitleText { text: "Характеристики *:" }
+            TitleText { text: "Характеристики: *" }
             MentionField {
                 objectName: "eventCharacteristicsField"
                 Layout.fillWidth: true
@@ -170,7 +185,7 @@ Rectangle {
                 Accessible.name: "Сгенерировать: " + fieldLabel
             }
 
-            TitleText { text: "Предыстория *:" }
+            TitleText { text: "Предыстория: *" }
             MentionField {
                 objectName: "eventBackstoryField"
                 Layout.fillWidth: true
@@ -184,21 +199,6 @@ Rectangle {
                 entityType: "event"
                 fieldName: "backstory"
                 fieldLabel: "Предыстория"
-                Accessible.name: "Сгенерировать: " + fieldLabel
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
-            ThemeAiButton {
-                objectName: "eventEntityAiButton"
-                proxy: eventDialogVm.entityAiProxy
-                // nri-0012 task 3.5: the wave generates the event as a whole
-                // — the labelled target surfaces in the tree (the label is
-                // QML-side only here: this button has no fieldName, the wave
-                // rides the proxy unchanged).
-                fieldLabel: "Событие"
                 Accessible.name: "Сгенерировать: " + fieldLabel
             }
         }

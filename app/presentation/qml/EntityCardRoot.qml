@@ -133,28 +133,13 @@ Rectangle {
                     Layout.alignment: Qt.AlignTop
                     spacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Item { Layout.fillWidth: true }
-                        ThemeAiButton {
-                            objectName: "entityGenerateButton"
-                            proxy: entityCardVm.entityAiProxy
-                            // Task 2.4 (nri-0012): the wave button generates the
-                            // entity as a whole — the label names that target in
-                            // the tree (QML-side only: the wave itself is driven
-                            // through the proxy, this label never reaches it).
-                            fieldLabel: "Событие"
-                            Accessible.name: "Сгенерировать: " + fieldLabel
-                        }
-                    }
-
                     GridLayout {
                         columns: 3
                         Layout.fillWidth: true
                         columnSpacing: Tokens.px(root.islandTokens, "space.sm", 8)
                         rowSpacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
-                        TitleText { text: "Название:" }
+                        TitleText { text: "Название: *" }
                         ThemeField {
                             objectName: "entityNameField"
                             Layout.fillWidth: true
@@ -166,13 +151,32 @@ Rectangle {
                             Accessible.name: "Название"
                             onTextEdited: entityCardVm.name = text
                         }
-                        ThemeAiButton {
-                            objectName: "entityNameAiButton"
-                            proxy: entityCardVm.nameAiProxy
-                            entityType: entityCardVm.entityType
-                            fieldName: "name"
-                            fieldLabel: "Название"
-                            Accessible.name: "Сгенерировать: " + fieldLabel
+                        RowLayout {
+                            spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+                            ThemeAiButton {
+                                objectName: "entityNameAiButton"
+                                proxy: entityCardVm.nameAiProxy
+                                entityType: entityCardVm.entityType
+                                fieldName: "name"
+                                fieldLabel: "Название"
+                                Accessible.name: "Сгенерировать: " + fieldLabel
+                            }
+                            ThemeAiButton {
+                                objectName: "entityGenerateButton"
+                                proxy: entityCardVm.entityAiProxy
+                                // Task 2.4 (nri-0012) + C1 (NRI-0015 task 3.3):
+                                // the wave generates this card's entity as a
+                                // whole — the fieldLabel is its own type from
+                                // the registry (the QML-side label only: the
+                                // wave rides the proxy, this label never
+                                // reaches it), so a character card reads
+                                // «Сгенерировать: Персонаж», never «Событие».
+                                // E3: the button belongs to the identity
+                                // field's block, it no longer floats in a
+                                // separate row above the grid.
+                                fieldLabel: entityCardVm.entityLabel
+                                Accessible.name: "Сгенерировать: " + fieldLabel
+                            }
                         }
 
                         TitleText { text: "Рейтинг (1-20):" }
@@ -254,7 +258,7 @@ Rectangle {
                         }
                         Item { implicitWidth: 24 }
 
-                        TitleText { text: "Характеристики:" }
+                        TitleText { text: "Характеристики: *" }
                         MentionField {
                             objectName: "entityCharacteristicsField"
                             Layout.fillWidth: true

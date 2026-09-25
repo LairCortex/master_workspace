@@ -5,6 +5,7 @@ from datetime import date
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from app.domain import entity_registry
 from app.domain.game_calendar import GameCoord, as_game_coord
 from app.presentation.utils.date_utils import format_game_date, iso_or_coord
 from app.presentation.viewmodels.event_dialog_island_view_model import (
@@ -109,6 +110,13 @@ class EntityCardIslandViewModel(QObject):
 
     name = Property(str, lambda self: self._name, _set_name, notify=stateChanged)
     entityType = Property(str, lambda self: self._entity_type, constant=True)
+    # AI-wave target of THIS sheet (NRI-0015 task 3.3, audit C1): the
+    # whole-entity button is named by the card's own type from the single
+    # registry — «Событие» names only the event dialog, never a card.
+    entityLabel = Property(
+        str, lambda self: entity_registry.display_label(self._entity_type),
+        constant=True,
+    )
     rating = Property(int, lambda self: self._rating, notify=stateChanged)
     # ``Iso`` strings (piece C3a, design D5): ISO while the coordinate is
     # representable as a real date (bit-for-bit the previous string), the
@@ -147,7 +155,14 @@ class EntityCardIslandViewModel(QObject):
     )
     saveEnabled = Property(
         bool,
-        lambda self: not self._save_locked and not self._saving,
+        # Sheet parity (NRI-0015 task 3.2, audit C3): one gate contract for
+        # both creation sheets — an empty mandatory «Название: *» blocks the
+        # card exactly the way the event view model's name rule blocks the
+        # event (see EventDialogIslandViewModel.valid); no second, softer
+        # rule and no per-sheet reason text to diverge from.
+        lambda self: bool(self._name.strip())
+        and not self._save_locked
+        and not self._saving,
         notify=stateChanged,
     )
     saving = Property(bool, lambda self: self._saving, notify=stateChanged)

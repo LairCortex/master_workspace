@@ -53,6 +53,7 @@ from app.application.services.table_host_service import (
 )
 from app.presentation.dialog_utils import confirm_discard
 from app.presentation.ai_generation_controller import AiGenerationController
+from app.presentation.geometry_memory import WindowGeometryMemory
 from app.presentation.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
@@ -149,10 +150,13 @@ class Application:
         # process; start() loads the calendar and sweeps the dated records
         # with it (C3a, design D8 — repair, shift, key reconcile).
         self._calendar_service: CalendarSettingsService | None = None
-        # Calendar wizard (C4, task 7.1): the one menu dialog at a time;
-        # the first-entry modal (task 7.2) is transient and never stored
-        # here — it dies inside start().
+        # Calendar wizard (C4, task 7.1): the one dialog at a time. Since
+        # NRI-0015 (task 2.4) the first-entry wizard lives here too — it is
+        # opened through the very menu path, deferred after start() instead of
+        # an exec() nested inside it (W3/FI-6); its close step is the finish
+        # task below.
         self._calendar_wizard: CalendarWizardDialog | None = None
+        self._first_run_finish: asyncio.Future | None = None
         self._wiring: ApplicationWiring | None = None
         # Character sheets (D6/D4): one service pair per game; the window
         # lifecycle (list + editor + fill, audit B2) lives in SheetWindowsManager,
@@ -168,6 +172,11 @@ class Application:
         # to MainWindow, so the docs entries and the launcher switch entry
         # share the mechanism instead of re-inventing dedup per usage site.
         self._window_registry = MenuWindowRegistry()
+        # NRI-0015 (design T3): the geometry memory of the named windows
+        # (main, sheet list/editor/fill, table host) rides the one ui.json
+        # manager the theme already owns; the memory lives for the process,
+        # so a reopened role returns to its remembered placement.
+        self._geometries = WindowGeometryMemory(self._theme.prefs)
 
     # The three window refs stay readable/writable under their historical
     # private names: the suite's e2e tests observe the open windows through
@@ -393,6 +402,9 @@ class Application:
             # Q14 (nri-0011, design D4): the editor/fill dialogs receive the
             # SAME unit — their image ingest commits through the single point.
             uow=self._uow,
+            # NRI-0015 (1.3): the list/editor/fill windows restore and
+            # remember their placements through the same app-wide memory.
+            geometries=self._geometries,
         )
         window.char_sheets_requested.connect(self._on_char_sheets)
         window.table_host_requested.connect(self._on_table_host)
@@ -401,11 +413,16 @@ class Application:
         # entry, built over the live session by _wire_calendar_menu below.
         self._wire_calendar_menu(window)
 
-        # First entry of a new game (C4, design D8): the seeded
-        # «calendar_wizard_seen == "0"» runs the wizard modally after the
-        # startup sweep and BEFORE the window is shown, so every surface's
-        # first paint already speaks the calendar the open settled on.
-        await self._maybe_show_calendar_wizard()
+        # First entry of a new game (C4, design D8; W3/NRI-0015 task 2.4):
+        # start() only READS the decision through the live session.  The old
+        # contour ran the wizard itself here (``await begin()`` + ``exec()``):
+        # on the qasync loop the nested modal loop re-entered this very start
+        # task («Cannot enter into task», FI-6) and the window never painted.
+        # The wizard now opens deferred, right below ``window.show()``,
+        # through the very builder the menu entry uses.
+        first_run_wizard = await self._calendar_service.wizard_should_open_on_start(
+            self._session
+        )
 
         # Initial load
         await timeline_vm.load_events()
@@ -415,7 +432,15 @@ class Application:
         if self._window is not None:
             self._window.close()
         self._window = window
+        # NRI-0015 (1.3): role "main" — remembered placement returns the
+        # window where the user left it, clamped into a connected screen.
+        self._geometries.attach(window, "main")
         window.show()
+        if first_run_wizard:
+            # Deferred right after the window is on screen (task 2.4): the
+            # next loop pass builds the wizard as its own application-modal
+            # top-level — no nested event loop ever wraps start().
+            asyncio.get_running_loop().call_soon(self._open_calendar_wizard, True)
         return window
 
     def _on_export_game(self) -> None:
@@ -514,21 +539,36 @@ class Application:
         window.calendar_wizard_requested.connect(self._on_calendar_wizard)
 
     def _on_calendar_wizard(self) -> None:
-        """Open the wizard modally over the CURRENT session.
+        """The «Настройки → Календарь…» menu entry: the wizard over the
+        CURRENT session, preselecting nothing extra — the «seen» flag is
+        never touched from here, only a first-entry close marks it (design D6).
+        """
+        self._open_calendar_wizard()
+
+    def _open_calendar_wizard(self, first_entry: bool = False) -> None:
+        """Open THE wizard (menu entry and the deferred first-run opening are
+        one builder — W3, task 2.4), one application-modal top-level at a time.
 
         The view model preselects the kind of the current calendar key
-        (spec «Вход из меню доступен всегда»), and the «seen» flag is never
-        touched from here — only a first-entry application marks it (design
-        D6). The flow keeps its draft through the dialog by contract of the
-        spec «Черновик мастера», so closing needs no extra handling.
+        (spec «Вход из меню доступен всегда»); with ``first_entry`` a freshly
+        seeded game lives on the preset, and its close still runs the service
+        close step (:meth:`_wizard_finished`). The flow keeps its draft
+        through the dialog by contract of the spec «Черновик мастера», so
+        closing needs no extra handling.
         """
-        if self._calendar_service is None or self._session is None:
+        if (
+            self._calendar_service is None
+            or self._session is None
+            or self._wiring is None
+        ):
             return
         if self._calendar_wizard is not None:
             self._calendar_wizard.raise_()
             self._calendar_wizard.activateWindow()
             return
-        wizard_vm = CalendarWizardViewModel(self._uow, self._calendar_service)
+        wizard_vm = CalendarWizardViewModel(
+            self._uow, self._calendar_service, first_entry=first_entry,
+        )
         dialog = CalendarWizardDialog(
             wizard_vm,
             parent=self._window,
@@ -543,7 +583,7 @@ class Application:
             lambda: self._wiring.run_locked(self._reload_after_calendar_change())
         )
         dialog.finished.connect(
-            lambda _r, _d=dialog: self._forget_calendar_wizard(_d)
+            lambda _r, _d=dialog, _f=first_entry: self._wizard_finished(_d, _f)
         )
         self._calendar_wizard = dialog
         # NRI-0014 D5/D6 (live audit D6): an own application-modal top-level,
@@ -555,8 +595,25 @@ class Application:
         dialog.show()
         # Draft continuation (spec «Черновик мастера») reads the session —
         # a locked spawn; its state_changed repaints the already-visible
-        # dialog onto the saved stage.
+        # dialog onto the saved stage. On the first run this is the moment
+        # the wizard opens over the ALREADY SHOWN window.
         self._wiring.run_locked(dialog.begin())
+
+    def _wizard_finished(self, dialog: CalendarWizardDialog, first_entry: bool) -> None:
+        """Drop the closed wizard; a FIRST-ENTRY close carries the C4 close
+        step (draft-left / already-applied / close-as-preset — all in the
+        service).  Since W3 the step runs as a locked, tracked task instead
+        of an awaited call behind a nested exec(): on the boot contour the
+        session is still live, and :meth:`shutdown` awaits this future before
+        the session closes (FI-6 «флаг не дописывается» must not return)."""
+        self._forget_calendar_wizard(dialog)
+        if not first_entry:
+            return
+        if self._calendar_service is None or self._session is None:
+            return
+        self._first_run_finish = self._wiring.run_locked(
+            self._calendar_service.finish_first_run_flow(self._session)
+        )
 
     def _forget_calendar_wizard(self, dialog: CalendarWizardDialog) -> None:
         """Drop the closed wizard and queue its C++ teardown."""
@@ -588,33 +645,6 @@ class Application:
             window.detail_panel.show_event(detail_vm.event)
         if self._table_host_panel is not None:
             await self._refresh_table_host_panel()
-
-    async def _maybe_show_calendar_wizard(self) -> None:
-        """First entry of a new game (task 7.2, design D8; task 6.3 thinned
-        it — the status decision and the close step are service calls now,
-        see :meth:`CalendarSettingsService.wizard_should_open_on_start`).
-
-        The modal still runs before ``MainWindow.show()``; its prefilled kind
-        is «Стандартный» because a freshly seeded game lives on the preset.
-        """
-        if not await self._calendar_service.wizard_should_open_on_start(
-            self._session
-        ):
-            return
-        wizard_vm = CalendarWizardViewModel(
-            self._uow, self._calendar_service, first_entry=True,
-        )
-        dialog = CalendarWizardDialog(
-            wizard_vm, theme=self._theme, run=self._wiring.run_locked,
-        )
-        # The draft decides the opening position, so it is read out before
-        # the modal loop starts; no other session user exists yet — the
-        # window is unshown and the startup coroutine still owns the session.
-        await dialog.begin()
-        dialog.exec()
-        dialog.deleteLater()
-        # Draft-left / already-applied / close-as-preset: all in the service.
-        await self._calendar_service.finish_first_run_flow(self._session)
 
     # -- character sheets (D6) ------------------------------------------------
     # The window lifecycle itself — creation, single-window dirty confirms,
@@ -649,6 +679,9 @@ class Application:
                 lambda: self._wiring.run_locked(self._stop_table())
             )
             panel.player_selected.connect(self._on_host_player_selected)
+            # NRI-0015 (1.3): role "table_host" — the table window returns to
+            # its remembered spot, clamped back into the connected screens.
+            self._geometries.attach(panel, "table_host")
             self._table_host_panel = panel
         self._table_host_panel.show()
         self._table_host_panel.raise_()
@@ -918,10 +951,15 @@ class Application:
             await self._table_host.stop()
         self._close_sheet_windows()
         # A wizard left open on a closing game must not outlive its session:
-        # its view model is bound to exactly this AsyncSession.
+        # its view model is bound to exactly this AsyncSession.  Closing it
+        # here fires the first-run close step (task 2.4) — the future it
+        # produced is awaited right below, through the STILL-LIVE session.
         if self._calendar_wizard is not None:
             self._calendar_wizard.close()
             self._calendar_wizard = None
+        if self._first_run_finish is not None:
+            await self._first_run_finish
+            self._first_run_finish = None
         self._table_host = None
         # The sheet manager is game-bound too (its dialogs parent to this
         # game's window); ``_close_sheet_windows`` above already tore them down.

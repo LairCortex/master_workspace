@@ -24,10 +24,20 @@ Scenario map (spec calendar-wizard, tasks 6.1–6.4):
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 
 import pytest
-from PySide6.QtWidgets import QDialog, QLabel, QScrollArea
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QAccessible
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QLabel,
+    QScrollArea,
+    QStyle,
+    QStyleOptionButton,
+)
 from sqlalchemy import select
 
 from app.application.services.calendar_settings_service import (
@@ -57,9 +67,11 @@ from app.infrastructure.db.models import EventModel, GameSettingsModel
 from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.ui_prefs.config import UiPrefsManager
 from app.presentation.theme import ThemeRuntime
-from app.presentation.theme.compiler import tokens_file_path
+from app.presentation.theme.compiler import compile_popup_qss, load_tokens, tokens_file_path
 from app.presentation.utils.date_utils import STANDARD_WEEK_NAMES
 from app.presentation.viewmodels.calendar_wizard_viewmodel import (
+    KIND_CUSTOM,
+    KIND_STANDARD,
     STEP_CHOICE,
     STEP_INTERCALARY,
     STEP_MONTHS,
@@ -71,6 +83,7 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
 from app.presentation.views import calendar_wizard
 from app.presentation.views.calendar_grid import (
     GameCalendarCell,
+    GameCalendarDayName,
     GameCalendarGrid,
     GameCalendarIntercalaryChip,
 )
@@ -726,3 +739,183 @@ class TestSkin:
         assert dlg.result() == QDialog.DialogCode.Accepted
         assert await _setting(async_session, CALENDAR_SETTINGS_KEY) is not None
         assert isinstance(current_calendar(), CustomCalendar)
+
+
+# ═════════ NRI-0015 task 2.2/2.3 — компактный предпросмотр, ряд кнопок, ═════
+# ═════════ центрирование шага, числа токеном, радио через доступность ═══════
+
+
+def _centre_y(widget, relative_to) -> int:
+    """Vertical centre of ``widget`` in the dialog's coordinate space."""
+    return widget.mapTo(
+        relative_to, QPoint(widget.width() // 2, widget.height() // 2)
+    ).y()
+
+
+async def _shown_at_audit_size(qtbot, vm) -> CalendarWizardDialog:
+    """Dialog on the live-audit screen size (мастер 1477×648) with a real
+    layout pass — the geometry the W1/W4 findings were measured on."""
+    dlg = _dialog(qtbot, vm)
+    await dlg.begin()
+    dlg.resize(1477, 648)
+    dlg.show()
+    QApplication.processEvents()
+    return dlg
+
+
+class TestPreviewIsOneBlock:
+    """W1 (spec «Экран-предпросмотр собран плотно и читаемо»): the weekday
+    header and the numbers are one block — no more-than-a-row visual void —
+    and the last week column keeps its margin from the panel border."""
+
+    async def test_header_and_numbers_read_as_one_block(self, async_session, qtbot):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        grid = dlg._preview
+        headers = grid.findChildren(GameCalendarDayName)
+        cells = [cell for cell in grid.findChildren(GameCalendarCell) if cell.text()]
+        assert headers and cells
+
+        header_centre = sum(_centre_y(label, dlg) for label in headers) / len(headers)
+        first_row_centre = min(_centre_y(cell, dlg) for cell in cells)
+        row_height = cells[0].sizeHint().height()
+        # Spec forbids «разрыв шапки и чисел более чем в одну строку»: from the
+        # caption centre to the first row of numbers at most a row and a half.
+        assert first_row_centre - header_centre <= 2 * row_height, (
+            f"между шапкой дней и числами {first_row_centre - header_centre} pt "
+            f"при строке {row_height} pt"
+        )
+        # The header itself is not inflated by the panel's dead space.
+        assert all(
+            label.height() <= 2 * label.sizeHint().height() for label in headers
+        )
+
+    async def test_last_week_column_keeps_its_margin(self, async_session, qtbot):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        grid = dlg._preview
+        cells = [cell for cell in grid.findChildren(GameCalendarCell) if cell.text()]
+        rightmost = max(
+            cell.mapTo(dlg, QPoint(cell.width(), 0)).x() for cell in cells
+        )
+        assert dlg.width() - rightmost >= 4  # «не прижата к границе»
+
+
+class TestPreviewNumberColour:
+    """W5 (spec «числа предпросмотра SHALL иметь контраст не ниже текста
+    содержимого экрана»): the inert preview cells are disabled widgets, so Qt
+    paints them in the system disabled grey — the popup sheet must pin the
+    number colour to the fg.primary token for both themes."""
+
+    def test_disabled_cells_use_the_primary_foreground_token(self):
+        tokens = load_tokens(tokens_file_path())
+        for theme in ("light", "dark"):
+            sheet = compile_popup_qss(tokens, theme)
+            match = re.search(
+                r"GameCalendarCell:disabled\s*\{[^}]*color:\s*([^;]+);", sheet
+            )
+            assert match, f"в теме {theme} числам предпросмотра не задан токен цвета"
+            assert match.group(1).strip() == tokens["color.fg.primary"][theme]
+
+
+class TestFooterOneRow:
+    """W4 (spec «Кнопки мастера — одна строка, шаг центрирован»): «Отменить»
+    and the «Назад/Далее/Применить» group share one row of one layout parent,
+    the dismissal sitting at the opposite edge from the group — it must stop
+    reading as the preview panel's button."""
+
+    async def test_cancel_and_navigation_group_share_one_row(self, async_session, qtbot):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        row = dlg._footer.layout()
+        buttons = (
+            dlg._cancel_button,
+            dlg._back_button,
+            dlg._next_button,
+            dlg._apply_button,
+        )
+        for button in buttons:
+            assert row.indexOf(button) >= 0  # one layout parent
+        tallest = max(button.height() for button in buttons)
+        first = _centre_y(dlg._cancel_button, dlg)
+        for button in buttons:  # all on one line
+            assert abs(_centre_y(button, dlg) - first) <= tallest
+        # «Отменить» — от противного края содержательной группы (W4: right by
+        # the preview it read as the preview's own button).
+        assert dlg._cancel_button.x() + dlg._cancel_button.width() <= dlg._back_button.x()
+        assert dlg._back_button.x() <= dlg._next_button.x() <= dlg._apply_button.x()
+
+
+class TestStepContentCentered:
+    """W4 (spec, second clause): the step's column-centred content sits in the
+    middle of its panel half, not glued into the empty left edge."""
+
+    async def test_choice_step_is_centered_in_its_half(self, async_session, qtbot):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        page = dlg._pages[STEP_CHOICE]
+        page_centre = page.width() / 2
+        for radio in (dlg._standard_radio, dlg._custom_radio):
+            # The visible centre of a radio is its indicator, not the widget
+            # rect (a stretched rect would read as centred while the control
+            # still sits glued to the left edge — exactly the W4 finding).
+            option = QStyleOptionButton()
+            radio.initStyleOption(option)
+            indicator = radio.style().subElementRect(
+                QStyle.SubElement.SE_RadioButtonIndicator, option, radio
+            )
+            indicator_centre = radio.mapTo(page, indicator.center()).x()
+            assert abs(indicator_centre - page_centre) <= page.width() * 0.15
+
+
+class TestRadioChoiceThroughAccessibility:
+    """W2 (spec «Выбор пресета работает через доступность»): the radio's AX
+    action «Toggle» flips the check mark through setChecked — the «clicked»
+    handler never fired (the live debug insert saw no choose_kind call), the
+    choice now hangs on «toggled» with the existing blockSignals contour of
+    _render guarding the recursion."""
+
+    def _spy_vm(self, async_session):
+        vm = _vm(async_session)
+        calls: list[str] = []
+        original = vm.choose_kind
+
+        def counting(kind: str) -> None:
+            calls.append(kind)
+            original(kind)
+
+        vm.choose_kind = counting
+        return vm, calls
+
+    async def test_ax_toggle_of_custom_moves_the_model_exactly_once(
+        self, async_session, qtbot
+    ):
+        vm, calls = self._spy_vm(async_session)
+        dlg = _dialog(qtbot, vm)
+        await dlg.begin()
+        dlg.show()
+        QApplication.processEvents()
+        assert vm.state.kind == KIND_STANDARD
+
+        iface = QAccessible.queryAccessibleInterface(dlg._custom_radio)
+        assert iface is not None
+        actions = iface.actionInterface()
+        assert "Toggle" in actions.actionNames()  # the radio's AX press channel
+        actions.doAction("Toggle")
+
+        assert calls == [KIND_CUSTOM]  # exactly one intent per activation
+        assert vm.state.kind == KIND_CUSTOM
+        assert dlg._custom_radio.isChecked() and not dlg._standard_radio.isChecked()
+        assert dlg._next_button.isEnabled()  # navigation reflects the choice
+
+        actions.doAction("Toggle")  # already the choice: another press changes nothing
+        assert calls == [KIND_CUSTOM]
+
+    async def test_mouse_click_does_not_double_the_choice(self, async_session, qtbot):
+        vm, calls = self._spy_vm(async_session)
+        dlg = _dialog(qtbot, vm)
+        await dlg.begin()
+
+        dlg._custom_radio.click()
+        assert calls == [KIND_CUSTOM]
+        dlg._standard_radio.click()
+        assert calls == [KIND_CUSTOM, KIND_STANDARD]
+        dlg._standard_radio.click()  # re-clicking the checked radio toggles nothing
+        assert calls == [KIND_CUSTOM, KIND_STANDARD]
+        assert vm.state.kind == KIND_STANDARD

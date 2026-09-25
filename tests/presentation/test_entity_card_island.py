@@ -138,7 +138,10 @@ def test_save_request_waits_for_explicit_result_and_retries(qtbot):
     qtbot.addWidget(dialog)
     seen = []
     dialog.saved.connect(seen.append)
-    dialog.name_input.setText("")
+    # The empty-name block itself is the sheet-parity gate (NRI-0015 task 3.2,
+    # pinned in test_sheet_parity); here the mandatory name is filled and the
+    # second click is stopped by the saving lock, not by the gate.
+    dialog.name_input.setText("Молот")
     dialog.save_button.click()
     dialog.save_button.click()
     assert len(seen) == 1
@@ -157,6 +160,8 @@ def test_saving_and_generation_guard_all_close_paths(qtbot):
     dialog = EntityCardDialog(None, "item")
     qtbot.addWidget(dialog)
     dialog.saved.connect(lambda _data: None)
+    # The mandatory name enters the save through the parity gate (3.2).
+    dialog.name_input.setText("Котелок")
     dialog.save_button.click()
     dialog.reject()
     dialog._on_cancel_clicked()
@@ -323,6 +328,7 @@ def test_save_guard_saving_close_and_date_routes(qtbot, monkeypatch):
     dialog = EntityCardDialog(None, "item")
     qtbot.addWidget(dialog)
     dialog.saved.connect(lambda _data: None)
+    dialog.name_input.setText("Факел")  # the parity gate (3.2) opens with a name
     dialog._on_save()
     dialog._on_save()
     close = QCloseEvent()

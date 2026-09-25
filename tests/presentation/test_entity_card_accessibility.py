@@ -8,7 +8,8 @@ here unchanged (TextField/EditableText face, Button, CheckBox, the MentionField
 role from task 1.3); the names come from the design map: «Название», date
 fields, «Рейтинг», «Ссылка на музыку», the mention fields by label, extras by
 modelData.label, every AI button «Сгенерировать: <fieldLabel>» (the whole-
-entity wave carries the filled fieldLabel «Событие»). «Сохранить» and
+entity wave carries the card's own registry label — «Персонаж» for this
+fixture since NRI-0015 task 3.3, the borrowed «Событие» is gone). «Сохранить» and
 «Открыть чар-лист» keep exactly their text as name (no usage-site override —
 map + the 4.1 guard).
 """
@@ -81,10 +82,12 @@ def test_mention_fields_are_editable_text_named_by_label(card):
 def test_ai_buttons_naming_rule_with_the_filled_entity_target(card):
     quick = card.quick
 
-    # entity-AI: the fieldLabel «Событие» is filled by task 2.4 itself.
+    # entity-AI: the wave names THIS card's entity (C1, NRI-0015 task 3.3) —
+    # the fieldLabel rides the view model's registry-backed entityLabel, a
+    # character card answers «Персонаж» and the event's «Событие» is gone.
     whole = iface_of(quick, "entityGenerateButton")
-    assert whole.text(QAccessible.Name) == "Сгенерировать: Событие"
-    assert quick_root_property(card, "entityGenerateButton", "fieldLabel") == "Событие"
+    assert whole.text(QAccessible.Name) == "Сгенерировать: Персонаж"
+    assert quick_root_property(card, "entityGenerateButton", "fieldLabel") == "Персонаж"
 
     assert name_of(quick, "entityNameAiButton") == "Сгенерировать: Название"
     assert name_of(quick, "entityCharacteristicsAiButton") == (

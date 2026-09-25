@@ -50,6 +50,7 @@ import asyncio
 from datetime import date
 from typing import Callable
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -189,18 +190,28 @@ class CalendarWizardDialog(QDialog):
         self._next_button = QPushButton("Далее")
         self._apply_button = QPushButton("Применить")
         self._cancel_button = QPushButton("Отменить")
+        # W4 (spec «Кнопки мастера — одна строка, шаг центрирован»): one row,
+        # the dismissal at the OPPOSITE edge from its content group.  With the
+        # old order the cancel sat at the far right, flush against the preview
+        # panel on a wide window, and read as the preview's own button.
+        footer_row.addWidget(self._cancel_button)
+        footer_row.addStretch()
         footer_row.addWidget(self._back_button)
         footer_row.addWidget(self._next_button)
         footer_row.addWidget(self._apply_button)
-        footer_row.addStretch()
-        footer_row.addWidget(self._cancel_button)
         left.addWidget(self._footer)
 
         right.addWidget(title("Предпросмотр"))
         # The live preview: the same grid class the date popups embed, inert
         # (STYLE-FACING class names skinned by the popup sheet — see module).
+        # W1 (spec «Экран-предпросмотр собран плотно и читаемо»): the grid
+        # keeps its own height — the day-name header was already the grid's
+        # first row, a stretched second header slot is what tore the names
+        # away from the numbers; every slack pixel belongs to the trailing
+        # stretch below the grid, never between the header and the cells.
         self._preview = GameCalendarGrid(interactive=False, show_era=False)
-        right.addWidget(self._preview, 1)
+        right.addWidget(self._preview)
+        right.addStretch(1)
 
         # Catalog skin: chrome root for the generated sheet's button/field
         # rules, roles stamped on the individual widgets above.
@@ -214,8 +225,19 @@ class CalendarWizardDialog(QDialog):
             lambda: self._start(self._vm.confirm_transfer())
         )
         self._transfer_cancel_button.clicked.connect(self._vm.cancel_report)
-        self._standard_radio.clicked.connect(lambda: self._vm.choose_kind(KIND_STANDARD))
-        self._custom_radio.clicked.connect(lambda: self._vm.choose_kind(KIND_CUSTOM))
+        # W2 (spec «Выбор пресета работает через доступность»): the radios' AX
+        # action toggles the check mark through ``setChecked`` — the old
+        # ``clicked`` handler never fired and the model stayed on the
+        # preselect (the tick moved, «Далее» never did).  The choice hangs on
+        # ``toggled`` now; the recursion through the view model's repaint of
+        # the very radios is fenced by the existing blockSignals contour in
+        # :meth:`_render`.
+        self._standard_radio.toggled.connect(
+            lambda checked: self._on_kind_toggled(KIND_STANDARD, checked)
+        )
+        self._custom_radio.toggled.connect(
+            lambda checked: self._on_kind_toggled(KIND_CUSTOM, checked)
+        )
         self._week_length_spin.valueChanged.connect(self._vm.set_week_length)
         self._month_count_spin.valueChanged.connect(self._vm.set_month_count)
         self._rule_add_button.clicked.connect(self._on_add_rule)
@@ -256,28 +278,28 @@ class CalendarWizardDialog(QDialog):
     # ── screens (built once; state re-syncs their widgets) ──────────────────
 
     def _build_choice_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        page, layout = _step_page()
         layout.addWidget(title("Стандартный или свой календарь?"))
-        layout.addWidget(
-            hint(
-                "Стандартный — привычные 12 григорианских месяцев. Кастомный — "
-                "своё число месяцев, их имена и длины, своя неделя и вставные дни."
-            )
+        kind_hint = hint(
+            "Стандартный — привычные 12 григорианских месяцев. Кастомный — "
+            "своё число месяцев, их имена и длины, своя неделя и вставные дни."
         )
+        kind_hint.setWordWrap(True)
+        layout.addWidget(kind_hint)
         self._standard_radio = QRadioButton("Стандартный")
         self._custom_radio = QRadioButton("Кастомный")
-        layout.addWidget(self._standard_radio)
-        layout.addWidget(self._custom_radio)
+        # W4 (spec): the step's content sits centered in its half, at its own
+        # size — not glued to the left edge of the empty panel behind.
+        layout.addWidget(self._standard_radio, alignment=Qt.AlignHCenter)
+        layout.addWidget(self._custom_radio, alignment=Qt.AlignHCenter)
         layout.addStretch()
         return page
 
     def _build_week_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(title("Неделя"))
         # Fields are one per week day, so the length spin is what adds the
         # empty tail / drops the tail names (spec «Экран „Неделя“»).
+        page, layout = _step_page()
+        layout.addWidget(title("Неделя"))
         self._week_length_spin = self._spin_row(layout, "Длина недели:")
         self._week_length_spin.setRange(WEEK_LENGTH_MIN, WEEK_LENGTH_MAX)
         self._week_box = _row_box()
@@ -286,8 +308,7 @@ class CalendarWizardDialog(QDialog):
         return page
 
     def _build_months_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        page, layout = _step_page()
         layout.addWidget(title("Месяцы"))
         # Rows «имя | длина» live in a scroll area (spec «строки „имя | длина“
         # со скроллом»).
@@ -299,15 +320,14 @@ class CalendarWizardDialog(QDialog):
         return page
 
     def _build_intercalary_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        page, layout = _step_page()
         layout.addWidget(title("Вставные дни"))
-        layout.addWidget(
-            hint(
-                "Порядок списка значим: правила одного месяца-хозяина занимают "
-                "его последовательные позиции."
-            )
+        rules_hint = hint(
+            "Порядок списка значим: правила одного месяца-хозяина занимают "
+            "его последовательные позиции."
         )
+        rules_hint.setWordWrap(True)  # fits the centered column of the step
+        layout.addWidget(rules_hint)
         self._rules_box = _row_box()
         layout.addWidget(_wrap_scroll(self._rules_box), 1)
         self._rule_rows: list[tuple[QLabel, QPushButton, QPushButton, QPushButton]] = []
@@ -325,14 +345,18 @@ class CalendarWizardDialog(QDialog):
         return page
 
     def _build_preview_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.addWidget(title("Предпросмотр"))
+        page, layout = _step_page()
+        # The right-hand panel already owns the «Предпросмотр» caption over the
+        # grid; a second one here was the double header (W1) — this step only
+        # carries its summary block.
+        layout.addWidget(title("Сводка"))
         # «сводка (число месяцев, длина недели, число вставных дней)» — the
         # grid itself lives in the right-hand panel next to every screen.
         self._summary_label = hint("")
         layout.addWidget(self._summary_label)
-        layout.addWidget(hint("Слева — сводка, справа — сетка будущего календаря. «Применить» — внизу."))
+        grid_hint = hint("Слева — сводка, справа — сетка будущего календаря. «Применить» — внизу.")
+        grid_hint.setWordWrap(True)
+        layout.addWidget(grid_hint)
         layout.addStretch()
         return page
 
@@ -581,6 +605,15 @@ class CalendarWizardDialog(QDialog):
         self._vm.add_intercalary(self._rule_name_edit.text(), self._rule_month_combo.currentData())
         _set_text(self._rule_name_edit, "")
 
+    def _on_kind_toggled(self, kind: str, checked: bool) -> None:
+        """The radio's ``toggled`` is both the mouse and the accessibility
+        channel (W2): only becoming-checked is a choice — the auto-exclusive
+        uncheck of the other radio must not reach the view model, and the
+        state re-render's own ``setChecked`` pass is fenced by its
+        blockSignals pair."""
+        if checked:
+            self._vm.choose_kind(kind)
+
     def _on_cancel(self) -> None:
         """Footer «Отменить»: the view model keeps the draft by contract (spec
         «Черновик мастера»), the dialog simply closes."""
@@ -591,6 +624,16 @@ class CalendarWizardDialog(QDialog):
         """Spec «Ошибки применения… окно с причиной»: reason verbatim from the
         view model (it is already a displayable string), wizard stays open."""
         QMessageBox.warning(self, APPLY_ERROR_TITLE, reason)
+
+
+def _step_page() -> tuple[QWidget, QVBoxLayout]:
+    """Content column of a build step.  Step-level centering (W4, spec
+    «шаг центрирован») lives in the ``Qt.AlignHCenter`` alignments put on the
+    interactive widgets, not in a narrower column: the descriptions keep the
+    full width of the step half for their word wrap and the row lists for
+    their scroll rows."""
+    page = QWidget()
+    return page, QVBoxLayout(page)
 
 
 def _row_box() -> QWidget:

@@ -27,9 +27,19 @@ application-wide popup sheet (W2a D2), whose rules address the named classes
 below — ``_DateWindowPopup`` and ``_DateWindowResetButton`` are therefore
 STYLE-FACING names (see ``compile_popup_qss``): renaming them silently drops
 the popover's theme, so keep them exactly as they are.
+
+NRI-0015 (spec event-timeline «Панель выбора даты имеет читаемые состояния»)
+made its open states readable: P1 — a bound the window does not carry opens
+its grid on the current game date's page (``_today_page``), not at «январь,
+год 1»; P2 — both grids answer to a permanent «Начало окна»/«Конец окна»
+caption from the first open frame; P3 — the popover is created without a
+widget parent, so no chrome-attached ancestor's generic QPushButton rule can
+leak through the stylesheet parent chain and accent-fill every cell (the
+popover stays parent-less and popup-sheet-skinned).
 """
 from __future__ import annotations
 
+from datetime import date
 from functools import partial
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
@@ -38,7 +48,12 @@ from PySide6.QtWidgets import (
 )
 
 from app.domain.date_era import cmp_era_dates
-from app.domain.game_calendar import GameCoord
+from app.domain.game_calendar import (
+    MIN_YEAR,
+    GameCoord,
+    as_game_coord,
+    current_calendar,
+)
 from app.presentation.utils.date_utils import (
     format_game_date,
     split_date_era,
@@ -55,6 +70,12 @@ WINDOW_CHIP_ALL = "Все дни ▾"
 WINDOW_PICK_START = "Кликните дату начала"
 WINDOW_PICK_END = "Кликните дату окончания"
 WINDOW_RESET_TEXT = "Сбросить"
+#: P2 (NRI-0015, spec «Панель выбора даты имеет читаемые состояния»): every
+#: grid carries its own orienting caption from the first frame of the open —
+#: the second grid used to carry no caption until the start had been picked.
+#: The captions are constant; the only dynamic hint stays the tip label.
+WINDOW_GRID_CAPTION_START = "Начало окна"
+WINDOW_GRID_CAPTION_END = "Конец окна"
 #: The popover stacks its two grids in one column, so both fit only when the
 #: room under the chip covers ``2×`` a grid's height — below that the
 #: low-screen fallback keeps a single grid and the taps assign the dates.
@@ -77,6 +98,22 @@ def window_chip_text(start, end) -> str:
         f"{format_game_date(start_date, is_bc=bool(start_bc))} — "
         f"{format_game_date(end_date, is_bc=bool(end_bc))} ▾"
     )
+
+
+def _today_page() -> tuple[int, int]:
+    """The page of the CURRENT game date in the ACTIVE calendar.
+
+    P1 (NRI-0015, spec «Панель выбора даты имеет читаемые состояния»): an
+    empty window opens its grids on the page containing today's numbers,
+    not at the head of calendar history. The placement follows the wizard
+    preview's documented convention «текущая игровая дата, иначе год 1» —
+    an assembled calendar with no room for today's coordinate pages to
+    year 1 instead (no second rule of its own).
+    """
+    today = as_game_coord(date.today())
+    if current_calendar().is_valid(today):
+        return today.year, today.month
+    return MIN_YEAR, 1
 
 
 class _DateWindowResetButton(QPushButton):
@@ -116,8 +153,17 @@ class _DateWindowPopup(QWidget):
 
     range_applied = Signal(object, object)  # (start pair | None, end pair | None)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
+    def __init__(self) -> None:
+        # P3 (NRI-0015, spec «Панель выбора даты имеет читаемые состояния»):
+        # deliberately PARENT-LESS. A widget-parented top level still inherits
+        # its parent's stylesheet chain, and the panel hosting the chip lives
+        # under the chrome-attached central widget, whose generic
+        # ``QWidget[uiRole="chrome"] QPushButton`` accent rule used to fill
+        # EVERY day cell — the live audit P3 («в режиме «Все дни» всё залито
+        # акцентным, выбранное и доступное сливаются»). Only the app-wide
+        # popup sheet may skin this popover; the opener keeps the object alive
+        # through its own attribute, exactly like the tooltip does.
+        super().__init__(None, Qt.WindowType.Popup)
         self.setObjectName("timelineDateWindowPopup")  # identifier, not style
         # A plain QWidget only paints the sheet's background with the flag on.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -128,9 +174,15 @@ class _DateWindowPopup(QWidget):
         layout.setSpacing(4)
         self.tip_label = QLabel(WINDOW_PICK_START)
         layout.addWidget(self.tip_label)
+        # P2: a permanent caption over each grid, visible from the first open
+        # frame — the second grid used to stay unlabelled until the start tap.
+        self.start_hint_label = QLabel(WINDOW_GRID_CAPTION_START)
+        self.end_hint_label = QLabel(WINDOW_GRID_CAPTION_END)
         self.start_calendar = GameCalendarGrid(self)
         self.end_calendar = GameCalendarGrid(self)
+        layout.addWidget(self.start_hint_label)
         layout.addWidget(self.start_calendar)
+        layout.addWidget(self.end_hint_label)
         layout.addWidget(self.end_calendar)
         reset_row = QHBoxLayout()
         reset_row.addStretch()
@@ -178,6 +230,11 @@ class _DateWindowPopup(QWidget):
             # a coordinate the active calendar rejects simply leaves the grid
             # un-prefilled — never a rewritten number (piece C3b, design D3).
             grid.set_selection(day, bool(is_bc))
+            if day is None:
+                # P1: an absent bound opens its grid on the CURRENT game
+                # date's page, never at «январь, год 1» — only a page walk
+                # (no selection), so P3's no-fill empty window is preserved.
+                grid.set_page(*_today_page())
         pos = QPoint(anchor_global.x(), anchor_global.y() + anchor_global.height() + 2)
         screen = QApplication.screenAt(pos)
         room = (
@@ -193,9 +250,12 @@ class _DateWindowPopup(QWidget):
         self.show()
 
     def _fit_low_screen(self, available_below: int) -> None:
-        """Low-screen fallback (D9 risk note): one grid, taps assign both."""
+        """Low-screen fallback (D9 risk note): one grid, taps assign both.
+        The end caption belongs to its grid and follows it off the screen."""
         need = WINDOW_DOUBLE_HEIGHT_FACTOR * self.start_calendar.sizeHint().height()
-        self.end_calendar.setVisible(available_below >= need)
+        both = available_below >= need
+        self.end_hint_label.setVisible(both)
+        self.end_calendar.setVisible(both)
 
     # ── tap handling ────────────────────────────────────────────────────────
 

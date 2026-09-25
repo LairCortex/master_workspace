@@ -284,7 +284,10 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         # setWindowTitle override threads every later rename (populate) too.
         self.setWindowTitle(self.windowTitle())
 
-        self.date_popup = ThemeDatePopup(self)
+        # P3 (NRI-0015): parent-less — under a chrome-attached ancestor the
+        # generic QPushButton chrome rule would accent-fill every day cell
+        # through the stylesheet parent chain; the popup sheet is its only skin.
+        self.date_popup = ThemeDatePopup()
         self.date_popup.date_selected.connect(self._set_selected_date)
         for _widget_attr, attr, entity_type, label in _TABS:
             state = self._sections[attr]

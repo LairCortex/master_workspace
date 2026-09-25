@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
+from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
 from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
 from app.presentation.viewmodels.detail_panel_view_model import (
@@ -61,6 +62,9 @@ class DetailPanel(IslandDialogMixin, QWidget):
         # context so the scene dies before it at child destruction, exactly
         # as the hand-written context did.
         self.vm.setParent(self._context)
+        # NRI-0015 (M1): the tab strips declare Nri.tooltip; the bridge is the
+        # island's own (timeline/editor pattern), declared BEFORE the load.
+        self._tooltip_bridge = install_island_tooltips(quick, self._context)
         super().load_island_scene(quick)
 
     def show_event(self, event: Any) -> None:

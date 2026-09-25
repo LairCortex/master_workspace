@@ -7,22 +7,24 @@ Spec calendar-wizard «Точки входа мастера» / «Первый �
 * 7.1 — «Настройки → Календарь…» opens the wizard over the main window in
   both games (preset and custom), preselecting the CURRENT calendar key's
   kind and never touching the «seen» flag (an old game stays an old game);
-* 7.2 — a freshly seeded game gets the wizard modally BEFORE the main window
-  is shown, prefilled «Стандартный»; closing without a draft applies the
+* 7.2 — a freshly seeded game gets the wizard prefilled «Стандартный»; since
+  W3/NRI-0015 (task 2.4) it opens deferred OVER THE SHOWN WINDOW (no nested
+  exec inside ``Application.start()``); closing without a draft applies the
   preset and writes «показан» once; a live draft keeps the flag at «не
   показан» so the next open calls the wizard back as a flow continuation —
-  the launcher precedent (a ``QDialog.exec`` stub observed through
-  ``ModalControl``, pumped by ``qtbot`` via the ``wait_for`` fixture);
+  driven off the live ``Application._calendar_wizard`` reference, pumped by
+  the ``wait_for`` fixture;
 * 7.3 (design D11) — after a menu application the feed, the «Выбор даты»
   chip and the open detail panel re-speak the new calendar without a
   restart, and the range popup's grids re-read it at their next opening.
 
-The first-entry ``exec`` stubs come from the ui conftest's autouse
-``modal_qdialog``: the dialog is still really constructed by ``start()`` and
-the close semantics (preset application, flag, draft survival) run whole.
+The boot fixtures never see a wizard ``exec`` — the first-entry wizard is a
+deferred top-level (task 2.4); the shared ``app`` fixture dismisses it after
+boot, the 7.2 tests drive the live dialog instance itself.
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -245,38 +247,34 @@ async def test_menu_wizard_is_application_modal_without_parent_geometry_jump(
 
 
 async def test_first_entry_close_applies_preset_and_marks_seen_once(
-    qapp, llm_client, tmp_llm_config, modal_qdialog, tmp_path
+    qapp, llm_client, tmp_llm_config, tmp_path, wait_for
 ):
     """Scenarios «Крест = Стандартный» and «Вход из меню доступен всегда»'s
-    flag twin: the freshly seeded game opens modally prefilled «Стандартный»
-    BEFORE the window shows; closing it applies the preset, writes
-    «показан» — and the next open gets no wizard at all."""
+    flag twin on the W3 contour (task 2.4): start() completes and the window
+    shows FIRST, prefilled «Стандартный» wizard opens over it deferred;
+    closing it applies the preset, writes «показан» — and the next open gets
+    no wizard at all."""
     db_path = tmp_path / "New" / "game.db"
     db_path.parent.mkdir(parents=True)
     (db_path.parent / "images").mkdir()
 
-    opened: list = []
-    observed: dict = {}
-
-    def _record(dlg) -> None:
-        opened.append(dlg)
-        # The window proper is not even handed around yet at this point…
-        assert application._window is None
-        # …and no main window is on screen: the wizard precedes show().
-        assert not [
-            w for w in qapp.topLevelWidgets()
-            if isinstance(w, MainWindow) and w.isVisible()
-        ]
-        state = dlg._vm.state
-        observed["kind"] = state.kind
-        observed["step"] = state.step
-
     application = Application(qapp, http=llm_client)
-    modal_qdialog.on_exec(_record)
     window = await application.start(str(db_path))
+    # The window proper is what start() handed over; the wizard is not even
+    # constructed yet — no nested modal loop wrapped the startup coroutine.
+    assert window.isVisible()
+    assert application._calendar_wizard is None
     try:
-        assert [type(d) for d in opened] == [CalendarWizardDialog]
-        assert observed == {"kind": KIND_STANDARD, "step": STEP_CHOICE}
+        await wait_for(lambda: application._calendar_wizard is not None)
+        wizard = application._calendar_wizard
+        await helpers.wait_until_settled()  # the prefilled draft read done
+        state = wizard._vm.state
+        assert state.kind == KIND_STANDARD
+        assert state.step == STEP_CHOICE
+
+        # The close the cross button gives: preset applies, «показан» flips.
+        wizard.reject()
+        await helpers.wait_until_settled()  # the service close step committed
     finally:
         window.close()
         await application.shutdown()
@@ -286,24 +284,24 @@ async def test_first_entry_close_applies_preset_and_marks_seen_once(
     assert rows[CALENDAR_SETTINGS_KEY] == encode_calendar(StandardCalendar())
     assert CALENDAR_DRAFT_KEY not in rows
 
-    # Next opening of the same game: no wizard until someone summons it.
-    second: list = []
-    modal_qdialog.on_exec(second.append)
+    # Next opening of the same game: no wizard until someone summons it —
+    # the deferred hook takes its turn and steps past the shown flag.
     window2 = await application.start(str(db_path))
     try:
-        assert second == []
+        await asyncio.sleep(0)  # the loop turn the deferred call needed
+        assert application._calendar_wizard is None
     finally:
         window2.close()
         await application.shutdown()
 
 
 async def test_abandoned_draft_calls_the_wizard_back(
-    qapp, llm_client, tmp_llm_config, modal_qdialog, tmp_path
+    qapp, llm_client, tmp_llm_config, tmp_path, wait_for
 ):
-    """Scenario «Брошенный черновик зовёт обратно»: a draft closed with the
-    wizard keeps the flag at «не показан», the game lives on the preset the
-    whole time, and every following open resumes the flow at the saved
-    stage with the saved week."""
+    """Scenario «Брошенный черновик зовёт обратно» on the W3 contour: a draft
+    wizard closed without applying keeps the flag at «не показан», the game
+    lives on the preset the whole time, and every following open resumes the
+    deferred wizard at the saved stage with the saved week."""
     db_path = tmp_path / "Drafty" / "game.db"
     db_path.parent.mkdir(parents=True)
     (db_path.parent / "images").mkdir()
@@ -330,36 +328,37 @@ async def test_abandoned_draft_calls_the_wizard_back(
 
     application = Application(qapp, http=llm_client)
 
-    resumption: dict = {}
+    async def _boot_resume_and_close() -> dict:
+        """One open: the deferred wizard resumes on the draft and is then
+        closed the way the cross does — draft left behind, flag untouched."""
+        window = await application.start(str(db_path))
+        try:
+            await wait_for(lambda: application._calendar_wizard is not None)
+            wizard = application._calendar_wizard
+            await helpers.wait_until_settled()
+            state = wizard._vm.state
+            resumed = {
+                "kind": state.kind,
+                "step": state.step,
+                "week": tuple(state.week_names),
+            }
+            # The draft-wizard opens over the window and lives on the preset —
+            # the game itself was never moved.
+            assert isinstance(current_calendar(), StandardCalendar)
+            wizard.reject()
+            await helpers.wait_until_settled()  # service close step done
+            return resumed
+        finally:
+            window.close()
+            await application.shutdown()
 
-    def _record_into(target: dict):
-        opened: list = []
-
-        def _record(dlg) -> None:
-            opened.append(dlg)
-            state = dlg._vm.state
-            target["kind"] = state.kind
-            target["step"] = state.step
-            target["week"] = tuple(state.week_names)
-
-        return opened, _record
-
-    opened, record = _record_into(resumption)
-    modal_qdialog.on_exec(record)
-    window = await application.start(str(db_path))
-    try:
-        assert [type(d) for d in opened] == [CalendarWizardDialog]
-        # Continuation, not a restart: the saved stage, prefilled by the draft.
-        assert resumption == {
-            "kind": KIND_CUSTOM,
-            "step": STEP_MONTHS,
-            "week": ("Понедельник", "Вторник", "Среда"),
-        }
-        # The draft warms the wizard only — the game is on the preset.
-        assert isinstance(current_calendar(), StandardCalendar)
-    finally:
-        window.close()
-        await application.shutdown()
+    resumption = await _boot_resume_and_close()
+    # Continuation, not a restart: the saved stage, prefilled by the draft.
+    assert resumption == {
+        "kind": KIND_CUSTOM,
+        "step": STEP_MONTHS,
+        "week": ("Понедельник", "Вторник", "Среда"),
+    }
 
     rows = _settings_rows(db_path)
     assert rows[CALENDAR_WIZARD_SEEN_KEY] == "0"  # flag NOT set (spec)
@@ -368,18 +367,8 @@ async def test_abandoned_draft_calls_the_wizard_back(
 
     # Reopen: the wizard calls the player back — same stage, same week, and
     # the flag still refuses to flip while the draft lives.
-    reopening: dict = {}
-    opened2, record2 = _record_into(reopening)
-    modal_qdialog.on_exec(record2)
-    window2 = await application.start(str(db_path))
-    try:
-        assert [type(d) for d in opened2] == [CalendarWizardDialog]
-        assert reopening == resumption
-        assert isinstance(current_calendar(), StandardCalendar)
-    finally:
-        window2.close()
-        await application.shutdown()
-
+    reopening = await _boot_resume_and_close()
+    assert reopening == resumption
     assert _settings_rows(db_path)[CALENDAR_WIZARD_SEEN_KEY] == "0"
 
 

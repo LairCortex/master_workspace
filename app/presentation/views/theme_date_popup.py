@@ -32,8 +32,16 @@ class ThemeDatePopup(QWidget):
     #: coordinate, the era is read off the grid's own era flag at emit time.
     date_selected = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
+    def __init__(self) -> None:
+        # P3 (NRI-0015, spec event-timeline «Панель выбора даты имеет читаемые
+        # состояния»): a widget-parented top level inherits the stylesheet
+        # chain of its ancestors, and under the chrome-attached panels the
+        # generic ``QWidget[uiRole="chrome"] QPushButton`` accent rule filled
+        # every day cell of an opened date popup (live audit P3). The popup is
+        # therefore created PARENT-LESS — only the application-wide popup sheet
+        # skins it — and the opener keeps the object alive through its own
+        # attribute (exactly like the tooltip bridge).
+        super().__init__(None, Qt.WindowType.Popup)
         self.setObjectName("themeDatePopup")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)

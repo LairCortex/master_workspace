@@ -29,7 +29,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -249,7 +249,7 @@ async def _tap_qml(qtbot, widget, object_name: str) -> None:
 # ── scene 1: the wizard to the end and the life of a custom game ─────────────
 
 async def test_custom_calendar_from_wizard_to_every_caption_and_restart(
-    qapp, llm_client, tmp_llm_config, modal_qdialog, tmp_path, qtbot,
+    qapp, llm_client, tmp_llm_config, tmp_path, qtbot,
     wait_for, custom_spec,
 ):
     application = Application(
@@ -263,29 +263,23 @@ async def test_custom_calendar_from_wizard_to_every_caption_and_restart(
     db_path.parent.mkdir(parents=True, exist_ok=True)
     (db_path.parent / "images").mkdir(exist_ok=True)
 
-    # ── A. a NEW game: the first-entry wizard really precedes the window ────
-    # Offscreen true modals are observed through ModalControl (the C4 suite's
-    # convention): the dialog is constructed by start() and its close
-    # semantics run whole («Крест = Стандартный» applies the preset once).
-    first_entry: dict = {}
-
-    def _record_first_entry(dlg) -> None:
-        assert application._window is None  # before MainWindow.show()
-        assert not [
-            w for w in qapp.topLevelWidgets()
-            if isinstance(w, MainWindow) and w.isVisible()
-        ]
-        first_entry["type"] = type(dlg)
-        first_entry["kind"] = dlg._vm.state.kind
-        first_entry["step"] = dlg._vm.state.step
-
-    modal_qdialog.on_exec(_record_first_entry)
+    # ── A. a NEW game: the window first, the wizard opens deferred over it ───
+    # NRI-0015 (task 2.4, W3): ``Application.start()`` no longer enters a
+    # modal loop — the first-entry wizard is built on the next loop turn AFTER
+    # ``MainWindow.show()``; its close semantics run whole («Крест =
+    # Стандартный» applies the preset once) through the live session.
     window = await application.start(str(db_path))
-    assert first_entry == {
-        "type": CalendarWizardDialog,
-        "kind": KIND_STANDARD,
-        "step": STEP_CHOICE,
-    }
+    assert window.isVisible()
+    assert application._calendar_wizard is None  # not built while start() is in flight
+    await wait_for(lambda: application._calendar_wizard is not None)
+    first_entry = application._calendar_wizard
+    await helpers.wait_until_settled()  # the prefilled draft read done
+    assert isinstance(first_entry, CalendarWizardDialog)
+    assert first_entry._vm.state.kind == KIND_STANDARD
+    assert first_entry._vm.state.step == STEP_CHOICE
+    first_entry.reject()
+    await helpers.wait_until_settled()  # the service close step committed
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     try:
         rows = _settings_rows(db_path)
         assert rows[CALENDAR_WIZARD_SEEN_KEY] == "1"  # the boot close applied the preset once

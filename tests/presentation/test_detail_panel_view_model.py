@@ -79,6 +79,17 @@ def test_show_event_publishes_header_tabs_and_python_derived_rows(monkeypatch):
     assert "entity preview.webp" in row["imageSource"]
 
 
+def test_event_selection_flag_tracks_show_event_and_clear():
+    # NRI-0015 (M4): the empty-panel hint binds this flag; show_event raises
+    # it, clear lowers it again.
+    vm = DetailPanelViewModel()
+    assert vm.eventSelected is False
+    vm.show_event(_event())
+    assert vm.eventSelected is True
+    vm.clear()
+    assert vm.eventSelected is False
+
+
 def test_clear_resets_header_and_all_four_models():
     vm = DetailPanelViewModel()
     vm.show_event(_event(characters=[_entity(2, "Герой")]))

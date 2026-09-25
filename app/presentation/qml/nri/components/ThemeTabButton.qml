@@ -34,6 +34,11 @@ TabButton {
     rightPadding: padding
     font.pixelSize: Tokens.px(islandTokens, "font.size.md", 13)
 
+    // NRI-0015 (task 1.1): the button's natural minimum width is its text's
+    // implicit width plus the button's own horizontal padding — the caption
+    // floor never comes from a hand-tuned pt constant.
+    implicitWidth: implicitContentWidth + leftPadding + rightPadding
+
     contentItem: control.skinned ? themedLabel : null
 
     Text {

@@ -159,11 +159,37 @@ Rectangle {
             Layout.fillWidth: true
             currentIndex: 0
 
+            // NRI-0015 (M1, design T1): the visible caption is the registry's
+            // short tab_label; the full plural stays reachable as the tab's
+            // accessibility name and as the native tooltip (shown by the
+            // island's bridge — the timeline-button pattern). Unlike the
+            // timeline rows, the tab delegate carries no Nri.attachment: the
+            // button control and a second attached type on the same instance
+            // put the tooltip text straight from the model at hover time.
+            // The usage-site name on this bound-text tab is the sanctioned
+            // exception, not the 4.1 re-annotation.
             Repeater {
-                model: detailPanelVm.tabTitles
+                model: detailPanelVm.tabLabels
                 ThemeTabButton {
+                    id: detailTab
+                    objectName: "detailTab"
                     required property string modelData
+                    required property int index
                     text: modelData
+                    // M1 live tail (NRI-0015): TabBar's equal-width division
+                    // ignores the buttons' implicitWidth floor — in the real
+                    // default column every tab got bar/count and the widest
+                    // short caption («Локации», 71.6 pt) came out elided. The
+                    // delegate owns its caption's width: natural implicitWidth
+                    // (content + padding), never the bar's quotient.
+                    width: implicitWidth
+                    Accessible.name: detailPanelVm.tabTitles[index]
+                    HoverHandler {
+                        onHoveredChanged: tooltipBridge.tooltipRequested(
+                            hovered ? detailPanelVm.tabTitles[index] : "",
+                            point.scenePosition
+                        )
+                    }
                 }
             }
         }
@@ -219,6 +245,15 @@ Rectangle {
                     spacing: Tokens.px(root.islandTokens, "space.xs", 4)
                     boundsBehavior: Flickable.StopAtBounds
                 }
+            }
+
+            // NRI-0015 (M4, design T2): the emptiness explains itself with the
+            // same muted hint face the timeline uses («Событий ещё нет»).
+            HintText {
+                objectName: "detailEmptyHint"
+                anchors.centerIn: parent
+                text: "Выберите строку — тут появятся детали"
+                visible: !detailPanelVm.eventSelected
             }
         }
     }

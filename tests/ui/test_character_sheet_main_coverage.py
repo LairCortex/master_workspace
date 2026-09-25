@@ -326,3 +326,22 @@ async def test_open_bound_sheet_after_unbind_hides_the_button(
 
     assert not card.open_sheet_button.isVisible()
     assert application._sheet_fill is None
+
+
+async def test_editor_and_fill_first_open_land_entirely_on_screen(
+    app, dialog_input, dialog_item, wait_for,
+):
+    """NRI-0015 (task 1.3, B4): without a remembered role the first openings
+    of the oversized dialogs are placed entirely inside the screen — offscreen
+    the 1280x800 editor must shrink into the 800x800 desktop instead of being
+    born outside it, and Fill follows the same rule."""
+    application, _window = app
+    list_dlg = await open_list(app, wait_for)
+    create_via_list(list_dlg, dialog_input, "Макет")
+    editor = await wait_editor(app, wait_for, "Макет")
+    placed = editor.screen().availableGeometry().adjusted(-8, -8, 8, 8)
+    assert placed.contains(editor.frameGeometry())
+
+    create_instance_via_list(list_dlg, dialog_item, dialog_input, "Макет", "Лист")
+    fill = await wait_fill(app, wait_for, "Лист")
+    assert placed.contains(fill.frameGeometry())

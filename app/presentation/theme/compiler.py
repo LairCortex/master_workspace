@@ -387,6 +387,14 @@ GameCalendarCell {{
 GameCalendarCell:hover {{
     background: {cell_hover};
 }}
+/* The wizard's live preview embeds the grid inert (interactive=False), which
+   disables every cell — and Qt paints disabled button text in the system
+   grey no stylesheet rule below touches.  The previewed numbers are content
+   of the screen, not decoration: W5 (NRI-0015) pins them to the primary
+   foreground token so their contrast matches the rest of the text. */
+GameCalendarCell:disabled {{
+    color: {t['color.fg.primary']};
+}}
 GameCalendarCell[selected="true"] {{
     background: {t['color.accent']};
     color: {t['color.accent.fg']};

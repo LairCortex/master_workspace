@@ -155,6 +155,16 @@ Rectangle {
                         onSelectedRequested: sheetListVm.selectTemplate(index)
                     }
                 }
+
+                // NRI-0015 (B6, design T2): the empty tab explains itself with
+                // the same muted hint face the timeline uses; it disappears
+                // with the first row.
+                HintText {
+                    objectName: "templatesListHint"
+                    anchors.centerIn: parent
+                    visible: templateListView.count === 0
+                    text: "Шаблонов ещё нет — создайте или возьмите пресет"
+                }
             }
 
             // ── «Листы» tab: the migrated instance_list ────────────────────

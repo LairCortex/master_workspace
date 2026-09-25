@@ -57,7 +57,10 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
         self.setup_island()
         layout.addWidget(self.quick)
 
-        self.date_popup = ThemeDatePopup(self)
+        # P3 (NRI-0015): parent-less — this panel sits under the chrome-attached
+        # central widget, whose generic QPushButton rule would accent-fill every
+        # day cell through the stylesheet parent chain; popup sheet only.
+        self.date_popup = ThemeDatePopup()
         self.date_popup.date_selected.connect(self.vm.set_date)
         self.vm.datePopupRequested.connect(self._open_date_popup)
         self.vm.snapshotRequested.connect(self.snapshot_requested.emit)

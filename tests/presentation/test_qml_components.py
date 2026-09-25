@@ -1248,3 +1248,77 @@ def test_tooltip_bridge_shows_tooltips_off_skin(qtbot, qapp, runtime, tmp_path):
         assert widget.errors() == []
     finally:
         QToolTip.hideText()
+
+
+# ── nri-0015 (task 3.4, audit E4=B5): the combo indicator inside the frame ───
+
+
+def test_combo_indicator_is_painted_inside_the_field_in_both_themes(
+    qtbot, qapp, runtime, themed
+):
+    # Spec qml-components «Индикатор раскрытия внутри рамки поля»: the arrow
+    # a hand-assigned style slot gets no style positioning — unanchored it
+    # floated at the frame's top-left corner, over the border. With the
+    # display text emptied the arrow is the ONLY fg-token pixel in the scan,
+    # so the grab pins: it paints (the scan is non-vacuous), stays strictly
+    # inside the field rect with the frame continuous on both edges, and
+    # sits in its right-end band inside the control's own padding.
+    palette = QmlPalette(runtime)
+    tokens = palette.tokens
+    fg_rgb = _token_rgb(tokens["color.fg.primary"])
+    border_rgb = _token_rgb(tokens["color.border"])
+    assert fg_rgb != border_rgb  # the scan distinguishes arrow from frame
+
+    widget = load_gallery(qtbot, qapp, runtime, palette)
+    assert widget.errors() == []
+    combo = _find_item(widget, "galleryCombo")
+    combo.setProperty("currentIndex", -1)  # empty display text: arrow-only scan
+    assert combo.property("displayText") == ""
+
+    pad = float(combo.property("padding"))
+    right_pad = float(combo.property("rightPadding"))
+    arrow = float(combo.property("arrowSize"))
+    # The Basic combo reserves the indicator's own width inside rightPadding
+    # (its style's padding binding) — the themed arrow has to land in that
+    # reserved band, not on top of the frame.
+    assert right_pad == pad + arrow
+    w = combo.width()
+    h = combo.height()
+    origin = combo.mapToScene(QPointF(0, 0))
+
+    def _fg_hits(img: QImage) -> list[tuple[float, float]]:
+        """fg-token pixels around the field in the item-local coordinate
+        system (a ±4 px ring beyond the frame is included — an indicator
+        crossing or floating over the border lands in the scan)."""
+        sx = img.width() / widget.width()
+        sy = img.height() / widget.height()
+        ox, oy = origin.x() * sx, origin.y() * sy
+        hits = []
+        for py in range(max(0, int(oy) - 4), min(img.height(), int(oy + h * sy) + 4)):
+            for px in range(max(0, int(ox) - 4), min(img.width(), int(ox + w * sx) + 4)):
+                c = img.pixelColor(px, py)
+                if (c.red(), c.green(), c.blue()) == fg_rgb:
+                    hits.append(((px - ox) / sx, (py - oy) / sy))
+        return hits
+
+    # The Canvas paints on the render pass — wait for the arrow to appear,
+    # then judge the settled grab.
+    qtbot.waitUntil(lambda: len(_fg_hits(_grab_rgb(widget))) >= 3, timeout=5000)
+    img = _grab_rgb(widget)
+    fg_hits = _fg_hits(img)
+    assert fg_hits, "the themed arrow painted nothing in this grab"
+
+    # A frame the arrow crossed would stop being the border token there.
+    assert _item_pixel(widget, img, combo, 0, combo.height() / 2) == border_rgb
+    assert _item_pixel(widget, img, combo, combo.width() - 1, combo.height() / 2) == border_rgb
+
+    for lx, ly in fg_hits:
+        # Strictly inside the field rect — no fg pixel may reach or cross the
+        # frame (the ring sampled ±4 px beyond the rect is included above).
+        assert 1.0 < lx < w - 1.0 and 1.0 < ly < h - 1.0, (lx, ly)
+        # Anchored to the right-end band reserved for the indicator inside
+        # the frame — the corner-over-the-border float the audit saw would
+        # land top-left, outside this band.
+        assert lx >= w - arrow - right_pad - 2.0, (lx, w, arrow, right_pad)
+        assert pad - 1.0 <= ly <= h - pad + 1.0, (ly, h, pad)
+    assert widget.errors() == []
