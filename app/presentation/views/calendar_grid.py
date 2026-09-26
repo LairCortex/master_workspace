@@ -22,11 +22,13 @@ marker, no neighbouring-month days, incomplete weeks are filled with empty
 unclickable cells; a cell has exactly the normal/hover/selected looks.
 
 The classes ``GameCalendarGrid``, ``GameCalendarCell``,
-``GameCalendarIntercalaryChip`` and ``GameCalendarDayName`` are STYLE-FACING
-names: the app-wide popup sheet (``compile_popup_qss``) skins them by class
-name (``GameCalendarCell`` additionally through its ``selected`` property), so
-renaming one silently drops the grid's theme — rename only together with the
-sheet (design D4).
+``GameCalendarIntercalaryChip``, ``GameCalendarDayName`` and
+``GameCalendarEraCheck`` are STYLE-FACING names: the app-wide popup sheet
+(``compile_popup_qss``) skins them by class name (``GameCalendarCell``
+additionally through its ``selected`` property, ``GameCalendarEraCheck``
+through its ``::indicator`` sub-control, NRI-0018 Д8), so renaming one
+silently drops the grid's theme — rename only together with the sheet
+(design D4; guarded by the pair test in ``test_calendar_nav_band``).
 """
 from __future__ import annotations
 
@@ -57,6 +59,11 @@ from app.domain.game_calendar import (
 )
 from app.presentation.utils.date_utils import STANDARD_WEEK_NAMES
 
+#: The navigation row's single control band (NRI-0018 Д8, spec «Строка
+#: навигации — единая полоса высот»): arrows, month combo, year spin and the
+#: era flag all clamp to this height and share its vertical centre.
+NAV_ROW_HEIGHT = 32
+
 
 class GameCalendarDayName(QLabel):
     """One weekday caption of the header row (STYLE-FACING, see module)."""
@@ -81,6 +88,18 @@ class GameCalendarCell(QPushButton):
     @property
     def selected(self) -> bool:
         return bool(self.property("selected"))
+
+
+class GameCalendarEraCheck(QCheckBox):
+    """The «до н.э.» era flag of the navigation row (STYLE-FACING, see module).
+
+    A named class because the app-wide popup sheet may never carry a generic
+    ``QCheckBox`` rule (every checkbox of the process would repaint — W2a D2):
+    the indicator's theme is addressed through this one name
+    (``GameCalendarEraCheck::indicator`` in ``compile_popup_qss``).  Off-skin
+    the sheet is empty and the box falls back to the native OS look untouched
+    (ui-widget-catalog «Off-skin не ломается»).
+    """
 
 
 class GameCalendarIntercalaryChip(QPushButton):
@@ -157,24 +176,30 @@ class GameCalendarGrid(QWidget):
         nav = QHBoxLayout()
         nav.setContentsMargins(6, 4, 6, 4)
         nav.setSpacing(2)
+        # One 32 px band for the whole row (NRI-0018 Д8): the arrows join the
+        # library's square glyph gauge (28→32), the native combo/spinner/
+        # checkbox clamp their height to the same value.
         self._prev_btn = QPushButton("◀")
-        self._prev_btn.setFixedSize(28, 28)
+        self._prev_btn.setFixedSize(NAV_ROW_HEIGHT, NAV_ROW_HEIGHT)
         self._prev_btn.clicked.connect(partial(self._step_month, -1))
         self._month_combo = QComboBox()
         self._month_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToContents
         )
+        self._month_combo.setFixedHeight(NAV_ROW_HEIGHT)
         self._month_combo.currentIndexChanged.connect(self._on_month_selected)
         self._year_spin = QSpinBox()
         self._year_spin.setRange(MIN_YEAR, MAX_YEAR)
         self._year_spin.setButtonSymbols(QSpinBox.ButtonSymbols.PlusMinus)
         self._year_spin.setFixedWidth(80)
+        self._year_spin.setFixedHeight(NAV_ROW_HEIGHT)
         self._year_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._year_spin.valueChanged.connect(self._on_year_changed)
         self._next_btn = QPushButton("▶")
-        self._next_btn.setFixedSize(28, 28)
+        self._next_btn.setFixedSize(NAV_ROW_HEIGHT, NAV_ROW_HEIGHT)
         self._next_btn.clicked.connect(partial(self._step_month, 1))
-        self._bc_check = QCheckBox("до н.э.")
+        self._bc_check = GameCalendarEraCheck("до н.э.")
+        self._bc_check.setFixedHeight(NAV_ROW_HEIGHT)
         nav.addWidget(self._prev_btn)
         nav.addWidget(self._month_combo, 1)
         nav.addSpacing(8)

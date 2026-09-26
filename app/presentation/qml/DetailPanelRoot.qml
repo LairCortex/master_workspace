@@ -11,6 +11,23 @@ Rectangle {
     property alias currentTab: tabBar.currentIndex
     property alias organizationContentY: organizationList.contentY
 
+    // NRI-0018 (design Д5): the "all tabs whole" threshold this panel needs —
+    // the tabs' own natural widths, the strip's spacing between them and this
+    // island's side margins, measured from the delegates (never a hand-tuned
+    // number). DetailPanel.min_tabs_width() re-publishes it for the placement
+    // memory (role "main" widens a restored frame to it) and the splitter
+    // floors in MainWindow.
+    readonly property real minTabsWidth: {
+        var strip = 0
+        for (var i = 0; i < detailTabs.count; ++i)
+            strip += detailTabs.itemAt(i).implicitWidth
+        return Math.ceil(
+            strip
+            + tabBar.spacing * Math.max(0, detailTabs.count - 1)
+            + 2 * Tokens.px(root.islandTokens, "space.xs", 4)
+        )
+    }
+
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
     readonly property color surfaceColor:
@@ -159,29 +176,24 @@ Rectangle {
             Layout.fillWidth: true
             currentIndex: 0
 
-            // NRI-0015 (M1, design T1): the visible caption is the registry's
-            // short tab_label; the full plural stays reachable as the tab's
-            // accessibility name and as the native tooltip (shown by the
-            // island's bridge — the timeline-button pattern). Unlike the
-            // timeline rows, the tab delegate carries no Nri.attachment: the
-            // button control and a second attached type on the same instance
-            // put the tooltip text straight from the model at hover time.
-            // The usage-site name on this bound-text tab is the sanctioned
-            // exception, not the 4.1 re-annotation.
+            // NRI-0018 (Д5): the retired short captions — every tab wears the
+            // registry's full plural again, as text, accessibility name AND
+            // tooltip at once (spec main-window scenario «Подпись и имя
+            // доступности одно»). The name stays annotated because TabBar
+            // divides its bar evenly and the text-derived name is the
+            // live-platform half only (AGENTS F4); the bound-text control
+            // keeps the 4.1 convention guard silent. The delegate's
+            // width: implicitWidth (NRI-0015 M1 tail) keeps every caption its
+            // natural width regardless of the bar's quotient.
             Repeater {
-                model: detailPanelVm.tabLabels
+                id: detailTabs
+                model: detailPanelVm.tabTitles
                 ThemeTabButton {
                     id: detailTab
                     objectName: "detailTab"
                     required property string modelData
                     required property int index
                     text: modelData
-                    // M1 live tail (NRI-0015): TabBar's equal-width division
-                    // ignores the buttons' implicitWidth floor — in the real
-                    // default column every tab got bar/count and the widest
-                    // short caption («Локации», 71.6 pt) came out elided. The
-                    // delegate owns its caption's width: natural implicitWidth
-                    // (content + padding), never the bar's quotient.
                     width: implicitWidth
                     Accessible.name: detailPanelVm.tabTitles[index]
                     HoverHandler {

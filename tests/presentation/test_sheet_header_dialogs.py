@@ -18,16 +18,21 @@ test_sheet_header_accessibility); here the usage sites are pinned:
 * the theme-grab wireframe stays intact with the header on: the dialog's own
   corner pixel is still the ``color.bg.surface`` token — the header carries
   no private fill, so no OS-palette strip can leak at the sheet edge (the
-  test_theme_grab pixel contract, recomputed with the header).
+  test_theme_grab pixel contract, recomputed with the header);
+* since NRI-0018 (Д4) the card's title is localized through the registry
+  («Карточка: Персонаж», never «Карточка: character») — pinned per type,
+  plus the grep-pin that the raw-key interpolation is gone.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QDialog
 
+from app.presentation.views import entity_card_dialog as entity_card_dialog_module
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from tests.presentation.qml_helpers import find_item
@@ -69,8 +74,43 @@ def test_entity_card_header_shows_the_window_title(qtbot):
     qtbot.addWidget(dialog)
 
     assert find_item(dialog.quick, "entitySheetHeader") is not None
-    assert dialog._root.property("sheetTitle") == "Карточка: character"
-    assert _header_title(dialog) == "Карточка: character"
+    # NRI-0018 Д4: the title names the type in Russian (registry display_label),
+    # the raw key never reaches the visible title.
+    assert dialog.windowTitle() == "Карточка: Персонаж"
+    assert dialog._root.property("sheetTitle") == "Карточка: Персонаж"
+    assert _header_title(dialog) == "Карточка: Персонаж"
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "russian_label"),
+    [
+        ("character", "Персонаж"),
+        ("organization", "Организация"),
+        ("item", "Предмет"),
+        ("location", "Локация"),
+        ("rating", "Рейтинг"),
+    ],
+)
+def test_card_title_names_the_type_in_russian_for_every_type(
+    qtbot, entity_type, russian_label
+):
+    """NRI-0018 task 3.1 (spec qml-shell «Название карточки всех типов»): every
+    card reads «Карточка: <русская метка реестра>», no raw registry key shows."""
+    dialog = EntityCardDialog(None, entity_type)
+    qtbot.addWidget(dialog)
+
+    title = f"Карточка: {russian_label}"
+    assert dialog.windowTitle() == title
+    assert _header_title(dialog) == title
+
+
+def test_card_title_source_localizes_through_the_registry():
+    """The grep-pin half of task 3.1 (design Д4): the raw-key interpolation
+    «Карточка: {entity_type}» is gone from the dialog source; the title is
+    built through the registry's display_label."""
+    source = Path(entity_card_dialog_module.__file__).read_text(encoding="utf-8")
+    assert 'f"Карточка: {entity_type}"' not in source
+    assert "Карточка: {entity_registry.display_label(entity_type)}" in source
 
 
 def test_event_header_close_press_rejects_like_the_cancel_route(qtbot):

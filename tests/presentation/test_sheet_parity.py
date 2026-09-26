@@ -11,7 +11,10 @@ audit (E2, CR1/E3, CR3, CR4) held them to one contract, pinned here offscreen:
 * every ✨ AI button — its accessible name «Сгенерировать: <поле>» names the
   target of THIS sheet (the card wave names its entity type through the
   registry, never «Событие»), and the button itself sits inside the row of its
-  target field, not in a separate row between blocks (3.3).
+  target field, not in a separate row between blocks (3.3). Since NRI-0018
+  the whole-entity wave buttons are the exception to the seating: they moved
+  to the sheet-header action slot (their names stay pinned here, their new
+  parent — the slot host — in test_sheet_header_actions).
 
 The AI buttons are never clicked here: a press would fire a real LLM request —
 the contract pinned is the name and the position only.
@@ -79,16 +82,18 @@ CARD_AI_NAMES = [
     ("entityGenerateButton", "Сгенерировать: Персонаж"),
 ]
 
+# NRI-0018 (Д3, «Кнопка стоит у заголовка»): the whole-entity wave buttons
+# left the name rows for the sheet-header action slot; their parent selector
+# is now the slot host, pinned in test_sheet_header_actions. The field rows
+# below list only the generation buttons that still ride their field's row.
 EVENT_AI_ROW_PAIRS = [
     ("eventNameField", "eventNameAiButton"),
-    ("eventNameField", "eventEntityAiButton"),
     ("eventCharacteristicsField", "eventCharacteristicsAiButton"),
     ("eventBackstoryField", "eventBackstoryAiButton"),
 ]
 
 CARD_AI_ROW_PAIRS = [
     ("entityNameField", "entityNameAiButton"),
-    ("entityNameField", "entityGenerateButton"),
     ("entityCharacteristicsField", "entityCharacteristicsAiButton"),
     ("entityBackstoryField", "entityBackstoryAiButton"),
     ("entityExtraField_personality", "entityExtraAiButton_personality"),

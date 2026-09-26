@@ -155,6 +155,45 @@ def test_no_center_rule_keeps_an_unremembered_window_untouched(tmp_path, qtbot):
     assert window.geometry() == before
 
 
+# ── NRI-0018 (Д5): the restored main width widens to the window's provider ──
+
+
+def test_restored_width_widens_to_the_provided_minimum(tmp_path, qtbot):
+    """Spec main-window «Узкая сохранённая рамка не режет вкладки» — the
+    provider is the detail panel's all-tabs-whole threshold; the position and
+    the height of the saved frame ride through untouched."""
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"main": [120, 90, 240, 700]}))
+    memory = WindowGeometryMemory(prefs)
+    window = _shown(qtbot, size=(400, 300))
+
+    assert memory.restore(window, "main", min_width=lambda: 500) is True
+    # …exactly to the threshold, in frame coordinates (the 2 px offscreen
+    # decoration stub is absorbed by _place_inside, the saved frame returns whole).
+    assert window.frameGeometry().getRect() == (120, 90, 500, 700)
+
+
+def test_provided_minimum_below_the_saved_width_changes_nothing(tmp_path, qtbot):
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"main": [10, 20, 700, 600]}))
+    memory = WindowGeometryMemory(prefs)
+    window = _shown(qtbot, size=(400, 300))
+
+    assert memory.restore(window, "main", min_width=lambda: 650) is True
+    assert window.frameGeometry().getRect() == (10, 20, 700, 600)
+
+
+def test_attach_takes_the_provider_into_the_main_role_too(tmp_path, qtbot):
+    # The attach half of the same rule (main.py wires role "main" with it).
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"main": [50, 60, 600, 650]}))
+    memory = WindowGeometryMemory(prefs)
+    window = _shown(qtbot, size=(400, 300))
+
+    assert memory.attach(window, "main", min_width=lambda: 750) is True
+    assert window.frameGeometry().getRect() == (50, 60, 750, 650)
+
+
 # ── the one ui.json: theme and windows must not evict each other ────────────
 
 

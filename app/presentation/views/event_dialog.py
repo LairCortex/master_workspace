@@ -253,7 +253,7 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self._close_guard = None
         self._date_target = "start"
         self.setWindowTitle("Новое событие")
-        self.setMinimumSize(700, 620)
+        self.setMinimumSize(720, 620)
 
         self.vm = EventDialogIslandViewModel(owner=self, parent=self)
         self._ai_buttons = [

@@ -119,7 +119,13 @@ class TestMainWindow:
         assert [splitter.widget(i) for i in range(3)] == [
             w.timeline_widget, w.detail_panel, w.world_snapshot,
         ]
-        assert [splitter.widget(i).minimumWidth() for i in range(3)] == [220, 280, 280]
+        # NRI-0018 (Д5): the caption-holding panes stand on the detail panel's
+        # all-tabs-whole threshold, not the old hand-tuned 280 (the timeline
+        # rail keeps its own 220 floor).
+        tabs_floor = w.detail_panel.min_tabs_width()
+        assert [splitter.widget(i).minimumWidth() for i in range(3)] == [
+            220, tabs_floor, tabs_floor,
+        ]
         assert [
             splitter.widget(i).sizePolicy().horizontalStretch() for i in range(3)
         ] == [1, 1, 1]

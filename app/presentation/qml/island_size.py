@@ -12,6 +12,12 @@ The islands publish their natural size through ``implicitWidth`` /
 numbers kept as the floor); the facades mirror it onto the window here. A dialog
 may never cover the whole screen — the rest has to stay reachable — so the
 requested size is capped by the screen's available geometry.
+
+Widths ride the ui-layout-grid scale (closing OBS-2, owner decision
+2026-09-26): a content ask that outruns the port's floor is climbed to the
+next 40 px step here — the single sizing point every content-driven sheet
+opens through (:mod:`app.presentation.layout_grid` owns the step and the
+tie-break). A floor the content fits inside stays exactly the floor.
 """
 from __future__ import annotations
 
@@ -21,6 +27,8 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtWidgets import QDialog
+
+from app.presentation.layout_grid import ceil_to_width_step
 
 #: Biggest share of the screen a single dialog is allowed to take.
 SCREEN_COVER_LIMIT = 0.9
@@ -47,11 +55,18 @@ def _natural_size(root: QQuickItem | None, floor: tuple[int, int]) -> tuple[int,
 
     A broken island (no root object) must not open a 0x0 window either — it
     gets the size its port used to pin.
+
+    The width half carries the scale rule (spec ui-layout-grid, OBS-2 close):
+    an ask ABOVE the floor is climbed to the next 40 px step, so a
+    content-driven window never opens off-scale (817→840, 620→640); an ask
+    the floor already covers opens at exactly that floor — floors stay the
+    floors their design pinned, on-scale or not. Heights are not on the scale.
     """
     if root is None:
         return floor
+    asked_width = int(round(root.implicitWidth()))
     return (
-        max(floor[0], int(round(root.implicitWidth()))),
+        ceil_to_width_step(asked_width) if asked_width > floor[0] else floor[0],
         max(floor[1], int(round(root.implicitHeight()))),
     )
 

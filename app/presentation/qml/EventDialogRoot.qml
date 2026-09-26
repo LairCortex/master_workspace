@@ -30,7 +30,7 @@ Rectangle {
     property real sheetScrimAlpha: 0.0
 
     color: surfaceColor
-    implicitWidth: 700
+    implicitWidth: 720
     // The 620 the port pinned stays the CONTENT share; the header row is the
     // wireframe's own strip on top (the wireframe recomputed with the header,
     // task 4.2 — the pixel grab contract keeps the surface token at the edge).
@@ -44,6 +44,19 @@ Rectangle {
         anchors.right: parent.right
         title: root.sheetTitle
         onCloseRequested: eventDialogVm.requestCancel()
+
+        // NRI-0018 task 3.3 (spec entity-generation «Кнопка стоит у
+        // заголовка»): the wave that generates the event as a whole rides the
+        // header's action slot, right after the dialog title — the same
+        // seating the card got, one phrasing for both sheets. The objectName
+        // and the proxy contract are untouched (the label is QML-side only:
+        // this button has no fieldName, the wave rides the proxy unchanged).
+        ThemeAiButton {
+            objectName: "eventEntityAiButton"
+            proxy: eventDialogVm.entityAiProxy
+            fieldLabel: "Событие"
+            Accessible.name: "Сгенерировать: " + fieldLabel
+        }
     }
 
     ColumnLayout {
@@ -71,30 +84,18 @@ Rectangle {
                 Accessible.name: "Название события"
                 onTextEdited: eventDialogVm.name = text
             }
-            RowLayout {
-                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                ThemeAiButton {
-                    objectName: "eventNameAiButton"
-                    proxy: eventDialogVm.nameAiProxy
-                    entityType: "event"
-                    fieldName: "name"
-                    fieldLabel: "Название"
-                    // nri-0012 task 3.5: the «✨» glyph is mute in the tree; the
-                    // name follows the fieldLabel the proxy prompt already uses.
-                    Accessible.name: "Сгенерировать: " + fieldLabel
-                }
-                ThemeAiButton {
-                    objectName: "eventEntityAiButton"
-                    proxy: eventDialogVm.entityAiProxy
-                    // nri-0012 task 3.5: the wave generates the event as a whole
-                    // — the labelled target surfaces in the tree (the label is
-                    // QML-side only here: this button has no fieldName, the wave
-                    // rides the proxy unchanged). E3 (NRI-0015 task 3.3): the
-                    // button belongs to the identity field's block, so it sits
-                    // in this row instead of floating between blocks.
-                    fieldLabel: "Событие"
-                    Accessible.name: "Сгенерировать: " + fieldLabel
-                }
+            // NRI-0018 (spec entity-generation «Кнопка стоит у заголовка»):
+            // only the name field's own ✨ stays in this cell — the whole-event
+            // wave moved into the header's action slot above.
+            ThemeAiButton {
+                objectName: "eventNameAiButton"
+                proxy: eventDialogVm.nameAiProxy
+                entityType: "event"
+                fieldName: "name"
+                fieldLabel: "Название"
+                // nri-0012 task 3.5: the «✨» glyph is mute in the tree; the
+                // name follows the fieldLabel the proxy prompt already uses.
+                Accessible.name: "Сгенерировать: " + fieldLabel
             }
 
             TitleText { text: "Дата начала: *" }

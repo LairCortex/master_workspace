@@ -51,7 +51,8 @@ Rectangle {
     // to; the recycling window sizes on the taller kind.
     readonly property int rowHeight: 24
     readonly property int detailedRowHeight: 54
-    readonly property int squareSide: 30        // the header's setFixedSize(30, 30)
+    // NRI-0018 task 1.3: the header square lost its private knob («+» wears
+    // the library ThemeIconButton gauge now — no island side constants left).
     // Inset of the list inside the content field: the card's own rounding, so a
     // full-width row wash can never square off the field's rounded corner or
     // cross its hairline border (see the field node below).
@@ -124,11 +125,12 @@ Rectangle {
         // ANCHOR geometry, not a nested RowLayout: this Qt build treats an
         // item's effective layout minimum as its implicitWidth even against an
         // explicit Layout.minimumWidth: 0, so row children never squeeze below
-        // their hints and the fixed 30 px square slides off the clipped
-        // QQuickWidget at narrow panels. Anchors reproduce the old QHBoxLayout
-        // contract deterministically: the chip/add group rides the right edge,
-        // the title hugs the left, the stretch (and the elision) is swallowed
-        // by the title first, then by the chip.
+        // their hints and the library square glyph (ThemeIconButton, NRI-0018)
+        // slides off the clipped QQuickWidget at narrow panels. Anchors
+        // reproduce the old QHBoxLayout contract deterministically: the
+        // chip/add group rides the right edge, the title hugs the left, the
+        // stretch (and the elision) is swallowed by the title first, then by
+        // the chip.
         Item {
             Layout.fillWidth: true
             Layout.minimumWidth: 0
@@ -145,12 +147,10 @@ Rectangle {
                                             windowChip.x - headerSpacing))
             }
 
-            ThemeButton {
+            ThemeIconButton {
                 id: addButton
                 objectName: "addButton"
                 text: "+"
-                width: root.squareSide        // the migrated setFixedSize(30, 30)
-                height: root.squareSide
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 Nri.tooltip: "Добавить событие (правый клик — другие сущности)"

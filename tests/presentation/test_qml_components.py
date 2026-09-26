@@ -187,6 +187,9 @@ def test_qmldir_declares_module_and_future_component_entries():
             # nri-0014 task 4.1: the island-sheet title row joins the module
             # (spec qml-components «Компонент строки заголовка листа»).
             "ThemeSheetHeader",
+            # NRI-0018 task 1.2: the square small-action glyph button (spec
+            # qml-components «Квадратная мелкая кнопка действия библиотеки»).
+            "ThemeIconButton",
         )
     ]
     assert TOKENS_JS.is_file()

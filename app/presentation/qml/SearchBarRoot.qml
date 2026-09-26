@@ -24,7 +24,15 @@ Rectangle {
 
     color: surfaceColor
     implicitWidth: 500
-    implicitHeight: content.implicitHeight
+    // NRI-0018 task 5.3 (spec ui-layout-grid «Отступ содержимого листов
+    // задан единым токеном»): the shared sheet margin (space.md — the
+    // content column below insets by it) must be part of the strip the
+    // facade fixes to this implicit height, exactly like the card and the
+    // event sheet keep the token on all their edges; with the bare content
+    // height a taller token would push the row band off the window's bottom.
+    readonly property real contentInset:
+        Tokens.px(root.islandTokens, "space.md", 16)
+    implicitHeight: content.implicitHeight + 2 * contentInset
 
     function syncQuery() {
         if (searchInput.text !== searchBarVm.query)
@@ -53,7 +61,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: Tokens.px(root.islandTokens, "space.xs", 4)
+        anchors.margins: root.contentInset
         spacing: 0
 
         RowLayout {

@@ -49,12 +49,12 @@ Rectangle {
 
     // Natural content size (island_size.py mirrors it onto the window): the
     // button row declares the width the six actions need, so the dialog opens
-    // wide enough instead of squeezing their texts off the window. The old
-    // 420x520 stays as the floor.
+    // wide enough instead of squeezing their texts off the window. The floor
+    // rides the ui-layout-grid scale (NRI-0018 Д6): 420 raised to its step.
     readonly property real contentMargin:
         Tokens.px(islandTokens, "space.md", 16)
     implicitWidth: Math.max(
-        420, sheetListColumn.implicitWidth + 2 * contentMargin)
+        440, sheetListColumn.implicitWidth + 2 * contentMargin)
     implicitHeight: Math.max(
         520, sheetListColumn.implicitHeight + 2 * contentMargin)
 

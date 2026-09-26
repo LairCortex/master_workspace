@@ -95,6 +95,9 @@ EXPECTED_COMPONENT_FILES = (
     "RowItem.qml",
     # nri-0014 task 4.1: the island-sheet title row (qml-components delta).
     "ThemeSheetHeader.qml",
+    # NRI-0018 task 1.2: the square small-action glyph button (qml-components
+    # delta «Квадратная мелкая кнопка действия библиотеки»).
+    "ThemeIconButton.qml",
     # Module probe from task 1.1, not a qmldir type: shipped so the bundle
     # mirrors the development import-path layout verbatim; inert at runtime
     # (no qmldir entry, no app code references it) — decision recorded in

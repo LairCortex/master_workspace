@@ -52,7 +52,7 @@ class DocViewerDialog(IslandDialogMixin, QDialog):
         # parent becomes a WindowModal sheet that silently greys out the
         # menu).
         self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setMinimumSize(640, 480)
+        self.setMinimumSize(720, 480)
         self.resize(720, 560)
 
         if file_path.exists():

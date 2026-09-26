@@ -390,9 +390,10 @@ Rectangle {
                     Layout.fillWidth: true
                     Layout.minimumHeight: 26
                     spacing: root.gapSm
-                    ThemeButton {
+                    // NRI-0018 task 1.3: the rail glyphs are library squares
+                    // — no Layout size here (the component owns the gauge).
+                    ThemeIconButton {
                         objectName: "railUpButton"
-                        Layout.fillWidth: true
                         text: "↑"
                         // nri-0012 task 3.3: glyph-only button — the name is
                         // the tooltip's action word (design map).
@@ -402,9 +403,8 @@ Rectangle {
                         onClicked: root.vm.move_page(root.currentPage,
                                                      root.currentPage - 1)
                     }
-                    ThemeButton {
+                    ThemeIconButton {
                         objectName: "railDownButton"
-                        Layout.fillWidth: true
                         text: "↓"
                         Accessible.name: "Вниз"
                         Nri.tooltip: "Вниз"
@@ -413,9 +413,8 @@ Rectangle {
                         onClicked: root.vm.move_page(root.currentPage,
                                                      root.currentPage + 1)
                     }
-                    ThemeButton {
+                    ThemeIconButton {
                         objectName: "railDeleteButton"
-                        Layout.fillWidth: true
                         text: "−"
                         Accessible.name: "Удалить страницу"
                         Nri.tooltip: "Удалить страницу"
@@ -424,9 +423,8 @@ Rectangle {
                         // on the facade — the rail only asks (D1)
                         onClicked: root.pageRemoveRequested(root.currentPage)
                     }
-                    ThemeButton {
+                    ThemeIconButton {
                         objectName: "railAddButton"
-                        Layout.fillWidth: true
                         text: "+"
                         Accessible.name: "Добавить страницу"
                         Nri.tooltip: "Добавить страницу после текущей"
@@ -761,7 +759,7 @@ Rectangle {
                                             text: "Удалить"
                                             onClicked: root.removeOption()
                                         }
-                                        ThemeButton {
+                                        ThemeIconButton {
                                             objectName: "optionUpButton"
                                             text: "↑"
                                             // nri-0012 task 3.3: glyph-only —
@@ -769,7 +767,7 @@ Rectangle {
                                             Accessible.name: "Поднять опцию"
                                             onClicked: root.moveOption(-1)
                                         }
-                                        ThemeButton {
+                                        ThemeIconButton {
                                             objectName: "optionDownButton"
                                             text: "↓"
                                             Accessible.name: "Опустить опцию"

@@ -164,7 +164,9 @@ Item {
     ThemeAiButton {
         id: ai
         objectName: "galleryAiButton"
-        x: 290; y: 10; width: 36; height: 36
+        // NRI-0018 Д1: the square gauge is the component's own — no usage-site
+        // size lives here anymore.
+        x: 290; y: 10
         aiState: "active"
     }
     RelatedSection {

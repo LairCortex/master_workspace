@@ -44,7 +44,7 @@ Rectangle {
     id: root
     objectName: "sheetFillRoot"
 
-    implicitWidth: 1100
+    implicitWidth: 1120
     implicitHeight: 800
 
     // ── injected VM (see the header) ────────────────────────────────────────

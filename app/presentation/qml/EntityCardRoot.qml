@@ -40,12 +40,14 @@ Rectangle {
     // Natural content size (island_size.py mirrors it onto the window), so the
     // dialog opens big enough to show the related section and the action row
     // instead of pushing them under the scroll. The sizes the port pinned
-    // (750/550 with an image, 550 without) stay as the floors; the content is
-    // measured plus the scroll bar's track, which the scene never owns, plus
-    // the header strip (task 4.2: the wireframe recomputed with the header).
+    // (760/550 with an image, 550 without; the 750 the audit saw was raised
+    // onto the ui-layout-grid step by NRI-0018 Д6) stay as the floors; the
+    // content is measured plus the scroll bar's track, which the scene never
+    // owns, plus the header strip (task 4.2: the wireframe recomputed with
+    // the header).
     readonly property real scrollbarReserve: 16
     implicitWidth: Math.max(
-        entityCardVm.hasImage ? 750 : 550,
+        entityCardVm.hasImage ? 760 : 550,
         cardColumn.implicitWidth + scrollbarReserve)
     implicitHeight: Math.max(
         550, cardColumn.implicitHeight + scrollbarReserve) + cardSheetHeader.implicitHeight
@@ -58,6 +60,20 @@ Rectangle {
         anchors.right: parent.right
         title: root.sheetTitle
         onCloseRequested: entityCardVm.requestCancel()
+
+        // NRI-0018 task 3.3 (spec qml-shell «Шапка карточки … несёт полную
+        // генерацию», entity-generation «Кнопка стоит у заголовка»): the
+        // whole-entity wave rides the header's action slot, right after the
+        // localized «Карточка: <тип>» — the objectName and the proxy contract
+        // are untouched (e2e/wiring keep addressing them), only the parent
+        // moved. The fieldLabel stays the card's own registry type (C1): a
+        // character card reads «Сгенерировать: Персонаж», never «Событие».
+        ThemeAiButton {
+            objectName: "entityGenerateButton"
+            proxy: entityCardVm.entityAiProxy
+            fieldLabel: entityCardVm.entityLabel
+            Accessible.name: "Сгенерировать: " + fieldLabel
+        }
     }
 
     ScrollView {
@@ -151,32 +167,16 @@ Rectangle {
                             Accessible.name: "Название"
                             onTextEdited: entityCardVm.name = text
                         }
-                        RowLayout {
-                            spacing: Tokens.px(root.islandTokens, "space.xs", 4)
-                            ThemeAiButton {
-                                objectName: "entityNameAiButton"
-                                proxy: entityCardVm.nameAiProxy
-                                entityType: entityCardVm.entityType
-                                fieldName: "name"
-                                fieldLabel: "Название"
-                                Accessible.name: "Сгенерировать: " + fieldLabel
-                            }
-                            ThemeAiButton {
-                                objectName: "entityGenerateButton"
-                                proxy: entityCardVm.entityAiProxy
-                                // Task 2.4 (nri-0012) + C1 (NRI-0015 task 3.3):
-                                // the wave generates this card's entity as a
-                                // whole — the fieldLabel is its own type from
-                                // the registry (the QML-side label only: the
-                                // wave rides the proxy, this label never
-                                // reaches it), so a character card reads
-                                // «Сгенерировать: Персонаж», never «Событие».
-                                // E3: the button belongs to the identity
-                                // field's block, it no longer floats in a
-                                // separate row above the grid.
-                                fieldLabel: entityCardVm.entityLabel
-                                Accessible.name: "Сгенерировать: " + fieldLabel
-                            }
+                        // NRI-0018 (spec qml-shell «Строка названия разгружена»):
+                        // only the name field's own ✨ stays in this cell — the
+                        // whole-entity wave moved into the header's action slot.
+                        ThemeAiButton {
+                            objectName: "entityNameAiButton"
+                            proxy: entityCardVm.nameAiProxy
+                            entityType: entityCardVm.entityType
+                            fieldName: "name"
+                            fieldLabel: "Название"
+                            Accessible.name: "Сгенерировать: " + fieldLabel
                         }
 
                         TitleText { text: "Рейтинг (1-20):" }
@@ -323,7 +323,7 @@ Rectangle {
                                 onClicked: entityCardVm.requestMusicOpen()
                             }
                         }
-                        ThemeButton {
+                        ThemeIconButton {
                             objectName: "entityMusicEditButton"
                             text: "✎"
                             // NRI-0017 task 4.2 (FI-4=CR2): glyph text is no

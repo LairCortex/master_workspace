@@ -131,8 +131,9 @@ class CharacterSheetListDialog(IslandDialogMixin, QDialog):
         self.setWindowTitle("Чар-листы")
         # The size a hardcoded resize() used to pin: the window now opens at the
         # island's content size (never smaller), so the whole button row fits
-        # instead of being squeezed out of the window.
-        self._size_floor = (420, 520)
+        # instead of being squeezed out of the window. The floor rides the
+        # ui-layout-grid scale (NRI-0018 Д6): 420 raised to its 440 step.
+        self._size_floor = (440, 520)
 
         self._preset_dialog: CharacterSheetPresetDialog | None = None
 

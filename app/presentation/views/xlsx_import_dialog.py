@@ -285,7 +285,7 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
         self._theme = theme if theme is not None else get_default_theme()
         self._plan = None
         self.setWindowTitle("Импорт из .xlsx")
-        self.setMinimumSize(620, 520)
+        self.setMinimumSize(640, 520)
 
         self.vm = XlsxImportViewModel(build_format_text(), parent=self)
         self.path_edit = _PathEdit(self.vm)
@@ -301,7 +301,7 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
         self.setup_island()
         layout.addWidget(self.quick)
         self._root = self.quick.rootObject()
-        fit_dialog_to_island(self, self._root, floor=(620, 520))
+        fit_dialog_to_island(self, self._root, floor=(640, 520))
         self.vm.browseRequested.connect(self._on_browse)
         self.vm.analyze_requested.connect(self.analyze_requested.emit)
         self.vm.confirm_import.connect(self.confirm_import.emit)

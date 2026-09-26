@@ -334,12 +334,17 @@ class TestDialogEntityButton:
         assert find_item(d.quick, "entityGenerateButton") is not None
 
     @pytest.mark.parametrize("kind", ["event", "card"])
-    def test_entity_button_row_sits_at_top_of_form(self, qtbot, kind):
+    def test_entity_button_sits_in_the_sheet_header_slot(self, qtbot, kind):
+        # NRI-0018 (Д3, entity-generation «Кнопка стоит у заголовка»): the wave
+        # button's parent selector is the header action slot, not a form row;
+        # the geometry of the seating lives in test_sheet_header_actions.
         d = _make_dialog(qtbot, kind)
-        if kind == "event":
-            assert find_item(d.quick, "eventEntityAiButton") is not None
-            return
-        assert find_item(d.quick, "entityGenerateButton") is not None
+        object_name = (
+            "eventEntityAiButton" if kind == "event" else "entityGenerateButton"
+        )
+        button = find_item(d.quick, object_name)
+        assert button is not None
+        assert button.parentItem().objectName() == "sheetHeaderAction"
 
     @pytest.mark.parametrize("kind", ["event", "card"])
     def test_entity_button_not_ready_by_default(self, qtbot, kind):

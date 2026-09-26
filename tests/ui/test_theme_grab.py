@@ -132,6 +132,262 @@ def test_main_window_top_left_pixel_is_themed(qtbot, tmp_path, theme):
     assert image.pixelColor(1, 1) == canvas_color(theme)
 
 
+# ── NRI-0018 (task 1.1): the library's square glyph button is token chrome —
+# re-computed pixel acceptance for the new ThemeIconButton geometry (spec
+# qml-components «Квадратная мелкая кнопка действия библиотеки»): the chip is
+# the plain ThemeButton skin family (border hairline + canvas fill, the same
+# tokens the plain text button paints), the glyph is centered in the square
+# from fg.primary, and — the point of the change — the chip is exactly the
+# 32×32 gauge with zero usage-site sizing.
+
+_ICON_BUTTON_PROBE = """
+import QtQuick
+import nri.components
+
+Item {
+    objectName: "iconProbeRoot"
+    implicitWidth: 120
+    implicitHeight: 80
+
+    // The surround paints color.danger — a token no chip surface uses, so
+    // every chip pixel below is painted, not seen through (the gallery's
+    // non-vacuity convention).
+    Rectangle {
+        anchors.fill: parent
+        color: (typeof islandPalette !== "undefined" && islandPalette !== null
+                && islandPalette.tokens)
+            ? islandPalette.tokens["color.danger"] : "lightgray"
+    }
+    ThemeIconButton {
+        objectName: "probeGlyph"
+        x: 20; y: 20
+        text: "✕"
+        Accessible.name: "Пиксельная приёмка"
+    }
+}
+"""
+
+
+def _load_icon_probe(qtbot, tmp_path, theme):
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQuickControls2 import QQuickStyle
+    from PySide6.QtQuickWidgets import QQuickWidget
+
+    from app.presentation.qml.engine import setup_qml_shell
+    from app.presentation.theme.qml_palette import QmlPalette
+
+    runtime = make_runtime(tmp_path, theme)
+    if QQuickStyle.name() != "Basic":
+        QQuickStyle.setStyle("Basic")
+    scene = tmp_path / "icon_probe.qml"
+    scene.write_text(_ICON_BUTTON_PROBE, encoding="utf-8")
+    from PySide6.QtWidgets import QApplication
+
+    engine = setup_qml_shell(QApplication.instance(), runtime)
+    widget = QQuickWidget(engine, None)
+    qtbot.addWidget(widget)
+    widget.resize(120, 80)
+    palette = QmlPalette(runtime)
+    palette.setParent(widget)
+    widget.rootContext().setContextProperty("islandPalette", palette)
+    widget.setSource(QUrl.fromLocalFile(str(scene)))
+    assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    return widget
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_icon_button_square_is_token_chip_in_both_themes(qtbot, tmp_path, theme):
+    from PySide6.QtGui import QImage
+
+    from tests.presentation.qml_helpers import find_item
+
+    widget = _load_icon_probe(qtbot, tmp_path, theme)
+    image = widget.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    scale = image.width() / max(widget.width(), 1)
+    glyph = find_item(widget, "probeGlyph")
+
+    # The gauge itself: 32×32 on the live item, not just as a declared value.
+    assert (glyph.width(), glyph.height()) == (32, 32)
+    assert (glyph.implicitWidth(), glyph.implicitHeight()) == (32, 32)
+
+    def point_rgb(px: float, py: float):
+        color = image.pixelColor(int(px * scale), int(py * scale))
+        return (color.red(), color.green(), color.blue())
+
+    def token_rgb(key: str) -> tuple[int, int, int]:
+        color = token_color(key, theme)
+        return (color.red(), color.green(), color.blue())
+
+    # The chip paints the plain-theme-button skin of its theme (no fill could
+    # fake the hairline: the probe background holds no border/canvas color).
+    assert point_rgb(20, 36) == token_rgb("color.border")          # left edge
+    assert point_rgb(24, 27) == token_rgb("color.bg.canvas")       # fill band
+    # The glyph is centered and reads in fg.primary: an exact token pixel sits
+    # in the middle 16×16 of the chip (the item's x,y is 20,20, the center is
+    # 36,36).
+    fg = token_rgb("color.fg.primary")
+    assert any(
+        point_rgb(x, y) == fg
+        for x in range(28, 44)
+        for y in range(28, 44)
+    ), "центр глифа обязан краситься токеном fg.primary"
+
+
+# ── NRI-0018 (task 2.3): the checkbox optical centering and the row strip —
+# re-captured pixel acceptance for ThemeCheckBox (spec qml-components
+# «Чекбокс ставит индикатор и подпись на один оптический центр», ui-layout-grid
+# «Контролы одного ряда стоят на единой полосе высот»). The geometry suite
+# (tests/presentation/test_theme_checkbox_optical.py) pins the model; this
+# probe pins the PAINT: the indicator band actually on screen is the 16-row box
+# at the optical place (its painted top agrees with the item's y), the painted
+# center meets the caption ink center (FontMetrics.boundingRect("Х") under the
+# label's font) within one raster, and the text button's painted band — the
+# strip the checkbox joins through its implicit height — is that same 32 px.
+
+_CHECKBOX_PROBE = """
+import QtQuick
+import nri.components
+
+Item {
+    objectName: "checkboxProbeRoot"
+    implicitWidth: 140
+    implicitHeight: 140
+
+    // The surround paints color.danger: a token no checkbox or button surface
+    // uses (the gallery's non-vacuity convention), so every band pixel of the
+    // runs below is painted, not seen through.
+    Rectangle {
+        anchors.fill: parent
+        color: (typeof islandPalette !== "undefined" && islandPalette !== null
+                && islandPalette.tokens)
+            ? islandPalette.tokens["color.danger"] : "lightgray"
+    }
+    // The pinning caption «Х» — one glyph, the very one whose ink center the
+    // pin computes.
+    ThemeCheckBox {
+        objectName: "probeCheck"
+        text: "Х"
+        x: 12; y: 20
+    }
+    ThemeButton {
+        objectName: "probeButton"
+        text: "btn"
+        x: 12; y: 80
+    }
+}
+"""
+
+
+def _load_checkbox_probe(qtbot, tmp_path, theme):
+    from PySide6.QtCore import QUrl
+    from PySide6.QtQuickControls2 import QQuickStyle
+    from PySide6.QtQuickWidgets import QQuickWidget
+    from PySide6.QtWidgets import QApplication
+
+    from app.presentation.qml.engine import setup_qml_shell
+    from app.presentation.theme.qml_palette import QmlPalette
+
+    runtime = make_runtime(tmp_path, theme)
+    if QQuickStyle.name() != "Basic":
+        QQuickStyle.setStyle("Basic")
+    scene = tmp_path / "checkbox_probe.qml"
+    scene.write_text(_CHECKBOX_PROBE, encoding="utf-8")
+    engine = setup_qml_shell(QApplication.instance(), runtime)
+    widget = QQuickWidget(engine, None)
+    qtbot.addWidget(widget)
+    widget.resize(140, 140)
+    palette = QmlPalette(runtime)
+    palette.setParent(widget)
+    widget.rootContext().setContextProperty("islandPalette", palette)
+    widget.setSource(QUrl.fromLocalFile(str(scene)))
+    assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    return widget
+
+
+def _vertical_runs(image, column: int, colors: set,
+                   top_row: int = 0, bottom_row: int | None = None) -> list[tuple[int, int]]:
+    """Maximal device-row runs in ``column`` whose pixel color lies in ``colors``.
+
+    The row window keeps a probe's run away from other stacked widgets' chips
+    that share the column (the button below the checkbox would otherwise win
+    the longest-run pick).
+    """
+    runs: list[tuple[int, int]] = []
+    start = None
+    for row in range(top_row, image.height() if bottom_row is None else bottom_row):
+        c = image.pixelColor(column, row)
+        inside = (c.red(), c.green(), c.blue()) in colors
+        if inside and start is None:
+            start = row
+        elif not inside and start is not None:
+            runs.append((start, row - 1))
+            start = None
+    if start is not None:
+        runs.append((start, (image.height() if bottom_row is None else bottom_row) - 1))
+    return runs
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_checkbox_indicator_and_button_band_are_painted_on_the_row(qtbot, tmp_path, theme):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QFontMetricsF, QImage
+
+    from tests.presentation.qml_helpers import find_item
+
+    widget = _load_checkbox_probe(qtbot, tmp_path, theme)
+    image = widget.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    scale = image.width() / max(widget.width(), 1)
+
+    canvas = token_color("color.bg.canvas", theme)
+    border = token_color("color.border", theme)
+    danger = token_color("color.danger", theme)
+    assert canvas != danger and border != danger  # the runs below stay non-vacuous
+
+    chk = find_item(widget, "probeCheck")
+    button = find_item(widget, "probeButton")
+    box = chk.property("indicator")
+    assert box is not None
+
+    # ── the painted indicator: the 16-row box, at the modeled place. The scan
+    # stops at the button's scene y so the chip below (same columns) cannot win
+    # the longest-run pick.
+    col = int(box.mapToScene(QPointF(box.width() / 2, 0)).x() * scale)
+    band_rows_end = int(round(button.mapToScene(QPointF(0, 0)).y() * scale))
+    band = {(canvas.red(), canvas.green(), canvas.blue()),
+            (border.red(), border.green(), border.blue())}
+    runs = _vertical_runs(image, col, band, bottom_row=band_rows_end)
+    assert runs, "индикатор обязан краситься токенами"
+    top, bottom = max(runs, key=lambda r: r[1] - r[0])
+    painted_span = (bottom - top + 1) / scale
+    assert painted_span == pytest.approx(box.height(), abs=1)
+    assert abs(top / scale - box.mapToScene(QPointF(0, 0)).y()) <= 1
+    painted_center = (top + bottom + 1) / (2 * scale)
+
+    # ── painted center = the caption's ink center, to one raster (Д2).
+    label = chk.property("contentItem")
+    assert label is not None
+    fm = QFontMetricsF(label.property("font"))
+    br = fm.boundingRect("Х")
+    line_top = (label.mapToScene(QPointF(0, 0)).y()
+                + (label.height() - label.implicitHeight()) / 2)
+    ink_center = line_top + fm.ascent() + br.top() + br.height() / 2
+    assert abs(round(painted_center) - round(ink_center)) <= 1, (
+        f"нарисованный центр {painted_center} vs центр чернил {ink_center}"
+    )
+
+    # ── the row band, painted: the text button's chip is the gauge (32) the
+    # checkbox's implicit strip now equals — one row in every island action row.
+    # The probe column sits in the button's left padding band beyond the round
+    # corner's flat edge: no glyph there, and no corner antialiasing above it.
+    btn_col = int((button.mapToScene(QPointF(0, 0)).x() + 7) * scale)
+    chip_top, chip_bottom = max(
+        _vertical_runs(image, btn_col, band), key=lambda r: r[1] - r[0]
+    )
+    chip_span = (chip_bottom - chip_top + 1) / scale
+    assert chip_span == pytest.approx(32.0, abs=1)
+    assert round(chk.implicitHeight()) == round(chip_span)
+
+
 # ── W2a pilots (add-widget-catalog-chrome-mechanics-w2a) ───────────────────
 
 @pytest.mark.parametrize("theme", ["dark", "light"])

@@ -2,6 +2,16 @@
 // add-qml-component-library-q2a1, task 2.3; design D4: indicator by
 // tokens — canvas box with the token border, accent fill when checked).
 //
+// Optical centering (change nri-0018-grid-alignment-and-card task 2.2,
+// design Д2): the Basic style never repositions a user-supplied indicator,
+// so the component itself places the box at the style's own centering
+// formula plus the caption's optical correction — the indicator center
+// meets the caption ink's center with the label metrics alone (FontMetrics
+// descent+leading), and the top/bottom strip padding (space.sm) makes the
+// control's implicit band equal the text buttons' row gauge. The correction
+// ships capped at 1 px (owner resolution 2026-09-25) so the centering lands
+// inside the ±1 px acceptance tolerance of the geometry pin.
+//
 // Off-skin (design D7): indicator and contentItem collapse to null so the
 // Basic indicator box and CheckLabel re-materialize untouched; the checkmark
 // lives inside the skinned indicator and never exists off-skin. Fallbacks
@@ -16,6 +26,24 @@ CheckBox {
     // Indicator edge: geometry from the flat space scale (space.md token,
     // a 16px box with the shipped values), not an invented constant.
     readonly property real boxSize: Tokens.px(islandTokens, "space.md", 16)
+
+    // The row band (design Д2): vertical padding out of the same space.sm
+    // the text buttons pad with, so implicitHeight equals the buttons' strip
+    // (line box + 2×8 at the shipped tokens) in every island action row.
+    topPadding: Tokens.px(islandTokens, "space.sm", 8)
+    bottomPadding: Tokens.px(islandTokens, "space.sm", 8)
+
+    // Caption metrics drive the optical placement of the box (spec «Чекбокс
+    // ставит индикатор и подпись на один оптический центр»): descent+leading
+    // half is the ink hang below the geometric line center; the cap at 1 keeps
+    // the correction inside the pinned ±1 px on fonts with a large descent.
+    readonly property real opticalNudge:
+        Math.min((labelMetrics.descent + labelMetrics.leading) / 2, 1)
+
+    FontMetrics {
+        id: labelMetrics
+        font: control.font
+    }
 
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
@@ -39,6 +67,13 @@ CheckBox {
         visible: control.skinned  // floats invisible while off-skin
         implicitWidth: control.boxSize
         implicitHeight: control.boxSize
+        // The style's own centering formula (Basic CheckBox places its
+        // indicator at topPadding + (availableHeight − height)/2) carries over
+        // because Qt never positions a user-supplied indicator itself; the
+        // optical nudge then walks the box down to the caption ink's center,
+        // quantized to the raster the whole acceptance suite pins (Д2).
+        y: Math.round(control.topPadding + (control.availableHeight - height) / 2
+                      + control.opticalNudge)
         radius: Tokens.px(islandTokens, "radius.sm", 6)
         color: control.checked ? control.accentColor : control.canvasColor
         border.width: 1

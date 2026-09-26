@@ -77,7 +77,7 @@ class TableHostPanel(QDialog):
         # The URL the shown QR encodes (test/observer surface, TB2/TB7).
         self.qr_url: str | None = None
         self.setWindowTitle("Стол")
-        self.resize(420, 560)
+        self.resize(440, 560)
 
         self.port_label = QLabel("Порт:", self)
         self.port_spin = QSpinBox(self)

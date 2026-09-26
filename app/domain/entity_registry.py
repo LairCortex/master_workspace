@@ -27,11 +27,11 @@ class EntityDescriptor:
     key: str
     #: singular display name, e.g. "Персонаж"
     label: str
-    #: plural display name, e.g. "Персонажи"
+    #: plural display name, e.g. "Персонажи" — since NRI-0018 (Д5) also the
+    #: detail tab's visible caption, accessibility name and tooltip at once
+    #: (the short-caption ``tab_label`` field of NRI-0015 retired: full names
+    #: read better at the wider 1280×800 start and no longer need clipping)
     plural_label: str
-    #: short caption for tab strips (NRI-0015 T1: «Орг.»/«Персы»/…), the full
-    #: plural_label stays the accessibility name and tooltip of the tab
-    tab_label: str
     #: plural form of the key — the M2M collection attribute name, e.g. "characters"
     plural: str
     #: link target types in entity-card display order
@@ -47,10 +47,7 @@ def _descriptors() -> dict[EntityType, EntityDescriptor]:
         d.entity_type: d
         for d in (
             EntityDescriptor(
-                EntityType.EVENT, "event", "Событие", "События",
-                # no short caption exists for the detail tabs (events never
-                # open a tab there) — the full plural stands in
-                "События", "events",
+                EntityType.EVENT, "event", "Событие", "События", "events",
                 # the event dialog's / detail panel's related lists
                 (EntityType.ORGANIZATION, EntityType.CHARACTER,
                  EntityType.ITEM, EntityType.LOCATION),
@@ -58,34 +55,30 @@ def _descriptors() -> dict[EntityType, EntityDescriptor]:
             ),
             EntityDescriptor(
                 EntityType.ORGANIZATION, "organization", "Организация", "Организации",
-                "Орг.",
                 "organizations",
                 # order pinned by the entity card's relation sections
                 (EntityType.CHARACTER, EntityType.ITEM, EntityType.LOCATION),
                 ("name", "characteristics", "backstory", "tasks"), True,
             ),
             EntityDescriptor(
-                EntityType.CHARACTER, "character", "Персонаж", "Персонажи", "Персы",
+                EntityType.CHARACTER, "character", "Персонаж", "Персонажи",
                 "characters",
                 (EntityType.ITEM, EntityType.LOCATION, EntityType.ORGANIZATION),
                 ("name", "characteristics", "backstory", "personality", "tasks"), True,
             ),
             EntityDescriptor(
-                EntityType.ITEM, "item", "Предмет", "Предметы", "Вещи", "items",
+                EntityType.ITEM, "item", "Предмет", "Предметы", "items",
                 (EntityType.LOCATION, EntityType.CHARACTER, EntityType.ORGANIZATION),
                 ("name", "characteristics", "backstory"), True,
             ),
             EntityDescriptor(
-                EntityType.LOCATION, "location", "Локация", "Локации", "Локации",
+                EntityType.LOCATION, "location", "Локация", "Локации",
                 "locations",
                 (EntityType.CHARACTER, EntityType.ORGANIZATION, EntityType.ITEM),
                 ("name", "characteristics", "backstory", "tasks"), True,
             ),
             EntityDescriptor(
-                EntityType.RATING, "rating", "Рейтинг", "Рейтинги",
-                # the rating tab strip shows the full caption already (and no
-                # detail tab exists for ratings at all)
-                "Рейтинги", "ratings",
+                EntityType.RATING, "rating", "Рейтинг", "Рейтинги", "ratings",
                 (),  # rating cards show no relation sections
                 (), False,
             ),

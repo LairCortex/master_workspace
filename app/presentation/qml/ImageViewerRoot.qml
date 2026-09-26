@@ -16,7 +16,7 @@ Rectangle {
         Tokens.token(root.islandTokens, "color.bg.surface", "white")
 
     color: root.surfaceColor
-    implicitWidth: 700
+    implicitWidth: 720
     implicitHeight: 600
 
     ColumnLayout {

@@ -14,8 +14,16 @@ center of its screen, never outside it (defect B4, «редактор не ро�
 Save policy (T3): a move/resize burst writes the file once the window has
 been quiet for ``DEBOUNCE_MS``, and closing the window saves its placement
 guaranteed.
+
+The main-role width floor (NRI-0018 design D5): ``restore``/``attach`` take a
+``min_width`` provider — role "main" hands the detail panel's all-tabs-whole
+threshold to it, so a restored narrower frame comes back widened to exactly
+that width while its position and height stay where the user left them
+(spec main-window «Узкая сохранённая рамка не режет вкладки»).
 """
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QObject, QRect, QTimer
 from PySide6.QtGui import QGuiApplication
@@ -127,14 +135,23 @@ class WindowGeometryMemory:
         self._trackers: list[_PlacementTracker] = []
 
     def restore(
-        self, window: QWidget, role: str, *, center_when_absent: bool = False
+        self,
+        window: QWidget,
+        role: str,
+        *,
+        center_when_absent: bool = False,
+        min_width: Callable[[], int] | None = None,
     ) -> bool:
         """Open ``window`` at its remembered placement (clamped to a screen).
 
         ``center_when_absent`` is the B4 rule for roles without a saved
         placement: the window is shrunk into the screen before it shows (the
         centering move itself needs the shown frame, see
-        :meth:`post_show_place`). Returns whether a placement was restored.
+        :meth:`post_show_place`). ``min_width`` is the NRI-0018 (design D5)
+        provider role "main" passes: the restored frame's width grows to the
+        value it returns (the detail panel's all-tabs-whole threshold), the
+        saved position and height never move. Returns whether a placement was
+        restored.
         """
         saved = self._roles.get(role)
         if saved is None:
@@ -142,6 +159,8 @@ class WindowGeometryMemory:
                 _shrink_into_area(window)
             return False
         x, y, width, height = saved
+        if min_width is not None:
+            width = max(width, int(min_width()))
         area = _placeable_area(QRect(x, y, width, height))
         _place_inside(window, area, x, y, width, height)
         return True
@@ -157,13 +176,22 @@ class WindowGeometryMemory:
         self._trackers.append(_PlacementTracker(self, window, role))
 
     def attach(
-        self, window: QWidget, role: str, *, center_when_absent: bool = False
+        self,
+        window: QWidget,
+        role: str,
+        *,
+        center_when_absent: bool = False,
+        min_width: Callable[[], int] | None = None,
     ) -> bool:
-        """Restore the placement (see :meth:`restore`), then remember it: the
-        window grows an own tracker that saves after move/resize quiescence
-        and on close. The tracker is parented to the window (and listed), so
-        it never outlives the wrapper whose events it filters."""
-        restored = self.restore(window, role, center_when_absent=center_when_absent)
+        """Restore the placement (see :meth:`restore`, including its
+        ``min_width`` provider — the main role's all-tabs-whole floor), then
+        remember it: the window grows an own tracker that saves after
+        move/resize quiescence and on close. The tracker is parented to the
+        window (and listed), so it never outlives the wrapper whose events it
+        filters."""
+        restored = self.restore(
+            window, role, center_when_absent=center_when_absent, min_width=min_width
+        )
         self._trackers.append(_PlacementTracker(self, window, role))
         return restored
 

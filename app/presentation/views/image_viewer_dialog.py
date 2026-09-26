@@ -32,7 +32,7 @@ class ImageViewerDialog(IslandDialogMixin, QDialog):
         super().__init__(parent)
         self._theme = theme if theme is not None else get_default_theme()
         self.setWindowTitle("Просмотр изображения")
-        self.resize(700, 600)
+        self.resize(720, 600)
         self._key = uuid4().hex
 
         self.vm = ImageViewerViewModel(parent=self)

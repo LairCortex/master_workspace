@@ -38,7 +38,7 @@ Rectangle {
     id: root
     objectName: "sheetPresetRoot"
 
-    implicitWidth: 540
+    implicitWidth: 560
     implicitHeight: 500
 
     // ── root contract to the facade (the migrated OK/Cancel flows) ──────────

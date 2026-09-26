@@ -36,7 +36,7 @@ Rectangle {
     readonly property string apiKeyFieldName: "Ключ API"
 
     color: surfaceColor
-    implicitWidth: 620
+    implicitWidth: 640
     implicitHeight: 480
 
     ColumnLayout {

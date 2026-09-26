@@ -174,13 +174,10 @@ class DetailPanelViewModel(QObject):
     # The four tabs and their payload keys are generated at import time from the
     # domain entity registry (wave 3, finding A4/C5): the same EVENT relation
     # order as the event dialog, so both views of one event always agree.
+    # NRI-0018 (Д5): this single full-caption list is the tab strip's text,
+    # accessibility name and tooltip at once — the short-caption TAB_LABELS of
+    # the NRI-0015 era retired together with the registry's tab_label field.
     TAB_TITLES = tuple(_ref.label for _ref in _event_refs)
-    # NRI-0015 (T1): the tab strip shows the registry's short caption, while
-    # TAB_TITLES (plural_label) stay the tab's accessibility name + tooltip.
-    TAB_LABELS = tuple(
-        entity_registry.descriptor(_ref.entity_type).tab_label
-        for _ref in _event_refs
-    )
     ENTITY_TYPES = tuple(_ref.entity_type.value for _ref in _event_refs)
     EVENT_ATTRS = tuple(_ref.attr for _ref in _event_refs)
 
@@ -214,9 +211,6 @@ class DetailPanelViewModel(QObject):
     )
     tabTitles = Property(
         "QVariant", lambda self: list(self.TAB_TITLES), constant=True
-    )
-    tabLabels = Property(
-        "QVariant", lambda self: list(self.TAB_LABELS), constant=True
     )
     organizations = Property(QObject, lambda self: self.models[0], constant=True)
     characters = Property(QObject, lambda self: self.models[1], constant=True)

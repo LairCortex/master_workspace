@@ -18,6 +18,7 @@ from app.application.services.character_sheet_service import CharacterSheetServi
 from app.infrastructure.repositories.character_sheet_repository import (
     CharacterSheetRepository,
 )
+from app.presentation.layout_grid import ceil_to_width_step
 from app.presentation.qml import island_size
 from app.presentation.qml.island_size import SCREEN_COVER_LIMIT, fit_dialog_to_island
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
@@ -78,8 +79,26 @@ def test_fit_grows_with_the_content(qtbot):
 
     size = fit_dialog_to_island(dialog, _Scene(900, 700), floor=(420, 520))
 
-    assert size == QSize(min(900, cap.width()), min(700, cap.height()))
+    # The 900 ask runs past the 420 floor, so the width half rides the
+    # ui-layout-grid scale and climbs to the next step (900→920); the height
+    # is not on the scale and passes through (spec «Естественная ширина…»,
+    # OBS-2 close).
+    assert size == QSize(min(920, cap.width()), min(700, cap.height()))
     assert dialog.size() == size
+
+
+def test_fit_climbs_an_off_step_ask_like_the_live_sheets(qtbot):
+    """The OBS-2 shapes themselves: an ask above the floor opens on the step
+    the live audit expected (620→640 list-class, 817→840 card-class), while
+    an on-step ask is left exactly on it (the «без пустоты» half)."""
+    cap = _screen_cap()
+
+    for ask, landed in ((620, 640), (817, 840), (500, 520), (520, 520)):
+        dialog = QDialog()
+        qtbot.addWidget(dialog)
+        size = fit_dialog_to_island(dialog, _Scene(ask, 560), floor=(420, 320))
+        assert size.width() == min(landed, cap.width()), ask
+        assert size.width() % 40 == 0, ask
 
 
 def test_fit_never_covers_the_whole_screen(qtbot):
@@ -153,9 +172,14 @@ def test_screen_limit_without_any_screen_imposes_no_cap(monkeypatch):
 
 
 def _opened(floor: tuple[int, int], natural: tuple[int, int], cap: QSize) -> QSize:
-    """The size a dialog must open with: the content, floored, screen-capped."""
+    """The size a dialog must open with: the content, floored under the scale
+    rule (an ask above the floor is climbed to the next 40 step — OBS-2
+    close; an ask the floor covers opens at the floor), screen-capped."""
+    width = (
+        ceil_to_width_step(natural[0]) if natural[0] > floor[0] else floor[0]
+    )
     return QSize(
-        max(floor[0], min(natural[0], cap.width())),
+        max(floor[0], min(width, cap.width())),
         max(floor[1], min(natural[1], cap.height())),
     )
 
@@ -166,14 +190,19 @@ def _pump(qtbot) -> None:
 
 
 def test_card_scene_asks_for_more_than_the_pinned_size(qtbot):
-    """The 750x550 the port pinned is below the card's own content."""
+    """The floor the port pinned is below the card's own content.
+
+    NRI-0018 task 5.2 moved the with-image floor 750→760 onto the
+    ui-layout-grid scale; the measured content ask is unchanged, so the
+    scene still asks for more than the floor it opens at.
+    """
     dialog = EntityCardDialog(None, "character")
     qtbot.addWidget(dialog)
 
     root = dialog._root
 
     assert root.implicitHeight() > 550
-    assert root.implicitWidth() >= 750
+    assert root.implicitWidth() > 760
 
 
 def test_card_window_opens_where_the_scene_fits(qtbot):
@@ -184,7 +213,7 @@ def test_card_window_opens_where_the_scene_fits(qtbot):
     root = dialog._root
     natural = (int(round(root.implicitWidth())), int(round(root.implicitHeight())))
 
-    assert dialog.size() == _opened((750, 550), natural, cap)
+    assert dialog.size() == _opened((760, 550), natural, cap)
 
 
 def test_the_card_at_its_scene_size_shows_the_action_row(qtbot):
@@ -208,7 +237,12 @@ def test_the_card_at_its_scene_size_shows_the_action_row(qtbot):
 
 
 def test_sheet_list_scene_asks_for_the_whole_button_row(qtbot, service):
-    """The 420 the port pinned could not hold the six actions side by side."""
+    """The 420 the port pinned could not hold the six actions side by side.
+
+    NRI-0018 put the floor on the scale (420→440) and the OBS-2 close climbs
+    the scene's wider ask to the next step — the opened width rides the
+    40-grid, whatever the fonts measure offscreen.
+    """
     dialog = CharacterSheetListDialog(service)
     qtbot.addWidget(dialog)
 
@@ -216,7 +250,8 @@ def test_sheet_list_scene_asks_for_the_whole_button_row(qtbot, service):
     natural = (int(round(root.implicitWidth())), int(round(root.implicitHeight())))
 
     assert natural[0] > 420
-    assert dialog.size() == _opened((420, 520), natural, _screen_cap())
+    assert dialog.size() == _opened((440, 520), natural, _screen_cap())
+    assert dialog.width() % 40 == 0
 
 
 def test_sheet_list_buttons_keep_their_own_width_on_both_tabs(qtbot, service):

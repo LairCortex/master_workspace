@@ -209,7 +209,7 @@ Rectangle {
                         onClicked: eventTypesVm.requestRemove()
                     }
                     Item { Layout.fillWidth: true }
-                    ThemeButton {
+                    ThemeIconButton {
                         id: upButton
                         objectName: "typeUpButton"
                         text: "↑"
@@ -218,7 +218,7 @@ Rectangle {
                         enabled: eventTypesVm.canMoveUp
                         onClicked: eventTypesVm.requestMove(-1)
                     }
-                    ThemeButton {
+                    ThemeIconButton {
                         id: downButton
                         objectName: "typeDownButton"
                         text: "↓"

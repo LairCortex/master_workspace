@@ -90,7 +90,7 @@ class CharacterSheetPresetDialog(IslandDialogMixin, QDialog):
         self._theme = theme if theme is not None else get_default_theme()
 
         self.setWindowTitle("Создать из пресета")
-        self.resize(540, 500)
+        self.resize(560, 500)
 
         # VM (the catalog + the D5 rule live there) and palette are dialog
         # children — a context property is a raw pointer, so QML must never

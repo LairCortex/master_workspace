@@ -124,7 +124,7 @@ class CharacterSheetFillDialog(IslandDialogMixin, QDialog):
         self.dropdown_menu: QMenu | None = None
 
         self.setWindowTitle("Лист")
-        self.resize(1100, 800)
+        self.resize(1120, 800)
 
         # Undo/Redo as hotkeys (B2, NRI-0017): unchanged QActions with their
         # standard shortcuts and VM handlers, registered on the dialog itself

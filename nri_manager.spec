@@ -161,6 +161,9 @@ a = Analysis(
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/ThemeAiButton.qml",
          "app/presentation/qml/nri/components"),
+        # NRI-0018 task 1.2: the square glyph button of the library module.
+        ("app/presentation/qml/nri/components/ThemeIconButton.qml",
+         "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/RelatedSection.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/ThemeSwatch.qml",

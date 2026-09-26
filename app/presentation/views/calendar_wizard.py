@@ -50,7 +50,6 @@ import asyncio
 from datetime import date
 from typing import Callable
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -65,6 +64,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QStackedWidget,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -77,6 +77,7 @@ from app.domain.game_calendar import (
     current_calendar,
     set_current_calendar,
 )
+from app.presentation.layout_grid import ceil_to_width_step
 from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import attach_theme, hint, set_role, title
 from app.presentation.viewmodels.calendar_wizard_viewmodel import (
@@ -111,6 +112,16 @@ WIZARD_TITLE = "Настройка календаря"
 #: displayable reason, the dialog only shows it (spec «Ошибки применения…»
 #: leaves it open on the report/preview screen).
 APPLY_ERROR_TITLE = "Применение календаря"
+
+#: NRI-0018 Д7 cap on the content-sized step column: past it the row lists
+#: (which already carry their own scroll rows) concede the width to the live
+#: preview, «излишек — предпросмотру». The step of 40 this cap and the
+#: column/minimum rounding climb along lives once in
+#: :mod:`app.presentation.layout_grid` (the wizard imports its ceil).
+STEP_COLUMN_MAX_WIDTH = 520
+#: The minimum height of the compact W4 layout (NRI-0015); Д7 recounted the
+#: WIDTH from the new column sum and left the height alone.
+WIZARD_MIN_HEIGHT = 620
 
 
 def _bind_spin(spin: QSpinBox, value: int) -> None:
@@ -155,13 +166,16 @@ class CalendarWizardDialog(QDialog):
         self._preview_shown: object | None = None
 
         self.setWindowTitle(WIZARD_TITLE)
-        self.setMinimumSize(860, 620)
-
+        # NRI-0018 Д7 retired the static 880 floor group 5 pinned (its own
+        # comment reserved the recount for Д7): the window minimum is now
+        # the sum of the NEW columns — the content-sized step column plus
+        # the live preview at its own minimum — climbed to the nearest step
+        # of 40 upwards, so the opened width never leaves the scale and the
+        # preview grid fits whole at the minimum (spec «Предпросмотр не
+        # сжат»).  See the two setMinimumSize inputs below the layout build.
         root = QHBoxLayout(self)
         left = QVBoxLayout()
         right = QVBoxLayout()
-        root.addLayout(left, 3)
-        root.addLayout(right, 2)
 
         self._stack = QStackedWidget()
         self._pages = {
@@ -190,16 +204,46 @@ class CalendarWizardDialog(QDialog):
         self._next_button = QPushButton("Далее")
         self._apply_button = QPushButton("Применить")
         self._cancel_button = QPushButton("Отменить")
-        # W4 (spec «Кнопки мастера — одна строка, шаг центрирован»): one row,
-        # the dismissal at the OPPOSITE edge from its content group.  With the
-        # old order the cancel sat at the far right, flush against the preview
-        # panel on a wide window, and read as the preview's own button.
+        # W4 (spec «Кнопки мастера — одна строка…», the row half this package
+        # leaves untouched): one row, the dismissal at the OPPOSITE edge from
+        # its content group.  With the old order the cancel sat at the far
+        # right, flush against the preview panel on a wide window, and read
+        # as the preview's own button.
         footer_row.addWidget(self._cancel_button)
         footer_row.addStretch()
         footer_row.addWidget(self._back_button)
         footer_row.addWidget(self._next_button)
         footer_row.addWidget(self._apply_button)
         left.addWidget(self._footer)
+
+        # Д7 (spec «Левая колонка мастера широка ровно по содержимому»): the
+        # old fixed 3:2 share is gone.  The column is exactly as wide as its
+        # widest natural content — the step stack (the QStackedWidget hint
+        # already carries the MAXIMUM over all pages) or the one-row buttons,
+        # plus the column's own insets (without them the 40-step rounding
+        # would let the padding eat the content's room) — rounded UP to the
+        # 40 step and capped; the width then stays fixed so the step forms
+        # neither drift with the window nor grow a dead zone («справа от
+        # шага нет широкой мёртвой зоны»).  The sums are read from the
+        # widgets directly, not from the layouts: a layout of a dialog that
+        # was never shown reports its items as empty (Qt hides-until-polished
+        # semantics), while a widget's own sizeHint is valid right here.
+        self._step_column = QWidget()
+        self._step_column.setLayout(left)
+        margins = left.contentsMargins()
+        column_natural = (
+            max(
+                self._stack.sizeHint().width(),
+                self._problems_label.sizeHint().width(),
+                self._footer.sizeHint().width(),
+            )
+            + margins.left()
+            + margins.right()
+        )
+        self._step_column.setFixedWidth(
+            min(ceil_to_width_step(column_natural), STEP_COLUMN_MAX_WIDTH)
+        )
+        root.addWidget(self._step_column)
 
         right.addWidget(title("Предпросмотр"))
         # The live preview: the same grid class the date popups embed, inert
@@ -212,6 +256,34 @@ class CalendarWizardDialog(QDialog):
         self._preview = GameCalendarGrid(interactive=False, show_era=False)
         right.addWidget(self._preview)
         right.addStretch(1)
+        # Every pixel the fixed step column does not need belongs to the
+        # preview panel (Д7: «излишек — предпросмотру») — the leftover goes
+        # to the right column with a single stretch, not to a 40 % cap.
+        root.addLayout(right, 1)
+
+        # The recounted minimum (see the note over the layout build): fixed
+        # column + the preview at its own minimum + the root layout's own
+        # chrome, climbed to the next step of 40.  Composed from the widget
+        # hints explicitly because — as above — the dialog's own
+        # minimumSizeHint() is still empty this early in construction.  The
+        # style metric stands in for the unresolved (-1) layout spacing the
+        # cocoa style reports.
+        style_spacing = self.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
+        spacing = root.spacing() if root.spacing() >= 0 else style_spacing
+        root_margins = root.contentsMargins()
+        chrome = (
+            root_margins.left()
+            + root_margins.right()
+            + spacing
+        )
+        self.setMinimumSize(
+            ceil_to_width_step(
+                self._step_column.maximumWidth()
+                + self._preview.minimumSizeHint().width()
+                + chrome
+            ),
+            WIZARD_MIN_HEIGHT,
+        )
 
         # Catalog skin: chrome root for the generated sheet's button/field
         # rules, roles stamped on the individual widgets above.
@@ -288,10 +360,15 @@ class CalendarWizardDialog(QDialog):
         layout.addWidget(kind_hint)
         self._standard_radio = QRadioButton("Стандартный")
         self._custom_radio = QRadioButton("Кастомный")
-        # W4 (spec): the step's content sits centered in its half, at its own
-        # size — not glued to the left edge of the empty panel behind.
-        layout.addWidget(self._standard_radio, alignment=Qt.AlignHCenter)
-        layout.addWidget(self._custom_radio, alignment=Qt.AlignHCenter)
+        # NRI-0018 Д7 revised the per-item clause of W4 (spec RENAMED:
+        # «шаг прижат к тексту»): no per-control centering any more — in the
+        # column layout each switch fills its cell, so both indicators start
+        # on the single left border shared with the title and the hint no
+        # matter what text width each switch carries.  (The one-row button
+        # clause of that spec — the footer above — this package deliberately
+        # does not touch.)
+        layout.addWidget(self._standard_radio)
+        layout.addWidget(self._custom_radio)
         layout.addStretch()
         return page
 
@@ -326,7 +403,7 @@ class CalendarWizardDialog(QDialog):
             "Порядок списка значим: правила одного месяца-хозяина занимают "
             "его последовательные позиции."
         )
-        rules_hint.setWordWrap(True)  # fits the centered column of the step
+        rules_hint.setWordWrap(True)  # wraps inside the content-sized step column
         layout.addWidget(rules_hint)
         self._rules_box = _row_box()
         layout.addWidget(_wrap_scroll(self._rules_box), 1)
@@ -627,11 +704,11 @@ class CalendarWizardDialog(QDialog):
 
 
 def _step_page() -> tuple[QWidget, QVBoxLayout]:
-    """Content column of a build step.  Step-level centering (W4, spec
-    «шаг центрирован») lives in the ``Qt.AlignHCenter`` alignments put on the
-    interactive widgets, not in a narrower column: the descriptions keep the
-    full width of the step half for their word wrap and the row lists for
-    their scroll rows."""
+    """Content column of a build step.  Since NRI-0018 Д7 the step carries no
+    per-item centering at all: the page stretches in the content-sized step
+    column and every control starts on that column's single left border; the
+    descriptions keep the full column width for their word wrap and the row
+    lists for their scroll rows."""
     page = QWidget()
     return page, QVBoxLayout(page)
 

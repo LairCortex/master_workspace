@@ -72,7 +72,12 @@ class MainWindow(QMainWindow):
         # falls back to its own.
         self._window_registry = window_registry or MenuWindowRegistry()
         self.set_game_name(game_name)
-        self.setMinimumSize(1024, 680)
+        self.setMinimumSize(1024, 680)  # hard system floor (stays NRI-0015's)
+        # NRI-0018 (design Д5, spec «Первый запуск шире прежнего минимума»):
+        # with no remembered placement the window opens 1280×800 — the frame
+        # every full tab caption and the snapshot «Дата:» row read whole at
+        # (role "main" in the geometry memory replaces it when one is saved).
+        self.resize(1280, 800)
 
         # Menu bar
         menu_bar = QMenuBar(self)
@@ -202,15 +207,22 @@ class MainWindow(QMainWindow):
         self.timeline_widget = TimelineWidget(timeline_vm, theme=self._theme)
         self.detail_panel = DetailPanel(detail_vm, theme=self._theme)
         self.world_snapshot = WorldSnapshotWidget(theme=self._theme)
+        # NRI-0018 (Д5): the detail panel's all-tabs-whole threshold is one
+        # number two floors read from: the strip's column never stands under
+        # it (full captions never clip), and it is the splitter's right-pane
+        # floor — the OBS-1 follow-up, so nothing under the default start
+        # squeezes the «Дата:» action row out of the snapshot panel.
+        tabs_floor = self.detail_panel.min_tabs_width()
         self.timeline_widget.setMinimumWidth(220)
-        self.detail_panel.setMinimumWidth(280)
-        self.world_snapshot.setMinimumWidth(280)
+        self.detail_panel.setMinimumWidth(tabs_floor)
+        self.world_snapshot.setMinimumWidth(tabs_floor)
         splitter.addWidget(self.timeline_widget)
         splitter.addWidget(self.detail_panel)
         splitter.addWidget(self.world_snapshot)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
+        splitter.setSizes([330, 390, 500])
         main_layout.addWidget(splitter, 1)
 
         self._apply_theme()

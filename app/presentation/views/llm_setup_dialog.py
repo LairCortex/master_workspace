@@ -48,7 +48,7 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
         # title is the entry text «Настройка LLM…» — the same phrase the menu
         # item and the error boxes use, so the window is unambiguous.
         self.setWindowTitle("Настройка LLM…")
-        self.setMinimumSize(620, 480)
+        self.setMinimumSize(640, 480)
         self._theme = theme if theme is not None else get_default_theme()
         self._llm_vm = llm_vm
         self._saving = False

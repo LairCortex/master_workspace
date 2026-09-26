@@ -238,6 +238,10 @@ def test_popup_sheet_covers_every_popup_category(tokens, theme):
     assert "GameCalendarIntercalaryChip {" in sheet
     assert 'GameCalendarIntercalaryChip[selected="true"]' in sheet
     assert "GameCalendarDayName {" in sheet
+    # the era checkbox of the navigation row is themed through its own class
+    # too (NRI-0018 Д8: no white native cell on the dark grid)
+    assert "GameCalendarEraCheck::indicator" in sheet
+    assert "GameCalendarEraCheck::indicator:checked" in sheet
     # …while the Gregorian Qt calendar widget it replaced is gone from the sheet
     assert "QCalendarWidget" not in sheet
     # the cell/chip hover wash is the accent derivation, not a new token
@@ -280,10 +284,80 @@ def test_chrome_and_popup_sheets_split_without_overlap(tokens, theme):
     for popup_only in ("QToolTip", "QComboBox QAbstractItemView",
                        "GameCalendarGrid", "GameCalendarCell",
                        "GameCalendarIntercalaryChip", "GameCalendarDayName",
-                       "MentionPopupListView"):
+                       "GameCalendarEraCheck", "MentionPopupListView"):
         assert popup_only not in chrome
         assert popup_only in popup
     assert not re.search(r"\bQMenu\b(?!Bar)", chrome)  # only the QMenuBar widget stays
+
+
+# ── NRI-0018 Д8: widget switch indicators are themed (ui-widget-catalog) ────
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chrome_sheet_themes_the_radio_indicator_from_tokens(tokens, theme):
+    # The wizard's «Стандартный/Кастомный» are plain widget radios inside a
+    # chrome root: their indicator must come from the tokens (рамка/заливка/
+    # метка), so no white native OS cell survives on the dark canvas (spec
+    # ui-widget-catalog «Радио мастера в обеих темах»).  Off-skin this sheet
+    # is never applied — the switch keeps the native look (that half is the
+    # runtime's empty qss(), pinned in tests/presentation/test_calendar_*).
+    qss = compile_qss(tokens, theme)
+
+    box = re.search(
+        r'QWidget\[uiRole="chrome"\] QRadioButton::indicator\s*\{([^}]*)\}', qss
+    )
+    assert box, "в chrome-листе нет правила ::indicator у QRadioButton"
+    rule = box.group(1)
+    assert "width: 16px;" in rule
+    assert "height: 16px;" in rule
+    assert f"border: 1px solid {tokens['color.border'][theme]};" in rule
+    assert f"background: {tokens['color.bg.canvas'][theme]};" in rule
+    # «радио — круг» (Д8): the circle is the half of the 16 px box.
+    assert "border-radius: 8px;" in rule
+
+    checked = re.search(
+        r'QWidget\[uiRole="chrome"\] QRadioButton::indicator:checked\s*\{([^}]*)\}',
+        qss,
+    )
+    assert checked, "выбранное состояние радио не тематизировано"
+    assert tokens["color.accent"][theme] in checked.group(1)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chrome_sheet_themes_the_checkbox_indicator_from_tokens(tokens, theme):
+    # The same recipe for the chrome checkboxes: 16 px box framed from
+    # border, its corner on radius.sm (the checkbox half of task 7.2's
+    # «радио/чекбоксов»).
+    qss = compile_qss(tokens, theme)
+
+    box = re.search(
+        r'QWidget\[uiRole="chrome"\] QCheckBox::indicator\s*\{([^}]*)\}', qss
+    )
+    assert box, "в chrome-листе нет правила ::indicator у QCheckBox"
+    rule = box.group(1)
+    assert "width: 16px;" in rule
+    assert "height: 16px;" in rule
+    assert f"border-radius: {tokens['radius.sm'][theme]};" in rule
+
+    checked = re.search(
+        r'QWidget\[uiRole="chrome"\] QCheckBox::indicator:checked\s*\{([^}]*)\}',
+        qss,
+    )
+    assert checked, "выбранное состояние чекбокса не тематизировано"
+    assert tokens["color.accent"][theme] in checked.group(1)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chrome_switch_captions_read_from_the_primary_foreground(tokens, theme):
+    # «метки читаемы в обеих темах»: the switch label itself rides on
+    # color.fg.primary, the same token every chrome text uses.
+    qss = compile_qss(tokens, theme)
+    for cls in ("QRadioButton", "QCheckBox"):
+        caption = re.search(
+            rf'QWidget\[uiRole="chrome"\] {cls}\s*\{{([^}}]*)\}}', qss
+        )
+        assert caption, f"метка {cls} не тематизирована"
+        assert f"color: {tokens['color.fg.primary'][theme]};" in caption.group(1)
 
 
 # ── CSS compilation ────────────────────────────────────────────────────────

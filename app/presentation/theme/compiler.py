@@ -196,6 +196,12 @@ def compile_qss(tokens: Tokens, theme: str) -> str:
     widgets without a role keep the OS palette. ``QToolTip``/``QMenu``/combo
     popups are absent here: as top-level popups they have no attached ancestor
     and could never match — they live in ``compile_popup_qss`` (D2).
+
+    NRI-0018 Д8 adds the theming of the native ``QRadioButton``/``QCheckBox``
+    indicators (the wizard's choice step) to this sheet: like every rule here
+    it is scoped to the attached chrome root, and off-skin the sheet is never
+    applied, so switches outside a valid theme keep the native indicator
+    (ui-widget-catalog «Off-skin не ломается»).
     """
     t = {key: values[theme] for key, values in tokens.items()}
     hover = accent_rgba(tokens, theme, 0.85)
@@ -238,6 +244,49 @@ QWidget[uiRole="chrome"] QPushButton:pressed {{
 }}
 QWidget[uiRole="chrome"] QPushButton:disabled {{
     color: {t['color.fg.muted']};
+}}
+/* NRI-0018 Д8 (ui-widget-catalog «Нативные индикаторы проверки
+   тематизируются»): the wizard's «Стандартный/Кастомный» are widget radios
+   in a chrome root, so their indicators — like the era flag of the themed
+   popup grids (see the popup sheet) — come from the tokens instead of the
+   white native OS cell.  Scoped to the attached root exactly like every
+   other rule here; off-skin this sheet is never applied and the switches
+   keep the native look (D7).  The checked state is the solid accent fill:
+   Qt QSS draws no tick/dot without bitmap assets and generated artifacts
+   never reach the disk — the same state language the popup-era box and the
+   QML checkbox speak.  Geometry: 16 px box, the checkbox corner on
+   radius.sm, the radio the circle half of the box («радио — круг»). */
+QWidget[uiRole="chrome"] QRadioButton {{
+    background: transparent;
+    color: {t['color.fg.primary']};
+}}
+QWidget[uiRole="chrome"] QCheckBox {{
+    background: transparent;
+    color: {t['color.fg.primary']};
+}}
+QWidget[uiRole="chrome"] QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    subcontrol-position: left center;
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    background: {t['color.bg.canvas']};
+}}
+QWidget[uiRole="chrome"] QCheckBox::indicator:checked {{
+    background: {t['color.accent']};
+    border-color: {t['color.accent']};
+}}
+QWidget[uiRole="chrome"] QRadioButton::indicator {{
+    width: 16px;
+    height: 16px;
+    subcontrol-position: left center;
+    border: 1px solid {t['color.border']};
+    border-radius: 8px;
+    background: {t['color.bg.canvas']};
+}}
+QWidget[uiRole="chrome"] QRadioButton::indicator:checked {{
+    background: {t['color.accent']};
+    border-color: {t['color.accent']};
 }}
 QWidget[uiRole="chrome"] QListWidget,
 QWidget[uiRole="chrome"] QTreeView,
@@ -333,11 +382,13 @@ def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     three states of spec «Минимализм оформления сетки» — normal, ``:hover`` and
     the ``selected`` property (``[selected="true"]``, mirrored by the grid on
     every selection flip) — ``GameCalendarIntercalaryChip`` selects like a
-    cell and gets the same trio, and ``GameCalendarDayName`` is the week
-    header.  These four names are STYLE-FACING exactly like
-    ``_DateWindowPopup``: renaming a class silently drops the grid's theme, so
-    rename only together with the rules below.  The Gregorian calendar-widget
-    rules retired together with that widget.
+    cell and gets the same trio, ``GameCalendarDayName`` is the week
+    header, and ``GameCalendarEraCheck`` themes the navigation row's era flag
+    through its ``::indicator`` sub-control (NRI-0018 Д8).  These five names
+    are STYLE-FACING exactly like ``_DateWindowPopup``: renaming a class
+    silently drops the grid's theme, so rename only together with the rules
+    below (the pair test in ``test_calendar_nav_band`` guards both sides).
+    The Gregorian calendar-widget rules retired together with that widget.
     """
     t = {key: values[theme] for key, values in tokens.items()}
     cell_hover = accent_rgba(tokens, theme, 0.25)
@@ -412,6 +463,31 @@ GameCalendarIntercalaryChip:hover {{
 GameCalendarIntercalaryChip[selected="true"] {{
     background: {t['color.accent']};
     color: {t['color.accent.fg']};
+}}
+/* The «до н.э.» flag of the grid's navigation row (NRI-0018 Д8,
+   ui-widget-catalog «Нативные индикаторы проверки тематизируются»).  The
+   sub-control is addressed through the grid's own STYLE-FACING class: a
+   generic check-box class rule here would repaint every checkbox of the
+   process (W2a D2), and off-skin this sheet is empty, so the box keeps the
+   native look.  The checked box is the solid accent fill — Qt QSS draws no
+   tick without a bitmap and generated artifacts never reach the disk, while
+   the accent-vs-canvas difference is the same state language the QML
+   checkbox speaks. */
+GameCalendarEraCheck {{
+    background: transparent;
+    color: {t['color.fg.primary']};
+}}
+GameCalendarEraCheck::indicator {{
+    width: 16px;
+    height: 16px;
+    subcontrol-position: left center;
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    background: {t['color.bg.canvas']};
+}}
+GameCalendarEraCheck::indicator:checked {{
+    background: {t['color.accent']};
+    border-color: {t['color.accent']};
 }}
 _MentionPopup {{
     background: {t['color.bg.surface']};

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPoint
@@ -87,8 +88,10 @@ from app.presentation.views.calendar_grid import (
     GameCalendarGrid,
     GameCalendarIntercalaryChip,
 )
+from app.presentation.layout_grid import WIDTH_STEP
 from app.presentation.views.calendar_wizard import (
     APPLY_ERROR_TITLE,
+    STEP_COLUMN_MAX_WIDTH,
     WEEK_LENGTH_MAX,
     WEEK_LENGTH_MIN,
     WIZARD_TITLE,
@@ -715,6 +718,8 @@ class TestSkin:
             "GameCalendarCell",
             "GameCalendarIntercalaryChip",
             "GameCalendarDayName",
+            # NRI-0018 Д8: the era flag of the popup grids is themed too
+            "GameCalendarEraCheck",
         ):
             assert name in popup_sheet
 
@@ -726,6 +731,10 @@ class TestSkin:
 
         dlg = _dialog(qtbot, _vm(async_session), theme=runtime)
         runtime.apply()  # off-skin apply is a no-op, not a crash
+        # NRI-0018 Д8 (ui-widget-catalog «Off-skin не ломается»): with the
+        # chrome sheet uncompiled the radios the walk below clicks keep the
+        # native indicator — no invented color, no exception.
+        assert runtime.qss() == ""
         await dlg.begin()
 
         await _walk_to(dlg, STEP_INTERCALARY)
@@ -742,7 +751,8 @@ class TestSkin:
 
 
 # ═════════ NRI-0015 task 2.2/2.3 — компактный предпросмотр, ряд кнопок, ═════
-# ═════════ центрирование шага, числа токеном, радио через доступность ═══════
+# ═════════ шаг у левого края (Д7 NRI-0018), числа токеном, радио через ══════
+# ═════════ доступность ══════════════════════════════════════════════════════
 
 
 def _centre_y(widget, relative_to) -> int:
@@ -817,10 +827,11 @@ class TestPreviewNumberColour:
 
 
 class TestFooterOneRow:
-    """W4 (spec «Кнопки мастера — одна строка, шаг центрирован»): «Отменить»
-    and the «Назад/Далее/Применить» group share one row of one layout parent,
-    the dismissal sitting at the opposite edge from the group — it must stop
-    reading as the preview panel's button."""
+    """W4 clause this package keeps intact (spec «Кнопки мастера — одна
+    строка, шаг прижат к тексту», renamed in NRI-0018 only in its second
+    half): «Отменить» and the «Назад/Далее/Применить» group share one row of
+    one layout parent, the dismissal sitting at the opposite edge from the
+    group — it must stop reading as the preview panel's button."""
 
     async def test_cancel_and_navigation_group_share_one_row(self, async_session, qtbot):
         dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
@@ -843,25 +854,154 @@ class TestFooterOneRow:
         assert dlg._back_button.x() <= dlg._next_button.x() <= dlg._apply_button.x()
 
 
-class TestStepContentCentered:
-    """W4 (spec, second clause): the step's column-centred content sits in the
-    middle of its panel half, not glued into the empty left edge."""
+class TestStepContentOnTheLeftBorder:
+    """NRI-0018 Д7 revises the second clause of W4 (spec RENAMED to «Кнопки
+    мастера — одна строка, шаг прижат к тексту»): the choice step's radios
+    stand on the common LEFT BORDER of the step's text — the indicator slices
+    of «Стандартный» and «Кастомный» coincide and start at the left edge of
+    the title and the hint, no switch centers itself.  The one-row button
+    clause of the same spec (TestFooterOneRow above) and the toggled wiring
+    (TestRadioChoiceThroughAccessibility below) stay exactly as they were."""
 
-    async def test_choice_step_is_centered_in_its_half(self, async_session, qtbot):
+    @staticmethod
+    def _indicator_left_in(widget, relative_to) -> int:
+        """x of the indicator's left edge in ``relative_to`` coordinates —
+        the visibly meaningful slice (the widget rect stretches to the
+        column, NRI-0018 Д7)."""
+        option = QStyleOptionButton()
+        widget.initStyleOption(option)
+        box = widget.style().subElementRect(
+            QStyle.SubElement.SE_RadioButtonIndicator, option, widget
+        )
+        return widget.mapTo(relative_to, QPoint(box.left(), 0)).x()
+
+    async def test_radios_share_the_step_texts_left_border(self, async_session, qtbot):
         dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
         page = dlg._pages[STEP_CHOICE]
-        page_centre = page.width() / 2
+        labels = page.findChildren(QLabel)
+        title_lbl = next(
+            lbl for lbl in labels if lbl.property("uiRole") == "title"
+        )
+        kind_hint = next(
+            lbl for lbl in labels if lbl.property("uiRole") == "hint"
+        )
+
+        border = title_lbl.mapTo(page, QPoint(0, 0)).x()
+        assert kind_hint.mapTo(page, QPoint(0, 0)).x() == border  # spec baseline
         for radio in (dlg._standard_radio, dlg._custom_radio):
-            # The visible centre of a radio is its indicator, not the widget
-            # rect (a stretched rect would read as centred while the control
-            # still sits glued to the left edge — exactly the W4 finding).
-            option = QStyleOptionButton()
-            radio.initStyleOption(option)
-            indicator = radio.style().subElementRect(
-                QStyle.SubElement.SE_RadioButtonIndicator, option, radio
+            edge = self._indicator_left_in(radio, page)
+            # The old W4 AlignHCenter parked these at (page − width)/2 — at
+            # the audit column width that is far outside this tolerance.
+            assert abs(edge - border) <= 4, radio.text()
+        assert self._indicator_left_in(
+            dlg._standard_radio, page
+        ) == self._indicator_left_in(dlg._custom_radio, page), (
+            "переключатели разной ширины не делят один вертикальный срез"
+        )
+
+    def test_the_wizard_source_kept_no_step_centering(self):
+        # «поштучное центрирование отдельных контролов SHALL отсутствовать»:
+        # pinned at the source, not just on the two radios of the choice page.
+        source = Path(calendar_wizard.__file__).read_text(encoding="utf-8")
+        assert "AlignHCenter" not in source
+
+
+class TestLeftColumnSizedByContent:
+    """NRI-0018 Д7 (spec «Левая колонка мастера широка ровно по содержимому»):
+    the old fixed 3:2 share is gone — the column is as wide as its widest
+    natural content rounded UP to the ui-layout-grid step of 40 and not more
+    than the cap; the leftover belongs to the preview.  A step-round width
+    with less than a step of slack left over is what «справа от шага нет
+    широкой мёртвой зоны» measures offscreen."""
+
+    async def test_column_is_natural_content_climbed_to_the_step(
+        self, async_session, qtbot
+    ):
+        dlg = _dialog(qtbot, _vm(async_session))
+        dlg.show()
+        QApplication.processEvents()
+
+        column = dlg._step_column.width()
+        # The left column's widest natural content: the step stack (the
+        # QStackedWidget hint is the maximum over ALL pages) or the one-row
+        # buttons — plus the column's own insets, which otherwise let the
+        # rounding eat the padding off the content's room.
+        col_margins = dlg._step_column.layout().contentsMargins()
+        natural = (
+            max(
+                dlg._stack.sizeHint().width(),
+                dlg._footer.sizeHint().width(),
             )
-            indicator_centre = radio.mapTo(page, indicator.center()).x()
-            assert abs(indicator_centre - page_centre) <= page.width() * 0.15
+            + col_margins.left()
+            + col_margins.right()
+        )
+        # Spec formula, spelled out once more here: ceiling to the step of
+        # 40, the cap ~520 as the ceiling on the column's reach.
+        assert column == min(-(-natural // WIDTH_STEP) * WIDTH_STEP,
+                             STEP_COLUMN_MAX_WIDTH)
+        assert column % WIDTH_STEP == 0
+        # No dead zone below the cap: the slack left after the content is
+        # strictly less than one step of the scale.
+        assert column - natural < WIDTH_STEP
+
+    async def test_the_wide_window_gives_the_leftover_to_the_preview(
+        self, async_session, qtbot
+    ):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        # A fixed content column: the width the audit screen added belongs to
+        # the preview panel, not to a share-proportional growth of the steps.
+        assert dlg._step_column.width() < dlg.width() // 2
+        leftover_bound = (
+            dlg.width()
+            - dlg._step_column.width()
+            - 2 * dlg.layout().contentsMargins().right()
+            - WIDTH_STEP
+        )
+        assert dlg._preview.width() > leftover_bound
+
+
+class TestPreviewFitsAtTheWindowMinimum:
+    """NRI-0018 Д7 (spec scenario «Предпросмотр не сжат»): at the RECOUNTED
+    window minimum the step column has not eaten the preview's own needed
+    width — the whole grid, day-name header to the last numeric column,
+    stands inside the panel (the 3:2 share used to leave it a clipped 40 %)."""
+
+    async def test_the_minimum_covers_the_new_column_sum(self, async_session, qtbot):
+        dlg = _dialog(qtbot, _vm(async_session))
+        content = (
+            dlg._step_column.minimumWidth()
+            + dlg._preview.minimumSizeHint().width()
+        )
+        assert dlg.minimumWidth() >= content  # «минимум покрывает колонку+сетку»
+        assert dlg.minimumWidth() % WIDTH_STEP == 0  # never leaves the scale
+        # ...and the climb stops at the ceiling of that sum with the window's
+        # own chrome — one step taller than the honest sum would already be
+        # «больше прежнего без необходимости».
+        root = dlg.layout()
+        style_spacing = dlg.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
+        spacing = root.spacing() if root.spacing() >= 0 else style_spacing
+        chrome = (
+            root.contentsMargins().left()
+            + root.contentsMargins().right()
+            + spacing
+        )
+        assert content + chrome <= dlg.minimumWidth() < content + chrome + WIDTH_STEP
+
+    async def test_the_grid_fits_whole_at_the_minimum(self, async_session, qtbot):
+        dlg = _dialog(qtbot, _vm(async_session))
+        await dlg.begin()
+        dlg.show()
+        dlg.resize(dlg.minimumWidth(), dlg.minimumHeight())
+        QApplication.processEvents()
+
+        grid = dlg._preview
+        assert grid.width() >= grid.minimumSizeHint().width()
+        cells = [cell for cell in grid.findChildren(GameCalendarCell) if cell.text()]
+        assert cells
+        rightmost = max(
+            cell.mapTo(grid, QPoint(cell.width(), 0)).x() for cell in cells
+        )
+        assert rightmost <= grid.width()  # nothing clipped away from the panel
 
 
 class TestRadioChoiceThroughAccessibility:

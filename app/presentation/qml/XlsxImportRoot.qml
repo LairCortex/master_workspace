@@ -28,7 +28,7 @@ Rectangle {
     readonly property color mutedColor: Tokens.token(islandTokens, "color.fg.muted", "gray")
 
     color: surfaceColor
-    implicitWidth: 620
+    implicitWidth: 640
     implicitHeight: 560
 
     function issuesShown() {

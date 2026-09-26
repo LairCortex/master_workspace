@@ -40,7 +40,10 @@ Rectangle {
         id: docScroll
         objectName: "docScroll"
         anchors.fill: parent
-        anchors.margins: Tokens.px(root.islandTokens, "space.sm", 8)
+        // NRI-0018 task 5.3 (spec ui-layout-grid «Отступ содержимого листов
+        // задан единым токеном»): the 8 px exception was pulled up to the
+        // shared sheet token.
+        anchors.margins: Tokens.px(root.islandTokens, "space.md", 16)
         clip: true
         contentWidth: availableWidth
 

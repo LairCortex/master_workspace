@@ -283,10 +283,13 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self._saving = False
         self._close_guard = None
         self._date_target = "start"
-        self.setWindowTitle(f"Карточка: {entity_type}")
+        # NRI-0018 (Д4, spec qml-shell «Шапка карточки … названа по-русски»):
+        # the title names the type through the registry's display_label — the
+        # raw key stays in the object/type contracts, never in a visible title.
+        self.setWindowTitle(f"Карточка: {entity_registry.display_label(entity_type)}")
         # Floor only: the window opens at the island's content size below, so
         # every field, the related section and the action row are visible.
-        self._size_floor = (750 if self._has_image_field else 550, 550)
+        self._size_floor = (760 if self._has_image_field else 550, 550)
         self.setMinimumSize(*self._size_floor)
 
         self.vm = EntityCardIslandViewModel(
