@@ -20,7 +20,6 @@ import pytest
 from PySide6.QtCore import QUrl, Slot
 from PySide6.QtGui import QAccessible
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import QApplication
 
 from app.domain.enums.field_type import FieldType
 from app.presentation.qml.sheet_font import register_sheet_font
@@ -79,7 +78,7 @@ class MockFillVM(CharacterSheetFillViewModel):
 
 
 @pytest.fixture
-async def mock_vm(services):
+async def mock_vm(services):  # noqa: F811 — pytest injects the imported fixture by name
     sheet_svc, _ = services
     row = await sheet_svc.create("Лист")
     view_model = MockDesignVM(sheet_svc)
@@ -88,7 +87,7 @@ async def mock_vm(services):
 
 
 @pytest.fixture
-async def mock_fill_case(services):
+async def mock_fill_case(services):  # noqa: F811 — pytest injects the imported fixture by name
     """The island suite's fill template on the recording fill VM."""
     sheet_svc, inst_svc = services
     row = await sheet_svc.create("Шаблон")

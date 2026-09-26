@@ -16,7 +16,6 @@ the reverse tab switches back the same way.
 """
 from __future__ import annotations
 
-import pytest
 from PySide6.QtGui import QAccessible
 
 from app.presentation.viewmodels.sheet_list_view_model import (
@@ -57,14 +56,14 @@ def press(item) -> None:
     actions.doAction("Press")
 
 
-def _loaded_list_island(qtbot, list_vm, palette):
+def _loaded_list_island(qtbot, list_vm, palette):  # noqa: F811 — pytest injects the imported fixtures by name
     list_vm.set_rows(templates=TEMPLATES, instances=INSTANCES)
     widget = load_island(qtbot, SHEET_LIST_QML, list_vm, palette, (420, 520))
     assert widget.errors() == []
     return widget
 
 
-def test_tabs_carry_the_stock_page_tab_face(qtbot, list_vm, palette):
+def test_tabs_carry_the_stock_page_tab_face(qtbot, list_vm, palette):  # noqa: F811 — pytest injects the imported fixtures by name
     # Role is delivered; the offscreen name slot never contradicts the caption
     # (a non-empty slot here can only be a forbidden re-annotation).
     widget = _loaded_list_island(qtbot, list_vm, palette)
@@ -90,7 +89,7 @@ def test_tab_declarations_carry_no_accessible_name_in_source():
         ) is None
 
 
-def test_press_on_the_instances_tab_switches_the_vm(qtbot, list_vm, palette):
+def test_press_on_the_instances_tab_switches_the_vm(qtbot, list_vm, palette):  # noqa: F811 — pytest injects the imported fixtures by name
     widget = _loaded_list_island(qtbot, list_vm, palette)
     tab_changed = track(list_vm.tabChanged)
     assert list_vm.current_tab == TAB_TEMPLATES
@@ -106,7 +105,7 @@ def test_press_on_the_instances_tab_switches_the_vm(qtbot, list_vm, palette):
     assert widget.errors() == []
 
 
-def test_press_on_the_templates_tab_switches_back(qtbot, list_vm, palette):
+def test_press_on_the_templates_tab_switches_back(qtbot, list_vm, palette):  # noqa: F811 — pytest injects the imported fixtures by name
     widget = _loaded_list_island(qtbot, list_vm, palette)
     from tests.presentation.qml_helpers import click_item
 

@@ -7,7 +7,6 @@ generalized into one mechanism for every single-instance menu window.
 """
 from __future__ import annotations
 
-import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog
 
