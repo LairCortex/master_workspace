@@ -1,13 +1,21 @@
-// ThemeTabButton — the library's tab, styled as the button family is: token
-// padding around the label, the rounded button corner and the accent fill on
-// the selected tab (Basic's own tab is a tall square strip that reads as a
-// foreign control between token-skinned chrome).
+// ThemeTabButton — the library's tab, NRI-0019: an underline tab, not a
+// member of the button family. Rounded borders around every caption read as
+// buttons; a tab reads as a tab: no fill, the caption turns accent when the
+// tab is current, the current tab sits on a 2 px accent underline, and every
+// tab carries its share of the strip's 1 px baseline hairline (the tabs sit
+// flush, so the hairlines join into one continuous line under the bar).
 //
-// Off-skin (design D7): both style slots collapse to null so the Basic tab
-// re-materializes untouched; the fallbacks are the pinned named-Qt-global
-// set.
+// The width contract is the component's too (spec qml-components «Вкладки
+// делят ширину полосы»): `Layout.fillWidth` makes the ThemeTabBar row give
+// each tab a share of the bar — stretched beyond the natural caption width
+// while the column is roomy, shrunk proportionally below it when the column
+// narrows, the caption eliding to «Организаци…».
+//
+// Off-skin (design D7): the style slots collapse to null so the Basic tab
+// re-materializes untouched; the underline stays island chrome.
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import "tokens.js" as Tokens
 
 TabButton {
@@ -18,21 +26,25 @@ TabButton {
     readonly property bool skinned:
         Tokens.token(islandTokens, "color.bg.surface", "") !== ""
 
-    readonly property color canvasColor: Tokens.token(islandTokens, "color.bg.canvas", "white")
     readonly property color fgColor: Tokens.token(islandTokens, "color.fg.primary", "black")
     readonly property color mutedColor: Tokens.token(islandTokens, "color.fg.muted", "gray")
     readonly property color borderColor: Tokens.token(islandTokens, "color.border", "lightgray")
     readonly property color accentColor: Tokens.token(islandTokens, "color.accent", "black")
-    readonly property color accentFgColor: Tokens.token(islandTokens, "color.accent.fg", "white")
 
     function accentHover(base) { return Tokens.token(islandTokens, "color.accent.hover", base) }
     function accentPressed(base) { return Tokens.token(islandTokens, "color.accent.pressed", base) }
 
-    // The button family's inset: space.sm on every side of the label.
+    // The label's inset: it also sets the strip's height (the tap target
+    // stays a button-sized row even though nothing is outlined anymore).
     padding: Tokens.px(islandTokens, "space.sm", 8)
     leftPadding: padding
     rightPadding: padding
     font.pixelSize: Tokens.px(islandTokens, "font.size.md", 13)
+
+    // NRI-0019: the tab shares the bar's width through the ThemeTabBar's
+    // layout row (see the header comment); its natural width is the row's
+    // share base, never a hard floor.
+    Layout.fillWidth: true
 
     // NRI-0017 (B1, design F4): the stock press path is dead for this control
     // — the Qt6 accessibility bridge exposes NO action for an un-annotated
@@ -46,9 +58,9 @@ TabButton {
     // never re-annotated — 4.2/4.1 guards stay green).
     Accessible.onPressAction: control.click()
 
-    // NRI-0015 (task 1.1): the button's natural minimum width is its text's
-    // implicit width plus the button's own horizontal padding — the caption
-    // floor never comes from a hand-tuned pt constant.
+    // The tab's natural (preferred) width is its text's implicit width plus
+    // the horizontal padding — the caption floor never comes from a
+    // hand-tuned pt constant; the layout row shrinks below it on demand.
     implicitWidth: implicitContentWidth + leftPadding + rightPadding
 
     contentItem: control.skinned ? themedLabel : null
@@ -58,9 +70,14 @@ TabButton {
         visible: control.skinned  // floats invisible while off-skin
         text: control.text
         font: control.font
+        // Current = the accent caption; the rest is plain fg text answering
+        // hover/press with the accent's interaction shades.
         color: !control.enabled
             ? control.mutedColor
-            : control.checked ? control.accentFgColor : control.fgColor
+            : control.checked ? control.accentColor
+            : control.pressed ? control.accentPressed(control.fgColor)
+            : control.hovered ? control.accentHover(control.fgColor)
+            : control.fgColor
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
@@ -71,19 +88,26 @@ TabButton {
     Rectangle {
         id: themedBackground
         visible: control.skinned  // floats invisible while off-skin
-        radius: Tokens.px(islandTokens, "radius.sm", 6)
-        // Selected tab = the accent action; the rest carries the flat
-        // button's canvas fill and token border.
-        border.width: control.checked ? 0 : 1
-        border.color: control.checked ? "transparent" : control.borderColor
-        color: {
-            if (control.checked)
-                return control.pressed ? control.accentPressed(control.accentColor)
-                     : control.hovered ? control.accentHover(control.accentColor)
-                     : control.accentColor
-            return control.pressed ? control.accentPressed(control.canvasColor)
-                 : control.hovered ? control.accentHover(control.canvasColor)
-                 : control.canvasColor
+        color: "transparent"
+
+        // The strip's baseline: every tab draws its own share, the flush
+        // neighbours join it into one line across the bar.
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: control.borderColor
+        }
+
+        // The current tab's underline covers the baseline at its span.
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 2
+            color: control.accentColor
+            visible: control.checked
         }
     }
 }

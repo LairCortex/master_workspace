@@ -1,27 +1,26 @@
-"""NRI-0018 group 4 — the detail tabs wear the FULL registry names.
+"""NRI-0019 — the detail tabs are tabs, and they follow the column width.
 
 Spec main-window «Подписи вкладок деталей читаемы при дефолтной ширине»
-(NRI-0018 re-pin of the NRI-0015 short-caption era, design Д5): every tab's
-visible text IS the registry plural_label, and that same caption is the tab's
-accessibility name and its tooltip (scenario «Подпись и имя доступности
-одно»); no short-caption field survives in the registry. The detail panel
-publishes the «all tabs whole» threshold — the width below which the widest
-full caption would clip — and that number is the width provider of the main
-role's placement memory and the splitter floors (see
-test_main_window_default_start.py / test_geometry_memory.py).
+(NRI-0019 re-pin): every tab's visible text IS the registry plural_label,
+and that same caption is the tab's accessibility name and its tooltip
+(scenario «Подпись и имя доступности одно»); no short-caption field survives
+in the registry. The strip no longer needs the «all tabs whole» threshold:
+the tabs share the panel's whole width (stretch beyond their natural widths,
+shrink proportionally below them) and a narrow column shortens the captions
+with the ellipsis instead of clipping the strip — the retired threshold is
+gone from the panel, the placement memory and the splitter floors (see
+test_main_window_default_start.py).
 
 Pins: registry guard (the tab_label field is gone from EntityDescriptor);
 the view model exposes only the full titles; on the shown island every tab's
-text, QAccessible name and tooltip-bridge request equal the full caption and
-keep at least their content width; the panel threshold equals the strip's own
-implicit widths plus the bar spacing and this island's margins — and at that
-exact width every tab stands whole while one point narrower the last tab
-already leaks past the panel.
+text, QAccessible name and tooltip-bridge request equal the full caption; at
+the default width every caption stands whole while the tabs together fill the
+bar's whole width; in a narrow column the tabs shrink proportionally to their
+natural widths and the eliding labels prove the shortened captions.
 """
 from __future__ import annotations
 
 import dataclasses
-import math
 from types import SimpleNamespace
 
 from PySide6.QtCore import QPoint, QPointF
@@ -35,19 +34,14 @@ from app.presentation.views.detail_panel import DetailPanel
 from tests.presentation.qml_helpers import find_item, walk_items
 
 FULL_TAB_LABELS = ["Организации", "Персонажи", "Предметы", "Локации"]
-# 1280 — the NRI-0018 default window width; the detail column it leaves the
-# panel must show every full caption whole (spec scenario «Все вкладки
-# прочитаны с порога»).
+# 1280 — the default window width; the detail column it leaves the panel
+# must show every full caption whole while the tabs fill the strip (spec
+# scenario «Все вкладки прочитаны на дефолте»).
 DEFAULT_PANEL_WIDTH = 1280
-
-
-def _space_xs_px() -> int:
-    """The island margin token the detail root anchors its layout with."""
-    from app.presentation.theme import get_default_theme
-
-    value = get_default_theme().tokens["space.xs"]["dark"]
-    assert value.endswith("px")
-    return int(value[:-2])
+# A column clearly narrower than the natural captions: the tabs must shrink
+# and the labels must elide instead of the strip leaking out of the panel
+# (spec scenario «Узкая колонка сокращает подписи»).
+NARROW_PANEL_WIDTH = 240
 
 
 # ── the registry no longer carries a short-caption field (task 4.2) ─────────
@@ -103,15 +97,8 @@ def _tabs(panel: DetailPanel):
     return tabs
 
 
-def _strip_min_width(panel: DetailPanel) -> float:
-    """The threshold recomputed from the island's own numbers: the sum of the
-    tabs' implicitWidth, the strip's spacing between them and the island
-    margins (design Д5 «сумма implicitWidth четырёх полных вкладок + отступы
-    TabBar»)."""
-    tabs = _tabs(panel)
-    bar = find_item(panel.quick, "detailTabBar")
-    strip = sum(tab.property("implicitWidth") for tab in tabs)
-    return strip + bar.property("spacing") * (len(tabs) - 1) + 2 * _space_xs_px()
+def _bar(panel: DetailPanel):
+    return find_item(panel.quick, "detailTabBar")
 
 
 def test_tab_text_accessible_name_and_tooltip_are_one_caption(qtbot):
@@ -155,39 +142,48 @@ def test_tab_text_accessible_name_and_tooltip_are_one_caption(qtbot):
         QToolTip.hideText()
 
 
-def test_tabs_keep_their_content_width_at_the_default_panel_width(qtbot):
+def test_tabs_stretch_to_fill_the_strip_whole_at_the_default_width(qtbot):
+    """Spec «Все вкладки прочитаны на дефолте» + the stretch half of the
+    NRI-0019 contract: whole captions AND the tabs share the bar's width."""
     panel = _shown_panel(qtbot, DEFAULT_PANEL_WIDTH)
     root = panel.quick.rootObject()
-    for tab, full in zip(_tabs(panel), FULL_TAB_LABELS):
-        # The real caption floor: content PLUS the button's own horizontal
-        # padding (the NRI-0015 M1-tail pin stays alive for the full captions).
-        assert tab.width() >= tab.property("implicitWidth")
-        # …and whole inside the panel: no full caption leaks past its edge.
+    bar = _bar(panel)
+    tabs = _tabs(panel)
+    for tab, full in zip(tabs, FULL_TAB_LABELS):
+        # Whole: every tab stands at least at its natural caption width…
+        assert tab.width() >= tab.property("implicitWidth") - 0.5, full
+        # …inside the panel, nothing leaks past the island edge.
         scene = tab.mapToItem(root, QPointF(0, 0))
         assert scene.x() + tab.width() <= root.width() + 0.5, full
+    # Stretched: the tabs together cover the bar's whole width (the retired
+    # natural-width row left the strip's remainder empty; the spacing between
+    # underline tabs is zero, so the sum lands on the bar exactly).
+    assert abs(sum(tab.width() for tab in tabs) - bar.width()) <= 1.0
 
 
-def test_threshold_is_the_all_tabs_whole_panel_width(qtbot):
-    """Task 4.1 «порог = ширина панели деталей „все вкладки целиком“»."""
-    panel = _shown_panel(qtbot, DEFAULT_PANEL_WIDTH)
-    threshold = panel.min_tabs_width()
-    assert threshold == math.ceil(_strip_min_width(panel))
-
-    # At exactly the threshold every tab still stands whole inside the panel…
-    panel.resize(threshold, 700)
-    QApplication.processEvents()
+def test_tabs_shrink_with_elided_captions_in_a_narrow_column(qtbot):
+    """Spec «Узкая колонка сокращает подписи»: below the natural widths the
+    tabs shrink proportionally to those widths and their labels elide —
+    the strip stays inside the panel instead of clipping."""
+    panel = _shown_panel(qtbot, NARROW_PANEL_WIDTH)
     root = panel.quick.rootObject()
-    for tab in _tabs(panel):
-        assert tab.mapToItem(root, QPointF(0, 0)).x() + tab.width() <= root.width() + 0.5
-
-    # …and a panel a margin-width below the threshold already clips the last
-    # full caption at its edge — the threshold really is the floor, not a
-    # padded guess (the strip plus both margins no longer fits).
-    panel.resize(threshold - 6, 700)
-    QApplication.processEvents()
-    root = panel.quick.rootObject()
-    last = _tabs(panel)[-1]
-    assert last.mapToItem(root, QPointF(0, 0)).x() + last.width() > root.width()
+    bar = _bar(panel)
+    tabs = _tabs(panel)
+    ratios = []
+    for tab, full in zip(tabs, FULL_TAB_LABELS):
+        assert tab.width() < tab.property("implicitWidth"), full
+        ratios.append(tab.width() / tab.property("implicitWidth"))
+        # The shortened caption: the label has less room than its full text
+        # (its elide: Text.ElideRight is pinned at the component source in
+        # test_qml_components — the caption then renders as «Организаци…»).
+        label = tab.property("contentItem")
+        assert label.width() < label.property("implicitWidth"), full
+        scene = tab.mapToItem(root, QPointF(0, 0))
+        assert scene.x() + tab.width() <= root.width() + 0.5, full
+    # Proportional shrink: every tab lost the same share of its natural width.
+    assert max(ratios) - min(ratios) < 0.05
+    # The shrunk tabs still fill the bar — they narrow, they do not leave a gap.
+    assert abs(sum(tab.width() for tab in tabs) - bar.width()) <= 1.0
 
 
 def test_bare_manager_first_open_is_a_silent_noop():

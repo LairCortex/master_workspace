@@ -434,12 +434,10 @@ class Application:
         self._window = window
         # NRI-0015 (1.3): role "main" — remembered placement returns the
         # window where the user left it, clamped into a connected screen.
-        # NRI-0018 (Д5): the detail panel's all-tabs-whole threshold rides
-        # along as the width provider — a saved frame narrower than the full
-        # tab captions need comes back widened, position and height untouched.
-        self._geometries.attach(
-            window, "main", min_width=window.detail_panel.min_tabs_width
-        )
+        # NRI-0019: the all-tabs-whole width provider retired — the tab strip
+        # shrinks its captions with the column now, so a narrow saved frame
+        # comes back exactly as saved.
+        self._geometries.attach(window, "main")
         window.show()
         if first_run_wizard:
             # Deferred right after the window is on screen (task 2.4): the

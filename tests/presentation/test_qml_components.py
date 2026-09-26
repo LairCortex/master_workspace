@@ -761,15 +761,18 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
     # fg text.
     assert _item_pixel(widget, img, row, 2, row.height() / 2) == page_rgb
     assert _exact_pixel_in_bounds(widget, img, row_text, fg_rgb) is not None
-    # Tabs carry the button family's surfaces: the current tab is the accent
-    # action with accentFg glyphs, the rest the canvas fill behind the border
-    # hairline; the transparent bar leaves the danger surround between them.
-    assert _item_pixel(widget, img, tab_selected, 4, tab_selected.height() / 2) == accent_rgb
-    assert _item_pixel(widget, img, tab_plain, 4, tab_plain.height() / 2) == canvas_rgb
-    assert _item_pixel(widget, img, tab_plain, 0, tab_plain.height() / 2) == border_rgb
+    # NRI-0019 underline tabs: no button fill — both tab bodies are see-through
+    # (the danger surround shows), the strip's baseline under the plain tab is
+    # the border hairline, the current tab sits on the accent underline, and
+    # the captions carry fg / accent glyphs (NRI-0018 Д5: accent_fg is not a
+    # tab face anymore).
+    assert _item_pixel(widget, img, tab_selected, 4, tab_selected.height() / 2) == page_rgb
+    assert _item_pixel(widget, img, tab_plain, 4, tab_plain.height() / 2) == page_rgb
+    assert _item_pixel(widget, img, tab_plain, 0, tab_plain.height() - 1) == border_rgb
+    assert _item_pixel(widget, img, tab_selected, 0, tab_selected.height() - 1) == accent_rgb
     selected_label = tab_selected.property("contentItem")
     plain_label = tab_plain.property("contentItem")
-    assert _exact_pixel_in_bounds(widget, img, selected_label, accent_fg_rgb) is not None
+    assert _exact_pixel_in_bounds(widget, img, selected_label, accent_rgb) is not None
     assert _exact_pixel_in_bounds(widget, img, plain_label, fg_rgb) is not None
 
     # ── state-dependent surfaces (interaction states of the skinned set) ───
@@ -799,6 +802,45 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
     field.forceActiveFocus()
     img = _grab_rgb(widget)
     assert _item_pixel(widget, img, field, 0, field.height() / 2) == accent_rgb
+    assert widget.errors() == []
+
+
+def test_gallery_tabs_stretch_and_shrink_with_the_bar_width(qtbot, qapp, runtime, palette):
+    # NRI-0019 (spec qml-components «Вкладки делят ширину полосы»): the strip's
+    # tabs share the bar's whole width — stretched beyond their natural widths
+    # while there is room, shrunk proportionally below them when the bar
+    # narrows. This is the component-side mechanism every island usage site
+    # gets for free (detail panel, event dialog, entity card, sheet list).
+    widget = load_gallery(qtbot, qapp, runtime, palette)
+    bar = _find_item(widget, "galleryTabBar")
+    tab_sel = _find_item(widget, "galleryTabSelected")
+    tab_plain = _find_item(widget, "galleryTabPlain")
+
+    # The gallery hands the bar 200 px against two short captions: the tabs
+    # are stretched and cover the bar with no leftover gap.
+    assert bar.width() == 200
+    assert tab_sel.width() > tab_sel.property("implicitWidth")
+    assert tab_plain.width() > tab_plain.property("implicitWidth")
+    assert abs(tab_sel.width() + tab_plain.width() - bar.width()) <= 1.0
+
+    # A narrow bar: the tabs drop below their natural widths in the same
+    # proportion — captions will elide, the strip itself stays whole.
+    bar.setProperty("width", 40)
+    assert tab_sel.width() < tab_sel.property("implicitWidth")
+    assert tab_plain.width() < tab_plain.property("implicitWidth")
+    ratio_sel = tab_sel.width() / tab_sel.property("implicitWidth")
+    ratio_plain = tab_plain.width() / tab_plain.property("implicitWidth")
+    assert abs(ratio_sel - ratio_plain) < 0.05
+    assert abs(tab_sel.width() + tab_plain.width() - bar.width()) <= 1.0
+    # The shortened caption renders with the ellipsis: the label really has
+    # less room than its text, and the component declares the elide the
+    # Python side cannot read back (no PySide wrapper for QQuickText's
+    # elide enum — source guard, the convention-guard pattern).
+    tab_source = (MODULE_DIR / "ThemeTabButton.qml").read_text(encoding="utf-8")
+    assert "elide: Text.ElideRight" in tab_source
+    for tab in (tab_sel, tab_plain):
+        label = tab.property("contentItem")
+        assert label.width() < label.property("implicitWidth")
     assert widget.errors() == []
 
 

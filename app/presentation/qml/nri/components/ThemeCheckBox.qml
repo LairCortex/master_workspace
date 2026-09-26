@@ -57,7 +57,21 @@ CheckBox {
     readonly property color accentColor: Tokens.token(islandTokens, "color.accent", "black")
     readonly property color accentFgColor: Tokens.token(islandTokens, "color.accent.fg", "white")
 
-    spacing: Tokens.px(islandTokens, "space.sm", 8)
+    // Grouping gap (owner design note 2026-09-26): the box and its caption
+    // are ONE element, so the space between them is the tighter space.xs —
+    // strictly smaller than the space.sm gap the surrounding row keeps
+    // between neighbouring controls (the launcher's button row read the
+    // box and «Светлая тема» as two row items at the old equal gap).
+    spacing: Tokens.px(islandTokens, "space.xs", 4)
+
+    // The same rule made measurable (offscreen probe 2026-09-26): the Basic
+    // style still places a user-supplied contentItem at its own default 6 px
+    // leftPadding while it NEVER repositions a user-supplied indicator (it
+    // stays at x = 0 — the very quirk nri-0018 pinned for the y axis), so
+    // that padding silently ADDS itself to the box↔caption gap (measured
+    // 10 px against the row's 8). The control's own paddings stay untouched
+    // (they are the off-skin bounds — D7); the skinned label below simply
+    // subtracts the style inset, so the painted gap equals `spacing`.
     font.pixelSize: Tokens.px(islandTokens, "font.size.md", 13)
 
     indicator: control.skinned ? themedIndicator : null
@@ -117,8 +131,13 @@ CheckBox {
         visible: control.skinned  // floats invisible while off-skin
         // The control lays the contentItem over the whole padding rect, the
         // indicator included (Basic's own CheckLabel carries the same inset);
-        // without it the label paints on top of the box.
-        leftPadding: control.indicator ? control.indicator.width + control.spacing : 0
+        // without it the label paints on top of the box. The item itself
+        // starts at the style's leftPadding, so that inset is subtracted —
+        // the ink then begins exactly `spacing` past the box (the gap note
+        // above the font properties).
+        leftPadding: control.indicator
+            ? Math.max(control.indicator.width + control.spacing - control.leftPadding, 0)
+            : 0
         text: control.text
         font: control.font
         color: control.enabled ? control.fgColor : control.mutedColor

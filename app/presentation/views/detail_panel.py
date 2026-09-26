@@ -65,17 +65,6 @@ class DetailPanel(IslandDialogMixin, QWidget):
     def island_source(self) -> str:
         return ROOT_QML
 
-    def min_tabs_width(self) -> int:
-        """The panel width at which every full tab caption stands whole.
-
-        NRI-0018 (design D5): the island measures it from the delegates' own
-        implicit widths (``minTabsWidth`` in ``DetailPanelRoot``) — never a
-        hand-tuned number. Role "main" placement memory widens a restored
-        frame to it; ``MainWindow`` floors the splitter panes that host the
-        strip and the «Дата:» row with the same number.
-        """
-        return int(self.quick.rootObject().property("minTabsWidth"))
-
     def load_island_scene(self, quick) -> None:
         # The VM is a raw context pointer: adopted under the (post-widget)
         # context so the scene dies before it at child destruction, exactly

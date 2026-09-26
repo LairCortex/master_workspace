@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import nri.components
 import "nri/components/tokens.js" as Tokens
+import "nri/components/panelHeader.js" as PanelHeader
 
 Rectangle {
     id: root
@@ -10,23 +11,6 @@ Rectangle {
 
     property alias currentTab: tabBar.currentIndex
     property alias organizationContentY: organizationList.contentY
-
-    // NRI-0018 (design Д5): the "all tabs whole" threshold this panel needs —
-    // the tabs' own natural widths, the strip's spacing between them and this
-    // island's side margins, measured from the delegates (never a hand-tuned
-    // number). DetailPanel.min_tabs_width() re-publishes it for the placement
-    // memory (role "main" widens a restored frame to it) and the splitter
-    // floors in MainWindow.
-    readonly property real minTabsWidth: {
-        var strip = 0
-        for (var i = 0; i < detailTabs.count; ++i)
-            strip += detailTabs.itemAt(i).implicitWidth
-        return Math.ceil(
-            strip
-            + tabBar.spacing * Math.max(0, detailTabs.count - 1)
-            + 2 * Tokens.px(root.islandTokens, "space.xs", 4)
-        )
-    }
 
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
@@ -156,51 +140,77 @@ Rectangle {
         anchors.margins: Tokens.px(root.islandTokens, "space.xs", 4)
         spacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
+        // The event-meta rows belong to a selected event: while nothing is
+        // selected they stay empty, and an empty row still occupied its line
+        // height + spacing, dropping the tab strip 41 px below the other two
+        // column headers (live fix 2026-09-26). The VM already answers the
+        // question — eventSelected — so the rows simply leave the layout
+        // (invisible children are skipped by ColumnLayout) and never push
+        // the strip down; a selected event grows the header block downward
+        // above the strip, exactly like before.
         TitleText {
             objectName: "detailTitle"
             Layout.fillWidth: true
+            visible: detailPanelVm.eventSelected
             text: detailPanelVm.title
         }
 
         Text {
             objectName: "detailDate"
             Layout.fillWidth: true
+            visible: detailPanelVm.eventSelected
             text: detailPanelVm.dateText
             color: root.secondaryText
             font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
         }
 
-        ThemeTabBar {
-            id: tabBar
-            objectName: "detailTabBar"
+        // The tab strip rides the shared panel-header band (panelHeader.js,
+        // live fix 2026-09-26): the same 32 px band, the same 4 px top margin
+        // and the band's vertical center as the timeline title and the
+        // snapshot title, so all three column headers sit on one horizontal
+        // line whether or not an event is selected. Anchors, not Layout
+        // attributes — the strip keeps the whole width (the tabs share it)
+        // and its own implicit height, centered in the band.
+        Item {
+            objectName: "detailTabBand"
             Layout.fillWidth: true
-            currentIndex: 0
+            Layout.minimumWidth: 0
+            implicitHeight: PanelHeader.band()
+            Layout.preferredHeight: implicitHeight
 
-            // NRI-0018 (Д5): the retired short captions — every tab wears the
-            // registry's full plural again, as text, accessibility name AND
-            // tooltip at once (spec main-window scenario «Подпись и имя
-            // доступности одно»). The name stays annotated because TabBar
-            // divides its bar evenly and the text-derived name is the
-            // live-platform half only (AGENTS F4); the bound-text control
-            // keeps the 4.1 convention guard silent. The delegate's
-            // width: implicitWidth (NRI-0015 M1 tail) keeps every caption its
-            // natural width regardless of the bar's quotient.
-            Repeater {
-                id: detailTabs
-                model: detailPanelVm.tabTitles
-                ThemeTabButton {
-                    id: detailTab
-                    objectName: "detailTab"
-                    required property string modelData
-                    required property int index
-                    text: modelData
-                    width: implicitWidth
-                    Accessible.name: detailPanelVm.tabTitles[index]
-                    HoverHandler {
-                        onHoveredChanged: tooltipBridge.tooltipRequested(
-                            hovered ? detailPanelVm.tabTitles[index] : "",
-                            point.scenePosition
-                        )
+            ThemeTabBar {
+                id: tabBar
+                objectName: "detailTabBar"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                currentIndex: 0
+
+                // NRI-0018 (Д5): the retired short captions — every tab wears the
+                // registry's full plural again, as text, accessibility name AND
+                // tooltip at once (spec main-window scenario «Подпись и имя
+                // доступности одно»). The name stays annotated because the text-
+                // derived name is the live-platform half only (AGENTS F4); the
+                // bound-text control keeps the 4.1 convention guard silent.
+                // NRI-0019: the retired width: implicitWidth (NRI-0015 M1 tail) —
+                // the bar's row now shares its width between the tabs (ThemeTabBar),
+                // so the whole column is used and a narrow column shortens the
+                // captions with the ellipsis instead of clipping the strip.
+                Repeater {
+                    model: detailPanelVm.tabTitles
+                    ThemeTabButton {
+                        id: detailTab
+                        objectName: "detailTab"
+                        required property string modelData
+                        required property int index
+                        text: modelData
+                        Accessible.name: detailPanelVm.tabTitles[index]
+                        HoverHandler {
+                            onHoveredChanged: tooltipBridge.tooltipRequested(
+                                hovered ? detailPanelVm.tabTitles[index] : "",
+                                point.scenePosition
+                            )
+                        }
                     }
                 }
             }

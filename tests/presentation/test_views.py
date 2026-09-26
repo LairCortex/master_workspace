@@ -119,12 +119,11 @@ class TestMainWindow:
         assert [splitter.widget(i) for i in range(3)] == [
             w.timeline_widget, w.detail_panel, w.world_snapshot,
         ]
-        # NRI-0018 (Д5): the caption-holding panes stand on the detail panel's
-        # all-tabs-whole threshold, not the old hand-tuned 280 (the timeline
-        # rail keeps its own 220 floor).
-        tabs_floor = w.detail_panel.min_tabs_width()
+        # NRI-0019: the tabs now shrink with the column (elided captions),
+        # so the all-tabs-whole threshold retired as the pane floor — all
+        # three panes stand on one shared usability minimum.
         assert [splitter.widget(i).minimumWidth() for i in range(3)] == [
-            220, tabs_floor, tabs_floor,
+            220, 220, 220,
         ]
         assert [
             splitter.widget(i).sizePolicy().horizontalStretch() for i in range(3)

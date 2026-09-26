@@ -105,12 +105,21 @@ Item {
     // same accent under the migrated 0.25 wash alpha, never under the
     // selection — and only on selectable rows (every delivered row is one
     // today; the flag stays the gate so a filtered-out row stays inert).
+    //
+    // The wash is rounded on ``radius.sm`` (live fix 2026-09-26): every other
+    // list item in the skin wears the card rounding (the snapshot and detail
+    // rows ride the rounded `ThemeRatingCard`, fields/buttons/checkboxes all
+    // take `radius.sm`), only the timeline row was a square accent block —
+    // the same token the content field's corners use, so the row reads as a
+    // rounded item inside the field.
     Rectangle {
+        objectName: "rowWash"
         anchors.fill: parent
         visible: row.selectedRow
             || (row.hoveredRow && !!(row.flags && row.flags.selectable))
         color: row.selectedRow ? row.accentColor : row.rowWashColor
         opacity: row.selectedRow ? 1.0 : row.rowWashAlpha
+        radius: Tokens.px(row.islandTokens, "radius.sm", 6)
     }
 
     // The type mark: the bare ``color.chart.N`` token square (untyped rows

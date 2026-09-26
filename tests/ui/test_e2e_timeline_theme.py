@@ -32,7 +32,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from app.presentation.theme.compiler import tokens_file_path
+from app.presentation.theme.compiler import load_tokens, tokens_file_path
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.timeline_island import TimelineWidget
 
@@ -138,6 +138,17 @@ def _field_color(theme: str) -> QColor:
     """The background the rows ride on: the canvas token of the bordered
     content field the list sits in (spec «Оформление списка из токенов»)."""
     return token_color("color.bg.canvas", theme)
+
+
+def _wash_item(widget, idx: int):
+    """The selection/hover wash rectangle of the row at ``idx``."""
+    delegate = _delegate(widget, idx)
+    return next(i for i in delegate.childItems() if i.objectName() == "rowWash")
+
+
+def _radius_px(theme: str) -> float:
+    """``radius.sm`` of the shipped token file, in px (``"6px"`` -> 6.0)."""
+    return float(str(load_tokens(tokens_file_path())["radius.sm"][theme]).removesuffix("px"))
 
 
 def _type_mark_pixel(widget, idx: int) -> QColor:
@@ -446,3 +457,37 @@ def test_description_line_and_the_list_field_are_tokens(qtbot, tmp_path, theme):
     QTest.qWait(10)
     QApplication.processEvents()
     assert detail.property("color") == token_color("color.accent.fg", theme), theme
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_row_wash_is_rounded_like_the_other_list_items(qtbot, tmp_path, theme):
+    """Spec «Оформление списка из токенов»: the row's wash carries the card
+    rounding (`radius.sm`) — every other list item in the skin wears it (the
+    snapshot/detail rows ride the rounded `ThemeRatingCard`), only the
+    timeline row used to paint a square accent block. The middle of the row
+    still answers the accent token itself; the corner of the row's band,
+    outside the rounded wash, keeps the field's canvas."""
+    runtime = make_runtime(tmp_path, theme)
+    surface = _field_color(theme)
+    accent = token_color("color.accent", theme)
+    widget, vm = _island(qtbot, runtime, [_evt(1, date(1200, 1, 1), date(1200, 1, 20), "З")])
+    row = vm.index_for_event(1)
+    _reveal(widget, row)
+    widget.set_selected(1)
+    QTest.qWait(10)
+    QApplication.processEvents()
+
+    wash = _wash_item(widget, row)
+    assert wash.property("visible") is True, theme
+    # The same rounding the content field's corners use — one token, both
+    # halves pinned off the live objects (no literal drift possible).
+    card = find_items(widget.quick, "timelineListCard")[0]
+    assert wash.property("radius") == card.property("radius"), theme
+    assert wash.property("radius") == _radius_px(theme), theme
+
+    # Raster half: mid-edge is the accent verbatim, the corner pixel of the
+    # row's band is not washed (the rounded corner lets the canvas through).
+    delegate = _delegate(widget, row)
+    assert _pixel(widget, delegate, fx=0.5) == accent, theme
+    corner = _pixel(widget, delegate, fx=0.002, fy=0.06)
+    assert corner == surface, (theme, corner.name())

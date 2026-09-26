@@ -8,6 +8,7 @@
 // field names lives here (spec llm-configuration «Поля выводятся из
 // единственного источника»).
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import nri.components
 import "nri/components/tokens.js" as Tokens
@@ -196,49 +197,77 @@ Rectangle {
                     }
 
                     // NRI-0016 LS1 (spec «Подпись стоит у своего поля», design
-                    // V5): ONE Repeater whose row delegate paints the label and
-                    // its own field side by side (row objectName
+                    // V5): ONE Repeater whose row delegate carries the label
+                    // and its own field in one container (row objectName
                     // «fieldPromptRow_<etype>_<field>» is the test seam). The
                     // two Repeaters before put ALL labels into the left column
                     // and ALL fields into the right one, so with a few rows a
                     // label visually faced another setting's field on every
                     // field page.
-                    Repeater {
-                        model: fieldPage.pageData.fields
+                    // Owner design note 2026-09-26: the pair is VERTICAL now —
+                    // the caption on top, its own multiline field directly
+                    // under it (the entity-card editor is the reference: the
+                    // fields are multiline and wide, but not window-wide, so
+                    // the text zone carries the prompt without stealing the
+                    // whole page). The compact 56 px band (about two lines at
+                    // the shipped font) keeps the usual 3-field page inside
+                    // the window's default height; the five-field page of the
+                    // tallest type measured 2 px past the 480 window
+                    // offscreen the same day, so the pair column rides a
+                    // ScrollView (the entity card's pattern) — short pages
+                    // show no scrollbar, tall ones stay fully reachable.
+                    ScrollView {
+                        id: fieldScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        contentWidth: availableWidth
 
-                        RowLayout {
-                            objectName: "fieldPromptRow_" + fieldPage.pageData.entityType
-                                + "_" + modelData.name
-                            Layout.fillWidth: true
+                        ColumnLayout {
+                            width: fieldScroll.availableWidth
                             spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
-                            // Test-seam pair of the row: the label and the
-                            // field share the «_<etype>_<field>» suffix, so a
-                            // tree walk can read the alternation and compare
-                            // the painted caption with the field's name slot.
-                            TitleText {
-                                objectName: "fieldPromptLabel_" + fieldPage.pageData.entityType
-                                    + "_" + modelData.name
-                                text: modelData.label + ":"
-                            }
+                            Repeater {
+                                model: fieldPage.pageData.fields
 
-                            ThemeField {
-                                objectName: "fieldPrompt_" + fieldPage.pageData.entityType
-                                    + "_" + modelData.name
-                                Layout.fillWidth: true
-                                placeholderText: modelData.placeholder
-                                text: modelData.value
-                                // nri-0012 task 3.2: the row binds the field's
-                                // name to the very model label its own
-                                // TitleText paints (D4: label is a binding).
-                                Accessible.name: modelData.label
-                                onTextChanged: llmSetupVm.setFieldValue(
-                                    fieldPage.pageIndex, index, text)
+                                ColumnLayout {
+                                    objectName: "fieldPromptRow_" + fieldPage.pageData.entityType
+                                        + "_" + modelData.name
+                                    Layout.fillWidth: true
+                                    // The caption hugs its own field (same grouping
+                                    // rule as the checkbox caption of the same day).
+                                    spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+
+                                    // Test-seam pair of the row: the label and the
+                                    // field share the «_<etype>_<field>» suffix, so a
+                                    // tree walk can read the alternation and compare
+                                    // the painted caption with the field's name slot.
+                                    TitleText {
+                                        objectName: "fieldPromptLabel_" + fieldPage.pageData.entityType
+                                            + "_" + modelData.name
+                                        text: modelData.label + ":"
+                                    }
+
+                                    ThemeTextArea {
+                                        objectName: "fieldPrompt_" + fieldPage.pageData.entityType
+                                            + "_" + modelData.name
+                                        Layout.fillWidth: true
+                                        // «Широкие, но не на весь экран» (the entity
+                                        // fields' proportion on this 640 px window).
+                                        Layout.maximumWidth: 480
+                                        Layout.preferredHeight: 56
+                                        placeholderText: modelData.placeholder
+                                        text: modelData.value
+                                        // nri-0012 task 3.2: the row binds the field's
+                                        // name to the very model label its own
+                                        // TitleText paints (D4: label is a binding).
+                                        Accessible.name: modelData.label
+                                        onTextChanged: llmSetupVm.setFieldValue(
+                                            fieldPage.pageIndex, index, text)
+                                    }
+                                }
                             }
                         }
                     }
-
-                    Item { Layout.fillHeight: true }
                 }
             }
 

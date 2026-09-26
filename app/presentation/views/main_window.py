@@ -29,6 +29,12 @@ from app.presentation.window_registry import (
 log = logging.getLogger(__name__)
 
 
+# NRI-0019: the splitter's three panes share one modest usability floor —
+# the tab strip stretches/shrinks with its column now (elided captions in a
+# narrow pane), so the all-tabs-whole threshold no longer floors the panes;
+# the number only keeps a dragged pane draggable back and clickable.
+PANE_MIN_WIDTH = 220
+
 _LOG_FILENAME = "nri_manager.log"
 # AB5 (NRI-0016): the log lives in the one configuration home (paths.py),
 # not next to the checkout/exe; ~2 MB × 3 archives bound its growth.
@@ -207,15 +213,14 @@ class MainWindow(QMainWindow):
         self.timeline_widget = TimelineWidget(timeline_vm, theme=self._theme)
         self.detail_panel = DetailPanel(detail_vm, theme=self._theme)
         self.world_snapshot = WorldSnapshotWidget(theme=self._theme)
-        # NRI-0018 (Д5): the detail panel's all-tabs-whole threshold is one
-        # number two floors read from: the strip's column never stands under
-        # it (full captions never clip), and it is the splitter's right-pane
-        # floor — the OBS-1 follow-up, so nothing under the default start
-        # squeezes the «Дата:» action row out of the snapshot panel.
-        tabs_floor = self.detail_panel.min_tabs_width()
-        self.timeline_widget.setMinimumWidth(220)
-        self.detail_panel.setMinimumWidth(tabs_floor)
-        self.world_snapshot.setMinimumWidth(tabs_floor)
+        # NRI-0019: the tab strip now shares the panel's width between its
+        # tabs (whole captions at the default column, elided ones in a narrow
+        # one), so the all-tabs-whole threshold retired as the pane floor —
+        # every pane keeps one shared usability minimum instead. OBS-1's
+        # narrow-frame follow-up (the «Дата:» row) stays that follow-up.
+        self.timeline_widget.setMinimumWidth(PANE_MIN_WIDTH)
+        self.detail_panel.setMinimumWidth(PANE_MIN_WIDTH)
+        self.world_snapshot.setMinimumWidth(PANE_MIN_WIDTH)
         splitter.addWidget(self.timeline_widget)
         splitter.addWidget(self.detail_panel)
         splitter.addWidget(self.world_snapshot)

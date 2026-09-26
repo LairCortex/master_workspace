@@ -1,12 +1,14 @@
 """NRI-0016 group 4 (LS1–LS4) — the LLM wizard island: pairs, footer, names.
 
 LS1 (spec «Подпись стоит у своего поля»): ONE Repeater now emits per-row
-``RowLayout { label; field }`` delegates, so an ordered walk of a page's
-children reads label, field, label, field… and each field's accessibility
-name equals the very caption its own label paints — on every real
-FIELD_CONFIG page and, with synthetic 1-field / 5-field pages, at any row
-count. This pins out the two-old-Repeater structure (all labels above all
-fields), which was the LS1 defect.
+``ColumnLayout { label; field }`` delegates — the caption on top, its own
+multiline field directly under it (owner design note 2026-09-26; the pair
+was side-by-side before) — so an ordered walk of a page's children reads
+label, field, label, field… and each field's accessibility name equals the
+very caption its own label paints — on every real FIELD_CONFIG page and,
+with synthetic 1-field / 5-field pages, at any row count. This pins out the
+two-old-Repeater structure (all labels above all fields), which was the
+LS1 defect.
 
 LS2 (spec «Оконный формат wizard с постоянным выходом и счётчиком»): the
 counter «N из M» and «Закрыть» live in the footer OUTSIDE the StackLayout,
@@ -161,7 +163,8 @@ def test_pair_order_is_correct_for_one_and_five_fields(qtbot, monkeypatch, key, 
         assert _a11y_name(field) == FIELD_LABELS[name]
 
     # The layout half of the check on the MATERIALIZED page: show it, so the
-    # RowLayout is held to really putting the caption left of its own field.
+    # ColumnLayout is held to really putting the caption directly ABOVE its
+    # own field (owner design note 2026-09-26: «поля ввода под название»).
     dlg.vm.goNext()  # world page
     dlg.vm.goNext()  # → the (only) field page, StackLayout index 2
     assert dlg.vm.currentPage == 2
@@ -170,8 +173,73 @@ def test_pair_order_is_correct_for_one_and_five_fields(qtbot, monkeypatch, key, 
         lx, ly, lw, lh = _scene_rect(label)
         fx, fy, fw, fh = _scene_rect(field)
         assert lw > 0 and fh > 0, name
-        assert lx + lw / 2 < fx + fw / 2, f"label right of its field: {name}"
-        assert ly < fy + fh and fy < ly + lh, f"label not on its field's row: {name}"
+        # The field starts no higher than where its caption ends (one raster
+        # of tolerance): the caption is above, never beside or below.
+        assert fy >= ly + lh - 1, f"field not below its label: {name}"
+        # Same left edge — the pair is one column, not a floating field.
+        assert abs(fx - lx) <= 1, f"field not left-aligned under its label: {name}"
+
+
+# ── design 2026-09-26: the vertical pair column stays fully reachable ───────
+
+
+def _flickable_of(item: QQuickItem) -> QQuickItem | None:
+    """The Flickable ancestor of a pair (the ScrollView's content viewport)."""
+    anc = item.parentItem()
+    while anc is not None:
+        if anc.property("contentHeight") is not None and anc.property("contentY") is not None:
+            return anc
+        anc = anc.parentItem()
+    return None
+
+
+def _field_page(qtbot, monkeypatch, key: str, fields: tuple[str, ...]):
+    _fake_pages(monkeypatch, key, fields)
+    dlg = LlmSetupDialog(config=LlmConfig("http://x/v1", "m", ""))
+    qtbot.addWidget(dlg)
+    dlg.resize(640, 480)
+    dlg.vm.goNext()  # world page
+    dlg.vm.goNext()  # → the (only) field page
+    dlg.quick.grab()
+    return dlg
+
+
+def test_tall_field_page_reaches_every_field_via_scroll(qtbot, monkeypatch):
+    """Five multiline pairs at the window's minimum height overflow the page
+    (measured +2 px offscreen 2026-09-26) — the column therefore rides a
+    ScrollView: the Flickable exists, is scrolled, and after the scroll the
+    last field's bottom edge stands no lower than the viewport's own."""
+    fields = ("name", "characteristics", "backstory", "personality", "tasks")
+    dlg = _field_page(qtbot, monkeypatch, "qatall", fields)
+    last = find_item(dlg.quick, "fieldPrompt_qatall_tasks")
+    flick = _flickable_of(last)
+    assert flick is not None, "the pair column must live inside a ScrollView"
+    slack = flick.property("contentHeight") - flick.height()
+    assert slack > 0, "the five-field page must be scrollable at 480 px"
+    flick.setProperty("contentY", slack)
+    dlg.quick.grab()
+    bottom = last.mapToScene(QPointF(0, last.height())).y()
+    viewport_bottom = flick.mapToScene(QPointF(0, flick.height())).y()
+    assert bottom <= viewport_bottom + 1, (
+        f"last field clipped below the viewport: {bottom} > {viewport_bottom}"
+    )
+
+
+def test_short_field_page_fits_without_scrolling(qtbot, monkeypatch):
+    """The usual three-field page (the «События» shape) stays fully visible
+    at the default 480 px without any scroll — the compactness half of the
+    owner note («многострочно, но не занимало много места»)."""
+    fields = ("name", "characteristics", "backstory")
+    dlg = _field_page(qtbot, monkeypatch, "qashort", fields)
+    last = find_item(dlg.quick, "fieldPrompt_qashort_backstory")
+    flick = _flickable_of(last)
+    assert flick is not None
+    assert flick.property("contentHeight") <= flick.height() + 1, (
+        "the three-field page must fit without scrolling"
+    )
+    bottom = last.mapToScene(QPointF(0, last.height())).y()
+    viewport_bottom = flick.mapToScene(QPointF(0, flick.height())).y()
+    assert bottom <= viewport_bottom + 1
 
 
 # ── LS2: persistent footer «N из M» + «Закрыть» on every page ────────────────

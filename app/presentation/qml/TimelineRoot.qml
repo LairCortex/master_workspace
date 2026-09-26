@@ -31,6 +31,7 @@ import QtQuick
 import QtQuick.Layouts
 import nri.components
 import "nri/components/tokens.js" as Tokens
+import "nri/components/panelHeader.js" as PanelHeader
 
 Rectangle {
     id: root
@@ -122,6 +123,11 @@ Rectangle {
         // exactly these three; the hide-empty toggle and the jump pair left
         // with the features they steered).
         //
+        // The band is the shared panel-header one (panelHeader.js, live fix
+        // 2026-09-26): the snapshot title and the detail tab strip sit on the
+        // same 32 px band with the same top margin, so the three column
+        // captions read on one horizontal line at the band's vertical center.
+        //
         // ANCHOR geometry, not a nested RowLayout: this Qt build treats an
         // item's effective layout minimum as its implicitWidth even against an
         // explicit Layout.minimumWidth: 0, so row children never squeeze below
@@ -132,9 +138,10 @@ Rectangle {
         // stretch (and the elision) is swallowed by the title first, then by
         // the chip.
         Item {
+            objectName: "timelineHeaderBand"
             Layout.fillWidth: true
             Layout.minimumWidth: 0
-            implicitHeight: 32
+            implicitHeight: PanelHeader.band()
             Layout.preferredHeight: implicitHeight
 
             TitleText {

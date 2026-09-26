@@ -52,6 +52,13 @@ COMPONENTS_DIR = (
 # from the shipped tokens) — pinned identically in the NRI-0018 group-1 grabs.
 ROW_STRIP = 32
 
+# The grouping gaps from the shipped tokens (owner design note 2026-09-26):
+# the indicator↔caption gap is the tight space.xs, the gap a row keeps
+# between neighbouring controls is space.sm — the box+caption must read as
+# ONE element, tighter than anything around it.
+CAPTION_GAP = 4
+ROW_GAP = 8
+
 # The pinning caption: ONE glyph so the measured ink is exactly the glyph the
 # spec's FontMetrics.boundingRect("Х") wording describes.
 PROBE_CAPTION = "Х"
@@ -154,6 +161,30 @@ def test_checkbox_strip_equals_the_button_row_strip(qtbot, qapp, tmp_path, theme
     assert widget.errors() == []
 
 
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_caption_sits_tighter_than_the_row_gap(qtbot, qapp, tmp_path, theme):
+    """Чекбокс с подписью — один элемент (решение владельца 2026-09-26): the
+    gap between the painted box and the caption's ink start equals space.xs
+    and is strictly smaller than space.sm — the gap the surrounding row
+    keeps between neighbouring controls (before the change both were 8 px
+    and the launcher row read the box and «Светлая тема» as two items)."""
+    runtime = make_runtime(tmp_path, theme)
+    widget = load_probe(qtbot, qapp, runtime, tmp_path, QmlPalette(runtime))
+
+    chk = find_item(widget, "probeCheck")
+    indicator = chk.property("indicator")
+    assert indicator is not None
+    label = chk.property("contentItem")
+    assert label is not None
+
+    # The caption paints at its own leftPadding inside the contentItem, the
+    # Basic inset being exactly indicator.width + control.spacing.
+    gap = (label.x() + label.property("leftPadding")) - (indicator.x() + indicator.width())
+    assert round(gap) == CAPTION_GAP, f"зазор индикатор↔подпись = {gap} px"
+    assert gap < ROW_GAP
+    assert widget.errors() == []
+
+
 def test_offskin_load_stays_clean_with_the_strip_metrics(qtbot, qapp, tmp_path):
     """D7 off-skin regression: the strip padding and the FontMetrics sit on the
     control itself — while collapsed (no contentItem/indicator off-skin, the
@@ -171,9 +202,11 @@ def test_offskin_load_stays_clean_with_the_strip_metrics(qtbot, qapp, tmp_path):
 
 def test_optical_offset_formula_and_strip_padding_live_in_the_component():
     """Design Д2's «одно знание — одно место» for the correction itself: the
-    capped formula ``min((descent + leading) / 2, 1)`` and the space.sm strip
-    padding are declared inside the component — no usage site can re-gauge
-    them silently (mirrors the group-1 constant pins)."""
+    capped formula ``min((descent + leading) / 2, 1)``, the space.sm strip
+    padding and the tight space.xs caption gap (owner design note
+    2026-09-26: box+caption are one element) are declared inside the
+    component — no usage site can re-gauge them silently (mirrors the
+    group-1 constant pins)."""
     source = (COMPONENTS_DIR / "ThemeCheckBox.qml").read_text(encoding="utf-8")
     assert re.search(
         r"Math\.min\(\(\w+\.descent \+ \w+\.leading\) / 2, 1\)", source
@@ -184,3 +217,6 @@ def test_optical_offset_formula_and_strip_padding_live_in_the_component():
     assert re.search(
         r"bottomPadding: Tokens\.px\(islandTokens, \"space\.sm\", 8\)", source
     )
+    assert re.search(
+        r"spacing: Tokens\.px\(islandTokens, \"space\.xs\", 4\)", source
+    ), "the caption gap space.xs (tighter than the row's space.sm) must live in the component"

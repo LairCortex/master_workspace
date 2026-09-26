@@ -135,6 +135,11 @@ a = Analysis(
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/tokens.js",
          "app/presentation/qml/nri/components"),
+        # Shared panel-header band constant of the three main-window columns
+        # (live fix 2026-09-26, docs/qa/2026-09-26-header-alignment.md) — a
+        # library script imported by the three roots, not a qmldir type.
+        ("app/presentation/qml/nri/components/panelHeader.js",
+         "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/CardPanel.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/HintText.qml",

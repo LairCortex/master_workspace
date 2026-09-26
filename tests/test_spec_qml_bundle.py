@@ -76,6 +76,10 @@ EXPECTED_QML_ROOT_FILES = (
 EXPECTED_COMPONENT_FILES = (
     "qmldir",
     "tokens.js",
+    # Shared panel-header band of the three main-window columns (live fix
+    # 2026-09-26, docs/qa/2026-09-26-header-alignment.md) — a library script
+    # imported by the three roots, same shipping rule as tokens.js.
+    "panelHeader.js",
     "ThemeButton.qml",
     "ThemeField.qml",
     "ThemeTextArea.qml",

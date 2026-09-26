@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import nri.components
 import "nri/components/tokens.js" as Tokens
+import "nri/components/panelHeader.js" as PanelHeader
 
 Rectangle {
     id: root
@@ -29,10 +30,27 @@ Rectangle {
         anchors.margins: Tokens.px(root.islandTokens, "space.xs", 4)
         spacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
-        TitleText {
-            objectName: "snapshotTitle"
-            text: "Обзор мира"
+        // The title rides the shared panel-header band (panelHeader.js, live
+        // fix 2026-09-26): the same 32 px band and the same 4 px top margin
+        // as the timeline header and the detail tab strip, with the caption
+        // seated on the band's vertical center — before this the bare text
+        // line hugged the top margin and read 7 px above the timeline title.
+        // Anchors, not a nested layout, so a long caption elides at the
+        // panel edge exactly like the timeline title does.
+        Item {
+            objectName: "snapshotHeaderBand"
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            implicitHeight: PanelHeader.band()
+            Layout.preferredHeight: implicitHeight
+
+            TitleText {
+                objectName: "snapshotTitle"
+                text: "Обзор мира"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+            }
         }
 
         RowLayout {
