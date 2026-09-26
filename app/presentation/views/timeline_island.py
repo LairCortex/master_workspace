@@ -26,12 +26,17 @@ mirrored by the test stubs):
 * root signal the facade EMITS — ``scrollToIndex(int)``: the island owns
   geometry, every reveal from the Python side is a scroll request by row
   index (the invokable answers with indices);
-* root signals the facade CONNECTS — ``addRequested()``,
-  ``addMenuRequested(real x, real y)``, ``datePopupRequested(real x, real y,
-  real width, real height)`` (the chip's scene rect — the chip is the only
-  popover opener), ``eventClicked(int)``, ``eventDoubleClicked(int)`` and
-  ``selectionMissed()`` (a click past every row: no id-contract signal, the
-  selection is dropped through the ViewModel so every layer clears).
+ * root signals the facade CONNECTS — ``addRequested()``,
+   ``addMenuRequested(real x, real y)``, ``datePopupRequested(real x, real y,
+   real width, real height)`` (the chip's scene rect — the chip is the only
+   popover opener), ``eventClicked(int)``, ``eventDoubleClicked(int)`` and
+   ``selectionMissed()`` (a click past every row: no id-contract signal, the
+   selection is dropped through the ViewModel so every layer clears);
+ * VM signals the facade SUBSCRIBES — ``nowScrollRequested(int)`` (NRI-0021
+   task 5.2): the «➜ Сейчас» button enters through the VM's sync slot, the VM
+   computes the landing index and asks for the scroll, the facade answers on
+   the same ``scrollToIndex`` channel (the QML header binds the button's
+   availability to ``vm.nowScrollEnabled`` directly — a pure display binding).
 
 All popups stay native: the «+» menu is a ``QMenu`` built here, and the
 «Выбор даты» popover lives in :mod:`timeline_date_popup` — the one
@@ -182,6 +187,18 @@ class TimelineWidget(IslandDialogMixin, QWidget):
             except (TypeError, AttributeError):
                 pass  # a stand-in VM's signal look-alike never fires anyway
 
+        # NRI-0021 (task 5.2, design Д6): the «➜ Сейчас» scroll request. The
+        # VM computed the target index (the button asked it through its sync
+        # slot); the island owns geometry, so the request lands on the same
+        # ``scrollToIndex`` channel every other reveal uses. Same stand-in
+        # tolerance as the mirror above: a VM without the signal is inert.
+        now_scroll = getattr(self._vm, "nowScrollRequested", None)
+        if now_scroll is not None:
+            try:
+                now_scroll.connect(self._reveal)
+            except (TypeError, AttributeError):
+                pass
+
         # «Типы событий…» joins the «+» context menu (member action so
         # tests can enumerate it; the menu's own exec result drives the emit,
         # mirroring the five create items — the action itself stays unconnected
@@ -269,6 +286,18 @@ class TimelineWidget(IslandDialogMixin, QWidget):
 
     # ── «Выбор даты» chip popover ────────────────────────────────────────────
 
+    def _vm_now_pair(self) -> tuple | None:
+        """The ViewModel's served game-«now» pair (NRI-0021 task 5.3), fed to
+        the popover so its empty window opens on the game date. A stand-in VM
+        without the knob — or a VM built without the game's «now» (the pair
+        is None) — seeds the year-1 page through the popover's own fallback."""
+        pair = getattr(self._vm, "now_pair", None)
+        if callable(pair):
+            pair = pair()
+        if isinstance(pair, tuple) and len(pair) == 2:
+            return pair
+        return None
+
     def _on_date_popup_requested(
         self, x: float, y: float, width: float, height: float
     ) -> None:
@@ -276,10 +305,11 @@ class TimelineWidget(IslandDialogMixin, QWidget):
 
         The chip is the popover's only opener: the popover re-seeds with the
         applied window (pre-fill only — the window itself lands when a tap
-        inside the popover completes the range)."""
+        inside the popover completes the range). The game's «сейчас» rides
+        along (NRI-0021 task 5.3) as the page an EMPTY window opens on."""
         top_left = self._scene_to_global(x, y)
         rect = QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
-        self.window_popup.open_at(rect, self._window_range)
+        self.window_popup.open_at(rect, self._window_range, self._vm_now_pair())
 
     # ── knob mirroring (VM is the single mutation point) ─────────────────────
 
@@ -375,6 +405,18 @@ class TimelineWidget(IslandDialogMixin, QWidget):
         self.window_changed.emit(start, end)
 
     # ── island lifecycle — IslandDialogMixin (release deferred per above) ──
+
+    def _release_island(self) -> None:
+        # NRI-0021 (design Д2/Д6): the ViewModel follows the game's «now»
+        # through the widget VM — the DEFECT-1 posture says the subscription
+        # never outlives the panel (the widget VM is a context property of
+        # the SEARCH island and may leave before this VM lives on the dying
+        # session's Python side). Guarded like every other VM contact: a
+        # stand-in VM carries no detach knob.
+        detach = getattr(self._vm, "detach_now_listener", None)
+        if callable(detach):
+            detach()
+        super()._release_island()
 
     def island_source(self) -> str:
         # ``root_qml`` exists for the facade tests only: until the production

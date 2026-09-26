@@ -56,6 +56,12 @@ Rectangle {
 
     Component.onCompleted: root.syncQuery()
 
+    // NRI-0021 task 3.2 (design Д4): the game's «now» VM is the one extra
+    // context name of this island (searchBarVm stays purely the search VM).
+    // Unit-built islands may hold no game value yet — then the context value
+    // is null and the widget row stays hidden behind these guards.
+    readonly property var nowVm: nowDateVm
+
     ColumnLayout {
         id: content
         anchors.left: parent.left
@@ -63,6 +69,40 @@ Rectangle {
         anchors.top: parent.top
         anchors.margins: root.contentInset
         spacing: 0
+
+        // NRI-0021 task 3.2 (spec «Виджет „Сейчас: <дата>“ в главном окне»):
+        // the game-date row above the search field, centered through the
+        // library ThemeDateField (role Button and press live inside the
+        // component; the usage site carries the name — here the caption
+        // itself, design Д4). Activation emits through the VM to the Python
+        // widgets bridge; no QML Popup is involved (spec qml-shell).
+        RowLayout {
+            objectName: "nowDateRow"
+            Layout.fillWidth: true
+            Layout.bottomMargin: Tokens.px(root.islandTokens, "space.xs", 4)
+            spacing: 0
+
+            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+
+            ThemeDateField {
+                id: nowDateField
+                objectName: "nowDateField"
+                visible: root.nowVm !== null
+                display: root.nowVm !== null ? root.nowVm.caption : ""
+                worstCaseText:
+                    root.nowVm !== null ? root.nowVm.worstCaseDisplay : ""
+                Accessible.name: root.nowVm !== null ? root.nowVm.caption : ""
+                onClicked: {
+                    if (!root.nowVm)
+                        return
+                    const point = nowDateField.mapToItem(root, 0, 0)
+                    root.nowVm.requestDatePopup(
+                        point.x, point.y, nowDateField.width, nowDateField.height)
+                }
+            }
+
+            Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
+        }
 
         RowLayout {
             Layout.fillWidth: true

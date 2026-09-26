@@ -46,6 +46,10 @@ Item {
     // ── island-owned state fed by the root's binding (D2) ───────────────────
     property bool selectedRow: false      // the washed row of selectedId
 
+    // NRI-0021 task 5.1: the ONE row starting «today» (the core marked it in
+    // the delivered flags — the rule lives in build_rows, this file paints).
+    readonly property bool nowRow: !!(row.flags && row.flags.isNow)
+
     // ── interaction channel to the root ─────────────────────────────────────
     signal rowClicked()
     signal rowDoubleClicked()
@@ -119,6 +123,26 @@ Item {
             || (row.hoveredRow && !!(row.flags && row.flags.selectable))
         color: row.selectedRow ? row.accentColor : row.rowWashColor
         opacity: row.selectedRow ? 1.0 : row.rowWashAlpha
+        radius: Tokens.px(row.islandTokens, "radius.sm", 6)
+    }
+
+    // NRI-0021 task 5.1 (spec «Обводка события, начинающегося „сегодня“»,
+    // design Д6): the today-row wears an OUTLINE, never a fill — border
+    // against the selection's fill is the mandated visual difference, so a
+    // now-row and a selected row can never be confused. The border color is
+    // the compiler's accent DERIVATION (``color.accent.hover`` — the accent
+    // at the button-wash alpha, the same token family the hover wash pair
+    // comes from), not ``color.accent`` itself that fills the selection; the
+    // rounding repeats the card rule of the wash above. The flag arrives via
+    // the model (re-delivered without a reset on a «now» edit — design Д6),
+    // here it is only painted.
+    Rectangle {
+        objectName: "rowNowOutline"
+        anchors.fill: parent
+        visible: row.nowRow
+        color: "transparent"
+        border.width: 1
+        border.color: Tokens.token(row.islandTokens, "color.accent.hover", "black")
         radius: Tokens.px(row.islandTokens, "radius.sm", 6)
     }
 

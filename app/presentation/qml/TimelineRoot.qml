@@ -119,9 +119,8 @@ Rectangle {
         anchors.margins: 4        // the migrated chrome layout margins
         spacing: 4                // …and spacing
 
-        // Header — title, «Выбор даты» chip, «+» (design D4: the header keeps
-        // exactly these three; the hide-empty toggle and the jump pair left
-        // with the features they steered).
+        // Header — title, «Выбор даты» chip, «➜ Сейчас» (NRI-0021 task 5.2),
+        // «+».
         //
         // The band is the shared panel-header one (panelHeader.js, live fix
         // 2026-09-26): the snapshot title and the detail tab strip sit on the
@@ -149,9 +148,10 @@ Rectangle {
                 text: "Таймлайн событий"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                // Stretches into the free space, shrinks (elides) first.
+                // Stretches into the free space, shrinks (elides) first —
+                // now behind the «➜ Сейчас» button too (NRI-0021 task 5.2).
                 width: Math.max(0, Math.min(implicitWidth,
-                                            windowChip.x - headerSpacing))
+                                            nowButton.x - headerSpacing))
             }
 
             ThemeIconButton {
@@ -191,11 +191,15 @@ Rectangle {
                 text: root.windowText
                 readonly property real minSideFloor: 46
                 // Implicit width; the floor keeps it tappable when the row
-                // squeezes, the contentItem eliding at that point.
+                // squeezes, the contentItem eliding at that point. The «➜
+                // Сейчас» button (its left neighbour since NRI-0021) rides
+                // its own implicit width, so the reservation is exact and
+                // the two width bindings cannot feed each other.
                 width: Math.max(minSideFloor,
                                 Math.min(implicitWidth,
                                          parent.width - addButton.width
-                                         - headerSpacing * 2))
+                                         - nowButton.implicitWidth
+                                         - headerSpacing * 3))
                 anchors.right: addButton.left
                 anchors.rightMargin: headerSpacing
                 anchors.verticalCenter: parent.verticalCenter
@@ -209,6 +213,27 @@ Rectangle {
                             hovered ? (windowChip).Nri.tooltip : "", point.scenePosition)
                     }
                 }
+            }
+
+            // «➜ Сейчас» (NRI-0021 task 5.2, spec «Кнопка прокрутки „➜
+            // Сейчас“») — right beside the «Выбор даты» chip. The rule is
+            // Python's (TimelineViewModel.requestNowScroll answers with the
+            // landing index, the facade reveals it through scrollToIndex);
+            // this button only presses the sync slot. Availability is the
+            // VM property ««сейчас» inside the window» (spec «Кнопка вне
+            // окна»): the binding follows vm.nowScrollEnabledChanged, which
+            // the VM emits on every «now» or window move. Stock text button:
+            // the accessibility name is its text (nri-0012 contract — the
+            // usage site adds no annotation).
+            ThemeButton {
+                id: nowButton
+                objectName: "nowButton"
+                text: "➜ Сейчас"
+                enabled: vm.nowScrollEnabled
+                anchors.right: windowChip.left
+                anchors.rightMargin: headerSpacing
+                anchors.verticalCenter: parent.verticalCenter
+                onClicked: vm.requestNowScroll()
             }
         }
 

@@ -3,9 +3,11 @@
 The model is the sole delivery channel of the FLAT rows to the QML island
 (design D2 / spec «Питание QML-списков списочной моделью»): the simplified
 row scalars (``event_id``, ``caption``, ``detail``, ``token_key``, ``flags`` —
-only ``selectable``), reset on rebuild and the empty set — asserted over REAL
-``build_rows`` output plus hand-made :class:`Row` records pinning the caption
-and the description line of a typed, an untyped and an open row.
+``selectable`` plus the NRI-0021 ``isNow`` outline flag), reset on rebuild and
+the empty set — asserted over REAL ``build_rows`` output plus hand-made
+:class:`Row` records pinning the caption and the description line of a typed,
+an untyped and an open row. Since NRI-0021 (design Д6) the ``reapply_flags``
+no-reset re-delivery of a «now»-only re-model is pinned here too.
 """
 from datetime import date
 from types import SimpleNamespace
@@ -92,7 +94,7 @@ class TestEntriesFromBuildRows:
             model, 0, model.CAPTION_ROLE
         ) == "20 Февраль 1200 — 10 Март 1200 · War"
         assert _field(model, 0, model.TOKEN_KEY_ROLE) == "color.chart.1"
-        assert _field(model, 0, model.FLAGS_ROLE) == {"selectable": True}
+        assert _field(model, 0, model.FLAGS_ROLE) == {"selectable": True, "isNow": False}
         assert _field(model, 0, model.DETAIL_ROLE) == ""  # no description carried
 
     def test_description_line_is_delivered_with_the_row(self):
@@ -113,17 +115,19 @@ class TestEntriesFromBuildRows:
         model = _model_of(rows)
         assert _field(model, 0, model.CAPTION_ROLE) == "05 Март 1200 — ∞ · Prophecy"
         assert _field(model, 0, model.TOKEN_KEY_ROLE) is None
-        assert _field(model, 0, model.FLAGS_ROLE) == {"selectable": True}
+        assert _field(model, 0, model.FLAGS_ROLE) == {"selectable": True, "isNow": False}
 
-    def test_only_the_flag_key_set_selectable_on_every_row(self):
+    def test_flag_keys_are_the_selectable_and_isNow_pair_on_every_row(self):
         """QML never reads an undefined flag — and the ladder's
-        drillable/windowable/etc. vocabulary is gone (design D2)."""
+        drillable/windowable/etc. vocabulary is gone (design D2); the NRI-0021
+        ``isNow`` key is delivered on every row, False unless the row starts
+        exactly on the game's «now» (build_rows decides, here it rides)."""
         model = _model_of(build_rows([
             _Event(1, date(1200, 1, 1), date(1200, 1, 2), "closed", color_index=3),
             _Event(2, date(1200, 1, 3), None, "open"),
         ]))
         for i in range(model.rowCount()):
-            assert set(_field(model, i, model.FLAGS_ROLE)) == {"selectable"}
+            assert set(_field(model, i, model.FLAGS_ROLE)) == {"selectable", "isNow"}
 
 
 class TestGetConvenience:
@@ -139,7 +143,7 @@ class TestGetConvenience:
         assert row["caption"] == "01 Март 1200 — ∞ · Слух"
         assert row["detail"] == ""
         assert row["tokenKey"] == "color.chart.5"
-        assert row["flags"] == {"selectable": True}
+        assert row["flags"] == {"selectable": True, "isNow": False}
 
     def test_get_misses_answer_empty(self):
         model = _model_of(build_rows([
@@ -147,6 +151,55 @@ class TestGetConvenience:
         ]))
         assert model.get(-1) == {}
         assert model.get(1) == {}
+
+
+class TestReapplyFlags:
+    """``reapply_flags`` (NRI-0021 design Д6): the «now»-only re-model moves
+    the outline flag ALONE — membership, order and texts stay put, so the
+    delivery is a scoped ``dataChanged`` and NEVER a reset (a reset would
+    rewind the view's head, which the spec forbids for a «now» edit)."""
+
+    EVENTS = [
+        _Event(1, date(1200, 1, 5), None, "Council"),
+        _Event(2, date(1200, 3, 7), None, "Fair"),
+    ]
+
+    def _spy(self, model):
+        resets: list = []
+        changes: list = []
+        model.modelReset.connect(lambda: resets.append(1))
+        model.dataChanged.connect(
+            lambda top, bottom, roles=None: changes.append(
+                (top.row(), bottom.row(), list(roles or []))
+            )
+        )
+        return resets, changes
+
+    def test_reapply_moves_the_flag_without_a_model_reset(self):
+        model = _model_of(build_rows(self.EVENTS, now=date(1200, 1, 5)))
+        assert [entry.flags["isNow"] for entry in model.entries] == [True, False]
+        resets, changes = self._spy(model)
+        captions_before = [entry.caption for entry in model.entries]
+
+        model.reapply_flags(build_rows(self.EVENTS))  # «now» gone: nobody today
+
+        assert [entry.flags["isNow"] for entry in model.entries] == [False, False]
+        assert resets == []  # no reset → the view never rewinds
+        assert changes == [
+            (0, model.rowCount() - 1, [model.FLAGS_ROLE])
+        ]  # one scoped repaint of the delivered rows
+        assert [entry.caption for entry in model.entries] == captions_before
+        # The scalars QML re-reads after dataChanged carry the new state.
+        assert _field(model, 0, model.FLAGS_ROLE) == {"selectable": True, "isNow": False}
+
+    def test_reapply_on_an_empty_model_is_a_silent_noop(self):
+        """A «now» edit on an unloaded panel must not emit index-invalid
+        changes (the delegates read nothing yet)."""
+        model = TimelineRowModel()
+        resets, changes = self._spy(model)
+        model.reapply_flags(build_rows(self.EVENTS, now=date(1200, 1, 5)))
+        assert model.rowCount() == 0
+        assert resets == [] and changes == []
 
 
 class TestRebuildAndEmpty:

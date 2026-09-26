@@ -15,12 +15,17 @@ number (spec «Отображение эры», scenario «Вставной де
 Since piece C3b (design D3) the picture-only popup pre-fill clamp and its
 intercalary display helper are gone as well: the game-calendar grid paints
 every valid coordinate itself, so no display-side number substitution
-remains anywhere downstream of a stored coordinate.
+remains anywhere downstream of a stored coordinate.  Since NRI-0021 (design
+Д3) the module also owns the word form of durations — ``format_duration_words``
+(«3 года 2 мес.», «12 дней», «сегодня», prefix «через ») with the Russian
+counting table, and ``format_age_words`` assembling the single domain age
+rule (``entity_age_duration``) into those words.
 """
 from __future__ import annotations
 
 from datetime import date
 
+from app.domain.date_era import DurationParts, entity_age_duration
 from app.domain.game_calendar import (
     DEFAULT_MONTH_NAMES,
     MAX_YEAR,
@@ -184,3 +189,87 @@ def era_flag(value: object) -> bool:
     «н.э.» — the same default as the ``DEFAULT 0`` column of design D3.
     """
     return bool(value) if isinstance(value, (bool, int)) else False
+
+
+# ── Word form of a duration (NRI-0021 tasks 1.3/1.4, design Д3) ──────────
+
+#: Russian cardinal forms per unit, table helper of design Д3:
+#: ``(one, few, many)`` — 1 год / 2 года / 5 лет, 1 день / 2 дня / 5 дней.
+#: The month unit prints the fixed abbreviation «мес.» (the spec scenarios
+#: pin «2 года 3 мес.» and «через 3 мес.», so it never declines).
+_YEAR_FORMS = ("год", "года", "лет")
+_DAY_FORMS = ("день", "дня", "дней")
+_MONTH_UNIT = "мес."
+
+
+def _plural_ru(count: int, forms: tuple[str, str, str]) -> str:
+    """One of ``(one, few, many)`` chosen by the Russian counting rule:
+    teens (11…14) and a last digit 0 or 5…9 take ``many``, a last digit 1
+    takes ``one``, 2…4 take ``few``."""
+    teens = count % 100
+    last = teens % 10
+    if 11 <= teens <= 19 or last == 0 or last >= 5:
+        return forms[2]
+    if last == 1:
+        return forms[0]
+    return forms[1]
+
+
+def format_duration_words(parts: DurationParts, ahead: bool | None = None) -> str:
+    """The one word formula for a duration (spec «Словесная формула
+    длительности»).
+
+    Whole years and months («3 года 2 мес.», whole years carry no zero
+    months remainder), less than a year — whole months («3 мес.»), less
+    than a month — whole days («12 дней»), zero — «сегодня».  A date ahead
+    of the reference point reads with the «через » prefix; the direction
+    arrives as the explicit ``ahead`` argument or, by default, through
+    ``parts.ahead`` carried from ``duration_parts`` (sign stays outside the
+    numbers until this wording step, design Д3)."""
+    if ahead is None:
+        ahead = parts.ahead
+    if parts.years:
+        words = f"{parts.years} {_plural_ru(parts.years, _YEAR_FORMS)}"
+        if parts.months:
+            words += f" {parts.months} {_MONTH_UNIT}"
+    elif parts.months:
+        words = f"{parts.months} {_MONTH_UNIT}"
+    elif parts.days:
+        words = f"{parts.days} {_plural_ru(parts.days, _DAY_FORMS)}"
+    else:
+        return "сегодня"
+    return f"через {words}" if ahead else words
+
+
+def format_age_words(
+    start: GameCoord | date,
+    start_bc: bool,
+    end: GameCoord | date | None,
+    end_bc: bool,
+    now: GameCoord | date,
+    now_bc: bool,
+) -> str:
+    """Entity age as words — the single implementation of the age rule for
+    the detail-panel summary and the entity card (NRI-0021 task 1.4,
+    design Д5).
+
+    Counts to «now»; when the entity has an end strictly earlier than
+    «now», counts to the end; a start later than «now» reads forward
+    («через N»).  The rule itself lives in ``entity_age_duration`` (domain,
+    no text), this helper only assembles the standard duration words.
+    """
+    parts = entity_age_duration(start, start_bc, end, end_bc, now, now_bc)
+    return format_duration_words(parts)
+
+
+#: Entity types carrying the age line (NRI-0021 group 4, spec «Возраст
+#: персонажа и предмета»): character and item; locations and organizations
+#: stay age-free in every display (spec «Локации и организации SHALL
+#: оставаться без строки возраста»).  The detail summary and the entity card
+#: read this one tuple — the type selection lives in a single place (Д5).
+AGE_ENTITY_TYPES = ("character", "item")
+
+#: The «Возраст» label both age surfaces print (spec «Read-only отображение
+#: производных величин» pins the visible «Возраст: <формула>» for the summary
+#: and the card alike; only the markup differs — HTML caption vs plain text).
+AGE_LABEL = "Возраст"

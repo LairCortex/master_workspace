@@ -263,6 +263,24 @@ Rectangle {
                         }
                         Item { implicitWidth: 24 }
 
+                        // NRI-0021 task 4.3 (spec «Read-only отображение
+                        // производных величин»): the age line under the date
+                        // fields — plain read-only text, never an input and
+                        // never part of the save result. The one age rule and
+                        // the wording live in the VM (ageText); an invisible
+                        // row leaves the grid, so location/organization cards
+                        // show no age row at all (spec «Локация без возраста»).
+                        Text {
+                            objectName: "entityAgeText"
+                            visible: text !== ""
+                            Layout.columnSpan: 3
+                            Layout.fillWidth: true
+                            text: entityCardVm.ageText
+                            color: root.foregroundColor
+                            font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
+                            elide: Text.ElideRight
+                        }
+
                         TitleText { text: "Характеристики: *" }
                         MentionField {
                             objectName: "entityCharacteristicsField"

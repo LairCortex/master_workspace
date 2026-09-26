@@ -11,11 +11,16 @@ from app.presentation.viewmodels.timeline_viewmodel import (
     TimelineViewModel,
     _RowEntry,
 )
+from app.presentation.viewmodels.now_date_view_model import NowDateViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.entity_viewmodel import EntityViewModel
 from app.domain.game_calendar import (
+    CalendarSpec,
+    CustomCalendar,
+    MonthDay,
+    MonthSpec,
     StandardCalendar,
     current_calendar,
     reset_current_calendar,
@@ -613,6 +618,221 @@ class TestTimelineViewModelIslandModel:
         del e1, e2
         gc.collect()
         assert all(ref() is None for ref in refs)  # nothing in the VM kept them
+
+
+# ── «➜ Сейчас» button (nri-0021 task 5.2, design Д6) ─────────────────────────
+
+class TestTimelineNowScrollButton:
+    """Python owns the button's whole rule (design Д6): the target index
+    (first start STRICTLY after «now», else the list end), the availability
+    («now» inside the filter window; «Все дни» — always) and the scroll
+    REQUEST — QML only presses the slot and binds the enabled property.
+    Nothing here moves the window, the selection or the scroll on its own."""
+
+    YEAR = (date(1200, 1, 1), date(1200, 12, 31))
+
+    @staticmethod
+    def _spread():
+        """Three one-day events: Jan 5, Mar 7, Jun 1 of 1200 (row order 1,2,3)."""
+        return (
+            _span(1, "Council", date(1200, 1, 5), date(1200, 1, 5)),
+            _span(2, "Fair", date(1200, 3, 7), date(1200, 3, 7)),
+            _span(3, "Feast", date(1200, 6, 1), date(1200, 6, 1)),
+        )
+
+    async def _loaded(self, *events, now=None, window=None):
+        service = AsyncMock()
+        service.get_all_events.return_value = list(events)
+        vm = TimelineViewModel(service, now_vm=now)
+        if window is not None:
+            vm.window = window
+        await vm.load_events()
+        return vm
+
+    # ── the landing index ─────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_target_is_the_first_row_strictly_after_now(self):
+        """Spec «Прокрутка к позиции „сейчас“»: верхним становится первый ряд
+        чьё начало ПОЗЖЕ «сейчас» — совпадение даты не считается («ровно
+        сегодня» это не «после»)."""
+        now = NowDateViewModel(MonthDay(1200, 2, 1))
+        vm = await self._loaded(*self._spread(), now=now)
+        received: list = []
+        vm.nowScrollRequested.connect(received.append)
+
+        vm.requestNowScroll()
+
+        assert received == [1]  # row 1 == «Fair», Mar 7
+        assert vm.rows[received[0]].event_id == 2
+
+        # «Ровно сегодня» is not «after»: with «now» standing ON Mar 7 the
+        # target moves to the NEXT start, never to the today-row itself.
+        now.applyNow(MonthDay(1200, 3, 7), False)
+        vm.requestNowScroll()
+        assert received == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_target_is_the_list_end_when_now_passes_every_row(self):
+        """Spec «„Сейчас“ позже всех событий»: прокрутка к последней строке."""
+        now = NowDateViewModel(MonthDay(1200, 12, 31))
+        vm = await self._loaded(*self._spread(), now=now)
+        received: list = []
+        vm.nowScrollRequested.connect(received.append)
+
+        vm.requestNowScroll()
+
+        assert received == [len(vm.rows) - 1]
+
+    @pytest.mark.asyncio
+    async def test_request_on_an_empty_list_is_a_keep_scroll(self):
+        """No rows → ``-1`` (the facade's reveal no-op, spec «nothing to
+        reveal»); the same answer the VM gives without a game-«now»."""
+        now = NowDateViewModel(MonthDay(1200, 12, 31))
+        vm = await self._loaded(now=now)
+        received: list = []
+        vm.nowScrollRequested.connect(received.append)
+        vm.requestNowScroll()
+        assert received == [-1]
+
+    @pytest.mark.asyncio
+    async def test_request_without_a_game_now_is_inert(self):
+        """A VM built without the widget (unit-built panels, bare windows):
+        now_pair is None, the button property reads False, the request keeps
+        the scroll — no crash, no invented date."""
+        vm = await self._loaded(*self._spread())
+        assert vm.now_pair() is None
+        assert vm.nowScrollEnabled is False
+        received: list = []
+        vm.nowScrollRequested.connect(received.append)
+        vm.requestNowScroll()
+        assert received == [-1]
+
+    @pytest.mark.asyncio
+    async def test_scroll_request_moves_neither_window_nor_selection(self):
+        """Spec «Прокрутка SHALL менять только позицию прокрутки» — the VM's
+        half: no window write, no selection write, no data signal, only the
+        scroll request leaves."""
+        now = NowDateViewModel(MonthDay(1200, 2, 1))
+        vm = await self._loaded(*self._spread(), now=now, window=self.YEAR)
+        vm.select_event_by_id(1)
+        events_changed: list = []
+        selection_changed: list = []
+        vm.events_changed.connect(lambda: events_changed.append(1))
+        vm.selected_event_changed.connect(lambda: selection_changed.append(1))
+        received: list = []
+        vm.nowScrollRequested.connect(received.append)
+
+        vm.requestNowScroll()
+
+        assert received == [1]
+        assert vm.window == self.YEAR
+        assert vm.selected_event is not None and vm.selected_event.id == 1
+        assert events_changed == [] and selection_changed == []
+
+    # ── the availability rule ─────────────────────────────────────────────────
+
+    def test_availability_is_window_containment(self):
+        now = NowDateViewModel(MonthDay(1200, 8, 14))
+        vm = TimelineViewModel(AsyncMock(), now_vm=now)
+        assert vm.nowScrollEnabled is True       # «Все дни» — always
+        vm.window = (date(1200, 8, 10), date(1200, 8, 20))
+        assert vm.nowScrollEnabled is True       # inside (spec «внутри окна»)
+        vm.window = (date(2088, 1, 1), date(2090, 12, 31))
+        assert vm.nowScrollEnabled is False      # spec «Кнопка вне окна»
+
+    @pytest.mark.asyncio
+    async def test_window_moves_notify_the_button_binding(self):
+        """The QML ``enabled`` binding rides ``nowScrollEnabledChanged``: the
+        window setter path emits it on EVERY window move — «сброс окна в
+        „Все дни“ возвращает кнопке жизнь» (spec scenario «Кнопка вне окна»)."""
+        now = NowDateViewModel(MonthDay(2095, 1, 1))
+        vm = await self._loaded(*self._spread(), now=now)
+        notifies: list = []
+        vm.nowScrollEnabledChanged.connect(lambda: notifies.append(1))
+
+        vm.window = (date(2088, 1, 1), date(2090, 12, 31))
+        assert vm.nowScrollEnabled is False
+        vm.window = None
+        assert vm.nowScrollEnabled is True
+        assert notifies == [1, 1]
+
+    @pytest.mark.asyncio
+    async def test_partial_window_is_all_days_for_the_button(self):
+        """A one-sided pair is «Все дни» for the filter, so the button lives
+        too (containment reads the partial window as unbounded, task 5.2)."""
+        now = NowDateViewModel(MonthDay(1200, 8, 14))
+        vm = await self._loaded(*self._spread(), now=now)
+        vm.window = (None, date(1200, 1, 31))  # would exclude «now» if bounded
+        assert vm.nowScrollEnabled is True
+
+    @pytest.mark.asyncio
+    async def test_now_edit_updates_the_button_and_the_flag_without_a_reset(self):
+        """The one ``nowChanged`` broadcast (design Д6): availability is
+        re-evaluated, the outline flag travels WITHOUT a model reset (the
+        spec pins «смена „сейчас“ не прокручивает список сама»), and the
+        edit itself never asks for a scroll."""
+        now = NowDateViewModel(MonthDay(1200, 1, 5))
+        vm = await self._loaded(*self._spread(), now=now, window=self.YEAR)
+        model = vm.row_model
+        resets, changes, scrolls = [], [], []
+        model.modelReset.connect(lambda: resets.append(1))
+        model.dataChanged.connect(
+            lambda top, bottom, roles=None: changes.append(list(roles or []))
+        )
+        vm.nowScrollRequested.connect(scrolls.append)
+        notifies: list = []
+        vm.nowScrollEnabledChanged.connect(lambda: notifies.append(1))
+        assert [e.flags["isNow"] for e in model.entries] == [True, False, False]
+
+        now.applyNow(MonthDay(1200, 3, 7), False)
+
+        assert [e.flags["isNow"] for e in model.entries] == [False, True, False]
+        assert resets == []              # no reset → the view never rewinds
+        assert changes == [[model.FLAGS_ROLE]]
+        assert scrolls == []             # the edit itself never scrolls
+        assert notifies == [1]           # the button binding is re-read
+        assert vm.nowScrollEnabled is True
+
+        now.applyNow(MonthDay(1300, 1, 1), False)  # «сейчас» уходит из окна
+        assert vm.nowScrollEnabled is False
+        assert notifies == [1, 1]
+
+    def test_a_now_the_active_calendar_refuses_keeps_the_button_inert(self):
+        """The Д1 seeding posture on the button: a «сейчас» the custom
+        calendar cannot host is not «inside» any window — the control goes
+        inert and the request keeps the scroll, never raising."""
+        calendar = CustomCalendar(CalendarSpec(
+            months=(MonthSpec("Первомес", 30), MonthSpec("Второмес", 20)),
+            week_names=tuple("Пн Вт Ср Чт Пт Сб Вс".split()),
+        ))
+        saved = current_calendar()
+        set_current_calendar(calendar)
+        try:
+            now = NowDateViewModel(MonthDay(1200, 9, 1))  # month 9 does not exist
+            vm = TimelineViewModel(AsyncMock(), now_vm=now)
+            vm.window = (MonthDay(1200, 1, 1), MonthDay(1200, 2, 20))
+            assert vm.nowScrollEnabled is False
+            received: list = []
+            vm.nowScrollRequested.connect(received.append)
+            vm.requestNowScroll()
+            assert received == [-1]
+        finally:
+            set_current_calendar(saved)
+
+    def test_detach_retires_the_subscription_idempotently(self):
+        """The island teardown calls this on close (DEFECT-1 posture); after
+        the detach a «now» edit is invisible to the timeline, and calling it
+        twice (or without a «now» VM at all) stays a no-op."""
+        now = NowDateViewModel(MonthDay(1200, 1, 5))
+        vm = TimelineViewModel(AsyncMock(), now_vm=now)
+        assert vm.now_pair() == (MonthDay(1200, 1, 5), False)
+        vm.detach_now_listener()
+        vm.detach_now_listener()  # the idempotent second call
+        now.applyNow(MonthDay(1200, 3, 7), False)  # must not reach the VM
+        assert vm.now_pair() is None
+        assert vm.nowScrollEnabled is False
+        TimelineViewModel(AsyncMock()).detach_now_listener()  # the None branch
 
 
 # ── DetailViewModel ──────────────────────────────────────────────────────

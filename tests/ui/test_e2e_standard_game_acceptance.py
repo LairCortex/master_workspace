@@ -95,9 +95,13 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
     )
 
     # ── 3. Detail panel header line (the same caption format). ──
+    # NRI-0021 (task 4.2): the line carries the event-time suffix counted to
+    # the game's «now» — the widget VM is moved to the event's first day, so
+    # the pinned string is the spec's « · сегодня» and clock-independent.
+    application._wiring.now_date_vm.applyNow(MonthDay(1200, 3, 3), False)
     helpers.click_timeline_event(window, "Долгая зима")
     await wait_for(lambda: window.detail_panel.vm.title == "Долгая зима")
-    assert window.detail_panel.vm.dateText == "03 Март 1200 — 10 Март 1200"
+    assert window.detail_panel.vm.dateText == "03 Март 1200 — 10 Март 1200 · сегодня"
 
     # ── 4. Editing through the same dialog: only legacy columns move, the
     # keys stay the plain preset numbers, coordinates stay NULL. ──
@@ -186,17 +190,19 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
 
     # ── 6. The whole database is still a pre-C3a standard database: empty
     # coordinate columns everywhere, preset keys, ISO legacy columns. ──
-    # The card VM pre-fills both bounds with «today, н.э.» (unchanged default,
-    # design D4: a plain date is the equal month-day coordinate) — in a
-    # standard game it lands in the legacy columns as today's ISO + ordinal.
-    today = date.today()
+    # NRI-0021 task 6.1 (spec «Дата „сейчас“ — дефолт новых записей»): the
+    # card VM pre-fills both bounds with the game's «now» — here pinned to
+    # «03 Март 1200» by the applyNow above; in a standard game it lands in the
+    # legacy columns as that day's ISO + ordinal.
+    game_now = "1200-03-03"
+    game_now_key = date(1200, 3, 3).toordinal()
     assert query_db(
         db_path,
         "SELECT start_date, end_date, start_key, end_key, start_coord, end_coord"
         " FROM characters WHERE name = 'Генерал Старый Вард'",
     )[0] == (
-        today.isoformat(), today.isoformat(),
-        today.toordinal(), today.toordinal(),
+        game_now, game_now,
+        game_now_key, game_now_key,
         None, None,
     )
     _assert_no_coordinates_stored(db_path)
@@ -229,7 +235,11 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
     # with a (coordinate, era) pair, the wiring keys the query and the
     # panel paints the pre-C3a captions. ──
     snapshot_vm = window.world_snapshot.vm
-    assert snapshot_vm.dateIso == date.today().isoformat()  # «today» default
+    # NRI-0021 task 6.2: the field starts at the game's «now» as served when
+    # the panel was created — the applyNow above landed after the window, and
+    # a chosen-or-initial field never chases «сейчас» edits, so it still shows
+    # the seeded system-day «now» the service loaded for this fresh game.
+    assert snapshot_vm.dateIso == date.today().isoformat()
     snapshot_vm.set_date(date(1200, 3, 15))
     snapshot_vm.requestShow()
     await helpers.wait_until_settled()

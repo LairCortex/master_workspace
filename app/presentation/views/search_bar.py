@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSize, Signal
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
@@ -15,7 +15,11 @@ ROOT_QML = str(Path(QML_IMPORT_PATH) / "SearchBarRoot.qml")
 
 
 class SearchBar(IslandDialogMixin, QWidget):
-    island_context_names = {"searchBarVm": "_vm"}
+    # NRI-0021 (task 3.2, spec qml-shell «Контекст каждого острова
+    # минимален»): the island gains exactly one more name — the game-date
+    # widget's own sync VM (null for unit-built islands without a game, the
+    # row then stays hidden); searchBarVm stays purely the search VM.
+    island_context_names = {"searchBarVm": "_vm", "nowDateVm": "_now_date_vm"}
 
     search_requested = Signal(str)
     result_selected = Signal(str, int)  # (entity_type, entity_id)
@@ -25,6 +29,7 @@ class SearchBar(IslandDialogMixin, QWidget):
         search_vm,
         parent: QWidget | None = None,
         theme=None,
+        now_date_vm: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._owns_vm = not isinstance(search_vm, QObject)
@@ -33,6 +38,10 @@ class SearchBar(IslandDialogMixin, QWidget):
             if not self._owns_vm
             else SearchViewModel(search_vm, parent=self)
         )
+        # Injected, never adopted: the game's «now» VM belongs to the
+        # composition root (its lifetime outlives the island scene — the
+        # wiring subscribes to it too, design Д2).
+        self._now_date_vm = now_date_vm
         self._theme = theme if theme is not None else get_default_theme()
 
         layout = QVBoxLayout(self)
@@ -55,6 +64,19 @@ class SearchBar(IslandDialogMixin, QWidget):
 
     def island_source(self) -> str:
         return ROOT_QML
+
+    def now_date_anchor(
+        self, x: float, y: float, width: float, height: float
+    ) -> QRect:
+        """Map the «now» chip's island-local rectangle to a global one.
+
+        The VM's ``datePopupRequested`` carries scene coordinates (the QML
+        island convention); the widgets popup is a top-level, so the wiring
+        asks this facade — the island's owner — for the global anchor
+        (pattern of WorldSnapshotWidget's private mapper, exposed here).
+        """
+        top_left = self.quick.mapToGlobal(QPoint(int(x), int(y)))
+        return QRect(top_left, QSize(max(int(width), 0), max(int(height), 0)))
 
     def load_island_scene(self, quick) -> None:
         if self._owns_vm:

@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         parent: QWidget | None = None,
         theme=None,
         window_registry: MenuWindowRegistry | None = None,
+        now_date_vm=None,
     ) -> None:
         super().__init__(parent)
         self._base_title = "Master Workspace"
@@ -201,7 +202,13 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(4)
 
-        self.search_bar = SearchBar(search_vm, theme=self._theme)
+        # NRI-0021 (task 3.2): the game's «now» VM joins the search island's
+        # context (design Д4 — no new island, the row lives inside the search
+        # panel above the field); a bare window without a game leaves it None
+        # and the widget row stays hidden.
+        self.search_bar = SearchBar(
+            search_vm, theme=self._theme, now_date_vm=now_date_vm
+        )
         main_layout.addWidget(self.search_bar)
 
         splitter = QSplitter()
@@ -211,8 +218,18 @@ class MainWindow(QMainWindow):
         set_role(splitter, "splitter")
         splitter.setChildrenCollapsible(False)
         self.timeline_widget = TimelineWidget(timeline_vm, theme=self._theme)
-        self.detail_panel = DetailPanel(detail_vm, theme=self._theme)
-        self.world_snapshot = WorldSnapshotWidget(theme=self._theme)
+        # NRI-0021 (task 4.1): the panel's derived texts (age lines, event
+        # time suffix) count against the game's «now»; the VM reference stays
+        # Python-side — the detail island's context keeps its one VM.
+        self.detail_panel = DetailPanel(
+            detail_vm, theme=self._theme, now_date_vm=now_date_vm
+        )
+        # NRI-0021 (task 6.2): the snapshot date field starts at the game's
+        # «now» and «Сброс» returns the field to it; the VM reference stays
+        # Python-side — the snapshot island's context keeps its one VM.
+        self.world_snapshot = WorldSnapshotWidget(
+            theme=self._theme, now_date_vm=now_date_vm
+        )
         # NRI-0019: the tab strip now shares the panel's width between its
         # tabs (whole captions at the default column, elided ones in a narrow
         # one), so the all-tabs-whole threshold retired as the pane floor —

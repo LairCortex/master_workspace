@@ -74,9 +74,10 @@ def isolated_qml_shell():
     runtime and leaked QQmlEngine children would break the "exactly one
     engine" assertion in tests/presentation/test_qml_engine.py.
 
-    Teardown order with the fixtures around this one: hide leftover
-    top-levels (``no_stale_windows``) → islands then engine (this reset) →
-    theme-runtime (``isolated_ui_theme_defaults``).
+    Teardown order with the fixtures around this one: drain deferred work
+    (``drain_deferred_island_teardown``, defined last so it finalizes first) →
+    hide leftover top-levels (``no_stale_windows``) → islands then engine
+    (this reset) → theme-runtime (``isolated_ui_theme_defaults``).
     """
     from app.presentation.qml.engine import reset_qml_shell
 
@@ -109,6 +110,52 @@ def no_stale_windows():
                 widget.hide()
         except RuntimeError:
             pass  # C++ side already gone
+
+
+@pytest.fixture(autouse=True)
+def drain_deferred_island_teardown():
+    """Run every island's deferred release inside the test that scheduled it.
+
+    NRI-0021 flake fix (task 7.2). The island lifecycle defers its scene
+    release by one loop turn (``QTimer.singleShot(0, …)`` in
+    ``IslandDialogMixin``), and ``pytest-qt`` closes registered widgets only
+    AFTER the function fixtures have finalized (its ``pytest_runtest_teardown``
+    hookwrapper runs after every finalizer) — so without this drain the
+    release timer and the ``deleteLater``/``DeferredDelete`` events of a
+    window closed at test end survive into the NEXT test's event pump
+    (``pytestqt`` ``pytest_runtest_setup`` → ``_process_events``), where they
+    fire against islands whose engine ``reset_qml_shell`` has already dropped.
+    That is where the SEGFAULTs of the NRI-0021 test runs died: faulthandler
+    stacks in ``_process_events`` during setup, malloc reports of
+    ``QObjectPrivate::deleteChildren`` freeing stale pointers during a
+    deferred ``QDialog`` delete (the crash class already registered as a
+    live-audit follow-up in NRI-0019, `Python-2026-09-26-121657.ips`).
+
+    Closing the still-visible windows here and pumping the queue runs each
+    window's own production exit path (close → one-shot release → palette
+    detach → ``setSource(QUrl())``) while its engine is still alive, so
+    nothing deferred can outlive the test that scheduled it. This fixture is
+    defined last among the autouse ones so it finalizes first — before
+    ``no_stale_windows`` turns visible windows into hidden ones and before
+    ``isolated_qml_shell`` drops the engine; the later ``hide``/``close``
+    calls on now-closed windows are no-ops.
+    """
+    yield
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    app_instance = QApplication.instance()
+    if app_instance is None:
+        return
+    for widget in list(app_instance.topLevelWidgets()):
+        try:
+            if widget.isVisible():
+                widget.close()
+        except RuntimeError:
+            pass  # C++ side already gone
+    # Fire the one-shot island releases, then the deferred deletes they post.
+    QCoreApplication.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest_asyncio.fixture

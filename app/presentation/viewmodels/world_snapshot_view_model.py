@@ -151,7 +151,12 @@ class WorldSnapshotViewModel(QObject):
     entitySelected = Signal(str, int)
     datePopupRequested = Signal(float, float, float, float)
 
-    def __init__(self, theme=None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        theme=None,
+        now_vm=None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._theme = theme
         self._model = WorldSnapshotRowModel(self)
@@ -167,10 +172,21 @@ class WorldSnapshotViewModel(QObject):
         self._stats_text = ""
         self._clear_enabled = False
         # The snapshot date bridge carries a (GameCoord, era) pair (piece C3a,
-        # designs D4/D9); the default is «сегодня, н.э.» — today's numbers as
-        # the equal month-day coordinate.
-        self._date: GameCoord = as_game_coord(date.today())
-        self._date_bc = False
+        # designs D4/D9).  NRI-0021 task 6.2 (spec world-snapshot «Поле стартует
+        # с игровой даты»): the field's initial value is the game's «now», read
+        # from the widget VM the composition root hands in; a VM built without
+        # a game keeps the legacy «сегодня, н.э.» fallback.  The reference is
+        # kept for «Сброс» (which re-reads it) but NO nowChanged subscription
+        # is taken — a date the master chose survives every «сейчас» edit
+        # until the next reset (spec «Выбранная дата не сбивается правкой
+        # „сейчас“»).
+        self._now_vm = now_vm
+        if now_vm is not None:
+            self._date: GameCoord = now_vm.coord
+            self._date_bc = bool(now_vm.is_bc)
+        else:
+            self._date = as_game_coord(date.today())
+            self._date_bc = False
         # DEFECT-1 (NRI-0016): handle kept for the explicit unsubscription
         # (spec app-logging «Слушатели состояния не переживают окно»); the
         # snapshot panel detaches the VM when its island releases.
@@ -271,6 +287,25 @@ class WorldSnapshotViewModel(QObject):
         self._stats_text = ""
         self._clear_enabled = False
         self.stateChanged.emit()
+        # NRI-0021 task 6.2 (spec world-snapshot «Сброс возвращает исходное
+        # состояние»): «Сброс» also returns the date field to the game's «now»
+        # — read at reset time, so a later «сейчас» edit lands here rather
+        # than silently moving a date the master is still looking at.
+        self._reset_date_to_now()
+
+    def _reset_date_to_now(self) -> None:
+        """Return the date field to the served «now» (no game VM — field
+        untouched, the legacy no-game behavior); an identical value is
+        silent, exactly the ``set_date`` contract."""
+        if self._now_vm is None:
+            return
+        coord = self._now_vm.coord
+        is_bc = bool(self._now_vm.is_bc)
+        if coord == self._date and is_bc == self._date_bc:
+            return
+        self._date = coord
+        self._date_bc = is_bc
+        self.dateChanged.emit()
 
     def set_date(self, value: GameCoord | date | tuple[GameCoord | date | None, bool] | None) -> None:
         # Accepts the popup bridge's (coordinate, era) pair; a bare coordinate

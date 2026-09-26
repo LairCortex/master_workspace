@@ -6,8 +6,15 @@ from datetime import date
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from app.domain import entity_registry
-from app.domain.game_calendar import GameCoord, as_game_coord
+from app.domain.game_calendar import (
+    GameCoord,
+    InvalidGameDateError,
+    as_game_coord,
+)
 from app.presentation.utils.date_utils import (
+    AGE_ENTITY_TYPES,
+    AGE_LABEL,
+    format_age_words,
     format_game_date,
     iso_or_coord,
     worst_case_date_caption,
@@ -23,6 +30,9 @@ from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 
 class EntityCardIslandViewModel(QObject):
     stateChanged = Signal()
+    #: Derived-surface fan-out (NRI-0021 task 4.3): re-raised whenever the
+    #: read-only age line must be re-read (dates edited or «now» moved).
+    ageTextChanged = Signal()
     saveRequested = Signal()
     cancelRequested = Signal()
     datePopupRequested = Signal(str, float, float, float, float)
@@ -39,6 +49,7 @@ class EntityCardIslandViewModel(QObject):
         related_configs,
         owner=None,
         parent: QObject | None = None,
+        now: tuple[GameCoord, bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self._entity_type = entity_type
@@ -47,13 +58,28 @@ class EntityCardIslandViewModel(QObject):
         self._name = ""
         self._rating = 1
         # Date bridges carry (GameCoord, era) pairs (piece C3a, designs D4/D6,
-        # since task 5.2); the default is «сегодня, н.э.» — today's numbers as
-        # the equal month-day coordinate.
-        self._start_date: GameCoord = as_game_coord(date.today())
-        self._end_date: GameCoord = as_game_coord(date.today())
-        self._start_bc = False
-        self._end_bc = False
+        # since task 5.2).  NRI-0021 task 6.1 (spec «Дата „сейчас“ — дефолт
+        # новых записей»): a new card opens with the game's «now» — the facade
+        # injects the widget VM's served (coord, era) pair at construction and
+        # an edit's populate() overwrites it with the saved dates; a VM built
+        # without a game keeps the legacy «сегодня, н.э.» fallback (today's
+        # numbers as the equal month-day coordinate).
+        if now is not None:
+            now_coord, now_bc = now
+            self._start_date: GameCoord = now_coord
+            self._end_date: GameCoord = now_coord
+            self._start_bc = self._end_bc = bool(now_bc)
+        else:
+            self._start_date = as_game_coord(date.today())
+            self._end_date = as_game_coord(date.today())
+            self._start_bc = False
+            self._end_bc = False
         self._no_end = False
+        # NRI-0021 task 4.3: the mirrored game «now» (fed by the facade from
+        # the widget VM); None while the card was built without a game open —
+        # then the read-only age line stays empty.
+        self._now_coord: GameCoord | None = None
+        self._now_bc = False
         self._music_url = ""
         self._music_editing = True
         self._image_source = ""
@@ -150,6 +176,12 @@ class EntityCardIslandViewModel(QObject):
     startBc = Property(bool, lambda self: self._start_bc, notify=stateChanged)
     endBc = Property(bool, lambda self: self._end_bc, notify=stateChanged)
     noEnd = Property(bool, lambda self: self._no_end, notify=stateChanged)
+    # NRI-0021 task 4.3 (spec «Read-only отображение производных величин»):
+    # «Возраст: <формула>» as plain text — never an input and never part of
+    # the save result.  The single age rule is format_age_words (task 1.4);
+    # empty for the age-free types (locations/organizations) and while no
+    # game «now» is mirrored into this card.
+    ageText = Property(str, lambda self: self._age_text(), notify=ageTextChanged)
     musicUrl = Property(str, lambda self: self._music_url, notify=stateChanged)
     musicEditing = Property(bool, lambda self: self._music_editing, notify=stateChanged)
     hasImage = Property(
@@ -236,6 +268,40 @@ class EntityCardIslandViewModel(QObject):
     def sections(self) -> dict[str, RelatedSectionState]:
         return self._sections
 
+    # ── Derived age line (NRI-0021 task 4.3) ────────────────────────────────
+
+    def _age_text(self) -> str:
+        """The read-only «Возраст: <формула>» line (spec «Возраст персонажа
+        и предмета»): character/item only, counted from the card's current
+        date fields to the mirrored «now» — an end earlier than «now» closes
+        the count, a start later reads «через N» (the one rule of task 1.4).
+        A coordinate pair the active calendar refuses (a custom-calendar
+        game on the Д1 seeded-today «now», whose start default it carries into
+        the fields since task 6.1) hides the row rather than raising inside the
+        QML binding — the derived text is display-only and absent-safe."""
+        if self._entity_type not in AGE_ENTITY_TYPES or self._now_coord is None:
+            return ""
+        try:
+            age = format_age_words(
+                self._start_date,
+                self._start_bc,
+                None if self._no_end else self._end_date,
+                self._end_bc,
+                self._now_coord,
+                self._now_bc,
+            )
+        except InvalidGameDateError:
+            return ""
+        return f"{AGE_LABEL}: {age}"
+
+    @Slot(object, bool)
+    def applyNow(self, coord: GameCoord, is_bc: bool) -> None:  # noqa: N802
+        """Mirror the game's «now» (the facade feeds this at open and on
+        every nowChanged); the age line is display-only and re-read."""
+        self._now_coord = coord
+        self._now_bc = bool(is_bc)
+        self.ageTextChanged.emit()
+
     def set_rating(self, value: int) -> None:
         value = max(1, min(20, int(value)))
         if value != self._rating:
@@ -261,11 +327,15 @@ class EntityCardIslandViewModel(QObject):
         if end_bc is not None:
             self._end_bc = bool(end_bc)
         self.stateChanged.emit()
+        # The age line counts on these fields — re-read it too (task 4.3).
+        self.ageTextChanged.emit()
 
     def set_no_end(self, value: bool) -> None:
         if value != self._no_end:
             self._no_end = value
             self.stateChanged.emit()
+            # noEnd switches which end the age rule counts to (task 4.3).
+            self.ageTextChanged.emit()
 
     def set_music_url(self, value: str) -> None:
         value = (value or "").strip()

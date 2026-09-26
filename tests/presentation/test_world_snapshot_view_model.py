@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtGui import QIcon, QPixmap
 
+from app.domain.game_calendar import MonthDay
+from app.presentation.viewmodels.now_date_view_model import NowDateViewModel
 from app.presentation.viewmodels.world_snapshot_view_model import (
     WorldSnapshotViewModel,
 )
@@ -269,3 +271,75 @@ def test_date_change_and_rating_color_refresh(qapp):
     assert len(changed) == 1
     vm.rowModel.refresh_rating_colors(runtime)
     assert len(changed) == 1
+
+
+# ── NRI-0021 task 6.2 — the field starts at the game's «now» ───────────────
+# Spec world-snapshot (modified «Снимок собирается по дате игрового мира»):
+# «Поле стартует с игровой даты», «Сброс возвращает исходное состояние» (the
+# date field included) and «Выбранная дата не сбивается правкой „сейчас“».
+
+
+def _now_vm(coord, is_bc=False):
+    return NowDateViewModel(coord, is_bc)
+
+
+def test_date_field_starts_at_the_game_now(qapp):
+    vm = WorldSnapshotViewModel(now_vm=_now_vm(MonthDay(2091, 5, 1)))
+    # scenario «Поле стартует с игровой даты» — not the system today
+    assert vm.dateIso == "2091-05-01"
+    assert vm.dateDisplay == "01 Май 2091"
+    assert vm.dateBc is False
+
+
+def test_bc_now_seeds_the_era_of_the_field(qapp):
+    vm = WorldSnapshotViewModel(now_vm=_now_vm(MonthDay(44, 3, 5), is_bc=True))
+    assert vm.dateBc is True
+    assert vm.dateDisplay == "05 Март 44 г. до н.э."
+
+
+def test_without_a_game_the_today_fallback_stays(qapp):
+    vm = WorldSnapshotViewModel()
+    assert vm.dateIso == date.today().isoformat()
+
+
+def test_reset_returns_the_field_to_now(qtbot):
+    vm = WorldSnapshotViewModel(now_vm=_now_vm(MonthDay(2091, 5, 1)))
+    vm.set_date(date(1200, 3, 4))
+    assert vm.dateIso == "1200-03-04"
+    vm.populate([_event()], None)  # enable «Сброс» like a real first slice
+    with qtbot.waitSignal(vm.dateChanged):
+        vm.clear()
+    # scenario «Сброс возвращает исходное состояние»: field back to «now»
+    assert vm.dateIso == "2091-05-01"
+
+
+def test_chosen_date_survives_now_edits_and_reset_lands_on_the_new_now(qtbot):
+    now_vm = _now_vm(MonthDay(2091, 5, 1))
+    vm = WorldSnapshotViewModel(now_vm=now_vm)
+    vm.set_date(date(1200, 3, 4))
+    # scenario «Выбранная дата не сбивается правкой „сейчас“»: the field has
+    # no nowChanged subscription — an edit leaves it exactly where the master
+    # put it…
+    now_vm.applyNow(MonthDay(2093, 7, 8), False)
+    assert vm.dateIso == "1200-03-04"
+    # …while the next «Сброс» returns it to the «now» served at reset time
+    vm.populate([_event()], None)
+    vm.clear()
+    assert vm.dateIso == "2093-07-08"
+
+
+def test_reset_on_the_already_now_date_is_silent(qtbot):
+    vm = WorldSnapshotViewModel(now_vm=_now_vm(MonthDay(2091, 5, 1)))
+    vm.populate([_event()], None)
+    with qtbot.assertNotEmitted(vm.dateChanged):
+        vm.clear()
+    assert vm.dateIso == "2091-05-01"
+
+
+def test_reset_without_a_game_leaves_the_field(qtbot):
+    # legacy no-game posture: clear() knows no «now», the field stays
+    vm = WorldSnapshotViewModel()
+    vm.set_date(date(1200, 3, 4))
+    with qtbot.assertNotEmitted(vm.dateChanged):
+        vm.clear()
+    assert vm.dateIso == "1200-03-04"

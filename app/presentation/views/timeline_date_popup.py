@@ -31,15 +31,16 @@ the popover's theme, so keep them exactly as they are.
 NRI-0015 (spec event-timeline «Панель выбора даты имеет читаемые состояния»)
 made its open states readable: P1 — a bound the window does not carry opens
 its grid on the current game date's page (``_today_page``), not at «январь,
-год 1»; P2 — both grids answer to a permanent «Начало окна»/«Конец окна»
-caption from the first open frame; P3 — the popover is created without a
-widget parent, so no chrome-attached ancestor's generic QPushButton rule can
-leak through the stylesheet parent chain and accent-fill every cell (the
-popover stays parent-less and popup-sheet-skinned).
+год 1»; since NRI-0021 task 5.3 that page follows the GAME's «сейчас» (the
+pair the opener injects), not the system day; P2 — both grids answer to a
+permanent «Начало окна»/«Конец окна» caption from the first open frame; P3 —
+the popover is created without a widget parent, so no chrome-attached
+ancestor's generic QPushButton rule can leak through the stylesheet parent
+chain and accent-fill every cell (the popover stays parent-less and
+popup-sheet-skinned).
 """
 from __future__ import annotations
 
-from datetime import date
 from functools import partial
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
@@ -51,7 +52,6 @@ from app.domain.date_era import cmp_era_dates
 from app.domain.game_calendar import (
     MIN_YEAR,
     GameCoord,
-    as_game_coord,
     current_calendar,
 )
 from app.presentation.utils.date_utils import (
@@ -100,19 +100,22 @@ def window_chip_text(start, end) -> str:
     )
 
 
-def _today_page() -> tuple[int, int]:
-    """The page of the CURRENT game date in the ACTIVE calendar.
+def _today_page(now) -> tuple[int, int]:
+    """The page of the GAME's «now» in the ACTIVE calendar.
 
     P1 (NRI-0015, spec «Панель выбора даты имеет читаемые состояния»): an
-    empty window opens its grids on the page containing today's numbers,
-    not at the head of calendar history. The placement follows the wizard
-    preview's documented convention «текущая игровая дата, иначе год 1» —
-    an assembled calendar with no room for today's coordinate pages to
-    year 1 instead (no second rule of its own).
+    empty window opens its grids on the page containing the current game
+    date, not at the head of calendar history. NRI-0021 task 5.3 replaced
+    the SYSTEM day with the injected game «now» pair (``(coord, is_bc)`` or
+    a bare coordinate/``None``): the master's «сейчас» is the date the panel
+    is about, the OS calendar is not. The placement keeps the wizard
+    preview's documented convention «текущая игровая дата, иначе год 1» — a
+    missing «now» or a coordinate the assembled calendar does not contain
+    pages to year 1 instead (no second rule of its own).
     """
-    today = as_game_coord(date.today())
-    if current_calendar().is_valid(today):
-        return today.year, today.month
+    coord, _bc = split_date_era(now)
+    if coord is not None and current_calendar().is_valid(coord):
+        return coord.year, coord.month
     return MIN_YEAR, 1
 
 
@@ -200,7 +203,9 @@ class _DateWindowPopup(QWidget):
 
     # ── opening ─────────────────────────────────────────────────────────────
 
-    def open_at(self, anchor_global: QRect, current: tuple | None = None) -> None:
+    def open_at(
+        self, anchor_global: QRect, current: tuple | None = None, now=None
+    ) -> None:
         """Arm a fresh pick and drop the popover under a GLOBAL chip rectangle.
 
         ``anchor_global`` is the chip's rectangle in global coordinates — the
@@ -210,14 +215,17 @@ class _DateWindowPopup(QWidget):
         the ACTIVE window (the chip is the popover's only opener; the flat
         list deleted the collapsed-gap pre-fill along with the gaps), without
         applying anything: only taps inside the popover mutate the window.
-        The grids re-read the ACTIVE game calendar on every open
-        (``refresh`` covers month names and the week page set), so a rename
-        while the panel stood idle is visible without any wiring around it.
-        Each seeded bound paints its page and marks its real cell or
-        intercalary chip with NO number substituted for the picture (spec
-        event-timeline «Предзаполнение панелей»); an unrepresentable bound
-        leaves its grid un-prefilled while the era check box of that very
-        grid still mirrors the bound (the eras stay independent, Q9).
+        ``now`` is the game's «сейчас» pair (NRI-0021 task 5.3) — the page an
+        EMPTY window opens on; it replaces the system day, which has no
+        meaning on a fictional calendar. The grids re-read the ACTIVE game
+        calendar on every open (``refresh`` covers month names and the week
+        page set), so a rename while the panel stood idle is visible without
+        any wiring around it. Each seeded bound paints its page and marks its
+        real cell or intercalary chip with NO number substituted for the
+        picture (spec event-timeline «Предзаполнение панелей»); an
+        unrepresentable bound leaves its grid un-prefilled while the era check
+        box of that very grid still mirrors the bound (the eras stay
+        independent, Q9).
         """
         self._pending_start = None
         self.tip_label.setText(WINDOW_PICK_START)
@@ -231,10 +239,11 @@ class _DateWindowPopup(QWidget):
             # un-prefilled — never a rewritten number (piece C3b, design D3).
             grid.set_selection(day, bool(is_bc))
             if day is None:
-                # P1: an absent bound opens its grid on the CURRENT game
-                # date's page, never at «январь, год 1» — only a page walk
-                # (no selection), so P3's no-fill empty window is preserved.
-                grid.set_page(*_today_page())
+                # P1: an absent bound opens its grid on the GAME's «now»
+                # page (NRI-0021 task 5.3), never at «январь, год 1» — only
+                # a page walk (no selection), so P3's no-fill empty window
+                # is preserved.
+                grid.set_page(*_today_page(now))
         pos = QPoint(anchor_global.x(), anchor_global.y() + anchor_global.height() + 2)
         screen = QApplication.screenAt(pos)
         room = (

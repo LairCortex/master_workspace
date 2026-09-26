@@ -12,6 +12,7 @@ from typing import Any, Coroutine
 
 from PySide6.QtWidgets import QMessageBox
 
+from app.application.services.current_date_service import CurrentDateService
 from app.application.services.event_service import EventService
 from app.application.services.xlsx_import_service import XlsxImportService
 from app.domain import entity_registry
@@ -29,6 +30,7 @@ from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
+from app.presentation.views.theme_date_popup import ThemeDatePopup
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
 
 # NRI-0014 task 4.3 (CR5), the sheet-stack dim: every sheet opened over a
@@ -60,6 +62,8 @@ class ApplicationWiring:
         event_dialog_vm,
         event_service: EventService,
         uow: GameSessionUoW,
+        current_date_service: CurrentDateService | None = None,
+        now_date_vm=None,
     ) -> None:
         self._app = app
         self._window = window
@@ -68,6 +72,18 @@ class ApplicationWiring:
         self._search_vm = search_vm
         self._event_dialog_vm = event_dialog_vm
         self._event_service = event_service
+        # NRI-0021 (task 2.3, design Д2): the game's «now» holder loaded by
+        # the composition root at game open; the connector is its presentation
+        # carrier — the date widget's view model and the derived surfaces
+        # read/edit it through this wiring (defaulted: the widget wiring
+        # joins in group 3, unit-built connectors need nothing of it).
+        self._current_date_service = current_date_service
+        # NRI-0021 (task 3.3): the widget VM built by the composition root
+        # from the loaded value; its popup lives on this connector (one grid
+        # per game, parent-less like every date popup here), created when the
+        # widget area is connected.
+        self._now_date_vm = now_date_vm
+        self._now_date_popup: ThemeDatePopup | None = None
         self._on_edit_event = None
         # Wave 5 (design D4, task 5.11): the single transaction finish point
         # over the game's one shared session, REQUIRED at construction — the
@@ -151,6 +167,17 @@ class ApplicationWiring:
         """The event service behind the timeline/detail/dialog flows."""
         return self._event_service
 
+    @property
+    def current_date_service(self) -> CurrentDateService | None:
+        """The game's «now» holder handed in by the composition root (Д2)."""
+        return self._current_date_service
+
+    @property
+    def now_date_vm(self):
+        """The «now» widget VM — the subscription carrier the derived
+        surfaces of groups 4–6 attach to (design Д2)."""
+        return self._now_date_vm
+
     async def open_event_editor(self, event_id: int) -> None:
         """Run the connector's open-edit-event handler for ``event_id``.
 
@@ -218,6 +245,7 @@ class ApplicationWiring:
         self._connect_entity_cards()
         self._connect_search()
         self._connect_snapshot()
+        self._connect_now_date()
 
     # ── connect() sections (wave B3) ────────────────────────────────────────
     # One private section per wiring area. The section order above is the
@@ -380,7 +408,12 @@ class ApplicationWiring:
 
         # Add event button
         def on_add_event():
-            dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
+            # NRI-0021 task 4.4: the dialog's read-only «С начала» line reads
+            # and follows the game's «now» through the widget VM.
+            dialog = EventDialog(
+                event_dialog_vm, parent=window, theme=self._app._theme,
+                now_vm=self._now_date_vm,
+            )
             self._spawn(self._load_available_into_dialog(dialog))
             self._spawn(self._load_types_into_dialog(dialog))
             self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
@@ -458,7 +491,12 @@ class ApplicationWiring:
                 event = await event_service.get_event(event_id)
                 if not event:
                     return
-                dialog = EventDialog(event_dialog_vm, parent=window, theme=self._app._theme)
+                # NRI-0021 task 4.4: the edit dialog's «С начала» line reads
+                # and follows the game's «now» through the widget VM too.
+                dialog = EventDialog(
+                    event_dialog_vm, parent=window, theme=self._app._theme,
+                    now_vm=self._now_date_vm,
+                )
                 await self._load_available_into_dialog(dialog)
                 # Types before populate: the selector gets the game's set, then
                 # populate() preselects this event's current type (W4 6.3).
@@ -588,6 +626,60 @@ class ApplicationWiring:
             lambda t, i: self._spawn(self._on_entity_click(t, i))
         )
 
+    def _connect_now_date(self) -> None:
+        """Game-«now» widget (NRI-0021 task 3.3): popup, write, broadcast.
+
+        The chip lives in the search island; its VM carries only the sync
+        request. This section is the whole async half of the flow (spec
+        qml-shell «Sync-вход достаточен»): VM signal → the widgets bridge
+        (parent-less top-level, never inside the island rectangle — spec
+        «Выбор даты идёт через widgets-мост») prefilled with the served
+        value → the service's single UoW transaction → the applied-value
+        slot, whose ``nowChanged`` repaints the caption and every derived
+        surface without a restart.
+        """
+        vm = self._now_date_vm
+        service = self._current_date_service
+        if vm is None or service is None:
+            # A connector built without the game's «now» pair (unit-built
+            # connectors, bare windows) simply has no widget area.
+            return
+        self._now_date_popup = ThemeDatePopup()
+        self._now_date_popup.date_selected.connect(
+            lambda pair: self._spawn(self._apply_now_date(pair))
+        )
+        vm.datePopupRequested.connect(self._open_now_date_popup)
+
+    def _open_now_date_popup(
+        self, x: float, y: float, width: float, height: float
+    ) -> None:
+        # The VM carries the island-local chip rectangle; the facade maps
+        # it to global (scene→widget is the island's knowledge, not ours).
+        value = self._current_date_service.value
+        self._now_date_popup.open_at(
+            self._window.search_bar.now_date_anchor(x, y, width, height),
+            (value.coord, value.is_bc) if value is not None else None,
+        )
+
+    async def _apply_now_date(self, selected) -> None:
+        """Finish one widget edit: service write, then mirror it into the VM.
+
+        The popup bridge answers with a ``(coord, is_bc)`` pair (the grid's
+        own era flag). The service moves its value and counter only on a
+        committed transaction, so ``applyNow`` runs only on success; the
+        failure half of the AGENTS rule («any persistence error reaches the
+        user») is the modal, like every other save path here.
+        """
+        coord, is_bc = selected
+        try:
+            await self._current_date_service.set_now(coord, is_bc)
+        except Exception as exc:  # noqa: BLE001 — the modal names the reason
+            QMessageBox.critical(
+                self._window, "Ошибка", f"Не удалось изменить игровую дату: {exc}",
+            )
+            return
+        self._now_date_vm.applyNow(coord, is_bc)
+
     # ── Shared handlers (the closures the old connect() shared between its
     # areas, promoted to private methods in wave B3) ─────────────────────────
     # Bodies moved unchanged; they all read the same connector state through
@@ -653,6 +745,10 @@ class ApplicationWiring:
         dialog = EntityCardDialog(
             None, entity_type=entity_type, parent=parent,
             theme=self._app._theme,
+            # NRI-0021 task 4.3: every card of the factory (create, edit,
+            # related popup) reads and follows the game's «now» through the
+            # widget VM for its read-only age line.
+            now_vm=self._now_date_vm,
         )
         if entity is not None:
             dialog.populate(entity)

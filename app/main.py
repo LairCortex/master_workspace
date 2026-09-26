@@ -36,6 +36,7 @@ from app.application.services.event_service import EventService
 from app.application.services.calendar_settings_service import (
     CalendarSettingsService,
 )
+from app.application.services.current_date_service import CurrentDateService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.application.services.export_service import ExportService
@@ -58,6 +59,7 @@ from app.presentation.wiring import ApplicationWiring
 
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
+from app.presentation.viewmodels.now_date_view_model import NowDateViewModel
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
@@ -150,6 +152,10 @@ class Application:
         # process; start() loads the calendar and sweeps the dated records
         # with it (C3a, design D8 — repair, shift, key reconcile).
         self._calendar_service: CalendarSettingsService | None = None
+        # NRI-0021 (design Д2): the game's «now» — a game-bound holder built
+        # and loaded per start() after the calendar became active, so a game
+        # switch can never carry the previous game's value over.
+        self._current_date_service: CurrentDateService | None = None
         # Calendar wizard (C4, task 7.1): the one dialog at a time. Since
         # NRI-0015 (task 2.4) the first-entry wizard lives here too — it is
         # opened through the very menu path, deferred after start() instead of
@@ -271,6 +277,14 @@ class Application:
         # dates.  Idempotent; a no-op on a standard game.
         await self._calendar_service.sweep_dated_records(self._session)
 
+        # NRI-0021 (design Д2): the game's «now» loads right after the
+        # calendar became active — its stored coordinate is read against the
+        # calendar the game actually lives on (an out-of-range value from a
+        # calendar switch reads as absent, Д1).  Absence seeds the real
+        # today in memory; no key is written before the master's first edit.
+        self._current_date_service = CurrentDateService(self._uow)
+        await self._current_date_service.load()
+
         # Repositories
         desc_repo = BaseRepository(self._session, DescriptionModel)
         event_repo = EventRepository(self._session)
@@ -305,7 +319,19 @@ class Application:
         )
 
         # ViewModels
-        timeline_vm = TimelineViewModel(event_service)
+        # NRI-0021 (task 3.1, design Д2): the widget VM mirrors the value the
+        # service loaded above — the composition root is the one place that
+        # pairs them; the island sees the VM as ``nowDateVm``, the connector
+        # runs the popup/write flow against it (groups 4–6 subscribe to its
+        # ``nowChanged`` through this wiring too).
+        now_date_vm = NowDateViewModel(
+            self._current_date_service.value.coord,
+            self._current_date_service.value.is_bc,
+        )
+        # NRI-0021 (tasks 5.1–5.2, design Д6): the timeline reads the same VM
+        # for the today-outline flag, the «➜ Сейчас» availability/target and
+        # the popover's game-«now» page.
+        timeline_vm = TimelineViewModel(event_service, now_vm=now_date_vm)
         detail_vm = DetailViewModel(event_service)
         search_vm = SearchViewModel(search_service)
         event_dialog_vm = EventDialogViewModel(event_service)
@@ -338,6 +364,7 @@ class Application:
             # NRI-0014 1.2: the window's docs entries and this application's
             # launcher entry share ONE open-window registry (design D1).
             window_registry=self._window_registry,
+            now_date_vm=now_date_vm,
         )
 
         self._search_service = search_service
@@ -346,6 +373,13 @@ class Application:
         self._wiring = ApplicationWiring(
             self, window, timeline_vm, detail_vm, search_vm, event_dialog_vm, event_service,
             uow=self._uow,
+            # NRI-0021 (task 2.3): the loaded «now» reaches the presentation
+            # through the connector — the date widget's VM (group 3) and the
+            # derived surfaces read and edit it via this wiring.
+            current_date_service=self._current_date_service,
+            # NRI-0021 (task 3.3): the same VM the island shows — the
+            # connector wires its popup request and the applied-value slot.
+            now_date_vm=now_date_vm,
         )
         self._wiring.connect()
 

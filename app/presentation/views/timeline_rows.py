@@ -25,16 +25,19 @@ pre-built with the game calendar (live month names, intercalary rule names)
 and era, so the row text is display-ready. Every row also carries
 ``detail`` — the event's own description as one collapsed, bounded line the
 delegate may wrap over two painted lines, so the list reads as a digest and
-not only as a date range. All of this is plain deterministic data, testable
-without a QApplication.
+not only as a date range. Since NRI-0021 (task 5.1) ``build_rows`` also carries
+the game's «now»: exactly one row — the first in sort order starting the very
+day of that «now», same era included — gets ``is_now`` for the delegate's
+outline. All of this is plain deterministic data, testable without a
+QApplication.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, Sequence
 
 from app.domain.date_era import era_key
-from app.domain.game_calendar import GameCoord
+from app.domain.game_calendar import GameCoord, InvalidGameDateError
 from app.presentation.utils.date_utils import (
     era_flag,
     format_game_date,
@@ -202,7 +205,9 @@ class Row:
     the finished display text ``start — end · name`` (open end shown as
     :data:`OPEN_END_MARK`, BC years with the «N г. до н.э.» suffix); ``detail``
     is the bounded one-line description (:func:`row_detail`, ``""`` = nothing to
-    show) the delegate paints under the caption.
+    show) the delegate paints under the caption; ``is_now`` marks the ONE row
+    the delegate outlines (NRI-0021 task 5.1, spec «Обводка события,
+    начинающегося „сегодня“») — the rule lives in :func:`build_rows`.
     """
 
     event_id: int
@@ -214,6 +219,38 @@ class Row:
     detail: str = ""
     start_bc: bool = False
     end_bc: bool = False
+    is_now: bool = False
+
+
+def window_contains(
+    window: (
+        tuple[
+            GameCoord | tuple[GameCoord | None, bool] | None,
+            GameCoord | tuple[GameCoord | None, bool] | None,
+        ]
+        | None
+    ),
+    coord: GameCoord,
+    is_bc: bool,
+) -> bool:
+    """Whether ``(coord, is_bc)`` falls INSIDE the «Выбор даты» window
+    (NRI-0021 task 5.2, spec «Кнопка прокрутки „➜ Сейчас“»).
+
+    This is the containment twin of :func:`_crosses_window` — a different
+    question («is this date one of the window's days», not «does this
+    interval cross the window»), answered on the same shared era key. An
+    absent or partial window is «Все дни» and contains every date, exactly
+    like the filter treats it. A coordinate the active calendar does not
+    contain raises its own ``InvalidGameDateError`` — the caller decides the
+    posture (the button goes inactive, design Д6)."""
+    if window is None:
+        return True
+    start_key = _bound_key(window[0])
+    end_key = _bound_key(window[1])
+    if start_key is None or end_key is None:
+        return True
+    key = era_key(coord, bool(is_bc))
+    return start_key <= key <= end_key
 
 
 def build_rows(
@@ -225,6 +262,8 @@ def build_rows(
         ]
         | None
     ) = None,
+    now: GameCoord | None = None,
+    now_bc: bool = False,
 ) -> list[Row]:
     """Lay ``events`` out as the flat list's rows, filtered by ``window``.
 
@@ -234,7 +273,22 @@ def build_rows(
     natural order; the window filters but never reorders. An empty sample or a
     window no event crosses yields ``[]`` — the view paints its own emptiness
     hint.
+
+    ``now``/``now_bc`` (NRI-0021 task 5.1, spec «Обводка события,
+    начинающегося „сегодня“») mark exactly one row: the FIRST in sort order
+    whose start is the same day of the same era as the game's «now» (the
+    shared era key settles the «тот же день той же эры» check, BC never
+    confuses our era). Without ``now`` nobody is marked; a «now» the active
+    calendar refuses (the Д1-seeded real today on a custom calendar) marks
+    nobody either — the outline simply stays absent (the group-4 posture:
+    derived lines hide, the list never breaks).
     """
+    now_key: int | None = None
+    if now is not None:
+        try:
+            now_key = era_key(now, era_flag(now_bc))
+        except InvalidGameDateError:
+            now_key = None
     rows = [
         Row(
             event_id=event.id,
@@ -251,4 +305,9 @@ def build_rows(
         if _crosses_window(event, window)
     ]
     rows.sort(key=lambda row: (era_key(row.start, row.start_bc), row.event_id))
+    if now_key is not None:
+        for index, row in enumerate(rows):
+            if era_key(row.start, row.start_bc) == now_key:
+                rows[index] = replace(row, is_now=True)
+                break
     return rows

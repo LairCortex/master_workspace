@@ -42,10 +42,20 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
     entity_clicked = Signal(str, int)
     snapshot_requested = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None, theme=None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        theme=None,
+        now_date_vm=None,
+    ) -> None:
         super().__init__(parent)
         self._theme = theme if theme is not None else get_default_theme()
-        self.vm = WorldSnapshotViewModel(self._theme, parent=self)
+        # NRI-0021 task 6.2 (design Д5): the game's «now» VM joins the Python
+        # VM only (island context stays minimal — worldSnapshotVm + palette,
+        # spec qml-shell); the field starts at «now» and «Сброс» returns to it.
+        self.vm = WorldSnapshotViewModel(
+            self._theme, now_vm=now_date_vm, parent=self
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

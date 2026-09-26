@@ -147,6 +147,22 @@ Rectangle {
             }
             Item { implicitWidth: 24 }
 
+            // NRI-0021 task 4.4 (spec «Read-only отображение производных
+            // величин»): the read-only «С начала: <формула>» line under the
+            // date fields — plain text, never an input and never part of the
+            // save result; the VM owns the formula (eventText).  Without a
+            // game «now» the answer is empty and the row leaves the grid.
+            Text {
+                objectName: "eventSinceText"
+                visible: text !== ""
+                Layout.columnSpan: 3
+                Layout.fillWidth: true
+                text: eventDialogVm.eventText
+                color: Tokens.token(root.islandTokens, "color.fg.primary", "black")
+                font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
+                elide: Text.ElideRight
+            }
+
             TitleText { text: "Тип:" }
             RowLayout {
                 Layout.fillWidth: true

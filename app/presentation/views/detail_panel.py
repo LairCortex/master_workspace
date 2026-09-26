@@ -34,12 +34,16 @@ class DetailPanel(IslandDialogMixin, QWidget):
         detail_vm,
         parent: QWidget | None = None,
         theme=None,
+        now_date_vm=None,
     ) -> None:
         super().__init__(parent)
         self._vm = detail_vm
         self._theme = theme if theme is not None else get_default_theme()
         self._current_event_id: int | None = None
-        self.vm = DetailPanelViewModel(self._theme, parent=self)
+        # NRI-0021 task 4.1: the game's «now» VM joins the Python VM only (the
+        # island context stays minimal — detailPanelVm + palette, spec
+        # qml-shell); the composition root hands it through MainWindow.
+        self.vm = DetailPanelViewModel(self._theme, now_vm=now_date_vm, parent=self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -59,7 +63,9 @@ class DetailPanel(IslandDialogMixin, QWidget):
         # so its C++ side leaves with the island while the wrapper lives on
         # this facade — unsubscribe it before that window opens (the release
         # runs when this panel's window closes, see the mixin contract).
+        # NRI-0021 (task 4.1): the «now» subscription follows the same rule.
         self.vm.detach_theme_listener()
+        self.vm.detach_now_listener()
         super()._release_island()
 
     def island_source(self) -> str:

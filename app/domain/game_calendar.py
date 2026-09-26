@@ -48,7 +48,12 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from app.domain.date_era import BC_YEAR_STEP, _gregorian_key, bind_era_key_resolver
+from app.domain.date_era import (
+    BC_YEAR_STEP,
+    _gregorian_key,
+    bind_duration_helpers,
+    bind_era_key_resolver,
+)
 
 #: Both eras span years MIN_YEAR…MAX_YEAR (same bound as ``date_era``).
 MIN_YEAR = 1
@@ -294,6 +299,29 @@ class GameCalendar(Protocol):
         the spec, year within MIN_YEAR…MAX_YEAR)."""
         ...
 
+    def day_index(self, coord: GameCoord, is_bc: bool = False) -> int:
+        """Absolute day counter of the coordinate (NRI-0021 task 1.1, design Д3).
+
+        The unified era timeline is numbered contiguously: day ``0`` is the
+        first day of year 1 н.э., the day before it — the last day of year 1
+        до н.э. — is ``−1`` (a year zero exists in neither era).  The
+        difference of two counters is the exact number of days between the
+        coordinates, era crossings included; unlike ``to_key`` the counter
+        has no blank slots, so durations never divide key gaps.  Raises
+        ``InvalidGameDateError`` for a coordinate absent here, exactly like
+        ``to_key`` (no silent normalization)."""
+        ...
+
+    @property
+    def days_per_year(self) -> int:
+        """Nominal year length in days, intercalary days counted as ordinary
+        slots (NRI-0021 task 1.1, design Д3).  Constant for a custom calendar
+        (design D4 makes every one of its years exactly this long); the
+        Gregorian preset reports the common-year length because its leap rule
+        lengthens every fourth year — exact durations therefore go through
+        ``day_index``, never through division by this number."""
+        ...
+
     @property
     def month_names(self) -> Mapping[int, str]:
         """Month display names by 1-based month number (piece C2, design
@@ -338,6 +366,10 @@ class StubCalendar:
 #: to, so this table is a plain fact about that calendar, not a second key
 #: formula (the key formulas themselves are never copied, D1).
 _GREGORIAN_MONTH_LENGTHS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+#: Ordinal of the AD epoch of ``day_index`` — ``MonthDay(1, 1, 1)`` is day ``0``
+#: (NRI-0021 task 1.1); the ``datetime`` ordinal of that date is ``1``.
+_GREGORIAN_EPOCH_ORDINAL = date(MIN_YEAR, 1, 1).toordinal()
 
 
 def _gregorian_is_leap(year: int) -> bool:
@@ -475,6 +507,32 @@ class StandardCalendar:
         # The standard preset has no intercalary rules at all: no such
         # coordinate exists in it, at any index or year.
         return False
+
+    def day_index(self, coord: GameCoord, is_bc: bool = False) -> int:
+        if not self.is_valid(coord):
+            raise InvalidGameDateError(
+                f"coordinate {coord!r} does not exist in the standard calendar"
+            )
+        day = date(coord.year, coord.month, coord.day)
+        if not is_bc:
+            return day.toordinal() - _GREGORIAN_EPOCH_ORDINAL
+        # Contiguous BC mirror (NRI-0021 task 1.1): the mirrored same-year
+        # ordinal shifted by the whole span its own year covers puts the last
+        # day of year 1 до н.э. at ``−1``, one day below the AD epoch — the
+        # era border crosses with no year zero and no key gaps.
+        return (
+            day.toordinal()
+            - date(coord.year, 1, 1).toordinal()
+            - date(coord.year, 12, 31).toordinal()
+        )
+
+    @property
+    def days_per_year(self) -> int:
+        """The common Gregorian year (365 days).  The preset's years are not
+        uniformly long — the leap rule adds February a day every fourth year
+        — so durations never divide by this number; the contiguous day
+        counter is the source of exact distances (NRI-0021 task 1.1)."""
+        return sum(_GREGORIAN_MONTH_LENGTHS)
 
 
 # ── Active calendar accessor (roadmap piece C1, design D3) ───────────────
@@ -628,6 +686,23 @@ class CustomCalendar:
         """Length ``L`` of every year of this calendar, in days
         (months plus intercalary days, design D4)."""
         return self._year_length
+
+    @property
+    def days_per_year(self) -> int:
+        """Protocol name (NRI-0021 task 1.1) for the same constant ``L`` this
+        calendar keeps: months plus intercalary slots, identical in every
+        year (design D4)."""
+        return self._year_length
+
+    def day_index(self, coord: GameCoord, is_bc: bool = False) -> int:
+        # ``to_key`` performs the existence refusal (D6) and both key scales
+        # are linear in the slot, so shifting them renumbers days without
+        # gaps: the CE key opens at day 1 (epoch is day 0), while every BC
+        # key sits exactly ``L`` under its mirrored CE position — a lift by
+        # ``L − 1`` lands the last day of BC year 1 on ``−1``, one below the
+        # AD epoch (NRI-0021 task 1.1, design Д3).
+        key = self.to_key(coord, is_bc)
+        return key - 1 if not is_bc else key + self._year_length - 1
 
     def to_key(self, coord: GameCoord, is_bc: bool = False) -> int:
         if not self.is_valid(coord):
@@ -1041,3 +1116,13 @@ def _resolve_era_key(coord: GameCoord | date, is_bc: bool) -> int:
 # ``date_era`` imports nothing from this module (at import time or lazily):
 # the dependency travels this way only, once, after all names above exist.
 bind_era_key_resolver(_resolve_era_key)
+
+# Duration machinery (NRI-0021 task 1.2, design Д3): the same one-way
+# hand-off — ``date_era`` receives the live calendar reader and the two
+# coordinate classes its anniversary/month step helpers construct, so the
+# duration functions stay pure domain logic with no import edge back here.
+bind_duration_helpers(
+    calendar_provider=current_calendar,
+    month_day=MonthDay,
+    intercalary_day=IntercalaryDay,
+)

@@ -1815,6 +1815,10 @@ class TestProtocolStubSurfaceAndGuards:
         assert GameCalendar.weekday(dummy, coord) is None
         assert GameCalendar.month_length(dummy, 1, 1) is None
         assert GameCalendar.is_valid(dummy, coord) is None
+        # NRI-0021 task 1.1: счётчик дней и номинальная длина года — те же
+        # безвредные заглушки протокола (строки-«многоточия» считает гейт)
+        assert GameCalendar.day_index(dummy, coord) is None
+        assert GameCalendar.days_per_year.fget(dummy) is None
 
     @pytest.mark.parametrize("call", [
         lambda stub: stub.to_key(MonthDay(1, 1, 1)),
@@ -2463,3 +2467,135 @@ class TestMonthNamesSource:
         # заглушка-предшественник имён не знает — расширенный протокол её
         # больше не пропускает (member проверяется isinstance'ом runtime)
         assert not isinstance(StubCalendar(), GameCalendar)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# NRI-0021 task 1.1 — contiguous day counter (day_index) and year length
+# (days_per_year).  day 0 = year 1 н.э. month 1 day 1; the day before it
+# (year 1 до н.э. last day) is −1 with no year zero.  Exact day distances
+# come from these counters, never from the gapped chronological key.
+# ═════════════════════════════════════════════════════════════════════════
+
+def gregorian_days_through_bc_year(year: int) -> int:
+    """Independent re-derivation: total days spanned by BC years 1…year,
+    leap rule counted per year (mirrors the standard preset's BC branch)."""
+    return 365 * year + year // 4 - year // 100 + year // 400
+
+
+class TestStandardDayIndex:
+    CALENDAR = StandardCalendar()
+
+    def test_epoch_is_day_zero_and_the_bc_neighbour_is_minus_one(self):
+        assert self.CALENDAR.day_index(MonthDay(MIN_YEAR, 1, 1)) == 0
+        assert self.CALENDAR.day_index(MonthDay(MIN_YEAR, 1, 2)) == 1
+        # last day of year 1 до н.э. sits exactly one below the AD epoch
+        assert self.CALENDAR.day_index(MonthDay(MIN_YEAR, 12, 31), is_bc=True) == -1
+
+    @pytest.mark.parametrize("real", [
+        pytest.param(date(1, 1, 1), id="ad-epoch"),
+        pytest.param(date(2024, 2, 29), id="leap-day"),
+        pytest.param(date(2023, 2, 28), id="common-feb-edge"),
+        pytest.param(date(9999, 12, 31), id="ad-top"),
+    ])
+    def test_ad_index_is_the_contiguous_ordinal_offset(self, real):
+        coord = MonthDay(real.year, real.month, real.day)
+        expected = real.toordinal() - date(MIN_YEAR, 1, 1).toordinal()
+        assert self.CALENDAR.day_index(coord) == expected
+
+    @pytest.mark.parametrize("real", [
+        pytest.param(date(1, 1, 1), id="bc-year1-open"),
+        pytest.param(date(1, 12, 31), id="bc-year1-close"),
+        pytest.param(date(4, 2, 29), id="bc-mirrored-leap-day"),
+        pytest.param(date(44, 3, 5), id="bc-year-44"),
+        pytest.param(date(9999, 1, 1), id="bc-bottom"),
+    ])
+    def test_bc_index_counts_the_spanned_bc_years(self, real):
+        coord = MonthDay(real.year, real.month, real.day)
+        within = real.toordinal() - date(real.year, 1, 1).toordinal()
+        expected = within - gregorian_days_through_bc_year(real.year)
+        assert self.CALENDAR.day_index(coord, is_bc=True) == expected
+
+    def test_consecutive_days_differ_by_one_within_and_across_the_border(self):
+        # сплошность счётчика: соседние дни отличаются ровно на 1 и внутри
+        # года, и на границе «до н.э. → н.э.» (нулевого года нет)
+        assert self.CALENDAR.day_index(MonthDay(2024, 3, 1)) - \
+            self.CALENDAR.day_index(MonthDay(2024, 2, 29)) == 1
+        assert self.CALENDAR.day_index(MonthDay(2023, 3, 1)) - \
+            self.CALENDAR.day_index(MonthDay(2023, 2, 28)) == 1
+        assert self.CALENDAR.day_index(MonthDay(1, 1, 1)) - \
+            self.CALENDAR.day_index(MonthDay(1, 12, 31), is_bc=True) == 1
+
+    def test_distance_across_the_era_border_is_one_day(self):
+        # последний день года 1 до н.э. → первый день года 1 н.э. — ровно
+        # один день: переход без нулевого года и без пропусков счётчика
+        assert self.CALENDAR.day_index(MonthDay(MIN_YEAR, 1, 1)) - \
+            self.CALENDAR.day_index(MonthDay(MIN_YEAR, 12, 31), is_bc=True) == 1
+
+    def test_leap_days_are_counted_once_per_year(self):
+        # от 1 янв. до 1 янв. следующего високосного года — ровно 366 дней
+        assert self.CALENDAR.day_index(MonthDay(2025, 1, 1)) - \
+            self.CALENDAR.day_index(MonthDay(2024, 1, 1)) == 366
+
+    @pytest.mark.parametrize("coord", [
+        MonthDay(2023, 2, 29),        # в обычном году 29 февраля нет
+        MonthDay(MAX_YEAR + 1, 1, 1),  # за пределами шкалы
+        IntercalaryDay(44, 0),         # у пресета вставных дней нет
+    ])
+    def test_absent_coordinate_refuses_like_to_key(self, coord):
+        with pytest.raises(InvalidGameDateError):
+            self.CALENDAR.day_index(coord)
+
+    def test_days_per_year_is_the_common_gregorian_length(self):
+        # пресет не делит длительности на это число (високосный год длиннее),
+        # но номинальная длина года — обычный год: сумма месяцев без поправок
+        assert self.CALENDAR.days_per_year == 365
+
+
+class TestCustomDayIndex:
+    # L = 30 + 50 + 20 + 1 вставной = 101; вставной день — после месяца 1
+    MONTHS = make_months(("Зимостой", 30), ("Талолист", 50), ("Сухочивень", 20))
+    CALENDAR = CustomCalendar(base_spec(
+        months=MONTHS, intercalary=(IntercalarySpec("День Маски", 1),)
+    ))
+
+    def test_days_per_year_equals_the_constant_year_length(self):
+        assert self.CALENDAR.days_per_year == self.CALENDAR.year_length == 101
+
+    def test_layout_offsets(self):
+        # префиксные смещения: м1 0..29, вставной 30, м2 31..80, м3 81..100
+        assert self.CALENDAR.day_index(MonthDay(1, 1, 1)) == 0
+        assert self.CALENDAR.day_index(MonthDay(1, 1, 30)) == 29
+        assert self.CALENDAR.day_index(IntercalaryDay(1, 0)) == 30
+        assert self.CALENDAR.day_index(MonthDay(1, 2, 1)) == 31
+        assert self.CALENDAR.day_index(MonthDay(1, 3, 20)) == 100
+
+    def test_next_year_opens_at_the_year_length(self):
+        assert self.CALENDAR.day_index(MonthDay(2, 1, 1)) == 101
+
+    def test_bc_last_day_of_year_one_is_minus_one(self):
+        # последний слот года 1 до н.э. (м3 д20, смещение 100) — ровно −1
+        assert self.CALENDAR.day_index(MonthDay(1, 3, 20), is_bc=True) == -1
+
+    def test_bc_intercalary_slot_counts_contiguously(self):
+        # год 1 до н.э.: −(year·L − offset); вставной слот offset 30 → 30−101 = −71
+        assert self.CALENDAR.day_index(IntercalaryDay(1, 0), is_bc=True) == 30 - 101
+
+    def test_consecutive_slots_differ_by_one_across_the_border(self):
+        assert self.CALENDAR.day_index(MonthDay(1, 2, 1)) - \
+            self.CALENDAR.day_index(IntercalaryDay(1, 0)) == 1
+        assert self.CALENDAR.day_index(MonthDay(1, 1, 1)) - \
+            self.CALENDAR.day_index(MonthDay(1, 3, 20), is_bc=True) == 1
+
+    def test_a_full_bc_year_spans_exactly_the_year_length(self):
+        first_of_year_2_bc = self.CALENDAR.day_index(MonthDay(2, 1, 1), is_bc=True)
+        first_of_year_1_bc = self.CALENDAR.day_index(MonthDay(1, 1, 1), is_bc=True)
+        assert first_of_year_1_bc - first_of_year_2_bc == self.CALENDAR.year_length
+
+    @pytest.mark.parametrize("coord", [
+        MonthDay(1, 1, 31),   # месяца-1 короче
+        IntercalaryDay(1, 1),  # второго вставного слота нет
+        MonthDay(0, 1, 1),     # год вне шкалы
+    ])
+    def test_absent_coordinate_refuses(self, coord):
+        with pytest.raises(InvalidGameDateError):
+            self.CALENDAR.day_index(coord)

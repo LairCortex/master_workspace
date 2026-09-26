@@ -18,6 +18,7 @@ import pytest
 from PySide6.QtCore import QRect
 
 from app.domain.game_calendar import (
+    MIN_YEAR,
     CalendarSpec,
     CustomCalendar,
     IntercalaryDay,
@@ -36,6 +37,7 @@ from app.presentation.views.calendar_grid import (
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 from app.presentation.views.timeline_date_popup import (
     _DateWindowPopup,
+    _today_page,
     window_chip_text,
 )
 
@@ -324,8 +326,10 @@ def test_range_low_screen_fallback_keeps_one_grid(qtbot, room, both_visible):
 
 # ── NRI-0015 group 4: readable states of the «Выбор даты» popover ──────────
 # (spec event-timeline «Панель выбора даты имеет читаемые состояния»:
-#  P1 opens the empty window on today, P2 captions both grids from the
-#  first frame, P3 shows no accent fill while the window is «Все дни».)
+#  P1 opens the empty window on the current date — since NRI-0021 task 5.3
+#  on the GAME's «сейчас» injected by the opener, not on the system day —,
+#  P2 captions both grids from the first frame, P3 shows no accent fill
+#  while the window is «Все дни».)
 
 
 def _grid_page(grid: GameCalendarGrid) -> tuple[int, int]:
@@ -334,54 +338,106 @@ def _grid_page(grid: GameCalendarGrid) -> tuple[int, int]:
 
 
 class TestEmptyWindowOpensOnTheCurrentDate:
-    """P1: an absent bound opens its grid on the page containing the current
-    game date, not at the head of calendar history («январь, год 1»);
-    seeded bounds keep pre-filling exactly as before."""
+    """P1 (delta-rewritten by NRI-0021 task 5.3, spec «…открываться
+    страницей, содержащей игровую дату „сейчас“, а не … системным
+    сегодняшним днём»): an absent bound opens its grid on the page the
+    opener's game-«now» pair names; a missing or unhostable «now» keeps the
+    wizard preview's «текущая игровая дата, иначе год 1» convention, and the
+    SYSTEM day never pages anything any more. Seeded bounds pre-fill exactly
+    as before."""
 
-    def test_reopened_empty_window_pages_both_grids_to_today(self, qtbot):
+    def test_today_page_follows_the_injected_game_now(self):
+        """The ``_today_page`` replacement itself: the page is the injected
+        pair's numbers — the game date here (44 / month 2) is neither the
+        system day nor year 1, and the bare-coordinate and None shapes keep
+        answering without a crash."""
+        assert _today_page((MonthDay(44, 2, 3), False)) == (44, 2)
+        assert _today_page(MonthDay(1200, 5, 5)) == (1200, 5)  # bare coord
+        assert _today_page(None) == (MIN_YEAR, 1)  # no «now» — year 1
+        with active(CustomCalendar(ONE_MASK)):
+            # ONE_MASK has two months — September simply does not exist there
+            # (the Д1 seeding posture: a «now» the calendar refuses pages to
+            # year 1, never an error).
+            assert _today_page((MonthDay(1200, 9, 1), False)) == (MIN_YEAR, 1)
+            assert _today_page((MonthDay(1200, 2, 1), True)) == (1200, 2)
+
+    def test_empty_window_pages_both_grids_to_the_game_now_not_the_system_day(
+        self, qtbot
+    ):
         popup = _DateWindowPopup()
         qtbot.addWidget(popup)
-        # Land the grids somewhere far from today first, so the second open
-        # proves a real navigation and not the construction default.
+        # Land the grids somewhere far first, so the second open proves a
+        # real navigation and not the construction default.
         popup.open_at(
             QRect(0, 0, 10, 10),
             ((MonthDay(500, 1, 1), False), (MonthDay(9000, 12, 31), False)),
         )
         popup.close()
-        popup.open_at(QRect(0, 0, 10, 10), (None, None))
+        popup.open_at(QRect(0, 0, 10, 10), (None, None), (MonthDay(44, 2, 3), False))
         today = date.today()
         for grid in (popup.start_calendar, popup.end_calendar):
-            assert _grid_page(grid) == (today.year, today.month)
+            assert _grid_page(grid) == (44, 2)
+            # The system day and the head of calendar history are both out
+            # (spec «Показывает месяц игровой даты, а не системного дня»).
+            assert (44, 2) != (today.year, today.month)
+            assert _grid_page(grid) != (MIN_YEAR, 1)
             # …as a page only: an empty window selects nothing (P3's model
             # half — «нет состояния «залита» при пустом окне»).
             assert grid.selection() is None
+            # The era checkbox of an unseeded grid stays independent (Q9):
+            # the «now» pair pages the grid, it never checks the era box.
             assert grid.is_bc() is False
         popup.close()
 
-    def test_empty_window_falls_to_year_one_without_a_room_for_today(
-        self, qtbot
-    ):
-        # The wizard preview's «текущая игровая дата, иначе год 1» convention:
-        # a calendar that cannot host today's numbers pages to year 1.
+    def test_bc_now_pages_the_numbers_without_touching_the_era_box(self, qtbot):
+        """The page is a page-walk (no selection, no era flip): a BC «сейчас»
+        lands the numbers on the grid the grid shows while the Q9 era
+        independence of the unseeded grids stays untouched."""
         popup = _DateWindowPopup()
         qtbot.addWidget(popup)
-        popup.open_at(QRect(0, 0, 10, 10), ((MonthDay(44, 1, 1), False), None))
+        popup.open_at(QRect(0, 0, 10, 10), None, (MonthDay(44, 2, 3), True))
+        assert _grid_page(popup.start_calendar) == (44, 2)
+        assert popup.start_calendar.is_bc() is False
+        assert popup.start_calendar.selection() is None
+        popup.close()
+
+    def test_empty_window_without_a_game_now_pages_to_year_one(self, qtbot):
+        # The fallback of the replaced rule: nothing injected → the wizard
+        # preview's «иначе год 1» half, never the system day.
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(0, 0, 10, 10), (None, None))
+        assert _grid_page(popup.start_calendar) == (MIN_YEAR, 1)
+        assert _grid_page(popup.end_calendar) == (MIN_YEAR, 1)
+        popup.close()
+
+    def test_empty_window_falls_to_year_one_without_a_room_for_now(
+        self, qtbot
+    ):
+        # The other half of the convention: a «now» the assembled calendar
+        # does not host pages to year 1 (the Д1 seeding posture on a custom
+        # calendar), not an error and not the system day.
+        popup = _DateWindowPopup()
+        qtbot.addWidget(popup)
         with active(CustomCalendar(ONE_MASK)):
-            popup.open_at(QRect(0, 0, 10, 10), None)
+            popup.open_at(
+                QRect(0, 0, 10, 10), None, (MonthDay(1200, 9, 1), False)
+            )
             # ONE_MASK has two months — September simply does not exist there.
-            assert _grid_page(popup.start_calendar) == (1, 1)
-            assert _grid_page(popup.end_calendar) == (1, 1)
+            assert _grid_page(popup.start_calendar) == (MIN_YEAR, 1)
+            assert _grid_page(popup.end_calendar) == (MIN_YEAR, 1)
             assert popup.start_calendar.selection() is None
         popup.close()
 
     def test_seeded_bounds_still_own_their_pages(self, qtbot):
         """Regression of the spec scenarios «c границами — как было»: a bound
-        pre-fills its own page and today does not intrude."""
+        pre-fills its own page and the game «now» does not intrude."""
         popup = _DateWindowPopup()
         qtbot.addWidget(popup)
         popup.open_at(
             QRect(0, 0, 10, 10),
             ((MonthDay(500, 4, 3), False), (MonthDay(100, 12, 31), False)),
+            (MonthDay(44, 2, 3), False),
         )
         assert _grid_page(popup.start_calendar) == (500, 4)
         assert _grid_page(popup.end_calendar) == (100, 12)
@@ -389,12 +445,17 @@ class TestEmptyWindowOpensOnTheCurrentDate:
         assert popup.end_calendar.selection() == MonthDay(100, 12, 31)
         popup.close()
 
-    def test_partial_window_pages_only_the_boundless_grid_to_today(self, qtbot):
+    def test_partial_window_pages_only_the_boundless_grid_to_the_game_now(
+        self, qtbot
+    ):
         popup = _DateWindowPopup()
         qtbot.addWidget(popup)
-        popup.open_at(QRect(0, 0, 10, 10), (None, (MonthDay(100, 12, 31), True)))
-        today = date.today()
-        assert _grid_page(popup.start_calendar) == (today.year, today.month)
+        popup.open_at(
+            QRect(0, 0, 10, 10),
+            (None, (MonthDay(100, 12, 31), True)),
+            (MonthDay(44, 2, 3), False),
+        )
+        assert _grid_page(popup.start_calendar) == (44, 2)
         assert popup.start_calendar.selection() is None
         assert _grid_page(popup.end_calendar) == (100, 12)
         assert popup.end_calendar.selection() == MonthDay(100, 12, 31)

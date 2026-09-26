@@ -1,6 +1,7 @@
 """Synchronous state and list models for the detail-panel QML island."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Iterable
 
 from PySide6.QtCore import (
@@ -17,10 +18,24 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from app.domain import entity_registry
+from app.domain.date_era import duration_parts
 from app.domain.enums.entity_type import EntityType
+from app.domain.game_calendar import GameCoord, InvalidGameDateError
 from app.presentation.theme.rating import rating_to_color
-from app.presentation.utils.date_utils import era_flag, format_game_date
+from app.presentation.utils.date_utils import (
+    AGE_ENTITY_TYPES,
+    AGE_LABEL,
+    era_flag,
+    format_age_words,
+    format_duration_words,
+    format_game_date,
+)
 from app.presentation.utils.image_utils import resolve_preview_path
+
+#: The «now» carrier the summary and the date row count against (NRI-0021
+#: design Д5): the active calendar's coordinate plus its era flag, or ``None``
+#: while the panel has no game «now» (unit-built panels — no derived text).
+NowPair = tuple[GameCoord | date, bool]
 
 #: relation refs of the event card, registry order (wave 3, finding A4)
 _event_refs = entity_registry.related_refs(EntityType.EVENT)
@@ -31,9 +46,37 @@ def _truncate(text: str, max_len: int = 120) -> str:
     return text[:max_len] + "…" if len(text) > max_len else text
 
 
-def build_detail_summary(entity: Any, entity_type: str) -> str:
-    """Build the render-ready HTML summary formerly owned by the widget row."""
+def build_detail_summary(
+    entity: Any, entity_type: str, now: NowPair | None = None
+) -> str:
+    """Build the render-ready HTML summary formerly owned by the widget row.
+
+    ``now`` (NRI-0021 task 4.1, design Д5) is the game's «now» coordinate
+    pair; for a character or item it adds the «Возраст: <формула>» line — the
+    single age rule assembled by ``format_age_words`` (started entities age
+    to their end, unstarted ones read «через N»).  Locations and
+    organizations never carry the line, and without a «now» the summary is
+    exactly the pre-NRI-0021 text.  A coordinate pair the active calendar
+    refuses (a custom-calendar game on the Д1 seeded-today «now») hides the
+    line — a derived text that cannot be counted never breaks the row, the
+    same absence posture as Д1's damaged-value rule."""
     parts: list[str] = []
+    if entity_type in AGE_ENTITY_TYPES and now is not None:
+        start = getattr(entity, "start_date", None)
+        if start is not None:
+            try:
+                age = format_age_words(
+                    start,
+                    era_flag(getattr(entity, "start_bc", False)),
+                    getattr(entity, "end_date", None),
+                    era_flag(getattr(entity, "end_bc", False)),
+                    now[0],
+                    now[1],
+                )
+            except InvalidGameDateError:
+                age = None
+            if age is not None:
+                parts.append(f"<b>{AGE_LABEL}:</b> {age}")
     rating = getattr(entity, "rating", None)
     if isinstance(rating, int) and rating >= 1:
         parts.append(f"<b>Рейтинг:</b> {rating}/20")
@@ -70,6 +113,19 @@ def build_detail_summary(entity: Any, entity_type: str) -> str:
     if counts:
         parts.append(f"<b>Связи:</b> {', '.join(counts)}")
     return "<br>".join(parts) if parts else "<i>нет данных</i>"
+
+
+def _event_elapsed_suffix(start: GameCoord | date, start_bc: bool, now: NowPair) -> str:
+    """The event-time tail of the panel's date row (NRI-0021 task 4.2, spec
+    «Прошедшее время от начала события»): « · <формула> назад», « · через N»
+    or « · сегодня».  Always counted from the event start — an open-ended and
+    a closed event read the same; only the standard duration words are used."""
+    parts = duration_parts(start, start_bc, now[0], now[1])
+    if not (parts.years or parts.months or parts.days):
+        return " · сегодня"
+    if parts.ahead:
+        return f" · {format_duration_words(parts)}"
+    return f" · {format_duration_words(parts)} назад"
 
 
 def _tint_text(rating: int, runtime) -> str:
@@ -115,10 +171,12 @@ class DetailRowsModel(QAbstractListModel):
             return None
         return self._rows[index.row()][bytes(name).decode()]
 
-    def set_entities(self, entities: Iterable[Any], entity_type: str) -> None:
+    def set_entities(
+        self, entities: Iterable[Any], entity_type: str, now: NowPair | None = None
+    ) -> None:
         self.beginResetModel()
         self._rows = [
-            self._make_row(entity, entity_type) for entity in entities
+            self._make_row(entity, entity_type, now) for entity in entities
         ]
         self.endResetModel()
 
@@ -142,7 +200,9 @@ class DetailRowsModel(QAbstractListModel):
                 return row["_entity"]
         return None
 
-    def _make_row(self, entity: Any, entity_type: str) -> dict[str, Any]:
+    def _make_row(
+        self, entity: Any, entity_type: str, now: NowPair | None = None
+    ) -> dict[str, Any]:
         rating = getattr(entity, "rating", 1)
         if not isinstance(rating, int):
             rating = 1
@@ -154,7 +214,7 @@ class DetailRowsModel(QAbstractListModel):
         )
         return {
             "name": getattr(entity, "name", str(entity)),
-            "summary": build_detail_summary(entity, entity_type),
+            "summary": build_detail_summary(entity, entity_type, now),
             "entityType": entity_type,
             "entityId": getattr(entity, "id", 0) or 0,
             "imageSource": image_source,
@@ -181,13 +241,25 @@ class DetailPanelViewModel(QObject):
     ENTITY_TYPES = tuple(_ref.entity_type.value for _ref in _event_refs)
     EVENT_ATTRS = tuple(_ref.attr for _ref in _event_refs)
 
-    def __init__(self, runtime=None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        runtime=None,
+        now_vm=None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._runtime = runtime
         self._title = ""
         self._date_text = ""
         # NRI-0015 (M4): drives the empty-panel hint — no timeline row picked.
         self._event_shown = False
+        # NRI-0021 (tasks 4.1/4.2, design Д2/Д5): the game-«now» VM (value
+        # reader + single nowChanged broadcast) and the last shown event, kept
+        # so a «now» edit re-renders the derived texts without a re-open.
+        self._now_vm = now_vm
+        self._shown_event: Any = None
+        if now_vm is not None:
+            now_vm.nowChanged.connect(self._on_now_changed)
         self.models = [
             DetailRowsModel(runtime, self) for _ in self.TAB_TITLES
         ]
@@ -203,6 +275,29 @@ class DetailPanelViewModel(QObject):
         if self._theme_subscription is not None:
             self._runtime.remove_listener(self._theme_subscription)
             self._theme_subscription = None
+
+    def detach_now_listener(self) -> None:
+        """Stop following the game's «now» (island teardown, NRI-0021 task
+        4.1 — the DEFECT-1 posture: the subscription never outlives the
+        panel); idempotent."""
+        if self._now_vm is not None:
+            self._now_vm.nowChanged.disconnect(self._on_now_changed)
+            self._now_vm = None
+
+    def _now_pair(self) -> NowPair | None:
+        """The served «now» pair, or ``None`` for a panel built without the
+        game's «now» VM (then the derived texts simply stay absent)."""
+        if self._now_vm is None:
+            return None
+        return (self._now_vm.coord, self._now_vm.is_bc)
+
+    def _on_now_changed(self) -> None:
+        """The one broadcast refresh (spec «Смена даты пересчитывает всё»):
+        the shown event is re-rendered through the very show_event path —
+        age lines and the event-time suffix recompute from the kept entity,
+        no second rule anywhere."""
+        if self._shown_event is not None:
+            self.show_event(self._shown_event)
 
     title = Property(str, lambda self: self._title, notify=headerChanged)
     dateText = Property(str, lambda self: self._date_text, notify=headerChanged)
@@ -220,26 +315,37 @@ class DetailPanelViewModel(QObject):
     def show_event(self, event: Any) -> None:
         self._title = getattr(event, "name", "")
         self._event_shown = True
-        start = format_game_date(
-            getattr(event, "start_date", None),
-            is_bc=era_flag(getattr(event, "start_bc", False)),
-        )
+        self._shown_event = event  # kept for the now_changed re-render
+        start_coord = getattr(event, "start_date", None)
+        start_bc = era_flag(getattr(event, "start_bc", False))
+        start = format_game_date(start_coord, is_bc=start_bc)
         end = format_game_date(
             getattr(event, "end_date", None),
             "∞",
             is_bc=era_flag(getattr(event, "end_bc", False)),
         )
         self._date_text = f"{start} — {end}"
+        now = self._now_pair()
+        # NRI-0021 task 4.2 (spec «Суффикс строки дат панели»): the event
+        # time tail rides the same single duration formula.  A pair the
+        # active calendar refuses (Д1-seeded «now» on a custom calendar)
+        # leaves the plain pre-NRI-0021 range — the row never breaks.
+        if now is not None and start_coord is not None:
+            try:
+                self._date_text += _event_elapsed_suffix(start_coord, start_bc, now)
+            except InvalidGameDateError:
+                pass
         self.headerChanged.emit()
         for model, attr, entity_type in zip(
             self.models, self.EVENT_ATTRS, self.ENTITY_TYPES
         ):
-            model.set_entities(getattr(event, attr, []) or [], entity_type)
+            model.set_entities(getattr(event, attr, []) or [], entity_type, now)
 
     def clear(self) -> None:
         self._title = ""
         self._date_text = ""
         self._event_shown = False
+        self._shown_event = None
         self.headerChanged.emit()
         for model in self.models:
             model.clear()

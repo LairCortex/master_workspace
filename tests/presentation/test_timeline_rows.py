@@ -14,6 +14,11 @@ from types import SimpleNamespace
 import pytest
 
 from app.domain.game_calendar import (
+    CalendarSpec,
+    CustomCalendar,
+    InvalidGameDateError,
+    MonthDay,
+    MonthSpec,
     StandardCalendar,
     current_calendar,
     reset_current_calendar,
@@ -25,6 +30,7 @@ from app.presentation.views.timeline_rows import (
     Row,
     build_rows,
     row_detail,
+    window_contains,
 )
 
 
@@ -418,3 +424,132 @@ def test_window_bounds_accept_bare_dates_and_pairs_alike():
         [event], ((date(1200, 8, 10), False), (date(1200, 8, 20), False))
     )
     assert [row.event_id for row in bare] == [row.event_id for row in paired] == [1]
+
+
+# ── the «today» outline flag (nri-0021 task 5.1) ──────────────────────────────
+
+_TODAY = date(1200, 8, 14)
+
+
+class TestTodayOutlineFlag:
+    """Spec «Обводка события, начинающегося „сегодня“»: exactly one row —
+    the FIRST in sort order starting the very day of the game's «now», same
+    era included — carries ``is_now``; without such an event nobody does,
+    and the rule never raises on a «now» the active calendar refuses."""
+
+    def test_two_events_started_today_mark_only_the_first_in_sort_order(self):
+        """Spec «Обводится первое сегодняшнее»: при двух сегодняшних обводка
+        на первом по сортировке (тот же день — порядок по id), вторая без."""
+        events = [
+            _event(9, _TODAY, None, "второе-в-сорте"),
+            _event(4, _TODAY, date(1200, 9, 1), "первое-в-сорте"),
+            _event(1, date(1200, 7, 1), None, "раньше"),
+        ]
+        rows = build_rows(events, now=_TODAY)
+        assert [(row.event_id, row.is_now) for row in rows] == [
+            (1, False), (4, True), (9, False),
+        ]
+
+    def test_no_event_starts_on_now_leaves_every_row_unmarked(self):
+        """Spec «Нет сегодняшних — нет обводки»."""
+        rows = build_rows(
+            [
+                _event(1, date(1200, 8, 13), None, "накануне"),
+                _event(2, date(1200, 8, 15), None, "наследующий"),
+            ],
+            now=_TODAY,
+        )
+        assert [row.is_now for row in rows] == [False, False]
+
+    def test_without_now_nobody_is_marked(self):
+        """A VM built without the game's «now» keeps the list outline-free."""
+        rows = build_rows([_event(1, _TODAY, None, "сегодняшнее")])
+        assert [row.is_now for row in rows] == [False]
+
+    def test_the_same_day_in_the_other_era_is_not_today(self):
+        """Spec «Эры не путаются»: «14 августа 2090» и «14 августа 2090 г.
+        до н.э.» — разные дни (тот же shared era key, что и для сортировки)."""
+        rows = build_rows(
+            [_event(1, date(2090, 8, 14), None, "до н.э.", start_bc=True)],
+            now=date(2090, 8, 14),
+        )
+        assert [row.is_now for row in rows] == [False]
+
+    def test_bc_now_marks_the_bc_row_of_the_same_numbers(self):
+        """The era-positive half: «сейчас» до н.э. находит ровно своё
+        до-н.-э. событие, н.э.-двойник с теми же числами обходит."""
+        rows = build_rows(
+            [
+                _event(1, date(2090, 8, 14), None, "наша эра"),
+                _event(2, date(2090, 8, 14), None, "до н.э.", start_bc=True),
+            ],
+            now=date(2090, 8, 14),
+            now_bc=True,
+        )
+        assert [(row.event_id, row.is_now) for row in rows] == [(2, True), (1, False)]
+
+    def test_flag_rides_only_the_visible_rows(self):
+        """An event the window cut away leaves no outline behind (the flag
+        is set on the built rows, after the window filter)."""
+        rows = build_rows(
+            [_event(1, _TODAY, _TODAY, "вне окна")],
+            (date(1300, 1, 1), date(1300, 2, 1)),
+            now=_TODAY,
+        )
+        assert rows == []
+
+    def test_a_now_the_active_calendar_refuses_marks_nobody(self):
+        """The Д1 seeding posture (group-4 rule): the real today seeded into
+        a CUSTOM calendar may name a month that calendar does not have — the
+        outline stays absent, the list never breaks."""
+        set_current_calendar(CustomCalendar(CalendarSpec(
+            months=(MonthSpec("Первомес", 30), MonthSpec("Второмес", 20)),
+            week_names=tuple("Пн Вт Ср Чт Пт Сб Вс".split()),
+        )))
+        rows = build_rows(
+            [_event(1, MonthDay(1200, 1, 5), None, "сентябрьского нет")],
+            now=MonthDay(1200, 9, 1),
+        )
+        assert [(row.event_id, row.is_now) for row in rows] == [(1, False)]
+
+
+# ── window containment for the «➜ Сейчас» button (nri-0021 task 5.2) ─────────
+
+
+class TestWindowContains:
+    """``window_contains`` is the containment twin of the crossing rule:
+    «is this date one of the window's days», answered on the same era key."""
+
+    def test_absent_or_partial_window_contains_every_date(self):
+        """«Все дни» — no filter and no boundary: always inside (spec
+        «„Все дни“ — всегда»)."""
+        inside = window_contains(None, _TODAY, False)
+        start_only = window_contains((_TODAY, None), date(1300, 1, 1), False)
+        end_only = window_contains((None, _TODAY), date(1100, 1, 1), False)
+        assert inside and start_only and end_only
+
+    def test_inside_outside_and_the_borders_are_included(self):
+        window = (date(1200, 8, 10), date(1200, 8, 20))
+        assert window_contains(window, date(1200, 8, 14), False) is True
+        assert window_contains(window, window[0], False) is True   # граница
+        assert window_contains(window, window[1], False) is True   # граница
+        assert window_contains(window, date(1200, 8, 21), False) is False
+        assert window_contains(window, date(1200, 8, 9), False) is False
+
+    def test_the_era_separates_the_same_numbers(self):
+        """Окно целиком в до н.э.: те же числа нашей эры в него не попадают
+        (total ordering of the shared key, not year arithmetic)."""
+        window = ((date(500, 1, 1), True), (date(100, 12, 31), True))
+        assert window_contains(window, date(300, 6, 6), True) is True
+        assert window_contains(window, date(300, 6, 6), False) is False
+
+    def test_a_date_the_calendar_refuses_raises_its_own_error(self):
+        """The helper does not decide the posture — the button caller
+        catches, this core just reports (design Д6)."""
+        set_current_calendar(CustomCalendar(CalendarSpec(
+            months=(MonthSpec("Первомес", 30), MonthSpec("Второмес", 20)),
+            week_names=tuple("Пн Вт Ср Чт Пт Сб Вс".split()),
+        )))
+        window = (MonthDay(1200, 1, 1), MonthDay(1200, 2, 20))
+        with pytest.raises(InvalidGameDateError):
+            window_contains(window, MonthDay(1200, 9, 1), False)

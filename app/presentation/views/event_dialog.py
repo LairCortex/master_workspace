@@ -242,6 +242,7 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         event_dialog_vm,
         parent: QWidget | None = None,
         theme=None,
+        now_vm=None,
     ) -> None:
         super().__init__(parent)
         self._vm = event_dialog_vm
@@ -255,7 +256,23 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.setWindowTitle("Новое событие")
         self.setMinimumSize(720, 620)
 
-        self.vm = EventDialogIslandViewModel(owner=self, parent=self)
+        self.vm = EventDialogIslandViewModel(
+            owner=self,
+            parent=self,
+            # NRI-0021 task 6.1 (spec «Дата „сейчас“ — дефолт новых записей»):
+            # the new-dialog date bounds default to the game's «now»; the edit
+            # flow's populate() overwrites them with the saved dates.
+            now=(now_vm.coord, now_vm.is_bc) if now_vm is not None else None,
+        )
+        # NRI-0021 task 4.4 (design Д2/Д5): the read-only «С начала» line
+        # follows the game's «now» while this dialog is open — same carrier
+        # as the card (the wiring's widget VM), same teardown rule
+        # (_release_island runs on every close route).
+        self._now_vm = None
+        if now_vm is not None:
+            self._now_vm = now_vm
+            self.vm.applyNow(now_vm.coord, now_vm.is_bc)
+            now_vm.nowChanged.connect(self._resync_event_text)
         self._ai_buttons = [
             self.vm.nameAi,
             self.vm.characteristicsAi,
@@ -542,5 +559,19 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
 
     def _restyle_type_icons(self) -> None:
         self.vm.stateChanged.emit()
+
+    def _release_island(self) -> None:
+        # NRI-0021 task 4.4: the «now» subscription leaves with the dialog
+        # (DEFECT-1 posture — no listener survives its window).
+        if self._now_vm is not None:
+            self._now_vm.nowChanged.disconnect(self._resync_event_text)
+            self._now_vm = None
+        super()._release_island()
+
+    def _resync_event_text(self) -> None:
+        """nowChanged receiver: re-read the served value into the VM, whose
+        eventTextChanged then repaints the read-only row."""
+        if self._now_vm is not None:
+            self.vm.applyNow(self._now_vm.coord, self._now_vm.is_bc)
 
     # Island lifecycle (context, deferred release) — IslandDialogMixin.

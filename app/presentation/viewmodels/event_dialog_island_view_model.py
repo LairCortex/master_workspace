@@ -8,14 +8,25 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.llm_status import LlmStatus
-from app.domain.date_era import era_key
-from app.domain.game_calendar import GameCoord, as_game_coord
+from app.domain.date_era import duration_parts, era_key
+from app.domain.game_calendar import (
+    GameCoord,
+    InvalidGameDateError,
+    as_game_coord,
+)
 from app.presentation.utils.date_utils import (
+    format_duration_words,
     format_game_date,
     iso_or_coord,
     worst_case_date_caption,
 )
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
+
+#: Caption of the read-only elapsed line of the event dialog (NRI-0021
+#: task 4.4, spec «Read-only отображение производных величин»): the visible
+#: «С начала: <формула>» row; the formula itself is the single duration word
+#: helper, counted from the event start to «now» regardless of the end.
+SINCE_LABEL = "С начала: "
 AI_STATE_PROPERTY = "aiState"
 AI_STATE_ACTIVE = "active"
 AI_STATE_DISABLED = "disabled"
@@ -321,22 +332,45 @@ class EntityGenerateProxy(AiStateHolder):
 
 class EventDialogIslandViewModel(QObject):
     stateChanged = Signal()
+    #: Derived-surface fan-out (NRI-0021 task 4.4): re-raised when the
+    #: read-only «С начала» line must be re-read (start edited or «now» moved).
+    eventTextChanged = Signal()
     saveRequested = Signal()
     cancelRequested = Signal()
     datePopupRequested = Signal(str, float, float, float, float)
 
-    def __init__(self, owner=None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        owner=None,
+        parent: QObject | None = None,
+        now: tuple[GameCoord, bool] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._owner = owner
         self._name = ""
         # Date bridges carry (GameCoord, era) pairs (piece C3a, designs D4/D6,
-        # since task 5.2); the default is «сегодня, н.э.» — today's numbers as
-        # the equal month-day coordinate.
-        self._start_date: GameCoord = as_game_coord(date.today())
-        self._end_date: GameCoord = as_game_coord(date.today())
-        self._start_bc = False
-        self._end_bc = False
+        # since task 5.2).  NRI-0021 task 6.1 (spec «Дата „сейчас“ — дефолт
+        # новых записей»): a new dialog opens with the game's «now» — the
+        # facade injects the widget VM's served (coord, era) pair at
+        # construction and an edit's populate() overwrites it with the saved
+        # dates; a VM built without a game keeps the legacy «сегодня, н.э.»
+        # fallback (today's numbers as the equal month-day coordinate).
+        if now is not None:
+            now_coord, now_bc = now
+            self._start_date: GameCoord = now_coord
+            self._end_date: GameCoord = now_coord
+            self._start_bc = self._end_bc = bool(now_bc)
+        else:
+            self._start_date = as_game_coord(date.today())
+            self._end_date = as_game_coord(date.today())
+            self._start_bc = False
+            self._end_bc = False
         self._no_end = False
+        # NRI-0021 task 4.4: the mirrored game «now» (fed by the facade from
+        # the widget VM); None without a game open — the «С начала» line then
+        # stays empty.
+        self._now_coord: GameCoord | None = None
+        self._now_bc = False
         self._save_locked = False
         self._saving = False
         self._types: list[Any] = []
@@ -431,6 +465,12 @@ class EventDialogIslandViewModel(QObject):
     startBc = Property(bool, lambda self: self._start_bc, notify=stateChanged)
     endBc = Property(bool, lambda self: self._end_bc, notify=stateChanged)
     noEnd = Property(bool, lambda self: self._no_end, notify=stateChanged)
+    # NRI-0021 task 4.4 (spec «Прошедшее время от начала события»): the
+    # read-only «С начала: <формула>» line — counted from the start to «now»
+    # whatever the end says (an open and a closed event read the same), a
+    # future start reads «через N», the same day reads «сегодня».  Display
+    # only: like the card's age, it never enters the save result.
+    eventText = Property(str, lambda self: self._event_text(), notify=eventTextChanged)
     saveLocked = Property(bool, lambda self: self._save_locked, notify=stateChanged)
     saving = Property(bool, lambda self: self._saving, notify=stateChanged)
     valid = Property(
@@ -488,6 +528,35 @@ class EventDialogIslandViewModel(QObject):
         if end_bc is not None:
             self._end_bc = bool(end_bc)
         self.stateChanged.emit()
+        # The «С начала» line counts on the start bound (task 4.4).
+        self.eventTextChanged.emit()
+
+    def _event_text(self) -> str:
+        """The read-only «С начала: <формула>» line of the dialog (spec
+        «Прошедшее время от начала события»): start→«now» through the one
+        duration rule, the end ignored by design; empty without a «now».
+        A pair the active calendar refuses (the Д1 seeded-today «now», whose
+        numbers the start default now carries since task 6.1, on a custom
+        calendar) hides the row
+        instead of raising inside the QML binding — display-only,
+        absent-safe."""
+        if self._now_coord is None:
+            return ""
+        try:
+            parts = duration_parts(
+                self._start_date, self._start_bc, self._now_coord, self._now_bc
+            )
+        except InvalidGameDateError:
+            return ""
+        return SINCE_LABEL + format_duration_words(parts)
+
+    @Slot(object, bool)
+    def applyNow(self, coord: GameCoord, is_bc: bool) -> None:  # noqa: N802
+        """Mirror the game's «now» (the facade feeds this at open and on
+        every nowChanged); the line is display-only and re-read."""
+        self._now_coord = coord
+        self._now_bc = bool(is_bc)
+        self.eventTextChanged.emit()
 
     def set_no_end(self, value: bool) -> None:
         if value != self._no_end:

@@ -265,6 +265,7 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         entity_type: str = "organization",
         parent: QWidget | None = None,
         theme=None,
+        now_vm=None,
     ) -> None:
         super().__init__(parent)
         self._vm = entity_vm
@@ -298,7 +299,22 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             self._related_configs,
             owner=self,
             parent=self,
+            # NRI-0021 task 6.1 (spec «Дата „сейчас“ — дефолт новых записей»):
+            # the new-card date bounds default to the game's «now»; the edit
+            # flow's populate() below overwrites them with the saved dates.
+            now=(now_vm.coord, now_vm.is_bc) if now_vm is not None else None,
         )
+        # NRI-0021 task 4.3 (design Д2/Д5): the read-only age line follows the
+        # game's «now» while this card is open. The wiring hands its widget VM
+        # (the single broadcast carrier); the value is mirrored immediately so
+        # the row is right at first paint, and _release_island — the one
+        # teardown the island lifecycle guarantees on every close route —
+        # unsubscribes, so the subscription never outlives the card.
+        self._now_vm = None
+        if now_vm is not None:
+            self._now_vm = now_vm
+            self.vm.applyNow(now_vm.coord, now_vm.is_bc)
+            now_vm.nowChanged.connect(self._resync_age)
         self._ai_buttons = [
             self.vm.nameAi,
             self.vm.ai_proxies["characteristics"],
@@ -732,7 +748,18 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
                     state.add_entity(entity)
 
     def _release_island(self) -> None:
+        # NRI-0021 task 4.3: the «now» subscription leaves with the card
+        # (DEFECT-1 posture — no listener survives its window).
+        if self._now_vm is not None:
+            self._now_vm.nowChanged.disconnect(self._resync_age)
+            self._now_vm = None
         clear_dialog_pixmap(self._image_key)
         super()._release_island()
+
+    def _resync_age(self) -> None:
+        """nowChanged receiver: re-read the served value into the VM, whose
+        ageTextChanged then repaints the read-only row."""
+        if self._now_vm is not None:
+            self.vm.applyNow(self._now_vm.coord, self._now_vm.is_bc)
 
     # Release scheduling — IslandDialogMixin.

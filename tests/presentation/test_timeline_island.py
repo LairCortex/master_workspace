@@ -375,12 +375,32 @@ class TestStandInKnobGuards:
             if event_id is None:
                 raise TypeError("the look-alike refuses the miss")
 
+    class RefusingNowScrollVM:
+        """NRI-0021 (task 5.2): the stand-in carries a ``nowScrollRequested``
+        look-alike whose connect is refused — the subscription must swallow
+        it exactly like the ``events_changed`` mirror above."""
+
+        class _RefusingSignal:
+            def connect(self, slot):
+                raise TypeError("not a Qt signal")
+
+        events: list = []
+        window = None
+        nowScrollRequested = _RefusingSignal()
+
     def test_events_changed_refused_connection_is_swallowed(self, qtbot, root_qml):
         """The subscription sits in try/except for the widget-era stand-in
         tolerance: a refused connect (TypeError/AttributeError) neither drops
         nor crashes the island — such a stand-in never fires regardless."""
         panel = _island(qtbot, self.RefusingSignalVM(), root_qml)
         assert panel._root.property("selectedId") == -1  # spun up normally
+
+    def test_now_scroll_refused_connection_is_swallowed(self, qtbot, root_qml):
+        """Same tolerance for the «➜ Сейчас» subscription (NRI-0021): the
+        island spins up normally and the stand-in's signal stays inert."""
+        panel = _island(qtbot, self.RefusingNowScrollVM(), root_qml)
+        assert panel._root.property("selectedId") == -1
+        assert panel._root.property("lastScrollIndex") == -2
 
     def test_selection_missed_swallows_a_refusing_select(self, qtbot, root_qml):
         """The miss path drops through the VM in try/except too: a look-alike
