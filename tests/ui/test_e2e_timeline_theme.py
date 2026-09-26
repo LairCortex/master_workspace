@@ -464,9 +464,11 @@ def test_row_wash_is_rounded_like_the_other_list_items(qtbot, tmp_path, theme):
     """Spec «Оформление списка из токенов»: the row's wash carries the card
     rounding (`radius.sm`) — every other list item in the skin wears it (the
     snapshot/detail rows ride the rounded `ThemeRatingCard`), only the
-    timeline row used to paint a square accent block. The middle of the row
-    still answers the accent token itself; the corner of the row's band,
-    outside the rounded wash, keeps the field's canvas."""
+    timeline row used to paint a square accent block. The text-free right end
+    of the washed row still answers the accent token itself (mid-row is NOT a
+    safe sample: on the CI's Linux font metrics the caption glyphs reach the
+    row centre and the pixel lands on an antialiased glyph edge); the corner
+    of the row's band, outside the rounded wash, keeps the field's canvas."""
     runtime = make_runtime(tmp_path, theme)
     surface = _field_color(theme)
     accent = token_color("color.accent", theme)
@@ -485,9 +487,12 @@ def test_row_wash_is_rounded_like_the_other_list_items(qtbot, tmp_path, theme):
     assert wash.property("radius") == card.property("radius"), theme
     assert wash.property("radius") == _radius_px(theme), theme
 
-    # Raster half: mid-edge is the accent verbatim, the corner pixel of the
-    # row's band is not washed (the rounded corner lets the canvas through).
+    # Raster half: the text-free right end is the accent verbatim (mid-row is
+    # NOT a safe sample — the «date — date · name» caption can cross the row
+    # centre and the pixel lands on an antialiased glyph edge, CI metrics),
+    # the corner pixel of the row's band is not washed (the rounded corner
+    # lets the canvas through).
     delegate = _delegate(widget, row)
-    assert _pixel(widget, delegate, fx=0.5) == accent, theme
+    assert _row_right_pixel(widget, row) == accent, theme
     corner = _pixel(widget, delegate, fx=0.002, fy=0.06)
     assert corner == surface, (theme, corner.name())
