@@ -1038,9 +1038,23 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
     # any chrome. The test suite mirrors this state via the session fixture in
     # tests/conftest.py.
     install_russian_localization(app)
-    # Product name: the macOS app menu (a source checkout has no bundle plist,
-    # so Qt reads this), plus any place Qt falls back to the application name.
+    # Product name everywhere Qt falls back to the application name. It does
+    # NOT rename the macOS Dock/menu label of a source checkout: without a
+    # bundle, LaunchServices attributes the process to the interpreter's own
+    # bundle (Homebrew's Python.app), and no runtime call can override that —
+    # the label there is carried by a bundle plist: the release .app of
+    # nri_manager.spec or the dev wrapper of dev_run.py.
     app.setApplicationName("Master Workspace")
+    # Desktop identity: the freedesktop desktop-entry name (icon matching on
+    # Linux) and — explicitly on Windows, where Qt may otherwise group the
+    # taskbar button under python.exe — the AppUserModelID of this process.
+    app.setDesktopFileName("com.nri.scenario-manager")
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "com.nri.scenario-manager"
+        )
     # Window/taskbar icon. The macOS .app gets its Dock icon from the bundle's
     # .icns; every other platform (and a source checkout) reads this PNG.
     app_icon = Path(__file__).resolve().parent / "resources" / "app_icon.png"

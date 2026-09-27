@@ -16,7 +16,10 @@ Python 3.11+ (CI and venv use 3.12). Tests must not require the network (LLM is 
 
 ```bash
 python -m app.main                 # GUI app; game launcher dialog opens first
+python dev_run.py                  # same app, but macOS labels it "Master Workspace"
 ```
+
+macOS labels a running app by the bundle around the window process's executable: a plain source run lives inside Homebrew's `Python.app`, so its Dock tooltip/menu and app menu say "Python" — no runtime call changes that (verified: `lsappinfo` attributes the process to `Python.app`, the private `setinfo` rename is rejected). `dev_run.py` assembles a throwaway wrapper .app under `build/dev_app/` (gitignored) whose executable is a copy of the interpreter stub, so LaunchServices labels the run "Master Workspace" — the same label the release bundle carries via `nri_manager.spec`. The wrapped process keeps `-m app.main` in its argv, so the `pkill -if "app.main"` teardown is unchanged; a "Python" label from a bare `python -m app.main` run is a platform quirk of dev mode, NOT a defect to file. Windows/Linux identity (taskbar grouping, desktop-entry icon) is set in `main()` via `setDesktopFileName` and the explicit `AppUserModelID`.
 
 ## Test
 

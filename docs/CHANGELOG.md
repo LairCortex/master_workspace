@@ -1,5 +1,17 @@
 # Changelog
 
+### Иконка приложения обновлена; имя «Master Workspace» в Dock/панели задач при запуске из исходников (версии не трогаем)
+
+#### Изменено
+- **Новая иконка во всех форматах:** `app/resources/app_icon.png` (512×512, прозрачный фон), `.icns` (macOS-набор 16–1024) и `.ico` (16–256, Windows) перегенерированы из нового макета; пути и роли файлов не менялись — `.icns` в релизный бандл, `.ico` в exe, `.png` в `setWindowIcon` (`main.py`, `nri_manager.spec`)
+- **Идентичность процесса в Windows/Linux (main.py `main()`):** добавлены `setDesktopFileName("com.nri.scenario-manager")` (совпадение иконки/launchable на Linux) и явный `SetCurrentProcessExplicitAppUserModelID` на Windows — окно больше не группируется в панели задач с `python.exe` при запуске из исходников
+
+#### Исправлено
+- **macOS подписывал запуск из исходников «Python» (исследование, versions not touched):** док-подпись берётся не из `setApplicationName`, а из бандла вокруг исполняемого файла оконного процесса; интерпретатор Homebrew физически живёт в `Python.app`, поэтому процесс атрибутировался ему (эмпирика: `lsappinfo` отдаёт bundle path `Python.app`; переименование приватным `lsappinfo setinfo` отклоняется err=-50 — рантайм-средства отсутствует). Релизный `.app` был подписан верно и раньше (`CFBundleName`/`CFBundleDisplayName` в `nri_manager.spec`) — правки потребовались только для дев-режима
+
+#### Новое
+- **`dev_run.py` (корень репозитория):** собирает под `build/dev_app/` (в .gitignore) одноразовый `.app`-враппер, исполняемый файл которого — копия интерпретаторного стаба внутри нашего бандла, поэтому LaunchServices подписывает процесс «Master Workspace»; stdlib стаб находит сам, чекаут и site-packages вены приходят через `LSEnvironment.PYTHONPATH`, копия перегенерируется и ад-хок подписывается на каждый запуск (переживает upgrade Homebrew). Аргументы `-m app.main` остаются в argv — документированный teardown `pkill -if "app.main"` не меняется. Для интерпретаторов без framework-стаба — fallback-враппер (иконка наша, подпись имени — честная интерпретатора); на Windows/Linux скрипт просто запускает модуль. Проверено живой сборкой: `lsappinfo name = "Master Workspace"`, bundle path — враппер, приложение стабильно, teardown зелёный; `tests/test_architecture_layers.py` + пины `main.py` (`test_log_home_ast_pin`, `test_interface_language`, `test_spec_qml_bundle`) — 42 passed
+
 ### Игровая «текущая дата»: виджет «Сейчас», возраст, прокрутка таймлайна и дефолты записей (change `nri-0021-current-date`; версии не трогаем)
 
 #### Новое
