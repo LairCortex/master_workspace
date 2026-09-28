@@ -223,16 +223,17 @@ class EntityPreviewViewModel(QObject):
         if start is None:
             return ""
         try:
-            return f"{AGE_LABEL}: {format_age_words(
+            age_words = format_age_words(
                 start,
                 start_bc,
                 getattr(self._entity, "end_date", None),
                 end_bc,
                 self._now_vm.coord,
                 self._now_vm.is_bc,
-            )}"
+            )
         except InvalidGameDateError:
             return ""
+        return f"{AGE_LABEL}: {age_words}"
 
     def _image_source_text(self) -> str:
         """The preview file's URL, or the empty string the island paints as the
