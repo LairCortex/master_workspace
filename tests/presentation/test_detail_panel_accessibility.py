@@ -1,15 +1,18 @@
 """Accessibility contract of the detail-panel island (change
-nri-0012-qml-accessibility, task 2.2).
+nri-0012-qml-accessibility, task 2.2; the selection posture of the row comes
+from change nri-0022-entity-preview, tasks 3.1/3.3).
 
 The card row and its picture carry the design-map contract on the production
 island (DetailPanel + real DetailPanelViewModel, the island-test fixtures):
 the row is a ListItem named by the entity name whose single Press is the
-double-click open (`activate` → the facade's ``entity_clicked``; D3), the
-picture is the «open the image» Button driving ``requestImage`` (the name
-falls back to «Изображение» when the entity has none). NRI-0015 (task 1.1)
-moved the tabs onto the registry short caption; the live tab name/description
-pin lives in ``tests/presentation/test_detail_panel_island.py`` and the
-caption/annotation unit pins in ``tests/presentation/test_detail_tabs_labels.py``.
+single selection (`select` → the facade's ``entity_selected``, task 3.1) and
+whose Enter on the focused row is the card open (`activate` → the facade's
+``entity_clicked``, task 3.3), the picture is the «open the image» Button
+driving ``requestImage`` (the name falls back to «Изображение» when the
+entity has none). NRI-0015 (task 1.1) moved the tabs onto the registry short
+caption; the live tab name/description pin lives in
+``tests/presentation/test_detail_panel_island.py`` and the caption/annotation
+unit pins in ``tests/presentation/test_detail_tabs_labels.py``.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAccessible, QImage
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 import app.presentation.viewmodels.detail_panel_view_model as detail_vm_module
@@ -109,26 +113,56 @@ def press(item) -> None:
     actions.doAction("Press")
 
 
-def test_card_row_is_list_item_named_by_entity_with_open_description(qtbot):
+def test_card_row_is_list_item_named_by_entity_with_selection_description(qtbot):
+    # NRI-0022 task 7.1 (spec «Строка деталей описывает выбор»): the raw tree
+    # of the row reads the selection wording — the description followed the
+    # Press action when the card moved to Enter/double-click (task 3.1).
     panel = _panel(qtbot)
     row = island_rows(panel.quick, "detailEntityRow")[0]
 
     iface = accessible_of(row)
     assert iface.role() == QAccessible.Role.ListItem
     assert iface.text(QAccessible.Name) == "Орден"
-    assert iface.text(QAccessible.Description) == "Открывает карточку"
+    assert iface.text(QAccessible.Description) == "Выбирает сущность"
 
 
-def test_row_press_opens_the_card_through_activate(qtbot):
+def test_row_press_selects_instead_of_opening_the_card(qtbot):
     panel = _panel(qtbot)
     row = island_rows(panel.quick, "detailEntityRow")[0]
-    clicked = track(panel.entity_clicked)
+    selected = track(panel.entity_selected)
+    activated = track(panel.entity_clicked)
 
     press(row)
 
-    # The very signal the mouse double-click drives: the card opens with one
-    # accessibility Press (design D3), no selection step.
-    assert clicked == [("organization", 4)]
+    # NRI-0022 task 3.1: the single activation runs the single selection —
+    # the very step the single mouse click drives (spec qml-accessibility
+    # «Строка сущности в деталях выбирается активацией»); the card path lives
+    # on the mouse double-click and on Enter (test below), not on Press.
+    assert selected == [("organization", 4)]
+    assert activated == []
+    assert row.property("rowSelected") is True
+
+
+def test_enter_on_focused_row_opens_the_editable_card(qtbot):
+    # NRI-0022 task 3.3: rows wear activeFocusOnTab, so the accessibility
+    # SetFocus lands on the row itself; Return then bubbles to the list's
+    # Keys.onReturnPressed and activates this very row through the VM — the
+    # facade's entity_clicked, the same signal the mouse double-click drives.
+    panel = _panel(qtbot)
+    row = island_rows(panel.quick, "detailEntityRow")[0]
+    activated = track(panel.entity_clicked)
+    selected = track(panel.entity_selected)
+
+    actions = accessible_of(row).actionInterface()
+    assert "SetFocus" in actions.actionNames()
+    actions.doAction("SetFocus")
+    QApplication.processEvents()
+    assert row.property("activeFocus") is True
+
+    QTest.keyClick(panel.quick, Qt.Key.Key_Return)
+
+    assert activated == [("organization", 4)]
+    assert selected == []
 
 
 def test_picture_is_image_button_pressing_it_opens_the_viewer(qtbot, image_monkey):

@@ -258,7 +258,17 @@ Rectangle {
                                 objectName: "entityNoEndCheck"
                                 text: "Бессрочно"
                                 checked: entityCardVm.noEnd
-                                onToggled: entityCardVm.setNoEnd(checked)
+                                // D1 (live audit 2026-09-27): the accessibility
+                                // activation of a stock CheckBox announces the
+                                // CLICK, not the toggled signal (Qt 6.10 probe)
+                                // — on the old onToggled wiring an AT press
+                                // moved the tick but silently never reached the
+                                // VM. The launcher's working convention rides:
+                                // the tick is the VM's state (binding), every
+                                // activation is a request read from the source
+                                // of truth (never from the control's own half-
+                                // flipped `checked`).
+                                onClicked: entityCardVm.setNoEnd(!entityCardVm.noEnd)
                             }
                         }
                         Item { implicitWidth: 24 }

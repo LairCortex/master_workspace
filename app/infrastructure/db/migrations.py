@@ -91,6 +91,10 @@ _MIGRATIONS = [
     ("organizations", "image_id", "INTEGER REFERENCES images(id)"),
     ("characters", "image_id", "INTEGER REFERENCES images(id)"),
     ("locations", "image_id", "INTEGER REFERENCES images(id)"),
+    # NRI-0022: the item image reference (spec image-storage «Старая база
+    # получает колонку предмета») — SET NULL so a dropped image row can never
+    # block or dangle, same contract as the fresh create_all schema carries.
+    ("items", "image_id", "INTEGER REFERENCES images(id) ON DELETE SET NULL"),
     ("events", "event_type_id", "INTEGER REFERENCES event_types(id) ON DELETE SET NULL"),
     # Era-aware dates (design D3): flags default to 0 so pre-era rows and any
     # INSERT that predates the feature read as «н.э.»; the derived keys are

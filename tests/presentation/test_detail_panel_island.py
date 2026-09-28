@@ -45,13 +45,37 @@ def _entity():
 
 
 def _item(root, name):
-    pending = [root]
+    found = _items(root, name)
+    assert len(found) == 1, name
+    return found[0]
+
+
+def _items(root, name):
+    found, pending = [], [root]
     while pending:
         item = pending.pop()
         if item.objectName() == name:
-            return item
+            found.append(item)
         pending.extend(item.childItems())
-    raise AssertionError(name)
+    return found
+
+
+def _click(panel, item, *, double=False):
+    """A synthetic left click on the item's right side — away from the row's
+    left-hand picture, which owns its own MouseArea (the existing picture
+    test addresses that one directly)."""
+    scene = item.mapToScene(QPointF(item.width() - 10, item.height() / 2))
+    pos = QPoint(round(scene.x()), round(scene.y()))
+    if double:
+        QTest.mouseDClick(panel.quick, Qt.MouseButton.LeftButton, pos=pos)
+    else:
+        QTest.mouseClick(panel.quick, Qt.MouseButton.LeftButton, pos=pos)
+
+
+def _visible_flags(panel, name):
+    items = _items(panel.quick.rootObject(), name)
+    items.sort(key=lambda i: i.mapToScene(QPointF(0, 0)).y())
+    return [bool(i.property("visible")) for i in items]
 
 
 def test_detail_root_contract_and_minimal_child_context(qtbot):
@@ -159,6 +183,132 @@ def test_live_retheme_keeps_tab_and_scroll_state(qtbot, tmp_path):
 
     assert root.property("currentTab") == 2
     assert root.property("organizationContentY") == 11.0
+
+
+# ── change nri-0022-entity-preview, tasks 3.1/3.2: the single-click selection ──
+
+
+def test_single_click_selects_washes_and_relays_without_opening_the_card(qtbot):
+    panel = DetailPanel(SimpleNamespace())
+    qtbot.addWidget(panel)
+    panel.show_event(_event(_entity()))
+    panel.resize(500, 500)
+    panel.show()
+    qtbot.wait(20)
+
+    selected, activated = [], []
+    panel.entity_selected.connect(lambda *args: selected.append(args))
+    panel.entity_clicked.connect(lambda *args: activated.append(args))
+    # Off the bat no row wears the wash (the role is False for fresh rows).
+    assert _visible_flags(panel, "detailRowWash") == [False]
+
+    _click(panel, _item(panel.quick.rootObject(), "detailEntityRow"))
+
+    # Task 3.1: the single click is the selection — the relay fired, the
+    # card signal stayed silent, the row's accent wash is on with the
+    # radius.sm rounding the card itself carries (same token, task check).
+    assert selected == [("organization", 4)]
+    assert activated == []
+    row = _item(panel.quick.rootObject(), "detailEntityRow")
+    assert bool(row.property("rowSelected")) is True
+    wash = _item(panel.quick.rootObject(), "detailRowWash")
+    assert bool(wash.property("visible")) is True
+    assert wash.property("radius") == row.property("radius")
+
+
+def test_second_click_moves_the_wash_to_the_clicked_row(qtbot):
+    # The mutual removal of task 3.1 on the live island: two rows, one wash.
+    def entity(entity_id, name):
+        row = _entity()
+        row.id = entity_id
+        row.name = name
+        return row
+
+    event = _event()
+    event.organizations = [entity(4, "Орден"), entity(5, "Гильдия")]
+    panel = DetailPanel(SimpleNamespace())
+    qtbot.addWidget(panel)
+    panel.show_event(event)
+    panel.resize(500, 500)
+    panel.show()
+    qtbot.wait(20)
+
+    rows = _items(panel.quick.rootObject(), "detailEntityRow")
+    rows.sort(key=lambda i: i.mapToScene(QPointF(0, 0)).y())
+    _click(panel, rows[0])
+    assert _visible_flags(panel, "detailRowWash") == [True, False]
+
+    _click(panel, rows[1])
+    assert _visible_flags(panel, "detailRowWash") == [False, True]
+
+
+def test_picture_click_opens_viewer_without_selecting(qtbot, monkeypatch, tmp_path):
+    opened = []
+
+    class Viewer:
+        def __init__(self, original, preview, parent=None, theme=None):
+            opened.append((original, preview, parent, theme))
+
+        def exec(self):
+            opened.append("exec")
+
+    monkeypatch.setattr(detail_module, "ImageViewerDialog", Viewer)
+    monkeypatch.setattr(detail_module, "load_entity_original", lambda entity: "original")
+    monkeypatch.setattr(
+        detail_module, "load_entity_preview", lambda entity, slot_size: "preview"
+    )
+    image_path = tmp_path / "preview.png"
+    image = QImage(20, 20, QImage.Format.Format_RGB32)
+    image.fill(Qt.GlobalColor.red)
+    assert image.save(str(image_path))
+    monkeypatch.setattr(
+        detail_vm_module, "resolve_preview_path", lambda entity: image_path
+    )
+
+    panel = DetailPanel(SimpleNamespace())
+    qtbot.addWidget(panel)
+    panel.show_event(_event(_entity()))
+    panel.resize(500, 500)
+    panel.show()
+    qtbot.wait(20)
+
+    selected = []
+    panel.entity_selected.connect(lambda *args: selected.append(args))
+
+    # The picture keeps its own gesture (task 3.1, design D3 risk row): its
+    # MouseArea accepts the press above the row's, so the viewer opens and
+    # the row is NOT selected.
+    _click(panel, _item(panel.quick.rootObject(), "detailImageMouseArea"))
+
+    assert opened[-1] == "exec"
+    assert selected == []
+    assert _visible_flags(panel, "detailRowWash") == [False]
+
+
+def test_tab_switch_hides_wash_but_remembers_the_selection(qtbot):
+    # Task 3.2: the wash is screen state — switching tabs hides it — while
+    # the VM still remembers the last selection (the preview keeps showing
+    # it; the signal half of that rule is the group-5 wiring).
+    panel = DetailPanel(SimpleNamespace())
+    qtbot.addWidget(panel)
+    panel.show_event(_event(_entity()))
+    panel.resize(500, 500)
+    panel.show()
+    qtbot.wait(20)
+
+    _click(panel, _item(panel.quick.rootObject(), "detailEntityRow"))
+    assert _visible_flags(panel, "detailRowWash") == [True]
+
+    panel.quick.rootObject().setProperty("currentTab", 1)
+    qtbot.wait(20)
+
+    # The role itself answers False — the hide is the VM's, not the tab pane
+    # merely putting the row out of sight.
+    assert bool(
+        _item(panel.quick.rootObject(), "detailEntityRow").property("rowSelected")
+    ) is False
+    assert _visible_flags(panel, "detailRowWash") == [False]
+    assert panel.vm.last_selected == ("organization", 4)
 
 
 def test_empty_detail_panel_shows_the_action_hint(qtbot):

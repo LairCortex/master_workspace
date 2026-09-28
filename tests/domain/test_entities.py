@@ -256,6 +256,18 @@ class TestItem:
         assert item.locations == []
         assert item.ratings == []
         assert item.music_url is None
+        # NRI-0022: the item's picture slot is its reference to an `images`
+        # row — unset until a file is attached.
+        assert item.image_id is None
+
+    def test_item_with_image_reference(self):
+        item = Item(
+            name="Lamp",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(500, 1, 1),
+            image_id=7,
+        )
+        assert item.image_id == 7
 
     def test_item_requires_name(self):
         with pytest.raises(ValueError, match="name"):

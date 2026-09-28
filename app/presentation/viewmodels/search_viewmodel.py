@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
+from PySide6.QtGui import QGuiApplication
 
 from app.domain import entity_registry
 from app.presentation.utils.date_utils import era_flag, format_game_date
@@ -19,6 +20,12 @@ class SearchViewModel(QObject):
     debounceActiveChanged = Signal()
     searchRequested = Signal(str)
     resultSelected = Signal(str, int)
+    # NRI-0022 (task 6.2, design D7): the second result gesture — the double
+    # click (and the accessibility Press, which per the RowItem contract
+    # mirrors the double-click path) asks for EDITING: the wiring opens the
+    # entity's card or the event editor. ``resultSelected`` stayed the single
+    # left-click channel (its meaning moved to the full path in the wiring).
+    resultActivated = Signal(str, int)
 
     def __init__(self, search_service, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -61,6 +68,18 @@ class SearchViewModel(QObject):
         bool, _get_debounce_active, notify=debounceActiveChanged
     )
 
+    def _get_double_click_interval_ms(self) -> int:
+        """The platform double-click interval — NRI-0022 (task 6.2): the
+        island holds a single click by this much, because a real double click
+        releases its FIRST click before the double-click event arrives, and an
+        immediate single-click jump would hide the results list from under the
+        second click (the edit gesture would never land)."""
+        return QGuiApplication.instance().doubleClickInterval()
+
+    doubleClickIntervalMs = Property(
+        int, _get_double_click_interval_ms, constant=True
+    )
+
     @Slot(str)
     def setQuery(self, query: str) -> None:  # noqa: N802
         if query != self._query:
@@ -82,14 +101,36 @@ class SearchViewModel(QObject):
         self._stop_debounce()
         self._emit_search()
 
-    @Slot(int)
-    def select(self, index: int) -> None:
+    def _clickable_target(self, index: int) -> tuple[str, int] | None:
+        """(type, id) behind one list index; ``None`` for an out-of-range
+        index and for the non-clickable rows (section headers, the no-match
+        line) — the single guard both result gestures share (NRI-0022)."""
         if not 0 <= index < len(self._rows):
-            return
+            return None
         row = self._rows[index]
         if not row["clickable"] or row["id"] is None:
+            return None
+        return (row["type"], row["id"])
+
+    @Slot(int)
+    def select(self, index: int) -> None:  # noqa: N802
+        """Single left click on a result row (its meaning — the full path —
+        lives in the wiring; the VM only names the hit and collapses)."""
+        target = self._clickable_target(index)
+        if target is None:
             return
-        self.resultSelected.emit(row["type"], row["id"])
+        self.resultSelected.emit(*target)
+        self._set_list_visible(False)
+
+    @Slot(int)
+    def activate(self, index: int) -> None:  # noqa: N802
+        """Double click on a result row (NRI-0022 task 6.2): the edit gesture
+        — the wiring opens the entity card or the event editor; the list
+        collapses the same way."""
+        target = self._clickable_target(index)
+        if target is None:
+            return
+        self.resultActivated.emit(*target)
         self._set_list_visible(False)
 
     async def search(self, query: str) -> None:

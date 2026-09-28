@@ -145,9 +145,11 @@ def test_description_property_slots_to_the_description_slot(qtbot, qapp, runtime
 
     assert accessible_of(described).text(QAccessible.Description) == ROW_DESCRIPTION
 
-    # The slot follows the property (a binding, not a one-shot copy).
-    described.setProperty("accessibleDescription", "Открывает карточку")
-    assert accessible_of(described).text(QAccessible.Description) == "Открывает карточку"
+    # The slot follows the property (a binding, not a one-shot copy) — the
+    # fill is the usage-site's wording from the fixed map (NRI-0022 task 7.1
+    # moved the detail row to «Выбирает сущность», here the probe's stand-in).
+    described.setProperty("accessibleDescription", "Выбирает сущность")
+    assert accessible_of(described).text(QAccessible.Description) == "Выбирает сущность"
 
     # The unannotated row: empty slot — no fabricated description.
     assert accessible_of(find_item(widget, "probeRow")).text(

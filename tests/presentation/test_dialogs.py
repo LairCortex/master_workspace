@@ -251,12 +251,14 @@ class TestEntityCardDialog:
             assert (name in data) == present, entity_type
 
     def test_entity_card_image_panel_follows_spec(self, qtbot):
-        for entity_type in ("character", "organization", "location"):
+        # NRI-0022: the item joined the image-carrying types; only the rating
+        # card (not an entity card type) still stands without the column.
+        for entity_type in ("character", "organization", "location", "item"):
             vm = MagicMock()
             d = EntityCardDialog(vm, entity_type=entity_type)
             qtbot.addWidget(d)
             assert d._has_image_field, entity_type
-        d = EntityCardDialog(MagicMock(), entity_type="item")
+        d = EntityCardDialog(MagicMock(), entity_type="rating")
         qtbot.addWidget(d)
         assert not d._has_image_field
 

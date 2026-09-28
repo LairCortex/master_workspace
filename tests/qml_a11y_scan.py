@@ -2,7 +2,7 @@
 nri-0012-qml-accessibility, tasks 4.1/4.2 — design D8's grep guard over the
 forbidden list of D9).
 
-The scanner reads QML source text (the real files on disk) and answers the two
+The scanner reads QML source text (the real files on disk) and answers the three
 guard questions:
 
 * :func:`find_convention_violations` — the 4.1 guard: nowhere under ``root``
@@ -11,7 +11,21 @@ guard questions:
   (``ThemeButton`` with word text / ``ThemeCheckBox`` with word text /
   ``ThemeTabButton`` with word text) must not carry its own
   ``Accessible.name``: штатно such a control's name IS its text (design F7),
-  so a usage-site annotation is a forbidden re-annotation.
+  so a usage-site annotation is a forbidden re-annotation. Since change
+  nri-0022-entity-preview (task 7.1) the same guard also keeps the
+  activation-description map: every non-empty string a
+  ``Accessible.description`` / ``accessibleDescription`` binding assigns
+  must be a word of :data:`DESCRIPTION_VOCABULARY` (spec qml-accessibility
+  «Скрытый смысл активации описан в дереве»), so a retired or invented
+  wording can never enter silently. The statically judgeable boundaries:
+  ``""`` is the unset slot and literal-less bindings (RowItem's pass-through,
+  a concatenation) carry nothing to judge — both stay silent; a ternary's
+  condition literals are compared, not assigned, so only the branch outcomes
+  are judged. The preview island's RichText mention anchors cannot carry a
+  description at all (fixed limit ⑥ in AGENTS.md — Qt 6.10 gives a RichText
+  link no own QAccessible node): a runtime fact pinned in
+  ``tests/presentation/test_entity_preview_island.py``, not a vocabulary
+  entry.
 
 * :func:`object_name_annotation_violation` — the 4.2 sample pin: a NAMED
   instance of a stock control must carry NO ``Accessible.name`` in its
@@ -54,6 +68,32 @@ FORBIDDEN_TOKENS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("Accessible.NoRole", re.compile(r"Accessible\.NoRole\b")),
     ("Accessible.ignored", re.compile(r"Accessible\.ignored\b")),
     ("Accessible.value", re.compile(r"Accessible\.value\b")),
+)
+
+# The fixed activation-description map (change nri-0022-entity-preview, task
+# 7.1; spec qml-accessibility «Скрытый смысл активации описан в дереве»).
+# A description states the hidden meaning of an activation, so its wording is
+# part of the contract the live accessibility-audit diffs against — a literal
+# assigned to ``Accessible.description``/``accessibleDescription`` may only be
+# a word of this set (or "" — the slot stays unset). The set is the spec's
+# fixed list plus the two wordings the shipped map carries (the timeline row,
+# the world-snapshot header); a new wording needs a change that extends both
+# the spec list and this guard, exactly like «Выбирает сущность» joined the
+# map when the detail row left «Открывает карточку» (NRI-0022 task 7.1).
+DESCRIPTION_VOCABULARY: frozenset[str] = frozenset({
+    "Открывает игру",
+    "Открывает карточку",
+    "Открывает упомянутую сущность",
+    "Выбор цвета типа",
+    "Открыть изображение",
+    "Переходит к сущности",
+    "Выбирает сущность",
+    "Открывает событие",
+    "Развернуть или свернуть раздел",
+})
+
+_DESC_DECL_RE = re.compile(
+    r"(?<![.\w])(?:Accessible\.description|accessibleDescription)\s*:"
 )
 
 _OWN_NAME_RE = re.compile(r"(?<![.\w])Accessible\.name\s*:")
@@ -200,6 +240,87 @@ def classify_text_value(value: str) -> str:
     return "dynamic" if rest_words else "blank"
 
 
+def _skip_string(v: str, i: int) -> int:
+    """Index just past the string literal that starts at ``v[i]`` (an
+    unterminated run ends at the newline — literals never span lines)."""
+    quote = v[i]
+    i += 1
+    n = len(v)
+    while i < n and v[i] not in (quote, "\n"):
+        i += 2 if v[i] == "\\" else 1
+    return i + 1 if i < n and v[i] == quote else i
+
+
+def _find_top_level(v: str, token: str, start: int = 0) -> int | None:
+    """First index of ``token`` outside strings and brackets at/after
+    ``start``; optional chaining ``?.`` and ``??`` never answer for ``?``."""
+    depth = 0
+    i = start
+    n = len(v)
+    while i < n:
+        c = v[i]
+        if c in "\"'":
+            i = _skip_string(v, i)
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0 and c == token:
+            if token != "?" or (i + 1 >= n or v[i + 1] not in "?."):
+                return i
+        i += 1
+    return None
+
+
+def _description_outcomes(value: str) -> list[str]:
+    """The literal texts a description binding can assign; an empty answer
+    means the shape is statically unjudgable (property binding, ternary
+    branch without a literal, concatenation) and nothing gets judged. A
+    ternary is judged per branch; the condition's literals compare, never
+    assign, and stay out."""
+    v = value.strip().rstrip(";").strip()
+    if not v:
+        return []
+    if _STRING_RE.fullmatch(v):
+        return [v[1:-1]]
+    q = _find_top_level(v, "?")
+    if q is None:
+        return []
+    c = _find_top_level(v, ":", q + 1)
+    if c is None:
+        return []
+    return _description_outcomes(v[q + 1 : c]) + _description_outcomes(v[c + 1 :])
+
+
+def _description_value_at(masked: str, struct: str, start: int) -> str:
+    """Like :func:`_value_at` but ternary-tolerant: the shipped description
+    ternaries wrap after the condition, so a newline whose next non-blank
+    token is ``?``/``:`` continues the value; a depth-0 ``}`` (the enclosing
+    object closing without a newline) ends it."""
+    depth = 0
+    end = start
+    n = len(struct)
+    while end < n:
+        c = struct[end]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if c == "}" and depth == 0:
+                break
+            depth -= 1
+        elif depth <= 0 and c in ";\n":
+            j = end + 1
+            while j < n and struct[j] in " \t":
+                j += 1
+            if c == "\n" and j < n and struct[j] in "?:":
+                end = j
+                continue
+            break
+        end += 1
+    return masked[start:end]
+
+
 @dataclass
 class StockInstance:
     """One stock-control declaration with the depth-1 facts the guards read."""
@@ -274,6 +395,21 @@ def find_convention_violations(root: Path) -> list[tuple[str, int, str]]:
                      f"{inst.type_name} with word text carries its own "
                      "Accessible.name — the text IS the штатно name (F7/D9)")
                 )
+        # The fixed description map (NRI-0022 task 7.1): every non-empty
+        # literal a description binding assigns must be a word of the map;
+        # "" is the unset slot, unjudgable shapes stay silent (module
+        # docstring, boundary list).
+        for d in _DESC_DECL_RE.finditer(struct):
+            value = _description_value_at(masked, struct, d.end())
+            for outcome in _description_outcomes(value):
+                if outcome and outcome not in DESCRIPTION_VOCABULARY:
+                    line = _line_of(text, d.start())
+                    violations.append(
+                        (rel, line,
+                         "description text outside the fixed map — "
+                         f"{outcome!r} is not a word of "
+                         "DESCRIPTION_VOCABULARY (NRI-0022 D8)")
+                    )
     return violations
 
 

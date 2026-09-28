@@ -142,6 +142,10 @@ class DetailRowsModel(QAbstractListModel):
     EntityIdRole = EntityTypeRole + 1
     ImageSourceRole = EntityIdRole + 1
     RatingTintRole = ImageSourceRole + 1
+    # NRI-0022 (task 3.1): the panel-wide single row selection, painted by the
+    # delegate as the rounded accent wash; only the VM moves it (``select`` /
+    # ``tabSwitched`` re-answer the role through :meth:`apply_selection`).
+    SelectedRole = RatingTintRole + 1
 
     _ROLES = {
         NameRole: QByteArray(b"name"),
@@ -150,6 +154,7 @@ class DetailRowsModel(QAbstractListModel):
         EntityIdRole: QByteArray(b"entityId"),
         ImageSourceRole: QByteArray(b"imageSource"),
         RatingTintRole: QByteArray(b"ratingTint"),
+        SelectedRole: QByteArray(b"selected"),
     }
 
     def __init__(self, runtime=None, parent: QObject | None = None) -> None:
@@ -200,6 +205,22 @@ class DetailRowsModel(QAbstractListModel):
                 return row["_entity"]
         return None
 
+    def apply_selection(self, selection: tuple[str, int] | None) -> None:
+        """Re-answer the ``selected`` role for the given panel-wide (type, id)
+        pair (``None`` = no wash, NRI-0022 task 3.1); rows whose answer
+        flipped get a targeted dataChanged, the delegate paints the wash from
+        the role alone."""
+        for row_index, row in enumerate(self._rows):
+            answer = selection is not None and (
+                row["entityType"],
+                row["entityId"],
+            ) == selection
+            if answer == row["selected"]:
+                continue
+            row["selected"] = answer
+            index = self.index(row_index, 0)
+            self.dataChanged.emit(index, index, [self.SelectedRole])
+
     def _make_row(
         self, entity: Any, entity_type: str, now: NowPair | None = None
     ) -> dict[str, Any]:
@@ -219,6 +240,7 @@ class DetailRowsModel(QAbstractListModel):
             "entityId": getattr(entity, "id", 0) or 0,
             "imageSource": image_source,
             "ratingTint": _tint_text(rating, self._runtime),
+            "selected": False,
             "_rating": rating,
             "_entity": entity,
         }
@@ -229,6 +251,9 @@ class DetailPanelViewModel(QObject):
 
     headerChanged = Signal()
     entityActivated = Signal(str, int)
+    # NRI-0022 (task 3.1): the single-click/Press selection, announced to the
+    # preview (wiring) next to the unchanged double-click ``entityActivated``.
+    entitySelected = Signal(str, int)
     imageRequested = Signal(object)
 
     # The four tabs and their payload keys are generated at import time from the
@@ -258,6 +283,11 @@ class DetailPanelViewModel(QObject):
         # so a «now» edit re-renders the derived texts without a re-open.
         self._now_vm = now_vm
         self._shown_event: Any = None
+        # NRI-0022 (task 3.2, design D3): the panel's ONE selection — the
+        # (type, id) pair of the last single-clicked/Pressed row. A tab switch
+        # hides the highlight but never resets this; only a new ``select`` (or
+        # a new game — the facade is rebuilt) replaces it.
+        self._selected: tuple[str, int] | None = None
         if now_vm is not None:
             now_vm.nowChanged.connect(self._on_now_changed)
         self.models = [
@@ -354,6 +384,37 @@ class DetailPanelViewModel(QObject):
     def activate(self, entity_type: str, entity_id: int) -> None:
         if self._find_entity(entity_type, entity_id) is not None:
             self.entityActivated.emit(entity_type, entity_id)
+
+    @Slot(str, int)
+    def select(self, entity_type: str, entity_id: int) -> None:
+        """Single mouse click / accessibility Press on a row (NRI-0022 task
+        3.1): the selection moves as the panel's ONE — the previously washed
+        row loses its highlight even across tabs — and the preview target is
+        announced through ``entitySelected``. A pair outside the shown lists
+        stays ignored, the same posture as ``activate``."""
+        if self._find_entity(entity_type, entity_id) is None:
+            return
+        self._selected = (entity_type, entity_id)
+        self._paint_highlight()
+        self.entitySelected.emit(entity_type, entity_id)
+
+    @Slot()
+    def hideRowHighlight(self) -> None:  # noqa: N802
+        """The tab strip moved (NRI-0022 task 3.2, design D3): the wash is
+        screen state and leaves the screen, while the remembered selection
+        (and the preview it fed) stays until the next ``select``."""
+        for model in self.models:
+            model.apply_selection(None)
+
+    def _paint_highlight(self) -> None:
+        for model in self.models:
+            model.apply_selection(self._selected)
+
+    @property
+    def last_selected(self) -> tuple[str, int] | None:
+        """The remembered panel selection — survives the highlight-hiding tab
+        switches (NRI-0022 task 3.2); ``None`` while the panel never selected."""
+        return self._selected
 
     @Slot(str, int)
     def requestImage(self, entity_type: str, entity_id: int) -> None:

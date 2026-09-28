@@ -15,6 +15,19 @@ Save policy (T3): a move/resize burst writes the file once the window has
 been quiet for ``DEBOUNCE_MS``, and closing the window saves its placement
 guaranteed.
 
+Reopen convergence (FU-4, live audit 2026-09-27): a pre-show restore runs
+while the window is hidden, and a hidden top-level lies about its frame —
+on cocoa the title bar is not in ``frameGeometry()`` yet (the offscreen
+stub's decoration frame likewise only exists after show). Resizing the
+hidden client to the saved *frame* therefore lands the shown frame bigger
+than saved, and the close save feeds the drifted frame back into the file:
++28 pt (the macOS title bar) on y and height per open→close cycle. The
+tracker re-applies the saved rect once per show, after the show completed
+and the real decorations exist — re-placing an already-shown window is
+exact (the live first-open centering proves the shown ``move`` lands the
+frame), so every open→close→open cycle converges back to the saved frame
+instead of accumulating the decoration cost.
+
 The main-role width floor (NRI-0018 design D5): ``restore``/``attach`` take a
 ``min_width`` provider — role "main" hands the detail panel's all-tabs-whole
 threshold to it, so a restored narrower frame comes back widened to exactly
@@ -170,10 +183,14 @@ class WindowGeometryMemory:
     ) -> None:
         """Second half of the opening: a window without a remembered role
         finally centers after show, its frame exists; then the placement
-        tracker takes over."""
+        tracker takes over. The tracker is created after the window is
+        already visible (the factory showed it), so it never sees the Show
+        event — the FU-4 convergence re-place runs here instead."""
         if not remembered and role not in self._roles:
             _center_move(window)
-        self._trackers.append(_PlacementTracker(self, window, role))
+        tracker = _PlacementTracker(self, window, role)
+        self._trackers.append(tracker)
+        tracker.replace_with_saved()
 
     def attach(
         self,
@@ -206,7 +223,13 @@ class WindowGeometryMemory:
 
 
 class _PlacementTracker(QObject):
-    """One window's save policy: debounced on move/resize, immediate on close."""
+    """One window's save policy: debounced on move/resize, immediate on close.
+
+    Also the FU-4 convergence point: the first Show schedules one re-apply
+    of the role's saved frame (the attach routes show the window after this
+    filter is installed; the restore→show→post_show_place routes re-apply
+    directly from :meth:`WindowGeometryMemory.post_show_place` instead).
+    """
 
     def __init__(self, memory: WindowGeometryMemory, window: QWidget, role: str) -> None:
         super().__init__(window)
@@ -219,9 +242,19 @@ class _PlacementTracker(QObject):
         self._timer.timeout.connect(self._save)
         window.installEventFilter(self)
 
+    def replace_with_saved(self) -> None:
+        """Re-apply the role's saved frame now that the window is shown and
+        its decoration margins are real (FU-4). No-op for a role nobody ever
+        saved (a first opening is centered, not placed)."""
+        self._memory.restore(self._window, self._role)
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         et = event.type()
-        if et in _WATCHED_TYPES:
+        if et == QEvent.Type.Show:
+            # Defer to the next loop turn: during Show delivery the native
+            # frame may not exist yet on cocoa; after show() returns it does.
+            QTimer.singleShot(0, self, self.replace_with_saved)
+        elif et in _WATCHED_TYPES:
             self._timer.start()  # restart the quiet period
         elif et == QEvent.Type.Close:
             self._timer.stop()

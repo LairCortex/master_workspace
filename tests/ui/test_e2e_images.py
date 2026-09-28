@@ -241,3 +241,63 @@ async def test_clear_image_removes_file(app, wait_for, menu_qmenu, modal_qdialog
 
     assert not orig.exists()
     assert query_db(db_path, "SELECT 1 FROM images WHERE id = ?", (image_id,)) == []
+
+
+async def test_item_image_binds_on_save_and_releases_on_clear(
+    app, wait_for, menu_qmenu, modal_qdialog, file_dialogs, tmp_path,
+):
+    """NRI-0022: the item card is a full image owner — «Выбрать файл» save
+    binds items.image_id to the ingested row, «Убрать» save releases it and
+    the now-unreferenced file goes through the same GC as the other types."""
+    application, window = app
+    db_path = application._db_path
+    images_dir = application._image_store._image_dir
+    name = "Предмет С Картинкой"
+
+    png = tmp_path / "art.png"
+    _write_png(png)
+    file_dialogs["open"] = str(png)
+
+    from tests.ui.helpers import pick_menu_action
+
+    pick_menu_action(menu_qmenu, "Новый предмет")
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
+    await wait_for(lambda: _visible_cards(window))
+    card = _visible_cards(window)[0]
+    card.name_input.setText(name)
+
+    card.pick_image_btn.click()
+    await wait_for(lambda: card._image_id is not None)
+    assert card.clear_image_btn.isEnabled()
+
+    card.save_button.click()
+    await wait_for(
+        lambda: len(query_db(db_path, "SELECT id FROM items WHERE name = ?", (name,))) == 1
+    )
+    await helpers.wait_until_settled()
+
+    image_id = query_db(db_path, "SELECT image_id FROM items WHERE name = ?", (name,))[0][0]
+    assert image_id is not None
+    sha, ext = query_db(db_path, "SELECT sha256, ext FROM images WHERE id = ?", (image_id,))[0]
+    orig = images_dir / sha[:2] / f"{sha}.{ext}"
+    assert orig.exists()
+
+    # Reopen the card: the stored link is loaded back into the field…
+    entity_id = query_db(db_path, "SELECT id FROM items WHERE name = ?", (name,))[0][0]
+    window.detail_panel.entity_clicked.emit("item", entity_id)
+    await wait_for(lambda: [d for d in _visible_cards(window) if d.name_input.text() == name])
+    edit_card = next(d for d in _visible_cards(window) if d.name_input.text() == name)
+    assert edit_card._image_id == image_id
+
+    # …and «Убрать» + save releases it; the file GC follows the released ref.
+    edit_card.clear_image_btn.click()
+    assert edit_card._image_id is None
+    edit_card.save_button.click()
+    await wait_for(
+        lambda: query_db(db_path, "SELECT image_id FROM items WHERE name = ?", (name,))[0][0] is None
+    )
+    await helpers.wait_until_settled()
+
+    assert not orig.exists()
+    assert query_db(db_path, "SELECT 1 FROM images WHERE id = ?", (image_id,)) == []

@@ -9,9 +9,9 @@ geometry mechanic itself is pinned in test_geometry_memory.py). The splitter
 panes stand on one modest usability floor — no more the tabs threshold —
 while the default split still gives the detail column the whole-caption room
 (spec «Все вкладки прочитаны на дефолте»). The OBS-1 live follow-up (NRI-0017
-audit: «Показать всё» clipped at the 1028×708 saved frame) is pinned HERE at
-the new default: the whole «Дата:» action row of the world snapshot stands
-inside its panel on a fresh start.
+audit: «Показать всё» clipped at the 1028×708 saved frame) is pinned HERE too,
+on the snapshot's own home: since NRI-0022 (task 2.4) the whole «Дата:» action
+row stands inside the «Обзор мира» window at its first-open default.
 """
 from __future__ import annotations
 
@@ -71,6 +71,10 @@ def test_splitter_panels_stand_on_one_usability_floor(qtbot):
     # threshold retired as the splitter floor — every pane keeps one modest
     # usability minimum instead (the rail's old 220, promoted to the shared
     # constant; the tabs elide below their natural widths, they never clip).
+    # NRI-0022 (tasks 2.4 + 4.1): the snapshot pane left for its own «Обзор
+    # мира…» window and the preview island took the freed column — the floor
+    # covers all three panes, so no column can be dragged out of usability
+    # (spec entity-preview «колонка SHALL оставаться видимой и не схлопываться»).
     floor = window.detail_panel.minimumWidth()
     assert floor == 220
     assert [
@@ -108,23 +112,30 @@ def _walk(root):
             stack.append(child)
 
 
-# ── OBS-1 follow-up: the «Дата:» row whole at the new start (task 4.4) ──────
+# ── OBS-1 follow-up: the «Дата:» row whole at the snapshot's own default ────
 
 
-def test_world_snapshot_date_row_stands_whole_at_the_default(qtbot):
-    window = _main_window(qtbot)
+def test_world_snapshot_date_row_stands_whole_at_the_window_default(qtbot):
+    # NRI-0022 (task 2.4) moved the panel out of the columns into its own
+    # «Обзор мира…» window; the OBS-1 whole-row pin rides along and now reads
+    # at the window's first-open default 520×760: the row's last action sits
+    # whole — right edge up to the island's own margin.
+    from app.presentation.views.world_snapshot_widget import WorldSnapshotWindow
+
+    window = WorldSnapshotWindow()
+    qtbot.addWidget(window)
     window.show()
     QApplication.processEvents()
+    assert window.size() == QSize(520, 760)
 
-    snap_root = window.world_snapshot.quick.rootObject()
-    reported = _whole_items_in_panel(window.world_snapshot.quick)
+    snap_root = window.snapshot.quick.rootObject()
+    reported = _whole_items_in_panel(window.snapshot.quick)
     assert [name for name, _ in reported] == [
         "snapshotShowButton", "snapshotResetButton", "snapshotShowAllButton",
     ]
     for name, right in reported:
         # OBS-1 (live NRI-0017): «Показать всё» used to lean on the panel edge
-        # already at the 1028-class frame. At the new default the row's last
-        # action sits whole — right edge up to the island's own margin.
+        # already at the 1028-class frame; the move keeps it standing whole.
         assert right <= snap_root.width() - 3, name
 
 

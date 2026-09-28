@@ -3,8 +3,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QAccessible
 from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtTest import QTest
 
 from app.presentation import qml as qml_shell
 from app.infrastructure.ui_prefs.config import UiPrefs, UiPrefsManager
@@ -130,19 +132,27 @@ async def test_headers_and_results_have_distinct_row_contracts_and_select(qtbot,
     assert selected == []
 
     click_item(bar.quick, find_item(bar.quick, "searchResultRow"))
-    assert selected == [("event", 42)]
+    # NRI-0022 task 6.2: the jump waits out the double-click interval (a real
+    # double click releases a single click first); after the hold it is the
+    # same single navigation as before.
+    qtbot.waitUntil(
+        lambda: selected == [("event", 42)],
+        timeout=vm.doubleClickIntervalMs + 1500,
+    )
     assert vm.listVisible is False
 
 
-async def test_accessibility_press_on_result_row_jumps_like_the_click(qtbot, tmp_path):
-    """nri-0017 task 2.2 sweep (the B3 family): the result row's action IS the
-    jump (the click emits it and the list collapses with it) — RowItem's
-    press path emits ``activateRequested``, and without a listener here the
-    tree press was a silent no-op. One Press now runs the very same jump."""
+async def test_accessibility_press_on_result_row_opens_the_edit_route(qtbot, tmp_path):
+    """nri-0017 task 2.2 sweep re-pinned for NRI-0022 task 6.2: RowItem's
+    press mirrors the DOUBLE-click path, and the double click now means
+    editing — a Press emits resultActivated (the wiring opens the card /
+    event editor) and collapses the list; the single-click channel stays
+    silent (no hold is started)."""
     event = SimpleNamespace(id=42, name="Battle", start_date=None)
     vm = _vm({"events": [event]})
     bar = _bar(qtbot, tmp_path, vm)
     selected = track(bar.result_selected)
+    activated = track(bar.result_activated)
     find_item(bar.quick, "searchInput").setProperty("text", "Ba")
 
     await vm.search("Ba")
@@ -155,8 +165,86 @@ async def test_accessibility_press_on_result_row_jumps_like_the_click(qtbot, tmp
     assert "Press" in actions.actionNames()
     actions.doAction("Press")
 
-    assert selected == [("event", 42)]
+    assert activated == [("event", 42)]
+    assert selected == []
     assert vm.listVisible is False
+
+
+async def test_single_click_holds_then_navigates_double_click_edits(qtbot, tmp_path):
+    """NRI-0022 task 6.2 race pin: a single click does NOT jump while the
+    double-click interval is open; the real double-click sequence (click —
+    then double-click event, as Qt delivers it) cancels the held jump and
+    ends as the edit gesture exactly once."""
+    event = SimpleNamespace(id=42, name="Battle", start_date=None)
+    vm = _vm({"events": [event]})
+    bar = _bar(qtbot, tmp_path, vm)
+    selected = track(bar.result_selected)
+    activated = track(bar.result_activated)
+    find_item(bar.quick, "searchInput").setProperty("text", "Ba")
+    await vm.search("Ba")
+    qtbot.waitUntil(lambda: len(island_rows(bar.quick, "searchResultRow")) == 1)
+    row = find_item(bar.quick, "searchResultRow")
+
+    click_item(bar.quick, row, double=True)
+    assert activated == [("event", 42)]
+    assert selected == []
+    assert vm.listVisible is False
+
+    # A re-shown second search: the click→double-click sequence (what a real
+    # mouse produces) must land ONLY on the edit route, after the hold window.
+    await vm.search("Ba")
+    vm._set_list_visible(True)
+    qtbot.waitUntil(lambda: len(island_rows(bar.quick, "searchResultRow")) == 1)
+    row = find_item(bar.quick, "searchResultRow")
+    click_item(bar.quick, row)
+    assert selected == []  # held, not fired
+    click_item(bar.quick, row, double=True)
+    qtbot.waitUntil(
+        lambda: len(activated) == 2,
+        timeout=vm.doubleClickIntervalMs + 1500,
+    )
+    QTest.qWait(vm.doubleClickIntervalMs + 200)
+    assert selected == []
+    assert activated == [("event", 42), ("event", 42)]
+
+
+async def test_right_button_on_result_row_is_inert(qtbot, tmp_path):
+    """Spec «Правая кнопка не делает ничего» (NRI-0022 task 6.2): the row's
+    MouseArea accepts the left button only — the right one opens nothing,
+    selects nothing, closes nothing (the context-menu slot stays reserved)."""
+    event = SimpleNamespace(id=42, name="Battle", start_date=None)
+    vm = _vm({"events": [event]})
+    bar = _bar(qtbot, tmp_path, vm)
+    selected = track(bar.result_selected)
+    activated = track(bar.result_activated)
+    find_item(bar.quick, "searchInput").setProperty("text", "Ba")
+    await vm.search("Ba")
+    qtbot.waitUntil(lambda: len(island_rows(bar.quick, "searchResultRow")) == 1)
+
+    row = island_rows(bar.quick, "searchResultRow")[0]
+    center = row.mapToScene(QPointF(row.width() / 2, row.height() / 2))
+    QTest.mouseClick(bar.quick, Qt.RightButton, Qt.NoModifier,
+                     QPoint(int(center.x()), int(center.y())))
+    QTest.qWait(50)
+
+    assert selected == []
+    assert activated == []
+    assert vm.listVisible is True
+
+
+def test_facade_relays_both_result_gestures(qtbot, tmp_path):
+    """The thin facade maps the VM's two gesture signals onto its own
+    (type, id) channels the wiring connects to (NRI-0022 task 6.2)."""
+    vm = _vm()
+    bar = _bar(qtbot, tmp_path, vm)
+    selected = track(bar.result_selected)
+    activated = track(bar.result_activated)
+
+    vm.resultSelected.emit("character", 1)
+    vm.resultActivated.emit("event", 2)
+
+    assert selected == [("character", 1)]
+    assert activated == [("event", 2)]
 
 
 async def test_empty_query_and_no_match_list_semantics(qtbot, tmp_path):

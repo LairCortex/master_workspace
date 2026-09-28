@@ -22,7 +22,10 @@ class SearchBar(IslandDialogMixin, QWidget):
     island_context_names = {"searchBarVm": "_vm", "nowDateVm": "_now_date_vm"}
 
     search_requested = Signal(str)
-    result_selected = Signal(str, int)  # (entity_type, entity_id)
+    result_selected = Signal(str, int)  # (entity_type, entity_id) — single click
+    # NRI-0022 (task 6.2): the double-click edit gesture (entity card / event
+    # editor); the wiring keeps the two gesture channels apart.
+    result_activated = Signal(str, int)  # (entity_type, entity_id) — double click
 
     def __init__(
         self,
@@ -54,6 +57,7 @@ class SearchBar(IslandDialogMixin, QWidget):
 
         self._vm.searchRequested.connect(self.search_requested)
         self._vm.resultSelected.connect(self.result_selected)
+        self._vm.resultActivated.connect(self.result_activated)
 
         # A QQuickWidget in SizeRootObjectToView never reports the scene's
         # implicit height as a size hint, so the results list laid out below

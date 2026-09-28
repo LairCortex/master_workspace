@@ -456,7 +456,9 @@ async def test_custom_calendar_from_wizard_to_every_caption_and_restart(
         assert window.detail_panel.vm.dateText == BC_CAPTION
 
         # ── E. the world snapshot: intercalary name + the «г. до н.э.» suffix ─
-        snapshot = window.world_snapshot
+        # NRI-0022 (group 2): the panel lives in its own «Обзор мира…» window
+        # now — opened through the real menu-bar action.
+        snapshot = helpers.open_world_snapshot(application, window)
         await _tap_qml(qtbot, snapshot.quick, "snapshotDateField")
         await wait_for(snapshot.date_popup.isVisible)
         _step_months(qtbot, snapshot.date_popup.calendar, 1)  # chip on month 2

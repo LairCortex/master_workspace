@@ -4,9 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
@@ -120,3 +120,56 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
         self.vm.clear()
 
     # Island lifecycle (context, deferred closeEvent release) — IslandDialogMixin.
+
+
+class WorldSnapshotWindow(QDialog):
+    """The «Обзор мира» top-level: the panel's home since NRI-0022 (task 2.1).
+
+    spec world-snapshot «Обзор мира открывается отдельным окном из строки
+    меню»: the snapshot left the main window's third splitter column and
+    lives in its own non-modal window — title bar, native close, the main
+    window working while it is open. The panel itself (island, VM, signals)
+    is untouched; the wrapper only hosts it and releases its island on the
+    window's way out. Presentation (single-instance slot, geometry role
+    ``world_snapshot``) belongs to the menu entry — see
+    ``ApplicationWiring._connect_snapshot``.
+    """
+
+    #: First opening without a remembered placement (design D5): 520×760.
+    DEFAULT_SIZE = QSize(520, 760)
+    #: One shared usability floor, the value the retired splitter pane kept.
+    MIN_SIZE = QSize(220, 300)
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        theme=None,
+        now_date_vm=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Обзор мира")
+        # Explicit NonModal pins the window-format contract (NRI-0014 AB3:
+        # the registry presents with show(); a WindowModal sheet would grey
+        # the menu out instead of leaving the main window working).
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setMinimumSize(self.MIN_SIZE)
+        self.resize(self.DEFAULT_SIZE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.snapshot = WorldSnapshotWidget(
+            theme=theme, now_date_vm=now_date_vm
+        )
+        layout.addWidget(self.snapshot)
+
+    def done(self, result: int) -> None:  # noqa: N802 — Qt API name
+        # Every way this dialog leaves the screen (title-bar ✕ through the
+        # default closeEvent, Esc through reject, a programmatic close())
+        # passes through done(). The panel is a child widget: closing the
+        # window never reaches its closeEvent, so the home releases its
+        # island here — one loop turn deferred, exactly the contract
+        # IslandDialogMixin pins for an owned island (the release must not
+        # run inside a QML handler), and idempotent on a dead island.
+        QTimer.singleShot(0, self.snapshot, self.snapshot.release_island)
+        super().done(result)

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import QApplication
 from app.presentation import qml as qml_shell
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.detail_panel import DetailPanel
+from app.presentation.views.entity_preview import EntityPreviewWidget
 from app.presentation.views.timeline_island import TimelineWidget
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 from tests.presentation.qml_helpers import find_item, walk_items
@@ -142,15 +143,28 @@ def test_the_three_header_captions_share_the_band_axis(qtbot):
     assert max(values) - min(values) <= 1.0, centers
 
 
+def test_the_preview_column_header_sits_on_the_same_axis(qtbot):
+    """NRI-0022 (task 4.1): the preview island became the third main-window
+    column — its «Карточка» band caption seats on the same shared band axis
+    the timeline title and the detail tab strip use, so the columns' headers
+    keep reading on one horizontal line."""
+    preview = _shown(EntityPreviewWidget(), qtbot)
+    center = _center_y(find_item(preview.quick, "previewBandTitle"))
+    assert abs(center - AXIS) <= 1.0, center
+
+
 def test_each_island_lays_its_header_on_the_shared_band(qtbot):
     timeline = _shown(_timeline(), qtbot)
     detail = _shown(DetailPanel(SimpleNamespace()), qtbot)
     snapshot = _shown(WorldSnapshotWidget(), qtbot)
+    preview = _shown(EntityPreviewWidget(), qtbot)
 
     for island, name in (
         (timeline, "timelineHeaderBand"),
         (detail, "detailTabBand"),
         (snapshot, "snapshotHeaderBand"),
+        # NRI-0022 (task 4.1): the preview column reads the same band home.
+        (preview, "previewHeaderBand"),
     ):
         band = find_item(island.quick, name)
         assert _island_y(band) == TOP_MARGIN, name
@@ -220,6 +234,8 @@ def test_the_band_constant_lives_in_one_home():
         "TimelineRoot.qml",
         "DetailPanelRoot.qml",
         "WorldSnapshotRoot.qml",
+        # NRI-0022 (task 4.1): the preview column reads the shared constant too.
+        "EntityPreviewRoot.qml",
     ):
         qml = _qml_text(name)
         assert 'import "nri/components/panelHeader.js" as PanelHeader' in qml, name

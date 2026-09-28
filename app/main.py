@@ -90,6 +90,7 @@ from app.presentation.sheet_windows import SheetWindowsManager
 from app.presentation.window_registry import (
     LAUNCHER_SWITCH_KEY,
     LLM_SETUP_KEY,
+    WORLD_SNAPSHOT_KEY,
     MenuWindowRegistry,
 )
 from app.presentation.views.table_host.panel import TableHostPanel
@@ -994,6 +995,15 @@ class Application:
         if self._table_host is not None and self._table_host.is_running:
             await self._table_host.stop()
         self._close_sheet_windows()
+        # NRI-0022 (task 2.1): the «Обзор мира» window is session-bound (its
+        # date query and entity activation run on THIS game's wiring), so it
+        # leaves with the game exactly the way the retired panel used to
+        # leave with the old main window. Closing fires the wrapper's
+        # done(): the registry slot releases, the island unbinds one turn
+        # later — a stale window can never be raised over the next game.
+        snapshot_window = self._window_registry.get(WORLD_SNAPSHOT_KEY)
+        if snapshot_window is not None:
+            snapshot_window.close()
         # A wizard left open on a closing game must not outlive its session:
         # its view model is bound to exactly this AsyncSession.  Closing it
         # here fires the first-run close step (task 2.4) — the future it

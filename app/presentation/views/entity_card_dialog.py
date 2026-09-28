@@ -83,7 +83,9 @@ _FIELD_SPECS: dict[str, list[_FieldSpec]] = {
         _FieldSpec("image", "Изображение", "image"),
         _FieldSpec("tasks", "Задачи", "mention"),
     ],
-    "item": [],
+    "item": [
+        _FieldSpec("image", "Изображение", "image"),
+    ],
     "rating": [],
 }
 

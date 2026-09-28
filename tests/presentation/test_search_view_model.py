@@ -157,6 +157,37 @@ async def test_only_result_rows_select_and_selection_hides_list():
     assert vm.listVisible is False
 
 
+async def test_activate_shares_the_row_guard_and_hides_the_list():
+    """NRI-0022 task 6.2: the double-click channel answers the SAME row
+    contract — headers/no-match/out-of-range stay silent — and on a result
+    row it emits resultActivated (the edit route) plus collapse."""
+    event = SimpleNamespace(id=42, name="Battle", start_date=None)
+    vm, _ = _vm({"events": [event]})
+    vm.setQuery("Ba")
+    await vm.search("Ba")
+    activated = track(vm.resultActivated)
+
+    vm.activate(-1)
+    vm.activate(99)
+    vm.activate(0)  # the section header row
+    assert activated == []
+    assert vm.listVisible is True
+
+    vm.activate(1)
+    assert activated == [("event", 42)]
+    assert vm.listVisible is False
+
+
+def test_double_click_interval_is_the_platform_one(qtbot):
+    """NRI-0022 task 6.2: the island's single-click hold rides the platform
+    double-click interval (the value QGuiApplication reports), not a literal."""
+    from PySide6.QtGui import QGuiApplication
+
+    vm, _ = _vm()
+    assert vm.doubleClickIntervalMs == QGuiApplication.instance().doubleClickInterval()
+    assert vm.doubleClickIntervalMs > 0
+
+
 async def test_result_date_carries_the_bc_era_suffix():
     """Spec «Отображение эры» (add-era-aware-dates): search is one of the places
     an entity's date is shown, so a BC start_date prints with the suffix."""

@@ -741,6 +741,12 @@ def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, capl
     so MainWindow.closeEvent releases them too (palette + per-panel view
     model subscriptions). Re-opening the main window with the same runtime
     must find only the engine bridge palette subscribed (DEFECT-1).
+
+    NRI-0022 (task 2.4): the world snapshot left the columns for its own
+    «Обзор мира…» window, so it is no longer counted here — its window
+    releases its own island (the window's done() half), pinned for the
+    snapshot's home in test_world_snapshot_window.py and, for the theme
+    subscriptions, in the window test right below.
     """
     import logging
 
@@ -755,7 +761,8 @@ def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, capl
     window = make_main_window(runtime)
     qtbot.addWidget(window)
     window.show()
-    # engine bridge + timeline/search/detail/world island palettes.
+    # engine bridge + timeline/search/detail/preview island palettes (the
+    # preview joined the columns with NRI-0022 task 4.1).
     assert len(palette_listeners()) == 5
 
     def bound_classes() -> set[str]:
@@ -765,12 +772,64 @@ def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, capl
             if hasattr(cb, "__self__")
         }
 
-    # the two island view models sit on the runtime too
-    assert {"DetailPanelViewModel", "WorldSnapshotViewModel"} <= bound_classes()
+    # the panel view models that subscribe sit on the runtime
+    assert "DetailPanelViewModel" in bound_classes()
+    assert "WorldSnapshotViewModel" not in bound_classes()
 
     window.close()  # closeEvent: own handle + every child island released
     assert len(palette_listeners()) == 1
     assert not {"DetailPanelViewModel", "WorldSnapshotViewModel"} & bound_classes()
+
+    caplog.clear()
+    caplog.set_level(logging.DEBUG)
+    assert runtime.set_theme("light") is True
+    assert caplog.records == []
+
+
+def test_snapshot_window_close_drops_its_island_subscriptions(qtbot, runtime, caplog):
+    """The same DEFECT-1 contract for the moved snapshot (NRI-0022): its
+    palette and view-model subscription join the runtime when the «Обзор
+    мира…» window is built and leave through the window's own done(), the
+    route every way out of the dialog takes (✕/Esc/close()). Re-opening a
+    fresh window then adds exactly one palette + one VM again."""
+    import logging
+
+    from app.presentation.theme.qml_palette import QmlPalette
+    from app.presentation.views.world_snapshot_widget import WorldSnapshotWindow
+
+    def island_palettes() -> list:
+        return [
+            cb for cb in runtime.subscribers
+            if isinstance(getattr(cb, "__self__", None), QmlPalette)
+        ]
+
+    def bound_classes() -> set[str]:
+        return {
+            cb.__self__.__class__.__name__
+            for cb in runtime.subscribers
+            if hasattr(cb, "__self__")
+        }
+
+    window = WorldSnapshotWindow(theme=runtime)
+    qtbot.addWidget(window)
+    window.show()
+    # engine bridge + this window's island palette; the VM joins as well.
+    assert len(island_palettes()) == 2
+    assert "WorldSnapshotViewModel" in bound_classes()
+
+    window.close()  # done(): the deferred release detaches palette + VM
+    qtbot.wait(50)
+    assert len(island_palettes()) == 1
+    assert "WorldSnapshotViewModel" not in bound_classes()
+
+    # A fresh window over the same runtime re-subscribes, no stale leftovers.
+    fresh = WorldSnapshotWindow(theme=runtime)
+    qtbot.addWidget(fresh)
+    fresh.show()
+    assert len(island_palettes()) == 2
+    fresh.close()
+    qtbot.wait(50)
+    assert len(island_palettes()) == 1
 
     caplog.clear()
     caplog.set_level(logging.DEBUG)

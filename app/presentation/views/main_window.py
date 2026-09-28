@@ -17,9 +17,9 @@ from app.presentation.bundle_resources import bundle_resource_path
 from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog as _DocViewerDialog
+from app.presentation.views.entity_preview import EntityPreviewWidget
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_island import TimelineWidget
-from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 from app.presentation.window_registry import (
     DOCS_CHANGELOG_KEY,
     DOCS_README_KEY,
@@ -29,7 +29,7 @@ from app.presentation.window_registry import (
 log = logging.getLogger(__name__)
 
 
-# NRI-0019: the splitter's three panes share one modest usability floor —
+# NRI-0019: the splitter's panes share one modest usability floor —
 # the tab strip stretches/shrinks with its column now (elided captions in a
 # narrow pane), so the all-tabs-whole threshold no longer floors the panes;
 # the number only keeps a dragged pane draggable back and clickable.
@@ -56,6 +56,10 @@ class MainWindow(QMainWindow):
     char_sheets_requested = Signal()
     table_host_requested = Signal()
     calendar_wizard_requested = Signal()
+    # NRI-0022 (task 2.2, spec world-snapshot): «Обзор мира…» — the entry of
+    # the snapshot's own window; the connector answers with the registry
+    # presentation (ApplicationWiring._connect_snapshot).
+    world_snapshot_requested = Signal()
 
     def __init__(
         self,
@@ -82,8 +86,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 680)  # hard system floor (stays NRI-0015's)
         # NRI-0018 (design Д5, spec «Первый запуск шире прежнего минимума»):
         # with no remembered placement the window opens 1280×800 — the frame
-        # every full tab caption and the snapshot «Дата:» row read whole at
-        # (role "main" in the geometry memory replaces it when one is saved).
+        # every full tab caption reads whole at (role "main" in the geometry
+        # memory replaces it when one is saved; the snapshot «Дата:» row the
+        # number also carried left with the panel to its own window, NRI-0022).
         self.resize(1280, 800)
 
         # Menu bar
@@ -98,6 +103,21 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("Экспорт игры…", self)
         self.export_action.triggered.connect(self.export_requested.emit)
         file_menu.addAction(self.export_action)
+
+        # NRI-0022 (task 2.2, spec world-snapshot «Обзор мира открывается
+        # отдельным окном из строки меню»), live-audit fix 2026-09-27 (FU-1):
+        # the entry rides the working «Файл» submenu, not the bar itself —
+        # the macOS cocoa bridge drops a top-level QAction that carries no
+        # submenu (reproduced with a minimal PySide6 probe: the bare item
+        # never reaches the NSMenu model, so the window was unreachable
+        # from UI on the target platform). The action text and the
+        # world_snapshot_requested contract are unchanged; every other
+        # entry of this menu bar reaches the user through a submenu too.
+        self.world_snapshot_action = QAction("Обзор мира…", self)
+        self.world_snapshot_action.triggered.connect(
+            self.world_snapshot_requested.emit
+        )
+        file_menu.addAction(self.world_snapshot_action)
 
         # Чар-листы
         char_sheets_menu = menu_bar.addMenu("Чар-листы")
@@ -224,26 +244,30 @@ class MainWindow(QMainWindow):
         self.detail_panel = DetailPanel(
             detail_vm, theme=self._theme, now_date_vm=now_date_vm
         )
-        # NRI-0021 (task 6.2): the snapshot date field starts at the game's
-        # «now» and «Сброс» returns the field to it; the VM reference stays
-        # Python-side — the snapshot island's context keeps its one VM.
-        self.world_snapshot = WorldSnapshotWidget(
-            theme=self._theme, now_date_vm=now_date_vm
-        )
+        # NRI-0022 (task 2.4): the world-snapshot pane left the columns for
+        # its own «Обзор мира…» window. Task 4.1 returns the freed third
+        # column as the entity-preview island: readable card of the last
+        # entity selected in the middle column (design D1 — the lifecycle
+        # rule lives in the wiring, this window only hosts the pane).
         # NRI-0019: the tab strip now shares the panel's width between its
         # tabs (whole captions at the default column, elided ones in a narrow
         # one), so the all-tabs-whole threshold retired as the pane floor —
-        # every pane keeps one shared usability minimum instead. OBS-1's
-        # narrow-frame follow-up (the «Дата:» row) stays that follow-up.
+        # every pane keeps one shared usability minimum instead.
+        self.entity_preview = EntityPreviewWidget(
+            theme=self._theme, now_date_vm=now_date_vm
+        )
         self.timeline_widget.setMinimumWidth(PANE_MIN_WIDTH)
         self.detail_panel.setMinimumWidth(PANE_MIN_WIDTH)
-        self.world_snapshot.setMinimumWidth(PANE_MIN_WIDTH)
+        self.entity_preview.setMinimumWidth(PANE_MIN_WIDTH)
         splitter.addWidget(self.timeline_widget)
         splitter.addWidget(self.detail_panel)
-        splitter.addWidget(self.world_snapshot)
+        splitter.addWidget(self.entity_preview)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
+        # The three default widths ride through unchanged (spec main-window
+        # «Дефолтные ширины колонок SHALL остаться прежними»): the preview
+        # column inherits the freed snapshot pane's 500 px.
         splitter.setSizes([330, 390, 500])
         main_layout.addWidget(splitter, 1)
 
@@ -280,11 +304,13 @@ class MainWindow(QMainWindow):
         # window: each island unbinds its scene and drops its theme
         # subscriptions (palette, panel view models) synchronously, before
         # their C++ sides leave with this window (idempotent on re-close).
+        # The world snapshot is not in this list anymore (NRI-0022 task 2.4):
+        # its home window releases its own island on close.
         for island in (
             self.search_bar,
             self.timeline_widget,
             self.detail_panel,
-            self.world_snapshot,
+            self.entity_preview,
         ):
             island.release_island()
         super().closeEvent(event)

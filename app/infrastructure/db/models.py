@@ -504,8 +504,17 @@ class ItemModel(CoordDateSlots, Base):
     end_coord: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     rating: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     music_url: Mapped[str | None] = mapped_column(Text, default=None)
+    # NRI-0022: the item joins the entity referrers of ``images`` (the org/
+    # character/location pattern; the legacy base64 ``image`` column the three
+    # older tables carry the item never had, so its slot is the reference only).
+    image_id: Mapped[int | None] = mapped_column(
+        ForeignKey("images.id", ondelete="SET NULL"), default=None,
+    )
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
+    # Eager-loaded so presentation/utils/image_utils can resolve a display
+    # path synchronously (sha256+ext), without the view ever querying itself.
+    image_ref: Mapped[ImageModel | None] = relationship(lazy="selectin")
     events: Mapped[list[EventModel]] = relationship(
         secondary=event_item, back_populates="items", lazy="selectin",
     )

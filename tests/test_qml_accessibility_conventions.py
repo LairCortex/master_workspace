@@ -13,6 +13,13 @@ Contract checked by :func:`tests.qml_a11y_scan.find_convention_violations`:
    with a word text does NOT carry its own ``Accessible.name`` — such a
    control's tree name is its text already (F7), so a usage-site name is a
    forbidden re-annotation.
+5. every non-empty literal assigned to ``Accessible.description`` /
+   ``accessibleDescription`` (the hidden meaning of an activation) is a word
+   of the fixed map DESCRIPTION_VOCABULARY (change nri-0022-entity-preview,
+   task 7.1; spec qml-accessibility «Скрытый смысл активации описан в
+   дереве») — an invented or retired wording fails here, never in the live
+   audit; "" (unset slot) and literal-less bindings stay silent (fixture
+   below).
 
 Documented boundaries of the statically judgeable rule (kept honest here, the
 runtime side is guarded per island in tests/presentation/ and live-audited in
@@ -24,7 +31,12 @@ task 5.4):
 * a *bound* text (``text: modelData.label``) is neither provable word nor
   provably data from source (the map annotates the music-open button whose
   bound text is a URL), so the generic rule stays silent; the named samples of
-  task 4.2 pin no-annotation on those controls explicitly.
+  task 4.2 pin no-annotation on those controls explicitly;
+* the description rule judges only direct literal outcomes (a whole-value
+  literal, a ternary's branches); concatenations and property bindings are
+  statically unjudgable and stay silent — the runtime face of the map is
+  pinned per island; the preview's RichText mention anchors carry no
+  description at all (fixed limit ⑥ in AGENTS.md) and live outside the map.
 
 The guard is tamper-proof in both directions tested below: synthetic QML
 fixtures carrying each violation are cut (and the legal uses are not), and a
@@ -40,7 +52,9 @@ from tests.qml_a11y_scan import QML_ROOT, find_convention_violations, rule_head
 
 # Exact expectations on the synthetic fixture below: (file, line, rule head).
 # Instance violations report the line of the control's opening brace; the
-# ternWord block spans lines 19-21 of the fixture and reports line 19.
+# ternWord block spans lines 19-21 of the fixture and reports line 19. The
+# description-map violations (rule 5, NRI-0022 task 7.1) report the line of
+# the description declaration itself.
 _EXPECTED_SYNTHETIC = [
     ("bad.qml", 6, "ThemeButton with word text carries its own Accessible.name"),
     ("bad.qml", 7, "ThemeCheckBox with word text carries its own Accessible.name"),
@@ -49,6 +63,8 @@ _EXPECTED_SYNTHETIC = [
     ("bad.qml", 10, "forbidden Accessible.ignored"),
     ("bad.qml", 11, "forbidden Accessible.value"),
     ("bad.qml", 19, "ThemeButton with word text carries its own Accessible.name"),
+    ("bad.qml", 34, "description text outside the fixed map"),
+    ("bad.qml", 35, "description text outside the fixed map"),
 ]
 
 _SYNTHETIC_QML = """\
@@ -76,6 +92,18 @@ Item {
         Accessible.name: "TernClobber" }
     // Accessible.NoRole, Accessible.ignored, Accessible.value in comments no
     Item { property var s: "ThemeButton { text: \\"fake\\"; Accessible.name: \\"fake\\" }" }
+
+    // The description map (rule 5, NRI-0022 task 7.1): map words and the
+    // unset "" are legal, a property binding is unjudgable, a ternary's
+    // condition literal compares (not assigns) and stays out; an invented
+    // outcome — direct or in a branch — is cut on the declaration line.
+    Item { objectName: "okDesc"; Accessible.description: "Выбирает сущность" }
+    Item { objectName: "okEmpty"; accessibleDescription: "" }
+    Item { objectName: "okTern"; Accessible.description: rowKind === "hdr"
+        ? "Развернуть или свернуть раздел" : "Переходит к сущности" }
+    Item { objectName: "badDesc"; Accessible.description: "Открывает детали" }
+    Item { objectName: "badTern"; Accessible.description: model.type === "image"
+        ? "Открыть изображение" : "Закрывает всё" }
 }
 """
 
@@ -97,7 +125,7 @@ def test_guard_cuts_each_synthetic_violation_and_keeps_legal_uses(
     assert found_triples == _EXPECTED_SYNTHETIC
     # The ok* instances never appear in any message.
     joined = "\n".join(msg for _, _, msg in found)
-    for legal in ("okGlyph", "okBound", "okPlain"):
+    for legal in ("okGlyph", "okBound", "okPlain", "okDesc", "okEmpty", "okTern"):
         assert legal not in joined
 
 
@@ -105,9 +133,11 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
     tmp_path: Path,
 ) -> None:
     """The deliberate-violation proof for the REAL corpus: the tree is copied
-    to a scratch dir, two textbook violations are injected there, and the same
-    guard that reads the repository fails on exactly those two — never on an
-    unmodified file, and never inside the repository itself."""
+    to a scratch dir, three textbook violations are injected there (one per
+    guard family, the third rewriting the detail row's mapped description
+    out of the fixed map), and the same guard that reads the repository fails
+    on exactly those three — never on an unmodified file, and never inside
+    the repository itself."""
     copy = tmp_path / "qml-copy"
     shutil.copytree(QML_ROOT, copy, ignore=shutil.ignore_patterns("__pycache__"))
     assert find_convention_violations(copy) == []  # untouched copy is clean
@@ -125,6 +155,18 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
     assert broken_checkbox != card_text, "injection anchor moved — fix the probe"
     card.write_text(broken_checkbox, encoding="utf-8")
 
+    # The description map (rule 5): the row's mapped «Выбирает сущность» is
+    # rewritten to an invented wording — the exact drift NRI-0022 T7.1 pins.
+    detail = copy / "DetailPanelRoot.qml"
+    detail_text = detail.read_text(encoding="utf-8")
+    broken_row = detail_text.replace(
+        'Accessible.description: "Выбирает сущность"',
+        'Accessible.description: "Открывает детали"',
+        1,
+    )
+    assert broken_row != detail_text, "injection anchor moved — fix the probe"
+    detail.write_text(broken_row, encoding="utf-8")
+
     row = copy / "TimelineRowDelegate.qml"
     row_text = row.read_text(encoding="utf-8")
     row.write_text(row_text + "\nItem { Accessible.ignored: true }\n", encoding="utf-8")
@@ -134,6 +176,7 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
         ((rel, rule_head(msg)) for rel, _, msg in violations),
         key=lambda entry: (entry[0], entry[1]),
     ) == [
+        ("DetailPanelRoot.qml", "description text outside the fixed map"),
         ("EntityCardRoot.qml",
          "ThemeCheckBox with word text carries its own Accessible.name"),
         ("TimelineRowDelegate.qml", "forbidden Accessible.ignored"),

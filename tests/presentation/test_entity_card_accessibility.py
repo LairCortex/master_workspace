@@ -161,3 +161,42 @@ def test_text_carrying_controls_keep_their_names_untouched(card):
     assert no_end.role() == QAccessible.Role.CheckBox
     assert no_end.text(QAccessible.Name) == ""
     assert no_end_item.property("text") == "Бессрочно"
+
+
+def test_no_end_checkbox_activation_reaches_the_view_model(card):
+    """D1 (live audit 2026-09-27, nri-0022): the accessibility activation of
+    «Бессрочно» must run the same toggle the mouse runs — on the pre-fix
+    ``onToggled`` wiring the offscreen action moved the tick but silently
+    never reached the VM, so «Дата конца» never reappeared. The card rides
+    the launcher's working convention now (the tick is the VM's bound state,
+    every activation is a request read from the source of truth); this pin
+    is the offscreen half — the live AXPress re-audit runs with the parent's
+    live pass.
+    """
+    check_item = find_item(card.quick, "entityNoEndCheck")
+    end_field = find_item(card.quick, "entityEndDateField")
+    actions = accessible_of(check_item).actionInterface()
+    # The synthetic mouse half of this pin needs the widget realized on the
+    # scene (the detail-panel accessibility fixture shows for the same
+    # reason).
+    card.show()
+    QApplication.processEvents()
+
+    assert card.vm.noEnd is False
+    assert end_field.property("visible") is True
+
+    # The QAccessible press channel (AGENTS pattern: actionInterface().
+    # doAction("Press")) — the VM flips and the end-date field hides.
+    actions.doAction("Press")
+    QApplication.processEvents()
+    assert card.vm.noEnd is True
+    assert end_field.property("visible") is False
+
+    # The mouse click (the ordinary user's path) toggles back through the
+    # very same VM call — the convention switch moved nobody off the bus.
+    from tests.presentation.qml_helpers import click_item
+
+    click_item(card.quick, check_item)
+    QApplication.processEvents()
+    assert card.vm.noEnd is False
+    assert end_field.property("visible") is True

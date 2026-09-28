@@ -28,6 +28,9 @@ class DetailPanel(IslandDialogMixin, QWidget):
     island_context_names = {"detailPanelVm": "vm"}
 
     entity_clicked = Signal(str, int)
+    # NRI-0022 (task 3.1): the single-click selection relay for the wiring —
+    # the preview target, next to the double-click ``entity_clicked`` card.
+    entity_selected = Signal(str, int)
 
     def __init__(
         self,
@@ -56,6 +59,7 @@ class DetailPanel(IslandDialogMixin, QWidget):
         layout.addWidget(self.quick)
 
         self.vm.entityActivated.connect(self.entity_clicked)
+        self.vm.entitySelected.connect(self.entity_selected)
         self.vm.imageRequested.connect(self._open_image_viewer)
 
     def _release_island(self) -> None:
@@ -88,6 +92,23 @@ class DetailPanel(IslandDialogMixin, QWidget):
     def clear(self) -> None:
         self._current_event_id = None
         self.vm.clear()
+
+    def select_entity(self, entity_type: str, entity_id: int) -> None:
+        """Programmatic middle-column selection for the preview's navigation
+        bus (NRI-0022 task 5.1, design D4): the type's tab opens and the VM
+        washes the row through the very ``select`` slot the island delegates
+        drive; a pair absent from the current lists (or a type key with no
+        tab at all) changes nothing. The tab write goes FIRST because moving
+        the strip fires QML's ``hideRowHighlight`` synchronously — washing
+        before that call would simply be painted out."""
+        try:
+            tab = self.vm.ENTITY_TYPES.index(entity_type)
+        except ValueError:
+            return
+        if self.vm.models[tab].entity(entity_type, entity_id) is None:
+            return
+        self._root.setProperty("currentTab", tab)
+        self.vm.select(entity_type, entity_id)
 
     def _open_image_viewer(self, entity: Any) -> None:
         original = load_entity_original(entity)

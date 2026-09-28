@@ -39,14 +39,47 @@ Rectangle {
             searchInput.text = searchBarVm.query
     }
 
-    // The result row's single action: jump to the hit (the VM emits
-    // resultSelected and collapses the list). NRI-0017 task 2.2 (B3 sweep):
-    // both row paths run through it — the single-click jump is the migrated
-    // behavior, and the RowItem press path emits activateRequested, which
-    // without a listener here was a silent no-op in the accessibility tree.
+    // The result row's two gestures (NRI-0022 task 6.2, spec «Клик по
+    // результату ведёт к цели и закрывает список»): the single left click
+    // runs the full path to the hit, the double click asks for editing —
+    // both emit through the VM, which collapses the list with the gesture.
+    //
+    // A real double click releases its FIRST click as a single click before
+    // the double-click event arrives, so the jump waits out the platform's
+    // double-click interval in ``singleClickHold``: an ``activateRequested``
+    // during the hold cancels the jump and takes the row to the editor
+    // instead. RowItem's accessibility Press emits activateRequested too
+    // (the library's «press mirrors the double-click path» rule), so the
+    // keyboard route opens the editor as well. The right button reaches no
+    // handler at all (RowItem's MouseArea accepts the left button only).
+    property int pendingJumpIndex: -1
+
+    Timer {
+        id: singleClickHold
+        interval: searchBarVm.doubleClickIntervalMs
+        onTriggered: {
+            const index = root.pendingJumpIndex
+            root.pendingJumpIndex = -1
+            if (index >= 0)
+                root.jumpToRow(index)
+        }
+    }
+
     function jumpToRow(index) {
         searchResultsList.currentIndex = index
         searchBarVm.select(index)
+    }
+
+    function holdJump(index) {
+        root.pendingJumpIndex = index
+        singleClickHold.restart()
+    }
+
+    function editRow(index) {
+        root.pendingJumpIndex = -1
+        singleClickHold.stop()
+        searchResultsList.currentIndex = index
+        searchBarVm.activate(index)
     }
 
     Connections {
@@ -199,8 +232,8 @@ Rectangle {
                         width: searchResultsList.width
                         text: parent.rowData.text
                         selected: searchResultsList.currentIndex === parent.rowIndex
-                        onSelectedRequested: root.jumpToRow(parent.rowIndex)
-                        onActivateRequested: root.jumpToRow(parent.rowIndex)
+                        onSelectedRequested: root.holdJump(parent.rowIndex)
+                        onActivateRequested: root.editRow(parent.rowIndex)
                     }
                 }
 

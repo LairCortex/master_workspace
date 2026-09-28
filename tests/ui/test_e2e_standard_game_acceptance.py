@@ -233,13 +233,17 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
 
     # ── 8. World snapshot through the REAL bridge: the ViewModel answers
     # with a (coordinate, era) pair, the wiring keys the query and the
-    # panel paints the pre-C3a captions. ──
-    snapshot_vm = window.world_snapshot.vm
-    # NRI-0021 task 6.2: the field starts at the game's «now» as served when
-    # the panel was created — the applyNow above landed after the window, and
-    # a chosen-or-initial field never chases «сейчас» edits, so it still shows
-    # the seeded system-day «now» the service loaded for this fresh game.
-    assert snapshot_vm.dateIso == date.today().isoformat()
+    # panel paints the pre-C3a captions. NRI-0022 (group 2): the panel is
+    # reached through its own «Обзор мира…» window, the menu action is the
+    # entry — the bridge itself is the same object as before the move. ──
+    snapshot_vm = helpers.open_world_snapshot(application, window).vm
+    # NRI-0021 task 6.2 + NRI-0022 (group 2): the field starts at the game's
+    # «now» AT PANEL CREATION — since the move the panel is created when the
+    # «Обзор мира…» window opens, so here it inherits the game's «now» the
+    # applyNow above landed («панель создана при игровой „сейчас“», spec
+    # world-snapshot). The no-chasing rule stays the VM's own (its reset half
+    # reads the live «now» VM, pinned in test_world_snapshot_view_model.py).
+    assert snapshot_vm.dateIso == "1200-03-03"
     snapshot_vm.set_date(date(1200, 3, 15))
     snapshot_vm.requestShow()
     await helpers.wait_until_settled()

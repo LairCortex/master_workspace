@@ -99,7 +99,10 @@ class SheetWindowsManager:
         """Post-show half: a first opening finally moves to the screen center
         (its frame exists only now — a move never relays out the scene), then
         the placement tracker takes over. Resizing shown heavyweight dialogs
-        offscreen churns their islands, so centering is move-only."""
+        offscreen churns their islands, so centering is move-only; a
+        remembered placement, however, is re-applied through the frame-aware
+        re-place (FU-4 convergence — the hidden pre-place could not know the
+        decoration cost, the shown one repairs it)."""
         if self._geometries is not None:
             self._geometries.post_show_place(window, role, remembered=remembered)
 

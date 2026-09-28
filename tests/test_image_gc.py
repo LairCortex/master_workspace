@@ -10,7 +10,13 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.db.models import CharacterModel, DescriptionModel, ImageModel, OrganizationModel
+from app.infrastructure.db.models import (
+    CharacterModel,
+    DescriptionModel,
+    ImageModel,
+    ItemModel,
+    OrganizationModel,
+)
 from app.infrastructure.images.paths import original_path, preview_path
 from app.infrastructure.images.store import ImageStore
 
@@ -50,6 +56,32 @@ async def _make_org(session: AsyncSession, image_id: int | None = None) -> Organ
     session.add(org)
     await session.flush()
     return org
+
+
+async def _make_item(session: AsyncSession, image_id: int | None = None) -> ItemModel:
+    desc = DescriptionModel(characteristics="i", backstory="i")
+    session.add(desc)
+    await session.flush()
+    item = ItemModel(
+        name="Ring", description_id=desc.id, image_id=image_id,
+        start_date=date(500, 1, 1), end_date=date(3000, 1, 1),
+    )
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def _make_character(session: AsyncSession, image_id: int | None = None) -> CharacterModel:
+    desc = DescriptionModel(characteristics="c", backstory="c")
+    session.add(desc)
+    await session.flush()
+    char = CharacterModel(
+        name="Hero", description_id=desc.id, image_id=image_id,
+        start_date=date(1100, 1, 1), end_date=date(1200, 1, 1),
+    )
+    session.add(char)
+    await session.flush()
+    return char
 
 
 class TestRefcount:
@@ -351,3 +383,116 @@ class TestStartupGc:
 
         assert orig.exists() and prev.exists()
         assert await async_session.get(ImageModel, image_id) is not None
+
+
+# ── NRI-0022: the item reference is a counted owner of the file ────────────
+
+class TestItemOwnership:
+    @pytest.mark.asyncio
+    async def test_refcount_counts_item_reference(self, qapp, async_session: AsyncSession, image_dir):
+        """Without the ItemModel entry in _REFERRING_MODELS this answered 0 —
+        the premature-deletion hole the design risk line names."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        await _make_item(async_session, image_id)
+        assert await store.refcount(image_id) == 1
+
+    @pytest.mark.asyncio
+    async def test_item_and_character_share_file_item_gone_file_and_char_survive(
+        self, qapp, async_session: AsyncSession, image_dir,
+    ):
+        """Spec image-storage «Общее изображение у двух сущностей» for the new
+        pair: the item and the character store the same bytes (one sha256 →
+        one `images` row); deleting the item must not touch the file nor the
+        character's link."""
+        store = ImageStore(async_session, image_dir)
+        data = _png_bytes()
+        item_image_id = await store.store(data)
+        char_image_id = await store.store(data)  # dedup: same row
+        assert item_image_id == char_image_id
+
+        item = await _make_item(async_session, item_image_id)
+        char = await _make_character(async_session, char_image_id)
+        assert await store.refcount(item_image_id) == 2
+        await async_session.commit()
+
+        # Delete the item (the entity-card delete path: the row goes, the FK
+        # contract is «SET NULL», moot once the row itself is gone).
+        await async_session.delete(item)
+        await async_session.flush()
+        assert await store.refcount(char_image_id) == 1
+
+        await store.gc_after_commit(char_image_id)
+        await async_session.commit()
+
+        row = await async_session.get(ImageModel, char_image_id)
+        assert row is not None
+        assert original_path(image_dir, row.sha256, row.ext).exists()
+        assert preview_path(image_dir, row.sha256).exists()
+        await async_session.refresh(char)
+        assert char.image_id == char_image_id
+        assert char.image_ref is not None and char.image_ref.id == char_image_id
+
+    @pytest.mark.asyncio
+    async def test_startup_gc_keeps_item_referenced_image(
+        self, qapp, async_session: AsyncSession, image_dir,
+    ):
+        """Startup-scan invariant (design D7): a file only an item references
+        is owned and survives the scan."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        await _make_item(async_session, image_id)
+        await async_session.commit()
+        row = await async_session.get(ImageModel, image_id)
+        orig = original_path(image_dir, row.sha256, row.ext)
+        prev = preview_path(image_dir, row.sha256)
+
+        await store.startup_gc()
+        await async_session.commit()
+
+        assert orig.exists() and prev.exists()
+        assert await async_session.get(ImageModel, image_id) is not None
+
+    @pytest.mark.asyncio
+    async def test_startup_gc_reclaims_image_after_item_deleted(
+        self, qapp, async_session: AsyncSession, image_dir,
+    ):
+        """Deletion cleanup for the item: its row leaving the table drops the
+        reference count to zero, so the next startup scan reclaims files+row."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        item = await _make_item(async_session, image_id)
+        await async_session.commit()
+        row = await async_session.get(ImageModel, image_id)
+        orig = original_path(image_dir, row.sha256, row.ext)
+        prev = preview_path(image_dir, row.sha256)
+
+        await async_session.delete(item)
+        await async_session.commit()
+
+        await store.startup_gc()
+        await async_session.commit()
+
+        assert not orig.exists() and not prev.exists()
+        assert await async_session.get(ImageModel, image_id) is None
+
+    @pytest.mark.asyncio
+    async def test_startup_gc_nulls_item_reference_when_original_missing(
+        self, qapp, async_session: AsyncSession, image_dir,
+    ):
+        """_null_references covers items too: dropping a row whose original
+        died must not leave items pointing at a dead `images` row."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        item = await _make_item(async_session, image_id)
+        await async_session.commit()
+
+        row = await async_session.get(ImageModel, image_id)
+        original_path(image_dir, row.sha256, row.ext).unlink()
+
+        await store.startup_gc()
+        await async_session.commit()
+
+        assert await async_session.get(ImageModel, image_id) is None
+        await async_session.refresh(item)
+        assert item.image_id is None

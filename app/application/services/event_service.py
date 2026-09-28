@@ -4,14 +4,20 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, List, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import Table, select
 
 from app.application.services.entity_service import EntityService
 from app.application.services.mention_rewrite import rewrite_mentions
 from app.application.services.relation_sync import sync_related
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
-from app.infrastructure.db.models import EventModel
+from app.infrastructure.db.models import (
+    EventModel,
+    event_character,
+    event_item,
+    event_location,
+    event_organization,
+)
 from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.event_repository import EventRepository
@@ -24,6 +30,18 @@ COLOR_INDEX_MAX = 8
 #: ``update_event_with_relations`` default: leave the event's type untouched.
 #: A plain ``None`` default could not tell "no type" from "caller predates W4".
 TYPE_UNSET = object()
+
+#: NRI-0022 (task 6.1, design D7): how each card type is a member of events —
+#: the stable type key → (event M2M association table, entity id column) of the
+#: four event association tables. The search's full path resolves "the entity's
+#: latest-by-start event" through this map; the event type itself has no
+#: membership, so an unknown key simply answers "no events".
+_EVENT_MEMBERSHIP: dict[str, tuple[Table, str]] = {
+    "organization": (event_organization, "organization_id"),
+    "character": (event_character, "character_id"),
+    "item": (event_item, "item_id"),
+    "location": (event_location, "location_id"),
+}
 
 
 class EventService:
@@ -85,6 +103,29 @@ class EventService:
         """Events covering a moment given by its era key (design D2/D4) —
         callers translate their (date, era) pair through ``era_key``."""
         return await self._event_repo.get_events_at_date(target_key)
+
+    async def get_last_event_for_entity(
+        self, entity_type: str, entity_id: int
+    ) -> EventModel | None:
+        """The latest-started event the entity participates in (NRI-0022
+        task 6.1, design D7 — the search's full-path target).
+
+        Order is the shared era-aware chronological start key (every BC
+        moment precedes every CE one), ties of the same start moment resolve
+        to the smaller ``id``; an entity with no events — and a type key with
+        no event membership at all — answer ``None``."""
+        link = _EVENT_MEMBERSHIP.get(entity_type)
+        if link is None:
+            return None
+        table, column = link
+        stmt = (
+            select(EventModel)
+            .join(table, table.c.event_id == EventModel.id)
+            .where(table.c[column] == entity_id)
+            .order_by(EventModel.start_key.desc(), EventModel.id.asc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalars().first()
 
     # ── Event types (W4) ───────────────────────────────────────────────────
 

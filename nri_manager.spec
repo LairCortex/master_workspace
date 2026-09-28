@@ -112,6 +112,10 @@ a = Analysis(
          "app/presentation/qml"),
         ("app/presentation/qml/DetailPanelRoot.qml",
          "app/presentation/qml"),
+        # nri-0022-entity-preview: the readable right column — the preview
+        # island root, loaded via QQuickWidget.setSource like the others.
+        ("app/presentation/qml/EntityPreviewRoot.qml",
+         "app/presentation/qml"),
         ("app/presentation/qml/WorldSnapshotRoot.qml",
          "app/presentation/qml"),
         ("app/presentation/qml/EventDialogRoot.qml",

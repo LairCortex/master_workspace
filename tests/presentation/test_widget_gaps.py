@@ -320,7 +320,7 @@ class TestEntityCardDialogGaps:
         assert not d.clear_image_btn.isEnabled()
 
     def test_display_pixmap_and_clear_preview_noop_without_image_field(self, qtbot):
-        d = EntityCardDialog(None, entity_type="item")  # no image field
+        d = EntityCardDialog(None, entity_type="rating")  # the spec's imageless type
         qtbot.addWidget(d)
         d._display_pixmap(QPixmap())  # no image_label attribute — must not crash
         d._clear_preview()
@@ -370,7 +370,7 @@ class TestEntityCardDialogGaps:
             entity_card_dialog_mod, "ImageViewerDialog",
             lambda *a, **k: opened.append(1),
         )
-        d = EntityCardDialog(None, entity_type="item")  # no image field
+        d = EntityCardDialog(None, entity_type="rating")  # the spec's imageless type
         qtbot.addWidget(d)
         d._open_image_viewer()
         assert opened == []

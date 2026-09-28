@@ -194,6 +194,85 @@ def test_attach_takes_the_provider_into_the_main_role_too(tmp_path, qtbot):
     assert window.frameGeometry().getRect() == (50, 60, 750, 650)
 
 
+# ── FU-4 (live audit 2026-09-27): the open→close cycle converges ─────────────
+
+
+def test_reopen_cycle_does_not_accumulate_the_decoration_drift(tmp_path, qtbot):
+    """The production open order — attach/restore while HIDDEN, then show —
+    must be a fixed point: three open→show→close cycles keep the saved frame
+    byte-identical and land every shown window exactly on it.
+
+    The offscreen stub reproduces the mechanism, not the macOS pixels: a
+    hidden top-level reports frame == client while its 2 px stub frame only
+    exists after show — the same lie cocoa tells with its 28 pt title bar
+    (the audit saw y/height grow +28 per cycle). Without the post-show
+    re-place the shown frame comes back +4 px bigger per cycle here and the
+    close save feeds the drift back into the file. Which exact pixels the
+    macOS title bar finally lands the frame on stays a live re-audit check.
+    """
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    saved = [40, 50, 300, 200]  # fits the offscreen screen whole — no clamping
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"world_snapshot": list(saved)}))
+
+    for cycle in range(3):
+        memory = WindowGeometryMemory(prefs)  # a fresh "run" per cycle
+        window = QWidget()
+        qtbot.addWidget(window)
+        assert memory.attach(window, "world_snapshot") is True
+        window.show()
+        qtbot.wait(100)  # the singleShot-deferred re-place lands here
+        assert window.frameGeometry().getRect() == tuple(saved), cycle
+        window.close()  # guaranteed save — no debounce wait
+        assert prefs.load().windows["world_snapshot"] == saved, cycle
+
+
+def test_post_show_replacement_is_idempotent(tmp_path, qtbot):
+    """The second half of the FU-4 pin: re-applying a saved placement to a
+    window already standing in it moves nothing and rewrites nothing — so
+    repeated applications cannot accumulate, on any platform."""
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    saved = [30, 40, 320, 240]
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"sheet_editor": list(saved)}))
+    memory = WindowGeometryMemory(prefs)
+    window = _shown(qtbot, size=(200, 200))
+
+    assert memory.restore(window, "sheet_editor") is True
+    first = window.frameGeometry().getRect()
+    assert first == tuple(saved)  # shown window: the margins are known, exact
+
+    # The route that shows before the tracker exists re-places synchronously
+    # from post_show_place — on an already-correct frame it is a no-op.
+    memory.post_show_place(window, "sheet_editor", remembered=True)
+    assert window.frameGeometry().getRect() == first
+    assert prefs.load().windows["sheet_editor"] == saved
+
+
+def test_post_show_route_cycle_repairs_the_hidden_restore_drift(tmp_path, qtbot):
+    """The exact production open order of the snapshot/editor/fill routes
+    (``wiring._connect_snapshot``, ``sheet_windows``): restore while HIDDEN —
+    the lie lands the shown frame +stub-border bigger — then show, then the
+    synchronous re-place from ``post_show_place`` repairs it back onto the
+    saved rect before the close save writes anything. Three cycles converge;
+    the tracker created after show never sees the Show event, so without
+    this half of the fix the drift would feed straight back into the file
+    exactly as the live cocoa audit saw (+28 pt title bar per cycle)."""
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    saved = [40, 50, 300, 200]
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"sheet_fill": list(saved)}))
+
+    for cycle in range(3):
+        memory = WindowGeometryMemory(prefs)  # a fresh "run" per cycle
+        window = QWidget()
+        qtbot.addWidget(window)
+        remembered = memory.restore(window, "sheet_fill", center_when_absent=True)
+        window.show()
+        memory.post_show_place(window, "sheet_fill", remembered=remembered)
+        assert remembered is True, cycle
+        assert window.frameGeometry().getRect() == tuple(saved), cycle
+        window.close()  # guaranteed save — no debounce wait
+        assert prefs.load().windows["sheet_fill"] == saved, cycle
+
+
 # ── the one ui.json: theme and windows must not evict each other ────────────
 
 

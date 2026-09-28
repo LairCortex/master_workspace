@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.date_era import era_key
 from app.infrastructure.db.models import (
     DescriptionModel, OrganizationModel,
-    CharacterModel, ItemModel, LocationModel,
+    CharacterModel, ImageModel, ItemModel, LocationModel,
 )
 from app.infrastructure.repositories.base_repository import BaseRepository
 from app.infrastructure.repositories.coord_mapping import CoordMappingMixin
@@ -356,6 +356,31 @@ class TestItemRepository:
         item = await repo.create(name="Sword", description_id=desc.id,
             start_date=date(500, 1, 1), end_date=date(3000, 12, 31))
         assert item.name == "Sword"
+
+    @pytest.mark.asyncio
+    async def test_image_ref_save_read_null(self, async_session: AsyncSession):
+        """NRI-0022: the item repository stores/returns the images link the
+        same way the organization repository does (image_id + eager image_ref)."""
+        desc = await _make_desc(async_session)
+        img = ImageModel(sha256="1" * 64, ext="png", width=1, height=1, size_bytes=1)
+        async_session.add(img)
+        await async_session.flush()
+
+        repo = ItemRepository(async_session)
+        item = await repo.create(
+            name="Lamp", description_id=desc.id,
+            start_date=date(500, 1, 1), image_id=img.id,
+        )
+        fetched = await repo.get_by_id(item.id)
+        assert fetched.image_id == img.id
+        # eager selectin (the org pattern): the row arrives with the reference
+        assert fetched.image_ref is not None
+        assert fetched.image_ref.id == img.id
+
+        updated = await repo.update(item.id, image_id=None)
+        assert updated.image_id is None
+        await async_session.refresh(updated)  # the stale-identity half: reload
+        assert updated.image_ref is None
 
 
 # ── LocationRepository ────────────────────────────────────────────────────

@@ -207,8 +207,23 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     assert canvas.selected_id == event_id
     assert any(e.id == event_id for e in timeline_vm_events(canvas))
 
-    # entity result: the entity card opens
+    # entity result, single click (NRI-0022 task 6.2 re-pin): the full-path
+    # gesture — the character has no events, so the scale and the panel stay
+    # as they are and only the preview shows the entity; no card opens.
     window.search_bar.result_selected.emit("character", char_id)
+    await wait_for(
+        lambda: window.entity_preview.vm.shown_entity is not None
+        and window.entity_preview.vm.shown_entity.id == char_id
+    )
+    await helpers.wait_until_settled()
+    assert canvas.selected_id == event_id  # the scale kept the previous choice
+    assert window.detail_panel.vm.title == "СобытиеПоиска"  # the panel too
+    assert not [
+        d for d in window.findChildren(EntityCardDialog) if d.isVisible()
+    ]
+
+    # entity result, double click: the edit gesture opens the card
+    window.search_bar.result_activated.emit("character", char_id)
     await wait_for(lambda: any(
         d.isVisible() and d.name_input.text() == "ГеройПоиска"
         for d in window.findChildren(EntityCardDialog)
@@ -333,15 +348,18 @@ async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):
         window, wait_for, "МоментВремени", start_date=date(1300, 5, 15)
     )
     calls: list = []
+    # NRI-0022 (group 2): the panel lives in the «Обзор мира…» window; the
+    # real menu action opens it, the wiring answers the panel's signals.
+    snapshot = helpers.open_world_snapshot(application, window)
     monkeypatch.setattr(
-        window.world_snapshot, "populate",
+        snapshot, "populate",
         lambda events, target_date: calls.append((len(events), target_date)),
     )
 
     # "Показать всё" (None) and a concrete date
-    window.world_snapshot.snapshot_requested.emit(None)
+    snapshot.snapshot_requested.emit(None)
     await helpers.wait_until_settled()
-    window.world_snapshot.snapshot_requested.emit(datetime.date(1300, 5, 15))
+    snapshot.snapshot_requested.emit(datetime.date(1300, 5, 15))
     await helpers.wait_until_settled()
 
     assert calls == [(1, None), (1, datetime.date(1300, 5, 15))]

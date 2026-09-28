@@ -28,6 +28,7 @@ from app.infrastructure.db.models import (
     CharacterSheetInstanceModel,
     CharacterSheetModel,
     ImageModel,
+    ItemModel,
     LocationModel,
     OrganizationModel,
 )
@@ -37,8 +38,10 @@ from app.infrastructure.images.preview import generate_preview
 logger = logging.getLogger("app.images.store")
 
 # Models whose image_id references ImageModel — used by refcount/GC to scan
-# every possible referrer (design D3: refcount = COUNT(*) across 3 tables).
-_REFERRING_MODELS = (OrganizationModel, CharacterModel, LocationModel)
+# every possible referrer (design D3: refcount = COUNT(*) across the entity
+# tables; ItemModel added by NRI-0022 — a missing entry here would GC item
+# images while an item still shows them).
+_REFERRING_MODELS = (OrganizationModel, CharacterModel, LocationModel, ItemModel)
 
 
 class ImageStore:

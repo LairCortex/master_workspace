@@ -116,15 +116,18 @@ class TestMainWindow:
         splitter = layout.itemAt(1).widget()
         assert layout.itemAt(0).widget() is w.search_bar
         assert isinstance(splitter, QSplitter)
-        assert [splitter.widget(i) for i in range(3)] == [
-            w.timeline_widget, w.detail_panel, w.world_snapshot,
+        # NRI-0022 (tasks 2.4 + 4.1, spec main-window «Правая колонка главного
+        # окна — предпросмотр сущности»): шкала / детали / предпросмотр — the
+        # snapshot left for its «Обзор мира…» window and the freed column came
+        # back as the preview island; the snapshot is not in the columns.
+        assert [splitter.widget(i) for i in range(splitter.count())] == [
+            w.timeline_widget, w.detail_panel, w.entity_preview,
         ]
+        assert splitter.widget(2) is w.entity_preview
         # NRI-0019: the tabs now shrink with the column (elided captions),
-        # so the all-tabs-whole threshold retired as the pane floor — all
-        # three panes stand on one shared usability minimum.
-        assert [splitter.widget(i).minimumWidth() for i in range(3)] == [
-            220, 220, 220,
-        ]
+        # so the all-tabs-whole threshold retired as the pane floor — every
+        # pane stands on one shared usability minimum.
+        assert [splitter.widget(i).minimumWidth() for i in range(3)] == [220, 220, 220]
         assert [
             splitter.widget(i).sizePolicy().horizontalStretch() for i in range(3)
         ] == [1, 1, 1]
@@ -133,9 +136,12 @@ class TestMainWindow:
         assert callable(w.detail_panel.show_event)
         assert callable(w.detail_panel.clear)
         assert hasattr(w.detail_panel, "entity_clicked")
-        assert hasattr(w.world_snapshot, "snapshot_requested")
-        assert callable(w.world_snapshot.populate)
-        assert hasattr(w.world_snapshot, "entity_clicked")
+        # The preview's public face for the group-5 wiring (task 4.1):
+        # one feed channel in, one selection bus out, a clear() for the
+        # delete/new-game lifecycle.
+        assert callable(w.entity_preview.show_entity)
+        assert callable(w.entity_preview.clear)
+        assert hasattr(w.entity_preview, "entity_requested")
 
     def test_main_window_game_name_in_title(self, qtbot):
         w = MainWindow(
@@ -1392,10 +1398,56 @@ class TestEntityCardDialogImage:
         qtbot.addWidget(w)
         assert w._has_image_field
 
-    def test_item_has_no_image_panel(self, qtbot):
+    def test_item_has_image_panel(self, qtbot):
+        # NRI-0022: the item card gained the image column with its two buttons.
         w = EntityCardDialog(None, entity_type="item")
         qtbot.addWidget(w)
-        assert not w._has_image_field
+        assert w._has_image_field
+        assert hasattr(w, "image_label")
+        column = find_item(w.quick, "entityImageColumn")
+        assert column is not None
+        assert column.isVisible()
+        assert find_item(w.quick, "entityImagePickButton").property("text") == "Выбрать файл"
+        assert find_item(w.quick, "entityImageClearButton").property("text") == "Убрать"
+
+    def test_item_save_binds_and_clears_image_id(self, qtbot, monkeypatch):
+        """The item card's save payload carries the images link «Выбрать
+        файл» attached and «Убрать» releases it (NRI-0022 check)."""
+        import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
+        from PySide6.QtGui import QPixmap
+
+        fake = QPixmap(4, 4)
+        monkeypatch.setattr(
+            entity_card_dialog_mod, "load_entity_preview", lambda entity, slot_size: fake
+        )
+        monkeypatch.setattr(
+            entity_card_dialog_mod, "load_entity_original", lambda entity: fake
+        )
+
+        w = EntityCardDialog(None, entity_type="item")
+        qtbot.addWidget(w)
+        entity = MagicMock()
+        entity.id = 3
+        entity.name = "Ring"
+        entity.rating = 1
+        entity.start_date = date(500, 1, 1)
+        entity.end_date = date(3000, 1, 1)
+        entity.music_url = ""
+        entity.image_id = 7
+        entity.description = MagicMock(characteristics="", backstory="")
+        w.populate(entity)
+
+        # The stored id travels in the edit result the wiring saves (bind).
+        w.set_stored_image_id(7)
+        result = w.build_result()
+        assert result.entity_id == 3
+        assert result.fields["image_id"] == 7
+
+        # «Убрать» — the save payload releases the link (unbind).
+        w.clear_image_btn.click()
+        assert not w.clear_image_btn.isEnabled()
+        released = w.build_result()
+        assert released.fields["image_id"] is None
 
     def test_get_data_includes_empty_image(self, qtbot):
         w = EntityCardDialog(None, entity_type="character")
@@ -1680,13 +1732,36 @@ class TestWorldSnapshotWidget:
         assert "Персонажей: 1" in w.vm.statsText
         assert "Локаций: 1" in w.vm.statsText
 
-    def test_main_window_has_snapshot(self, qtbot):
+    def test_world_snapshot_left_the_columns_for_the_menu_action(self, qtbot):
+        """NRI-0022 (tasks 2.2/2.4): no snapshot pane in the window anymore.
+
+        The panel is hosted by the «Обзор мира…» window (spec world-snapshot
+        «Обзор мира открывается отдельным окном из строки меню»). Live audit
+        2026-09-27 (FU-1): a bare bar-level QAction is dropped by the macOS
+        cocoa bridge, so the entry lives in the «Файл» submenu like every
+        other working entry of this bar; it is NOT a top-level bar item and
+        pressing it still emits the request the connector answers with the
+        registry opening.
+        """
         vm = MagicMock()
         vm.events = []
         w = MainWindow(timeline_vm=vm, detail_vm=vm, search_vm=vm)
         qtbot.addWidget(w)
-        assert hasattr(w, "world_snapshot")
-        assert isinstance(w.world_snapshot, WorldSnapshotWidget)
+        assert not hasattr(w, "world_snapshot")
+        assert w.findChildren(WorldSnapshotWidget) == []
+        assert w.world_snapshot_action not in w.menuBar().actions()
+        # The submenu is read through findChildren — the established
+        # pattern of this file (the transient QAction.menu() wrapper has a
+        # PySide6 ownership quirk that can drop the C++ side in tests).
+        from PySide6.QtWidgets import QMenu
+
+        file_menu = next(
+            m for m in w.menuBar().findChildren(QMenu) if m.title() == "Файл"
+        )
+        assert w.world_snapshot_action in file_menu.actions()
+        assert w.world_snapshot_action.text() == "Обзор мира…"
+        with qtbot.waitSignal(w.world_snapshot_requested, timeout=1000):
+            w.world_snapshot_action.trigger()
 
     def test_world_snapshot_show_all_emits_none(self, qtbot):
         w = WorldSnapshotWidget()

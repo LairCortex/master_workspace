@@ -65,6 +65,8 @@ EXPECTED_QML_ROOT_FILES = (
     "EventTypesRoot.qml",
     "SearchBarRoot.qml",
     "DetailPanelRoot.qml",
+    # nri-0022-entity-preview: the entity-preview column's island root.
+    "EntityPreviewRoot.qml",
     "WorldSnapshotRoot.qml",
     "EventDialogRoot.qml",
     "EntityCardRoot.qml",

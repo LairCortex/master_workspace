@@ -72,6 +72,22 @@ def has_event_named(window, name: str) -> bool:
     return any(name in e.name for e in timeline_probe.events(window))
 
 
+def open_world_snapshot(application, window):
+    """Open the world-snapshot panel through the «Обзор мира…» menu action.
+
+    NRI-0022 (group 2): the panel left the main window's columns for its own
+    MenuWindowRegistry window (key ``world_snapshot``); this presses the real
+    action and reads the panel back off the live registry slot — the same
+    way the user reaches it.
+    """
+    from app.presentation.window_registry import WORLD_SNAPSHOT_KEY
+
+    window.world_snapshot_action.trigger()
+    snapshot_window = application._window_registry.get(WORLD_SNAPSHOT_KEY)
+    assert snapshot_window is not None, "«Обзор мира…» не открыло окно"
+    return snapshot_window.snapshot
+
+
 def find_event_id(window, name: str) -> int:
     return next(e.id for e in timeline_probe.events(window) if name in e.name)
 

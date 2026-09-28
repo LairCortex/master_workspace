@@ -1,4 +1,4 @@
-"""Tests for ImageModel and image_id FK on Organization/Character/Location."""
+"""Tests for ImageModel and image_id FK on Organization/Character/Location/Item."""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.models import (
-    Base, CharacterModel, DescriptionModel, ImageModel, LocationModel, OrganizationModel,
+    Base, CharacterModel, DescriptionModel, ImageModel, ItemModel, LocationModel,
+    OrganizationModel,
 )
 
 
@@ -111,6 +112,41 @@ class TestEntityImageIdColumn:
         result = await async_session.get(LocationModel, loc.id)
         assert result.image_id == img.id
 
+    @pytest.mark.asyncio
+    async def test_item_image_id_defaults_none(self, async_session: AsyncSession):
+        """NRI-0022: the item joins the image-referring entities."""
+        desc = DescriptionModel(characteristics="i", backstory="i")
+        async_session.add(desc)
+        await async_session.flush()
+        item = ItemModel(
+            name="Ring", description_id=desc.id,
+            start_date=date(500, 1, 1), end_date=date(3000, 1, 1),
+        )
+        async_session.add(item)
+        await async_session.commit()
+        assert item.image_id is None
+        assert item.image_ref is None
+
+    @pytest.mark.asyncio
+    async def test_item_can_link_to_image(self, async_session: AsyncSession):
+        img = ImageModel(sha256="a1" * 32, ext="png", width=1, height=1, size_bytes=1)
+        async_session.add(img)
+        await async_session.flush()
+        desc = DescriptionModel(characteristics="i", backstory="i")
+        async_session.add(desc)
+        await async_session.flush()
+        item = ItemModel(
+            name="Lamp", description_id=desc.id, image_id=img.id,
+            start_date=date(500, 1, 1), end_date=date(3000, 1, 1),
+        )
+        async_session.add(item)
+        await async_session.commit()
+        result = await async_session.get(ItemModel, item.id)
+        assert result.image_id == img.id
+        # eager image_ref (org pattern) — presentation resolves paths from it
+        assert result.image_ref is not None
+        assert result.image_ref.id == img.id
+
 
 class TestImageIdForeignKeySetNullDdl:
     """DDL-level check: image_id FKs declare ON DELETE SET NULL (design D3).
@@ -144,6 +180,37 @@ class TestImageIdForeignKeySetNullDdl:
                 await conn.execute(text("DELETE FROM images WHERE id=1"))
                 row = (
                     await conn.execute(text("SELECT image_id FROM organizations WHERE id=1"))
+                ).first()
+                assert row[0] is None
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_deleting_image_nulls_item_reference(self):
+        """NRI-0022: the item FK carries the same ON DELETE SET NULL contract
+        (fresh create_all schema from the ORM; the migrated schema adds the
+        identical DDL via the ``_MIGRATIONS`` registry)."""
+        engine = create_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+                await conn.execute(
+                    text(
+                        "INSERT INTO images (id, sha256, ext, width, height, size_bytes, created_at) "
+                        "VALUES (1, :sha, 'png', 1, 1, 1, :now)"
+                    ),
+                    {"sha": "12" * 32, "now": datetime(2024, 1, 1)},
+                )
+                await conn.execute(
+                    text(
+                        "INSERT INTO items (id, name, start_date, end_date, image_id, rating) "
+                        "VALUES (1, 'Ring', '0500-01-01', '3000-01-01', 1, 1)"
+                    )
+                )
+                await conn.execute(text("DELETE FROM images WHERE id=1"))
+                row = (
+                    await conn.execute(text("SELECT image_id FROM items WHERE id=1"))
                 ).first()
                 assert row[0] is None
         finally:

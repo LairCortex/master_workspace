@@ -31,6 +31,8 @@ from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.theme_date_popup import ThemeDatePopup
+from app.presentation.views.world_snapshot_widget import WorldSnapshotWindow
+from app.presentation.window_registry import WORLD_SNAPSHOT_KEY
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
 
 # NRI-0014 task 4.3 (CR5), the sheet-stack dim: every sheet opened over a
@@ -113,6 +115,13 @@ class ApplicationWiring:
         # its only reader/writer; entries die with the last sheet that made
         # them, and a game switch rebuilds the connector anyway.
         self._sheet_scrim_units: dict[Any, int] = {}
+        # NRI-0022 (tasks 5.1/5.2, design D2): the (type, id) the preview
+        # column shows — the lifecycle's whole state. A game switch rebuilds
+        # the connector (shutdown → start), so a restart or another game needs
+        # no clearing code: the fresh preview simply starts empty. The two
+        # signals that DO move this state are the shown entity's deletion
+        # (popup cleanup) and its own card save (refresh in place).
+        self._preview_shown: tuple[str, int] | None = None
         # Unified five-sheet import (rework 4.3): writes through the session/
         # ORM in apply_plan, only the image ingest pipeline is a dependency.
         self._xlsx_import = XlsxImportService(image_store=app._image_store)
@@ -243,6 +252,7 @@ class ApplicationWiring:
         self._connect_event_types()
         self._connect_event_dialogs()
         self._connect_entity_cards()
+        self._connect_preview()
         self._connect_search()
         self._connect_snapshot()
         self._connect_now_date()
@@ -553,6 +563,57 @@ class ApplicationWiring:
             lambda t, i: self._spawn(self._on_entity_click(t, i))
         )
 
+    def _connect_preview(self) -> None:
+        """Entity preview (NRI-0022 tasks 5.1/5.2, design D2/D4): the one
+        selection bus between the middle column and the read-only right
+        column. The preview never loads anything itself — both directions
+        ride here as (type, id) pairs, the entity service answers with the
+        row (its relations come from ``get_entity``), and only then does the
+        right column repaint. The timeline is deliberately absent from this
+        section: selecting or deselecting an event on the scale leaves the
+        shown entity in place (spec «Смена события предпросмотр не трогает»).
+        """
+        # Single-click / Press selection in the middle column (task 3.1's
+        # relay): the panel already painted the row wash, the connector feeds
+        # the preview with the freshly loaded entity.
+        self._window.detail_panel.entity_selected.connect(
+            lambda t, i: self._spawn(self._show_in_preview(t, i))
+        )
+        # Relation-row / mention-link activation inside the preview: the same
+        # bus in the opposite direction, plus the middle-column sync attempt.
+        self._window.entity_preview.entity_requested.connect(
+            lambda t, i: self._spawn(self._on_preview_entity_requested(t, i))
+        )
+
+    async def _show_in_preview(self, entity_type: str, entity_id: int) -> bool:
+        """Load one entity through its entity service and feed the preview
+        column (design D2: the presentation never sees the session). True
+        when the preview shows that pair afterwards. The pair already shown
+        reloads nothing — the spec changes the content only when the
+        selection changes, which also swallows the ``entitySelected`` echo of
+        :meth:`DetailPanel.select_entity` below (no second load, no loop).
+        A dead type key or a vanished row keeps the shown entity in place:
+        the broken-mention posture of task 4.5 survives into the wiring."""
+        if self._preview_shown == (entity_type, entity_id):
+            return True
+        entity_service = self._app._get_entity_service(entity_type)
+        if not entity_service:
+            return False
+        entity = await entity_service.get_entity(entity_id)
+        if entity is None:
+            return False
+        self._preview_shown = (entity_type, entity_id)
+        self._window.entity_preview.show_entity(entity_type, entity)
+        return True
+
+    async def _on_preview_entity_requested(self, entity_type: str, entity_id: int) -> None:
+        if not await self._show_in_preview(entity_type, entity_id):
+            return
+        # Middle-column sync (design D4): switch to the row's tab and wash it;
+        # a pair outside the current lists stays a preview-only navigation
+        # (the facade's no-op) and the scale is never touched from here.
+        self._window.detail_panel.select_entity(entity_type, entity_id)
+
     def _connect_search(self) -> None:
         """Search bar: the query dispatch and the result-open flows."""
         window = self._window
@@ -567,7 +628,9 @@ class ApplicationWiring:
             lambda q: self._spawn(on_search(q))
         )
 
-        # Search result click -> open entity card (or select event in timeline)
+        # Search result gestures (NRI-0022 task 6.2, spec «Клик по результату
+        # ведёт к цели и закрывает список»): the two channels the island
+        # separates — single click routes, double click edits.
         async def on_search_result(entity_type, entity_id):
             if entity_type == "event":
                 # Select by id and show details (plain await: the task of
@@ -590,41 +653,118 @@ class ApplicationWiring:
                     self._timeline_set_selected(entity_id)
                     self._timeline.scroll_to_event(entity_id)
             else:
-                # Plain await, not a new spawn: on_search_result's own task
-                # already holds the session lock (see _spawn at the connect
-                # site below), and on_entity_click never acquires it itself.
-                await self._on_entity_click(entity_type, entity_id)
+                # Full path to the hit (design D7): the target is the entity's
+                # latest-by-start event (era-chronological, smaller id on a
+                # tie). When the scale holds it, the event is selected first —
+                # with the window reset ``select_event_by_id`` performs from
+                # inside — so the detail panel re-models over the very event
+                # the entity belongs to; only then do the middle-column tab
+                # switch, the row wash and the preview run, over the loaded
+                # lists (the task 5.1 bus: show, then try to highlight).
+                # Without any event — and with an event the timeline never
+                # held — the scale and the panel stay exactly as they were
+                # and only the preview shows the entity (spec «Сущность без
+                # событий»).
+                target = await self._event_service.get_last_event_for_entity(
+                    entity_type, entity_id
+                )
+                if target is not None and any(
+                    ev.id == target.id for ev in timeline_vm.all_events
+                ):
+                    await self._on_event_selected(target.id)
+                    self._timeline_update_events()
+                    self._timeline_set_selected(target.id)
+                    self._timeline.scroll_to_event(target.id)
+                    await self._on_preview_entity_requested(entity_type, entity_id)
+                else:
+                    await self._show_in_preview(entity_type, entity_id)
 
         window.search_bar.result_selected.connect(
             lambda t, i: self._spawn(on_search_result(t, i))
         )
 
-    def _connect_snapshot(self) -> None:
-        """World-snapshot panel: the date query and the entity double-click."""
-        window = self._window
-        event_service = self._event_service
-
-        # World snapshot — date query. The bridge carries a (date, era) pair
-        # (task 3.4); the query itself is key-based, so era_key translates it
-        # here exactly once (a bare legacy date reads as «н.э.»).
-        async def on_snapshot_requested(target):
-            if target is None:
-                events = await event_service.get_all_events()
+        async def on_search_result_activated(entity_type, entity_id):
+            # Double click — the edit gesture (spec «Сущность открывается
+            # карточкой» / «Событие открывается редактором двойным кликом»):
+            # the entity's editable card, or the event editor for an event.
+            # Plain awaits: this handler's own task already holds the session
+            # lock, and neither shared handler acquires it itself.
+            if entity_type == "event":
+                await self._on_edit_event(entity_id)
             else:
-                target_date, target_bc = split_date_era(target)
-                events = await event_service.get_events_at_date(
-                    era_key(target_date, bool(target_bc))
+                await self._on_entity_click(entity_type, entity_id)
+
+        window.search_bar.result_activated.connect(
+            lambda t, i: self._spawn(on_search_result_activated(t, i))
+        )
+
+    def _connect_snapshot(self) -> None:
+        """World-snapshot WINDOW (NRI-0022, spec world-snapshot): the menu
+        entry, the date query and the entity activation.
+
+        The panel left the main window's splitter columns for a top-level
+        «Обзор мира…»: the action asks the one open-window registry (key
+        ``world_snapshot``), so a repeated entry raises the live window and
+        closing releases the slot. The factory additionally places the fresh
+        window through the geometry memory (role ``world_snapshot`` — saved
+        frame restored clamped, first opening centered at the wrapper's own
+        default 520×760) and shows it itself; the registry's following
+        ``show()`` is then the idempotent no-op on the visible window (the
+        launcher-switch factory precedent). QML content and the panel VM are
+        untouched by the move — the wiring surface (``snapshot_requested``,
+        ``entity_clicked``) is the same object as before, just hosted by the
+        window instead of the splitter.
+        """
+        window = self._window
+
+        def open_snapshot_window() -> None:
+            def make() -> WorldSnapshotWindow:
+                snapshot_window = WorldSnapshotWindow(
+                    parent=window,
+                    theme=self._app._theme,
+                    now_date_vm=self._now_date_vm,
                 )
-            window.world_snapshot.populate(events, target)
+                snapshot_window.snapshot.snapshot_requested.connect(
+                    lambda target, _w=snapshot_window: self._spawn(
+                        self._on_snapshot_requested(_w.snapshot, target)
+                    )
+                )
+                snapshot_window.snapshot.entity_clicked.connect(
+                    lambda t, i: self._spawn(self._on_entity_click(t, i))
+                )
+                # Pre-show / post-show placement halves (B4 rule): restore
+                # and possible shrink happen while hidden, the frame-aware
+                # centering move and the placement tracker right after show.
+                remembered = self._app._geometries.restore(
+                    snapshot_window, WORLD_SNAPSHOT_KEY, center_when_absent=True
+                )
+                snapshot_window.show()
+                self._app._geometries.post_show_place(
+                    snapshot_window, WORLD_SNAPSHOT_KEY, remembered=remembered
+                )
+                return snapshot_window
 
-        window.world_snapshot.snapshot_requested.connect(
-            lambda d: self._spawn(on_snapshot_requested(d))
-        )
+            self._app._window_registry.open(WORLD_SNAPSHOT_KEY, make)
 
-        # World snapshot — entity double-click (reuse _on_entity_click)
-        window.world_snapshot.entity_clicked.connect(
-            lambda t, i: self._spawn(self._on_entity_click(t, i))
-        )
+        window.world_snapshot_requested.connect(open_snapshot_window)
+
+    async def _on_snapshot_requested(self, snapshot, target) -> None:
+        """Answer one date query for the open snapshot panel.
+
+        The bridge carries a (date, era) pair (task 3.4); the query itself is
+        key-based, so era_key translates it here exactly once (a bare legacy
+        date reads as «н.э.»). The panel arrives as an argument because the
+        window is reopened (fresh panel after every close), not a permanent
+        child of the main window anymore.
+        """
+        if target is None:
+            events = await self._event_service.get_all_events()
+        else:
+            target_date, target_bc = split_date_era(target)
+            events = await self._event_service.get_events_at_date(
+                era_key(target_date, bool(target_bc))
+            )
+        snapshot.populate(events, target)
 
     def _connect_now_date(self) -> None:
         """Game-«now» widget (NRI-0021 task 3.3): popup, write, broadcast.
@@ -829,6 +969,16 @@ class ApplicationWiring:
                 if detail_vm.event:
                     await detail_vm.load_details(detail_vm.event.id)
                     window.detail_panel.show_event(detail_vm.event)
+                # NRI-0022 (task 5.2, spec «Сохранение карточки обновляет
+                # предпросмотр»): the shown entity repaints from a fresh read
+                # of the just-saved row; a save of any other entity never
+                # reaches the right column (its pair simply differs).
+                if self._preview_shown == (entity_type, entity_id):
+                    refreshed = await entity_service.get_entity(entity_id)
+                    if refreshed is not None:
+                        self._window.entity_preview.show_entity(
+                            entity_type, refreshed,
+                        )
                 dialog.finish_saving(True)
 
             dialog = await self._open_entity_card(
@@ -965,3 +1115,12 @@ class ApplicationWiring:
             for entity_type, entity_id, description_id in pending:
                 service = self._app._get_entity_service(entity_type)
                 await service.delete_entity_and_description(entity_id, description_id)
+        # NRI-0022 (task 5.2): this is the entity-delete channel the connector
+        # owns (spec entity-preview «Удаление показанной сущности очищает
+        # предпросмотр») — when the preview's shown entity was among the
+        # deleted, the right column returns to its self-explaining empty
+        # state. ``_preview_shown`` is None-safe here: the pair never equals
+        # None, so a preview that shows nothing stays untouched.
+        if any((t, i) == self._preview_shown for t, i, _d in pending):
+            self._preview_shown = None
+            self._window.entity_preview.clear()

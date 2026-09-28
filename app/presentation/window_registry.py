@@ -26,6 +26,10 @@ DOCS_README_KEY = "docs_readme"
 DOCS_CHANGELOG_KEY = "docs_changelog"
 LAUNCHER_SWITCH_KEY = "launcher_switch"
 LLM_SETUP_KEY = "llm_setup"
+# NRI-0022 (task 2.2, spec world-snapshot): «Обзор мира…» joins the contract's
+# non-modal family; the same string doubles as the window's role in the
+# geometry memory (task 2.3) — the spec names key and role alike.
+WORLD_SNAPSHOT_KEY = "world_snapshot"
 
 
 class MenuWindowRegistry:
