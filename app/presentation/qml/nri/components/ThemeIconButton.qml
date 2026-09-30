@@ -11,8 +11,13 @@
 //
 // Skin and interaction are inherited verbatim from ThemeButton (the token
 // chrome, hover/pressed derivations, disabled face, off-skin Basic
-// degradation) — the square only freezes the geometry. Accessibility stays on
-// the nri-0012 contract: the stock Button role ships with the control, the
+// degradation) — the square only freezes the geometry. The flat (ghost) set
+// of NRI-0023 task 11.2 rides the very same inheritance: a usage that sets
+// ``ghost: true`` gets the transparent-at-rest face with the compiler's
+// hover/pressed derivations WITHOUT losing this component's gauge or its
+//штатный accessibility contract (the disclosure chevron of the timeline
+// ladder is that usage — design Д12). Accessibility stays on the
+// nri-0012 contract: the stock Button role ships with the control, the
 // NAME is the usage site's (icon glyphs are named by the action they perform;
 // the close button inside ThemeSheetHeader is the one component-owned
 // annotation), and single activation is the ordinary Button.clicked the

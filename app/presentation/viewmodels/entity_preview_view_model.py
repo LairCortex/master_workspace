@@ -30,7 +30,9 @@ from app.presentation.utils.date_utils import (
     AGE_ENTITY_TYPES,
     AGE_LABEL,
     era_flag,
+    event_start_time,
     format_age_words,
+    format_event_start,
     format_game_date,
 )
 from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
@@ -197,7 +199,16 @@ class EntityPreviewViewModel(QObject):
 
         start_bc = era_flag(getattr(entity, "start_bc", False))
         end_bc = era_flag(getattr(entity, "end_bc", False))
-        start = format_game_date(getattr(entity, "start_date", None), is_bc=start_bc)
+        # NRI-0023 task 8.1 (design Д9, spec event-time «Время на поверхностях
+        # события»): the start side rides the single surface helper with the
+        # duck-typed time reader — an event shown here prints its «, HH:MM»
+        # tail, every time-less entity keeps the caption bit-for-bit.  The end
+        # stays a day (only the start carries a time).
+        start = format_event_start(
+            getattr(entity, "start_date", None),
+            start_bc,
+            event_start_time(entity),
+        )
         end = format_game_date(
             getattr(entity, "end_date", None), INFINITE_LABEL, is_bc=end_bc
         )

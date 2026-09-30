@@ -27,11 +27,16 @@ mirrored by the test stubs):
   geometry, every reveal from the Python side is a scroll request by row
   index (the invokable answers with indices);
  * root signals the facade CONNECTS — ``addRequested()``,
-   ``addMenuRequested(real x, real y)``, ``datePopupRequested(real x, real y,
-   real width, real height)`` (the chip's scene rect — the chip is the only
-   popover opener), ``eventClicked(int)``, ``eventDoubleClicked(int)`` and
-   ``selectionMissed()`` (a click past every row: no id-contract signal, the
-   selection is dropped through the ViewModel so every layer clears);
+    ``addMenuRequested(real x, real y)``, ``datePopupRequested(real x, real y,
+    real width, real height)`` (the chip's scene rect — the chip is the only
+    popover opener), ``eventClicked(int)``, ``eventDoubleClicked(int)``,
+    ``selectionMissed()`` (a click past every row: no id-contract signal, the
+    selection is dropped through the ViewModel so every layer clears) and
+    ``rowContextMenuRequested(int eventId, real x, real y)`` (NRI-0023 task
+    6.1: a MAIN event row was right-clicked — the delegate never reports
+    children or stubs — and the native «Создать подсобытие» menu is the
+    facade's to build; its pick is re-broadcast on the ViewModel's
+    ``subevent_create_requested`` for the connector);
  * VM signals the facade SUBSCRIBES — ``nowScrollRequested(int)`` (NRI-0021
    task 5.2): the «➜ Сейчас» button enters through the VM's sync slot, the VM
    computes the landing index and asks for the scroll, the facade answers on
@@ -79,6 +84,11 @@ ADD_MENU_ITEMS: tuple[tuple[str, str | None], ...] = (
     ("Новая организация", EntityType.ORGANIZATION.value),
     ("Новый предмет", EntityType.ITEM.value),
 )
+
+#: The row context menu's one item (NRI-0023 task 6.1, spec «Создание
+#: подсобытия правым кликом»): offered by a main event row and by nothing
+#: else — children and stubs never reach the menu (the delegate gate).
+SUBEVENT_MENU_ITEM = "Создать подсобытие"
 
 #: Window knob normalized: ``None`` and ``(None, None)`` both mean «Все дни».
 _NO_WINDOW: tuple = (None, None)
@@ -231,6 +241,9 @@ class TimelineWidget(IslandDialogMixin, QWidget):
         root.eventClicked.connect(self._on_event_clicked)
         root.eventDoubleClicked.connect(self.event_double_clicked.emit)
         root.selectionMissed.connect(self._on_selection_missed)
+        # NRI-0023 task 6.1: the row's right-click (main event rows only —
+        # the delegate gate) opens the native sub-event menu here.
+        root.rowContextMenuRequested.connect(self._show_row_context_menu)
 
     def _on_event_clicked(self, event_id: int) -> None:
         """A user click selects: the root's ``selectedId`` mirrors the click
@@ -283,6 +296,26 @@ class TimelineWidget(IslandDialogMixin, QWidget):
                 self.add_event_requested.emit()
             else:
                 self.add_entity_requested.emit(entity_type)
+
+    def _show_row_context_menu(
+        self, event_id: int, x: float, y: float
+    ) -> None:
+        """The main-event row's context menu (NRI-0023 task 6.1, design Д7):
+        one «Создать подсобытие» item, exec at the reported scene point. A
+        pick re-broadcasts the parent id on the ViewModel's
+        ``subevent_create_requested`` (the connector owns the prefilled
+        dialog); closing without a choice emits nothing. Only a main event row
+        ever reaches this — the delegate silences children and stubs, so the
+        menu is never built for them («меню не создаётся вовсе»)."""
+        menu = QMenu(self)
+        subevent_action = menu.addAction(SUBEVENT_MENU_ITEM)
+
+        picked = menu.exec(self._scene_to_global(x, y))
+        if picked is not subevent_action:
+            return  # Esc/промах — no request
+        request = getattr(self._vm, "requestSubeventCreate", None)
+        if callable(request):
+            request(int(event_id))
 
     # ── «Выбор даты» chip popover ────────────────────────────────────────────
 

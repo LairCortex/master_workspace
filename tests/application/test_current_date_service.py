@@ -8,6 +8,7 @@ including corrupted — value.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 
@@ -178,3 +179,36 @@ class TestSetNow:
         reopened = CurrentDateService(uow)
         assert await reopened.load(TODAY) == CurrentDateValue(MonthDay(2089, 5, 1), True)
         assert reopened.revision == 0  # per-holder counter, per-game holder
+
+    # ── NRI-0023 task 2.3: час «сейчас» (design Д5) ─────────────────────────
+
+    async def test_set_now_with_hour_writes_it_and_serves_it(
+        self, async_session: AsyncSession, uow: GameSessionUoW
+    ):
+        # сценарий «Час помнится после перезапуска» на стороне записи: тот же
+        # один транзакционный upsert, в JSON добавлен только ключ «h».
+        service = CurrentDateService(uow)
+        await service.load(TODAY)
+        await service.set_now(MonthDay(44, 11, 3), False, 14)
+        assert json.loads(await _stored_text(async_session)) == {
+            "coord": "M:44:11:3",
+            "bc": 0,
+            "h": 14,
+        }
+        assert service.value == CurrentDateValue(MonthDay(44, 11, 3), False, 14)
+        reopened = CurrentDateService(uow)
+        assert await reopened.load(TODAY) == CurrentDateValue(
+            MonthDay(44, 11, 3), False, 14
+        )
+
+    async def test_set_now_without_hour_keeps_the_pre_0023_wire(
+        self, async_session: AsyncSession, uow: GameSessionUoW
+    ):
+        # отсутствие ключа — поведение как прежде: дата-only правка пишет
+        # прежний двухключевой JSON и читается без часа
+        service = CurrentDateService(uow)
+        await service.load(TODAY)
+        await service.set_now(MonthDay(44, 11, 3))
+        assert await _stored_text(async_session) == '{"coord": "M:44:11:3", "bc": 0}'
+        reopened = CurrentDateService(uow)
+        assert await reopened.load(TODAY) == CurrentDateValue(MonthDay(44, 11, 3), False)

@@ -35,6 +35,7 @@ from app.domain.game_calendar import (
     as_game_coord,
     current_calendar,
 )
+from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.calendar_storage import (
     encode_coord,
 )
@@ -111,6 +112,40 @@ def format_game_date(
     if isinstance(d, IntercalaryDay):
         return f"{_intercalary_caption(d)} {d.year}{era}"
     return f"{d.day:02d} {month_name(d.month)} {d.year}{era}"
+
+
+def format_event_start(
+    coord: GameCoord | date | None,
+    is_bc: bool,
+    start_time: TimeOfDay | None,
+) -> str:
+    """The one caption of an event's start moment (NRI-0023 task 8.1, design
+    Д9 — spec event-time «Время на поверхностях события»).
+
+    Every surface that prints an event's start date (the ladder row, the
+    event card, the entity preview, the search result, the world snapshot)
+    calls THIS helper: with a chosen time the caption gains the ', HH:MM'
+    tail (both parts zero-padded to two digits, straight after the date, a
+    comma between); with ``start_time`` None the print is bit-for-bit the
+    plain :func:`format_game_date` caption — the empty time means «весь день,
+    с утра» and never invents a «00:00» (spec «Пустое время ничего не
+    меняет», the task's pin).
+    """
+    caption = format_game_date(coord, is_bc=is_bc)
+    if start_time is None:
+        return caption
+    return f"{caption}, {start_time.format_hhmm()}"
+
+
+def event_start_time(event: object) -> TimeOfDay | None:
+    """The event's optional wall-clock start, duck-typed like every other
+    display reader (NRI-0023 task 8.1): the surfaces receive ORM rows and
+    domain doubles alike, so only an actual :class:`TimeOfDay` counts —
+    absent/foreign attributes (the auto-Mock of a test double, say) read as
+    «без времени», exactly what :func:`format_event_start` then prints as
+    the untouched date caption."""
+    start_time = getattr(event, "start_time", None)
+    return start_time if isinstance(start_time, TimeOfDay) else None
 
 
 def worst_case_date_caption() -> str:

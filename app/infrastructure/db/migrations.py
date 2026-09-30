@@ -111,6 +111,18 @@ _MIGRATIONS = [
     # columns"), exactly like a fresh create_all game.
     *[(t, "start_coord", "TEXT") for t in _ERA_TABLES],
     *[(t, "end_coord", "TEXT") for t in _ERA_TABLES],
+    # NRI-0023 (design Д2): the optional event start time — one nullable
+    # INTEGER of minutes from the day start; NULL means «без времени».  Added
+    # here because ``EventModel`` now maps the column, so a pre-0023 game file
+    # has to receive it before any ``select(EventModel)`` (the startup era-key
+    # reconcile included) can run against it.
+    ("events", "start_time", "INTEGER"),
+    # NRI-0023 (design Д1): the sub-event self-FK — NULL marks a main event.
+    # The same mapping reason as the row above (``EventModel.parent_id``
+    # selects the column); ON DELETE CASCADE is the no-orphan formality the
+    # design names — the product deletes nothing, but even a manual DB edit
+    # cannot leave the parent link dangling.
+    ("events", "parent_id", "INTEGER REFERENCES events(id) ON DELETE CASCADE"),
 ]
 
 # NRI defaults seeded once per game into an empty `event_types` set (W4).

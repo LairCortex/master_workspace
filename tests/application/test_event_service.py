@@ -15,6 +15,7 @@ import pytest
 
 from app.application.services.entity_service import EntityService
 from app.application.services.event_service import EventService
+from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.db.models import (
     CharacterModel,
     DescriptionModel,
@@ -639,3 +640,279 @@ class TestSessionAliveAfterSaveFailure:
         names = [e.name for e in await w.event_repo.get_all()]
         assert "Aftermath" in names
         assert "Doomed" not in names
+
+
+# ── Parent link guard (NRI-0023 task 3.2, design Д1) ───────────────────────
+#
+# Exactly two levels is a save-time rule of this service: the parent must
+# exist, must itself be parentless and must not be the edited event.  The
+# refusal is a Russian ValueError — the wiring's save handler renders any
+# exception into the one modal the user reads («Не удалось сохранить
+# событие: …»), so the message text is user-facing and pinned here.
+
+
+class TestEventParentGuard:
+    async def _chain(self, session):
+        """fair (main) → toast (its sub-event), plus feast — a second main."""
+        fair = await _make_event(session, "Fair")
+        feast = await _make_event(session, "Feast")
+        toast = await _make_event(session, "Toast", parent_id=fair.id)
+        return fair, feast, toast
+
+    async def test_create_with_unknown_parent_rejected(self, async_session):
+        w = await _world(async_session)
+        await async_session.commit()  # fixture baseline in its own transaction
+        with pytest.raises(ValueError, match="родительское событие 999999 не найдено"):
+            await w.event_service.create_event_with_relations(
+                name="Orphan",
+                start_date=D1,
+                end_date=None,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+                parent_id=999999,
+            )
+        # The refusal happened before anything was written and the unit rolled
+        # the session back — no half-saved event stays behind.
+        names = [e.name for e in await w.event_repo.get_all()]
+        assert "Orphan" not in names
+
+    async def test_create_with_subevent_as_parent_rejected(self, async_session):
+        # spec «Подсобытие не обрастает детьми»: a child can never be a parent
+        w = await _world(async_session)
+        fair, _, toast = await self._chain(async_session)
+        await async_session.commit()
+        with pytest.raises(ValueError, match="не может быть подсобытием"):
+            await w.event_service.create_event_with_relations(
+                name="Grandchild",
+                start_date=D1,
+                end_date=None,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+                parent_id=toast.id,
+            )
+        names = [e.name for e in await w.event_repo.get_all()]
+        assert "Grandchild" not in names
+        assert fair.parent_id is None
+
+    async def test_update_to_self_rejected(self, async_session):
+        w = await _world(async_session)
+        await async_session.commit()
+        with pytest.raises(ValueError, match="родителем самого себя"):
+            await w.event_service.update_event_with_relations(
+                w.event.id,
+                name="Brawl",
+                start_date=D1,
+                end_date=D2,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+                parent_id=w.event.id,
+            )
+        await async_session.refresh(w.event, attribute_names=["parent_id"])
+        assert w.event.parent_id is None  # the refused save left no trace
+
+    async def test_update_to_unknown_parent_rejected(self, async_session):
+        w = await _world(async_session)
+        _, _, toast = await self._chain(async_session)
+        await async_session.commit()
+        with pytest.raises(ValueError, match="родительское событие 999999 не найдено"):
+            await w.event_service.update_event_with_relations(
+                toast.id,
+                name="Toast",
+                start_date=D1,
+                end_date=D2,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+                parent_id=999999,
+            )
+        await async_session.refresh(toast, attribute_names=["parent_id"])
+        assert toast.parent_id is not None  # the old link survived
+
+    async def test_update_to_subevent_as_parent_rejected(self, async_session):
+        # Making «Fair» a child of its own child «Toast» would open a third
+        # level (and a cycle) — rule «без своего родителя» refuses it.
+        w = await _world(async_session)
+        fair, _, toast = await self._chain(async_session)
+        await async_session.commit()
+        with pytest.raises(ValueError, match="не может быть подсобытием"):
+            await w.event_service.update_event_with_relations(
+                fair.id,
+                name="Fair",
+                start_date=D1,
+                end_date=D2,
+                characteristics="c",
+                backstory="b",
+                relations=dict(EMPTY_RELATIONS),
+                parent_id=toast.id,
+            )
+        await async_session.refresh(fair, attribute_names=["parent_id"])
+        assert fair.parent_id is None
+
+    async def test_create_with_main_parent_attaches(self, async_session):
+        w = await _world(async_session)
+        fair, _, _ = await self._chain(async_session)
+        child = await w.event_service.create_event_with_relations(
+            name="Oath",
+            start_date=D1,
+            end_date=None,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+            parent_id=fair.id,
+        )
+        assert child.parent_id == fair.id
+        await async_session.refresh(child, attribute_names=["parent_id"])
+        assert child.parent_id == fair.id
+
+    async def test_update_reparents_child(self, async_session):
+        # spec «Перецепка»: the child moves to another main event
+        w = await _world(async_session)
+        _, feast, toast = await self._chain(async_session)
+        result = await w.event_service.update_event_with_relations(
+            toast.id,
+            name="Toast",
+            start_date=D1,
+            end_date=D2,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+            parent_id=feast.id,
+        )
+        await async_session.refresh(result, attribute_names=["parent_id"])
+        assert result.parent_id == feast.id
+
+    async def test_update_promotes_to_main(self, async_session):
+        # spec «Подъём в основные»: the explicit None detaches the child
+        w = await _world(async_session)
+        fair, _, toast = await self._chain(async_session)
+        result = await w.event_service.update_event_with_relations(
+            toast.id,
+            name="Toast",
+            start_date=D1,
+            end_date=D2,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+            parent_id=None,
+        )
+        await async_session.refresh(result, attribute_names=["parent_id"])
+        assert result.parent_id is None
+        await async_session.refresh(fair, attribute_names=["parent_id"])
+        assert fair.parent_id is None  # the old parent stays main as well
+
+    async def test_update_without_parent_argument_keeps_the_link(
+        self, async_session,
+    ):
+        # The PARENT_UNSET default (design Д1, same trick as TYPE_UNSET): a
+        # caller that predates the sub-event feature must never silently
+        # promote a child it is only renaming.
+        w = await _world(async_session)
+        fair, _, toast = await self._chain(async_session)
+        result = await w.event_service.update_event_with_relations(
+            toast.id,
+            name="Toast Renamed",
+            start_date=D1,
+            end_date=D2,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+        )
+        await async_session.refresh(result, attribute_names=["name", "parent_id"])
+        assert result.name == "Toast Renamed"
+        assert result.parent_id == fair.id
+
+
+# ── Wall-clock start time plumbing (NRI-0023 task 7.2, spec «Необязательное
+# время начала события») ─────────────────────────────────────────────────────
+#
+# The dialog hands the service a TimeOfDay (or None); the model stores the
+# minutes from the day start in the ACTIVE calendar's unit, so the service
+# tests read the value back through the same property. The sentinel default is
+# the PARENT_UNSET precedent: a caller that predates the time field must never
+# clear a stored time while merely renaming.
+
+
+class TestEventStartTime:
+    async def test_create_stores_the_time_and_none_stays_none(self, async_session):
+        w = await _world(async_session)
+        timed = await w.event_service.create_event_with_relations(
+            name="Рассвет",
+            start_date=D1,
+            end_date=None,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+            start_time=TimeOfDay(9, 30),
+        )
+        plain = await w.event_service.create_event_with_relations(
+            name="Без времени",
+            start_date=D1,
+            end_date=None,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+        )
+        # The mapped column is start_time_raw (the start_time face is a plain
+        # property over it, unrefreshable — the group-1 mapping contract).
+        await async_session.refresh(timed, attribute_names=["start_time_raw"])
+        await async_session.refresh(plain, attribute_names=["start_time_raw"])
+        # spec «Время задано» / «Время не задано — не выдумано»: the value
+        # round-trips exactly, and an empty selection is NULL, never 00:00.
+        assert timed.start_time == TimeOfDay(9, 30)
+        assert timed.start_time_raw == 9 * 60 + 30
+        assert plain.start_time is None
+        assert plain.start_time_raw is None
+
+    async def test_update_sets_and_clears_the_time(self, async_session):
+        w = await _world(async_session)
+        await async_session.commit()
+        updated = await w.event_service.update_event_with_relations(
+            w.event.id,
+            name="Brawl",
+            start_date=D1,
+            end_date=D2,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+            start_time=TimeOfDay(14, 0),
+        )
+        await async_session.refresh(updated, attribute_names=["start_time_raw"])
+        assert updated.start_time == TimeOfDay(14, 0)
+        cleared = await w.event_service.update_event_with_relations(
+            w.event.id,
+            name="Brawl",
+            start_date=D1,
+            end_date=D2,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+            start_time=None,
+        )
+        await async_session.refresh(cleared, attribute_names=["start_time_raw"])
+        assert cleared.start_time is None
+
+    async def test_update_without_time_argument_keeps_the_time(
+        self, async_session,
+    ):
+        # The START_TIME_UNSET default: renaming an event through an
+        # old-signature caller must not silently wipe its stored wall clock.
+        w = await _world(async_session)
+        timed = await _make_event(
+            async_session, "Timed", start_time=TimeOfDay(7, 45),
+        )
+        await async_session.commit()
+        result = await w.event_service.update_event_with_relations(
+            timed.id,
+            name="Timed Renamed",
+            start_date=D1,
+            end_date=D2,
+            characteristics="c",
+            backstory="b",
+            relations=dict(EMPTY_RELATIONS),
+        )
+        await async_session.refresh(result, attribute_names=["name", "start_time_raw"])
+        assert result.name == "Timed Renamed"
+        assert result.start_time == TimeOfDay(7, 45)

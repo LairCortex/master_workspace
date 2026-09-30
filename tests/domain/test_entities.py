@@ -24,6 +24,7 @@ from app.domain.game_calendar import (
     InvalidGameDateError,
     MonthDay,
 )
+from app.domain.time_of_day import TimeOfDay
 
 
 # --- Description ---
@@ -129,6 +130,35 @@ class TestEvent:
             event_type=t,
         )
         assert e.event_type is t
+
+    def test_event_has_no_start_time_by_default(self):
+        # NRI-0023 task 1.3 (design Д2): «без времени» — отдельное состояние,
+        # оно не выдумывает 00:00 и не трогает прежние конструкторы событий
+        e = Event(
+            name="All-day Feast",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 1, 1),
+        )
+        assert e.start_time is None
+
+    def test_event_with_assigned_start_time(self):
+        e = Event(
+            name="Meeting at the Tavern",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 1, 1),
+            start_time=TimeOfDay(14, 30),
+        )
+        assert e.start_time == TimeOfDay(14, 30)
+
+    def test_event_start_time_clears_back_to_none(self):
+        e = Event(
+            name="Morning Muster",
+            description=Description(characteristics="x", backstory="y"),
+            start_date=date(1200, 1, 1),
+            start_time=TimeOfDay(9, 5),
+        )
+        e.start_time = None
+        assert e.start_time is None
 
 
 # --- EventType (W4) ---

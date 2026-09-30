@@ -13,13 +13,17 @@ from app.domain.game_calendar import (
     GameCoord,
     InvalidGameDateError,
     as_game_coord,
+    current_calendar,
 )
+from app.domain.time_of_day import TimeOfDay
 from app.presentation.utils.date_utils import (
     format_duration_words,
+    format_event_start,
     format_game_date,
     iso_or_coord,
     worst_case_date_caption,
 )
+from app.presentation.utils.time_options import minute_options
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 
 #: Caption of the read-only elapsed line of the event dialog (NRI-0021
@@ -27,6 +31,10 @@ from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 #: «С начала: <формула>» row; the formula itself is the single duration word
 #: helper, counted from the event start to «now» regardless of the end.
 SINCE_LABEL = "С начала: "
+#: The empty head of the dialog's three dropdown lists (NRI-0023 tasks 7.1/7.2,
+#: specs «Поле „Родительское событие“…» and «Списки часов и минут…»): index 0
+#: of every model means «нет значения» — no parent, no hour, no minute.
+EMPTY_OPTION = "—"
 AI_STATE_PROPERTY = "aiState"
 AI_STATE_ACTIVE = "active"
 AI_STATE_DISABLED = "disabled"
@@ -366,6 +374,23 @@ class EventDialogIslandViewModel(QObject):
             self._start_bc = False
             self._end_bc = False
         self._no_end = False
+        # NRI-0023 task 6.1 (spec «Создание подсобытия правым кликом»): the
+        # parent link the dialog carries. The «Создать подсобытие» flow
+        # prefills it through the facade; a plain create stays None. Task 7.1
+        # moves its visible face (the «Родительское событие» combo) onto this
+        # same slot — the value lives here, in the ViewModel, nowhere else.
+        self._parent_id: int | None = None
+        # NRI-0023 task 7.1 (spec «Поле „Родительское событие“ в карточке
+        # события»): the combo's raw candidate list (the connector hands over
+        # the game's events) and the edited event's id, excluded from the list
+        # so a card never offers itself as its own parent.
+        self._parent_candidates: list[Any] = []
+        self._parent_exclude_id: int | None = None
+        # NRI-0023 task 7.2 (spec event-time «Списки часов и минут…»): the
+        # wall-clock start as the two combo selections. A None hour means «без
+        # времени»; a None minute with a chosen hour saves as minute 0.
+        self._start_hour: int | None = None
+        self._start_minute: int | None = None
         # NRI-0021 task 4.4: the mirrored game «now» (fed by the facade from
         # the widget VM); None without a game open — the «С начала» line then
         # stays empty.
@@ -435,7 +460,17 @@ class EventDialogIslandViewModel(QObject):
             self._name = value
             self.stateChanged.emit()
 
+    def _set_parent_id(self, value: int | None) -> None:
+        if value != self._parent_id:
+            self._parent_id = None if value is None else int(value)
+            self.stateChanged.emit()
+
     name = Property(str, lambda self: self._name, _set_name, notify=stateChanged)
+    # NRI-0023 task 6.1: the sub-event parent slot (Python contract; task 7.1
+    # binds the «Родительское событие» combo onto this same value).
+    parent_id = Property(
+        "QVariant", lambda self: self._parent_id, _set_parent_id, notify=stateChanged
+    )
     # ``Iso`` strings (piece C3a, design D5): ISO while the coordinate is
     # representable as a real date (bit-for-bit the previous string), the
     # domain codec text otherwise; QML reads them verbatim and parses none.
@@ -443,7 +478,13 @@ class EventDialogIslandViewModel(QObject):
     endIso = Property(str, lambda self: iso_or_coord(self._end_date), notify=stateChanged)
     startDisplay = Property(
         str,
-        lambda self: format_game_date(self._start_date, is_bc=self._start_bc),
+        # NRI-0023 task 8.1 (design Д9, spec event-time «Время на поверхностях
+        # события»): the card prints its start through the single surface
+        # helper — a chosen time rides the date as «, HH:MM», the empty one
+        # keeps the caption bit-for-bit (start_time is None then).
+        lambda self: format_event_start(
+            self._start_date, self._start_bc, self.start_time
+        ),
         notify=stateChanged,
     )
     endDisplay = Property(
@@ -508,6 +549,149 @@ class EventDialogIslandViewModel(QObject):
         ),
         notify=stateChanged,
     )
+
+    # ── «Родительское событие» (NRI-0023 task 7.1, spec «Поле „Родительское
+    # событие“ в карточке события») ──────────────────────────────────────────
+    # The list is «—» plus every MAIN event of the game — sub-events never
+    # qualify (two-level nesting), and the edited event is excluded so a card
+    # cannot parent itself.  The raw connector list stays untouched here; the
+    # filtering happens at read, so loading before or after populate cannot
+    # matter.  index 0 of the model means «без родителя».
+
+    def _parent_choices(self) -> list[Any]:
+        return [
+            item
+            for item in self._parent_candidates
+            if getattr(item, "parent_id", None) is None
+            and getattr(item, "id", None) != self._parent_exclude_id
+        ]
+
+    def set_parent_options(
+        self, events: list[Any], exclude_id: int | None = None
+    ) -> None:
+        """Hand the combo its candidates (the connector's event list, the
+        whole set — the main-only/self filtering is the read-time rule)."""
+        self._parent_candidates = list(events)
+        self._parent_exclude_id = exclude_id
+        self.stateChanged.emit()
+
+    parentNames = Property(
+        "QVariant",
+        lambda self: [EMPTY_OPTION] + [
+            getattr(item, "name", "") for item in self._parent_choices()
+        ],
+        notify=stateChanged,
+    )
+    selectedParentIndex = Property(
+        int, lambda self: self._selected_parent_index(), notify=stateChanged
+    )
+
+    def _selected_parent_index(self) -> int:
+        if self._parent_id is None:
+            return 0
+        for index, item in enumerate(self._parent_choices(), 1):
+            if getattr(item, "id", None) == self._parent_id:
+                return index
+        return 0
+
+    @Slot(int)
+    def selectParent(self, index: int) -> None:  # noqa: N802
+        choices = self._parent_choices()
+        if not 0 <= index <= len(choices):
+            return
+        self._set_parent_id(
+            None if index == 0 else getattr(choices[index - 1], "id", None)
+        )
+
+    # ── «Час»/«Минута» (NRI-0023 task 7.2, spec «Списки часов и минут в
+    # карточке события») ─────────────────────────────────────────────────────
+    # Bounds come from the active calendar — nothing here hardcodes 24/60.
+    # The minute list offers the pure helper's ladder, is enabled only while
+    # an hour is chosen, and «час без минут» saves as minute 0.
+
+    @property
+    def start_time(self) -> TimeOfDay | None:
+        """The save-bound value: None without an hour (never a fabricated
+        00:00), else the hour with the chosen minute or 0 («час без минут»)."""
+        if self._start_hour is None:
+            return None
+        return TimeOfDay(hour=self._start_hour, minute=self._start_minute or 0)
+
+    def set_start_time(self, start_time: TimeOfDay | None) -> None:
+        """Load a stored time into the two selections, sanitised against the
+        ACTIVE calendar (spec «Смена размера суток…»): an hour outside the
+        current day or a minute the current ladder cannot show reads as empty
+        and therefore never re-participates in a save until the user picks a
+        valid value."""
+        calendar = current_calendar()
+        hour: int | None = None
+        minute: int | None = None
+        if start_time is not None and 0 <= start_time.hour < calendar.day_hours:
+            hour = start_time.hour
+            if start_time.minute in minute_options(calendar.minutes_per_hour):
+                minute = start_time.minute
+        self._start_hour = hour
+        self._start_minute = minute
+        self.stateChanged.emit()
+
+    hourOptions = Property(
+        "QVariant",
+        lambda self: [EMPTY_OPTION] + [
+            str(hour) for hour in range(current_calendar().day_hours)
+        ],
+        notify=stateChanged,
+    )
+    minuteOptions = Property(
+        "QVariant",
+        lambda self: [EMPTY_OPTION] + [
+            str(minute) for minute in minute_options(current_calendar().minutes_per_hour)
+        ],
+        notify=stateChanged,
+    )
+    selectedHourIndex = Property(
+        int,
+        lambda self: 0 if self._start_hour is None else self._start_hour + 1,
+        notify=stateChanged,
+    )
+    selectedMinuteIndex = Property(
+        int, lambda self: self._selected_minute_index(), notify=stateChanged
+    )
+    # «Список минут SHALL становиться активным только при выбранном часе».
+    minuteEnabled = Property(
+        bool, lambda self: self._start_hour is not None, notify=stateChanged
+    )
+
+    def _selected_minute_index(self) -> int:
+        # absent-safe QML binding (the same posture as _event_text): a minute
+        # the ACTIVE ladder cannot offer — only reachable if the calendar was
+        # swapped after the value was set, since load and selection both
+        # sanitise against the current ladder — reads as the empty «—».
+        if self._start_minute is None:
+            return 0
+        options = minute_options(current_calendar().minutes_per_hour)
+        if self._start_minute not in options:
+            return 0
+        return options.index(self._start_minute) + 1
+
+    @Slot(int)
+    def selectHour(self, index: int) -> None:  # noqa: N802
+        day_hours = current_calendar().day_hours
+        if not 0 <= index <= day_hours:
+            return
+        self._start_hour = None if index == 0 else index - 1
+        if self._start_hour is None:
+            # No hour — no minute either (the list is disabled; the empty
+            # hour must not leave a hidden minute behind for the save).
+            self._start_minute = None
+        self.stateChanged.emit()
+
+    @Slot(int)
+    def selectMinute(self, index: int) -> None:  # noqa: N802
+        options = minute_options(current_calendar().minutes_per_hour)
+        if not 0 <= index <= len(options):
+            return
+        self._start_minute = None if index == 0 else options[index - 1]
+        self.stateChanged.emit()
 
     def set_dates(
         self,

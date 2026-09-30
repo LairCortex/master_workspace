@@ -21,6 +21,17 @@ Button {
     // «Открыть» vs every other action.
     property bool accentBackground: false
 
+    // Flat (ghost) set (NRI-0023 task 11.2, design Д12; spec qml-components
+    // «Плоская (ghost) гарнитура кнопки библиотеки»): a glyph action that sits
+    // ON a row paints NO own face at all — neither fill nor border, only the
+    // glyph — and takes the compiler's derivations (color.accent.hover /
+    // pressed, bridge tokens, never literals here) as the hover/pressed wash.
+    // It changes neither the hit zone nor the accessibility (the stock Button
+    // contract is untouched) and does not shift neighbours: only the
+    // background node's paint moves. Usage sites that do not ask for it keep
+    // the previous face word-for-word.
+    property bool ghost: false
+
     // Design D2: creation-context lookup of the bridge with the typeof
     // insurance; outside any island the lookup degrades to {} (off-skin).
     readonly property var islandTokens:
@@ -60,9 +71,18 @@ Button {
     background: Rectangle {
         visible: control.skinned  // off-skin: bare Basic text button
         radius: Tokens.px(islandTokens, "radius.sm", 6)
-        border.width: control.accentBackground ? 0 : 1
+        // A ghost wears no border ever (spec: «ни заливки, ни рамки»); the
+        // non-ghost chrome below is the migrated pair, word-for-word.
+        border.width: control.ghost ? 0 : (control.accentBackground ? 0 : 1)
         border.color: control.accentBackground ? "transparent" : control.borderColor
         color: {
+            if (control.ghost)
+                // Ghost face (Д12): transparent at rest — hover/pressed are
+                // the compiler's derivations, tokens the Python compiler
+                // already ships for every other button wash in the app.
+                return control.pressed ? control.accentPressed(control.canvasColor)
+                     : control.hovered ? control.accentHover(control.canvasColor)
+                     : "transparent"
             if (!control.enabled)
                 return control.canvasColor
             if (control.accentBackground)

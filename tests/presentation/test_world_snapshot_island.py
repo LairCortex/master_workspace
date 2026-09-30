@@ -120,6 +120,52 @@ def test_section_toggle_entity_click_and_event_no_emit(qtbot):
     assert emitted == [("location", 20)]
 
 
+def test_tree_stub_renders_name_only_and_stays_unclickable(qtbot):
+    """NRI-0023 task 8.3 in QML: the always-expanded tree arrives as ordinary
+    rows — the child's indent rides inside displayText (the caption is the
+    QML-independent channel), the orphan's parent stub carries the NAME and
+    answers the click channel with nothing (vm.select ignores its rowKind)."""
+    widget = WorldSnapshotWidget()
+    widget.resize(760, 520)
+    qtbot.addWidget(widget)
+    orphan = SimpleNamespace(
+        id=4,
+        name="Сирота",
+        start_date=date(1200, 1, 1),
+        end_date=None,
+        locations=[],
+        organizations=[],
+        characters=[],
+        items=[],
+        parent_id=9,
+    )
+    widget.populate([orphan], None, {9: "Ушедший отец"})
+    widget.show()
+    emitted = []
+    widget.entity_clicked.connect(
+        lambda kind, entity_id: emitted.append((kind, entity_id))
+    )
+
+    header = next(
+        row for row in island_rows(widget.quick, "snapshotSectionRow")
+        if row.property("sectionKey") == "events"
+    )
+    click_item(widget.quick, header)  # open the collapsed section (the tree)
+    rows = [
+        row
+        for row in island_rows(widget.quick, "snapshotEntityRow")
+        if row.property("sectionKey") == "events"
+    ]
+    texts = [row.property("displayText") for row in rows]
+    assert "Ушедший отец" in texts  # the stub — the parent's bare name
+    orphan_row = next(row for row in rows if "Сирота" in row.property("displayText"))
+    assert orphan_row.property("displayText").startswith("\u00a0" * 4)  # indented
+
+    click_item(widget.quick, rows[texts.index("Ушедший отец")])
+    click_item(widget.quick, orphan_row)  # event rows never emitted jumps anyway
+    assert emitted == []
+
+
 def test_date_popup_and_deferred_release(qtbot, monkeypatch):
     widget = WorldSnapshotWidget()
     qtbot.addWidget(widget)

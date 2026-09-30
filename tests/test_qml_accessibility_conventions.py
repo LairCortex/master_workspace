@@ -20,6 +20,11 @@ Contract checked by :func:`tests.qml_a11y_scan.find_convention_violations`:
    дереве») — an invented or retired wording fails here, never in the live
    audit; "" (unset slot) and literal-less bindings stay silent (fixture
    below).
+6. no ``ThemeCheckBox`` usage site wires its action on ``onToggled``
+   (change nri-0023-event-nesting-and-time, task 13.1, design Д15, live
+   audit OBS-2): the accessibility activation of a stock CheckBox writes
+   ``checked`` without a user gesture, so the action rides ``onClicked``
+   (the tick stays the view model's binding).
 
 Documented boundaries of the statically judgeable rule (kept honest here, the
 runtime side is guarded per island in tests/presentation/ and live-audited in
@@ -65,6 +70,7 @@ _EXPECTED_SYNTHETIC = [
     ("bad.qml", 19, "ThemeButton with word text carries its own Accessible.name"),
     ("bad.qml", 34, "description text outside the fixed map"),
     ("bad.qml", 35, "description text outside the fixed map"),
+    ("bad.qml", 44, "ThemeCheckBox wires action on onToggled"),
 ]
 
 _SYNTHETIC_QML = """\
@@ -104,6 +110,17 @@ Item {
     Item { objectName: "badDesc"; Accessible.description: "Открывает детали" }
     Item { objectName: "badTern"; Accessible.description: model.type === "image"
         ? "Открыть изображение" : "Закрывает всё" }
+
+    // The checkbox-action convention (rule 6, NRI-0023 task 13.1, design
+    // Д15): the accessibility press writes ``checked`` without a user
+    // gesture — an onToggled wiring silently loses the action, so the usage
+    // site must ride onClicked. The tick-toggle below is cut on its opening
+    // brace; the onClicked one and a mention of the token in a comment stay
+    // silent.
+    ThemeCheckBox { objectName: "badToggle"; text: "Галка"
+        onToggled: vm.setFlag(checked) }
+    ThemeCheckBox { objectName: "okClick"; text: "Галка"
+        onClicked: vm.setFlag(!vm.flag) }  // onToggled here is only prose
 }
 """
 
@@ -125,7 +142,8 @@ def test_guard_cuts_each_synthetic_violation_and_keeps_legal_uses(
     assert found_triples == _EXPECTED_SYNTHETIC
     # The ok* instances never appear in any message.
     joined = "\n".join(msg for _, _, msg in found)
-    for legal in ("okGlyph", "okBound", "okPlain", "okDesc", "okEmpty", "okTern"):
+    for legal in ("okGlyph", "okBound", "okPlain", "okDesc", "okEmpty",
+                  "okTern", "okClick"):
         assert legal not in joined
 
 
@@ -133,11 +151,12 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
     tmp_path: Path,
 ) -> None:
     """The deliberate-violation proof for the REAL corpus: the tree is copied
-    to a scratch dir, three textbook violations are injected there (one per
+    to a scratch dir, four textbook violations are injected there (one per
     guard family, the third rewriting the detail row's mapped description
-    out of the fixed map), and the same guard that reads the repository fails
-    on exactly those three — never on an unmodified file, and never inside
-    the repository itself."""
+    out of the fixed map, the fourth rewinding the card's «Бессрочно» to the
+    retired onToggled wiring), and the same guard that reads the repository
+    fails on exactly those four — never on an unmodified file, and never
+    inside the repository itself."""
     copy = tmp_path / "qml-copy"
     shutil.copytree(QML_ROOT, copy, ignore=shutil.ignore_patterns("__pycache__"))
     assert find_convention_violations(copy) == []  # untouched copy is clean
@@ -154,6 +173,17 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
     )
     assert broken_checkbox != card_text, "injection anchor moved — fix the probe"
     card.write_text(broken_checkbox, encoding="utf-8")
+
+    # The checkbox-action convention (rule 6, NRI-0023 task 13.1): the card's
+    # working onClicked wiring is rewound to the OBS-2 onToggled shape — the
+    # exact regression Д15 forbids.
+    rewound = broken_checkbox.replace(
+        '                                onClicked: entityCardVm.setNoEnd(!entityCardVm.noEnd)\n',
+        '                                onToggled: entityCardVm.setNoEnd(checked)\n',
+        1,
+    )
+    assert rewound != broken_checkbox, "injection anchor moved — fix the probe"
+    card.write_text(rewound, encoding="utf-8")
 
     # The description map (rule 5): the row's mapped «Выбирает сущность» is
     # rewritten to an invented wording — the exact drift NRI-0022 T7.1 pins.
@@ -177,6 +207,7 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
         key=lambda entry: (entry[0], entry[1]),
     ) == [
         ("DetailPanelRoot.qml", "description text outside the fixed map"),
+        ("EntityCardRoot.qml", "ThemeCheckBox wires action on onToggled"),
         ("EntityCardRoot.qml",
          "ThemeCheckBox with word text carries its own Accessible.name"),
         ("TimelineRowDelegate.qml", "forbidden Accessible.ignored"),

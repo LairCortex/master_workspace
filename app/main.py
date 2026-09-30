@@ -328,6 +328,7 @@ class Application:
         now_date_vm = NowDateViewModel(
             self._current_date_service.value.coord,
             self._current_date_service.value.is_bc,
+            self._current_date_service.value.hour,
         )
         # NRI-0021 (tasks 5.1–5.2, design Д6): the timeline reads the same VM
         # for the today-outline flag, the «➜ Сейчас» availability/target and

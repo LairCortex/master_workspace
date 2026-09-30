@@ -120,6 +120,36 @@ Rectangle {
             }
             Item { implicitWidth: 24 }
 
+            // NRI-0023 task 7.2 (spec «Списки часов и минут в карточке
+            // события»): the optional wall-clock start, right beside the start
+            // date. The bounds come from the active calendar through the VM,
+            // the empty «—» head means без времени and is never saved as
+            // 00:00, and the minute list is enabled only while an hour is
+            // chosen. The native popups sit outside the accessibility island
+            // (limit ③); the triggers carry the design-Д8 usage-site names.
+            TitleText { text: "Час:" }
+            ThemeComboBox {
+                objectName: "eventStartHourCombo"
+                Layout.fillWidth: true
+                model: eventDialogVm.hourOptions
+                currentIndex: eventDialogVm.selectedHourIndex
+                Accessible.name: "Час начала"
+                onActivated: eventDialogVm.selectHour(index)
+            }
+            Item { implicitWidth: 24 }
+
+            TitleText { text: "Минута:" }
+            ThemeComboBox {
+                objectName: "eventStartMinuteCombo"
+                Layout.fillWidth: true
+                enabled: eventDialogVm.minuteEnabled
+                model: eventDialogVm.minuteOptions
+                currentIndex: eventDialogVm.selectedMinuteIndex
+                Accessible.name: "Минута начала"
+                onActivated: eventDialogVm.selectMinute(index)
+            }
+            Item { implicitWidth: 24 }
+
             TitleText { text: "Дата конца:" }
             RowLayout {
                 Layout.fillWidth: true
@@ -142,7 +172,15 @@ Rectangle {
                     objectName: "eventNoEndCheck"
                     text: "Бессрочно"
                     checked: eventDialogVm.noEnd
-                    onToggled: eventDialogVm.setNoEnd(checked)
+                    // Д15 (NRI-0023 task 13.1, live audit 2026-09-29 OBS-2):
+                    // the accessibility activation of a stock CheckBox writes
+                    // ``checked`` WITHOUT a user gesture, so an onToggled
+                    // wiring moved the tick but silently never reached the VM.
+                    // The card's working convention (EntityCardRoot D1) rides:
+                    // the tick is the VM's state (binding), every activation
+                    // is a request read from the source of truth — never from
+                    // the control's own half-flipped ``checked``.
+                    onClicked: eventDialogVm.setNoEnd(!eventDialogVm.noEnd)
                 }
             }
             Item { implicitWidth: 24 }
@@ -185,6 +223,23 @@ Rectangle {
                     // swatch default («Цвет палитры №N» stays in the palette).
                     accessibleName: "Цвет типа события"
                 }
+            }
+            Item { implicitWidth: 24 }
+
+            // NRI-0023 task 7.1 (spec «Поле „Родительское событие" в карточке
+            // события»): a dropdown of «—» plus the game's main events (the
+            // VM excludes sub-events and the edited one). Changing it is
+            // applied at save; «—» lifts the event to main. The native popup
+            // is outside the island (limit ③), the trigger carries the
+            // design-Д8 usage-site name.
+            TitleText { text: "Родительское событие:" }
+            ThemeComboBox {
+                objectName: "eventParentCombo"
+                Layout.fillWidth: true
+                model: eventDialogVm.parentNames
+                currentIndex: eventDialogVm.selectedParentIndex
+                Accessible.name: "Родительское событие"
+                onActivated: eventDialogVm.selectParent(index)
             }
             Item { implicitWidth: 24 }
 

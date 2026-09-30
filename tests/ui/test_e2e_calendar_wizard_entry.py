@@ -421,6 +421,8 @@ async def test_applied_calendar_repaints_feed_chip_detail_and_popup(
     wizard._next_button.click()
     await wizard.wait_idle()  # → «Вставные дни» (empty list is valid)
     wizard._next_button.click()
+    await wizard.wait_idle()  # → «Сутки» (NRI-0023 task 4.1, defaults 24/60)
+    wizard._next_button.click()
     await wizard.wait_idle()  # → «Предпросмотр»
 
     assert wizard._apply_button.isEnabled()
@@ -497,6 +499,8 @@ async def test_applied_calendar_repaints_feed_chip_detail_and_popup(
         length_spin.setValue(length)
     wizard._next_button.click()
     await wizard.wait_idle()  # → «Вставные дни»
+    wizard._next_button.click()
+    await wizard.wait_idle()  # → «Сутки» (NRI-0023 task 4.1, defaults 24/60)
     wizard._next_button.click()
     await wizard.wait_idle()  # → «Предпросмотр»
     wizard._apply_button.click()

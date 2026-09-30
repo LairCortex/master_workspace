@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QColor
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.domain.game_calendar import (
@@ -176,7 +177,11 @@ def test_the_outline_block_reads_the_hover_derivation_not_the_fill_token():
     """Source-level token contract of the delegate (the same grep-grade idiom
     as the accessibility convention guards): the rowNowOutline block binds
     the accent DERIVATION ``color.accent.hover``; the raw ``color.accent`` —
-    the selection's fill — stays out of the outline block."""
+    the selection's fill — stays out of the outline block. NRI-0023 task 11.4
+    (A2) adds the second half: over the selection the line flips to the
+    delegate's ONE contrast foreground (``accentFgColor`` — the caption's own
+    switch), and the flip is the border colour only: the block still never
+    fills, never reads the fill token."""
     from pathlib import Path
 
     from app.presentation.qml.engine import QML_IMPORT_PATH
@@ -187,6 +192,47 @@ def test_the_outline_block_reads_the_hover_derivation_not_the_fill_token():
     block = source.split('objectName: "rowNowOutline"', 1)[1].split("\n    }", 1)[0]
     assert '"color.accent.hover"' in block
     assert '"color.accent"' not in block
+    # 11.4: the selected-row branch is the accent foreground, the fill itself
+    # never enters the block, and the geometry stays a 1-px border on a
+    # transparent body.
+    assert "row.selectedRow" in block and "accentFgColor" in block
+    assert 'color: "transparent"' in block
+    assert "border.width: 1" in block
+
+
+def test_the_outline_flips_to_the_contrast_family_when_selected(qtbot):
+    """NRI-0023 task 11.4 (spec scenario «Обводка видна на выбранной строке»,
+    audit A2): selecting the today-row must not erase its outline — orange
+    over orange is what the live audit caught. On this skinned (process
+    default theme) island the selected edge pixel answers ``color.accent.fg``
+    verbatim, measurably far from the accent fill it now rides, while an
+    unselected row still wears the plain canvas (no line). The both-themes
+    pixel half is pinned in tests/ui/test_e2e_timeline_theme.py."""
+    panel, _vm = _island(qtbot, now_vm=NowDateViewModel(NOW))
+    tokens = panel._palette.tokens
+    accent = QColor(tokens["color.accent"])
+    accent_fg = QColor(tokens["color.accent.fg"])
+    assert accent != accent_fg  # the flip is meaningful in this theme
+
+    rows = island_rows(panel.quick, "eventRow")
+    outline = _outline(rows[0])
+    assert outline.property("visible") is True
+    panel.set_selected(1)
+    # the render-pass beat the embedded scene graph needs before a pixel is
+    # truth (the test_e2e_timeline_theme qWait convention)
+    QTest.qWait(50)
+    QApplication.processEvents()
+
+    # body still paints nothing under the outline (an outline never fills:
+    # the far-right body pixel is the accent FILL, not a second color)
+    edge = _pixel(panel, rows[0], 0.97, 0.5 / 24.0)
+    distance = max(abs(edge.red() - accent.red()),
+                   abs(edge.green() - accent.green()),
+                   abs(edge.blue() - accent.blue()))
+    assert distance > 20, (edge.name(), accent.name())
+    for chan in ("red", "green", "blue"):
+        assert abs(getattr(edge, chan)() - getattr(accent_fg, chan)()) <= 2, edge.name()
+    _retire(panel, qtbot)
 
 
 def test_now_edit_moves_the_outline_without_scrolling(qtbot):
@@ -210,6 +256,32 @@ def test_now_edit_moves_the_outline_without_scrolling(qtbot):
         "07 Март 1200 — ∞ · Пророчество",
     ]
     assert [row.is_now for row in vm.rows] == [False, True]
+    _retire(panel, qtbot)
+
+
+def test_the_hour_moves_neither_the_outline_nor_the_scroll_target(qtbot):
+    """NRI-0023 task 9.1 pin (spec «Час меняет только подпись»): setting an
+    hour on the game-«now» leaves the today-outline and the «➜ Сейчас»
+    target on the day they were computed from — the derived surfaces read
+    the coordinate, and the ``nowChanged`` broadcast that triggers them
+    stays silent for an hour-only edit."""
+    now_vm = NowDateViewModel(NOW)
+    panel, vm = _island(qtbot, now_vm=now_vm)
+    assert _visible_outlines(panel) == [True, False]
+
+    now_vm.applyNow(NOW, False, 20)  # тот же день, выставлен час 20
+    QApplication.processEvents()
+
+    assert _visible_outlines(panel) == [True, False]
+    assert [row.is_now for row in vm.rows] == [True, False]
+
+    button = find_item(panel.quick, "nowButton")
+    scrolls = track(panel._root.scrollToIndex)
+    click_item(panel.quick, button)
+    QApplication.processEvents()
+
+    assert scrolls == [(1,)]  # цель прокрутки от часа не сдвинулась
+    assert vm.rows[scrolls[0][0]].event_id == 2
     _retire(panel, qtbot)
 
 

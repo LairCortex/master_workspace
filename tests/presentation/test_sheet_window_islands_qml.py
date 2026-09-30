@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPointF, Qt, QUrl
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QAccessible, QColor, QImage
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest
@@ -374,9 +374,8 @@ def test_editor_panel_type_branches_write_through_vm(qtbot, typed_case, palette)
     _pump(2)
     default_toggle = find_item(widget, "checkboxDefaultCheck")
     assert default_toggle.property("checked") is False
-    default_toggle.setProperty("checked", True)
-    default_toggle.toggled.emit()
-    _pump(1)
+    click_item(widget, default_toggle)  # Д15 (NRI-0023 13.1): the click is
+    _pump(1)                            # the request channel, not toggled
     assert vm.template.get_field(chk_id).content == "true"
 
 
@@ -564,8 +563,7 @@ def test_fill_value_panel_branches_write_through_vm(qtbot, fill_case, palette):
     check = find_item(widget, "fillCheckbox")
     assert check.property("visible") is True
     before = bool(fvm.values.get(ids["chk"]))
-    check.setProperty("checked", not before)
-    check.toggled.emit()     # programmatic checked writes stay silent
+    click_item(widget, check)  # Д15 (NRI-0023 13.1): the click toggles once
     _pump(1)
     assert bool(fvm.values.get(ids["chk"])) is not before
 
@@ -765,3 +763,114 @@ def test_fill_island_paints_surface_and_accent_tokens(qtbot, fill_case, palette)
     assert button_pixel(widget, find_item(widget, "saveButton"), image) == (
         token_rgb(tokens["color.accent"])
     )
+
+
+# ── NRI-0023 task 13.1 (design Д15, live-audit OBS-2): checkbox presses ──────
+
+
+def _press_checkbox(widget, object_name: str) -> None:
+    """QAccessible press on a checkbox (the AGENTS pattern:
+    queryAccessibleInterface(...).actionInterface().doAction("Press")); the
+    verdict is the effect below, not the return slot (the D1 entity-card pin
+    reads it the same way)."""
+    item = find_item(widget, object_name)
+    iface = QAccessible.queryAccessibleInterface(item)
+    assert iface is not None, f"no accessibility interface on {object_name!r}"
+    iface.actionInterface().doAction("Press")
+
+
+def test_checkbox_press_reaches_vm_snap_channel(qtbot, vm, palette):
+    """Д15: on the retired onToggled wiring an AT press only moved the tick;
+    the onClicked convention sends the toggle request to the VM."""
+    widget = load_editor(qtbot, vm, palette)
+    snap = find_item(widget, "snapCheck")
+    assert snap.property("checked") is False
+    _press_checkbox(widget, "snapCheck")
+    _pump(1)
+    assert vm.snap_enabled is True
+    assert snap.property("checked") is True
+    _press_checkbox(widget, "snapCheck")
+    _pump(1)
+    assert vm.snap_enabled is False
+    assert snap.property("checked") is False
+
+
+def test_checkbox_press_applies_number_bounds(qtbot, typed_case, palette):
+    """Д15: the AT press of a stock CheckBox announces the click WITHOUT
+    writing the tick (its Toggle writes the tick but never announces), so
+    applyBounds takes the toggled next state from the source of truth —
+    unchecking «min» on the AT path lifts the stored bound, and the tick,
+    being the panelProps reflection, follows the VM. The bounds fields are
+    the panel's draft buffer (seeded the way the user types them); the
+    compound handler keeps writing both legs — the min draft doubles as the
+    probe that a press on «max» reached the VM at all."""
+    vm, num_id, _dd_id, _chk_id = typed_case
+    widget = load_editor(qtbot, vm, palette)
+    vm.select(num_id)
+    _pump(2)
+    min_check = find_item(widget, "minCheck")
+    min_field = find_item(widget, "minField")
+    min_field.setProperty("text", "0")
+    find_item(widget, "maxField").setProperty("text", "10")
+    assert min_check.property("checked") is True
+
+    # AT press on the min bound: the VM loses the lower bound, max stays
+    _press_checkbox(widget, "minCheck")
+    _pump(1)
+    assert min_check.property("checked") is False
+    assert vm.field_props(num_id)["min"] is None
+    assert vm.field_props(num_id)["max"] == 10
+
+    # the mouse path rides the same handler and the same truth read
+    click_item(widget, min_check)
+    _pump(1)
+    assert min_check.property("checked") is True
+    assert vm.field_props(num_id)["min"] == 0
+
+    # AT press on the max bound lifts it (the changed min draft «1» is the
+    # compound write's probe — the handler lands both legs from draft+truth)
+    min_field.setProperty("text", "1")
+    _press_checkbox(widget, "maxCheck")
+    _pump(1)
+    assert vm.field_props(num_id)["min"] == 1
+    assert vm.field_props(num_id)["max"] is None
+    assert min_check.property("checked") is True
+    assert find_item(widget, "maxCheck").property("checked") is False
+
+
+def test_checkbox_press_toggles_default_check_row(qtbot, typed_case, palette):
+    """Д15: the checkbox row's «Включение по умолчанию» — the press is one
+    toggle request; the VM answers from its own stored value."""
+    vm, _num_id, _dd_id, chk_id = typed_case
+    widget = load_editor(qtbot, vm, palette)
+    vm.select(chk_id)
+    _pump(2)
+    default_toggle = find_item(widget, "checkboxDefaultCheck")
+    assert default_toggle.property("checked") is False
+    _press_checkbox(widget, "checkboxDefaultCheck")
+    _pump(1)
+    assert vm.template.get_field(chk_id).content == "true"
+    assert default_toggle.property("checked") is True
+    click_item(widget, default_toggle)
+    _pump(1)
+    assert vm.template.get_field(chk_id).content == "false"
+    assert default_toggle.property("checked") is False
+
+
+def test_fill_checkbox_press_toggles_stored_value(qtbot, fill_case, palette):
+    """Д15: the fill panel's row-checkbox — the press toggles the stored
+    value through the VM exactly once (read-only fields refuse there)."""
+    fvm, ids = fill_case
+    widget = load_fill(qtbot, fvm, palette)
+    fvm.select(ids["chk"])
+    _pump(2)
+    check = find_item(widget, "fillCheckbox")
+    assert check.property("checked") is False
+    _press_checkbox(widget, "fillCheckbox")
+    _pump(1)
+    assert fvm.values.get(ids["chk"]) is True
+    assert check.property("checked") is True
+    click_item(widget, check)
+    _pump(1)
+    assert fvm.values.get(ids["chk"]) is False
+    assert check.property("checked") is False

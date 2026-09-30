@@ -19,10 +19,23 @@ class EventRepository(CoordMappingMixin, BaseRepository[EventModel]):
     def __init__(self, session) -> None:
         super().__init__(session, EventModel)
 
-    async def get_all_ordered(self) -> Sequence[EventModel]:
-        stmt = select(self._model).order_by(
-            self._model.start_key, self._model.id
+    def _chronological_order(self) -> tuple:
+        """The one order of every event listing (NRI-0023, task 3.1, design Д3):
+        the day-level ``start_key`` first, then within one day — untimed events
+        before timed ones (``start_time IS NOT NULL`` puts NULL in the first
+        bucket), then ascending minutes from the day start, then ``id`` for a
+        full tie (spec event-time «Время участвует в порядке внутри дня»).
+        The day key itself stays untouched — time is only the secondary sort
+        key, so cross-day and cross-era order is word-for-word what it was."""
+        return (
+            self._model.start_key,
+            self._model.start_time_raw.is_not(None),
+            self._model.start_time_raw,
+            self._model.id,
         )
+
+    async def get_all_ordered(self) -> Sequence[EventModel]:
+        stmt = select(self._model).order_by(*self._chronological_order())
         result = await self._session.execute(stmt)
         return result.scalars().all()
 
@@ -43,7 +56,7 @@ class EventRepository(CoordMappingMixin, BaseRepository[EventModel]):
                     self._model.end_key >= target_key,
                 )
             )
-            .order_by(self._model.start_key, self._model.id)
+            .order_by(*self._chronological_order())
         )
         result = await self._session.execute(stmt)
         return result.scalars().all()

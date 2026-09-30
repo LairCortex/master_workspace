@@ -327,12 +327,20 @@ async def test_custom_calendar_from_wizard_to_every_caption_and_restart(
             f"{INTERCALARY_NAME} → {MONTH_NAMES[1]}"
         )
         _click(qtbot, wizard._next_button)
+        await wizard.wait_idle()  # → «Сутки» (NRI-0023 task 4.1)
+
+        # Step «Сутки»: the untouched 24/60 preselect — the scene's calendar
+        # is earthly-day, so the screen is passed through as a default.
+        assert wizard._day_hours_spin.value() == 24
+        assert wizard._minutes_per_hour_spin.value() == 60
+        _click(qtbot, wizard._next_button)
         await wizard.wait_idle()  # → «Предпросмотр»
 
         # Step «Предпросмотр»: the summary line AND the live preview grid
         # (the same GameCalendarGrid class the popups embed) speak the spec.
         assert wizard._summary_label.text() == (
-            "Месяцев: 3 · Длина недели: 8 · Вставных дней: 1"
+            "Месяцев: 3 · Длина недели: 8 · Вставных дней: 1 · "
+            "Часов в сутках: 24 · Минут в часе: 60"
         )
         assert _week_name_labels(wizard._preview) == list(WEEK_NAMES)
         assert _month_combo_names(wizard._preview) == list(MONTH_NAMES)
@@ -767,6 +775,8 @@ async def test_custom_calendar_midgame_shorten_shows_shift_report(
 
         _click(qtbot, wizard._next_button)
         await wizard.wait_idle()  # → «Вставные дни», host «Пуровеж» intact
+        _click(qtbot, wizard._next_button)
+        await wizard.wait_idle()  # → «Сутки» (NRI-0023 task 4.1, defaults 24/60)
         _click(qtbot, wizard._next_button)
         await wizard.wait_idle()  # → «Предпросмотр»
         assert wizard._apply_button.isEnabled()

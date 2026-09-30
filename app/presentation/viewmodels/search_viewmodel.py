@@ -1,13 +1,18 @@
 """Search ViewModel — global search plus the sync state of its QML island."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 from app.domain import entity_registry
-from app.presentation.utils.date_utils import era_flag, format_game_date
+from app.presentation.utils.date_utils import (
+    era_flag,
+    event_start_time,
+    format_event_start,
+)
+from app.presentation.views.timeline_rows import event_parent_id
 
 DEBOUNCE_INTERVAL_MS = 300
 
@@ -34,6 +39,13 @@ class SearchViewModel(QObject):
         self._rows: list[dict[str, Any]] = []
         self._query = ""
         self._list_visible = False
+        # NRI-0023 task 8.2 (design Д9, spec global-search «Подсобытие названо
+        # через родителя»): the game-wide event `id → имя` card the wiring
+        # hands in with every query — built одним проходом over the ladder's
+        # loaded sample, it names a sub-event's parent even when the parent
+        # never matched the query itself. Empty (the default) keeps rows
+        # exactly as they were: an unnameable parent adds no prefix.
+        self._event_names: Mapping[int, str] = {}
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(DEBOUNCE_INTERVAL_MS)
@@ -133,7 +145,12 @@ class SearchViewModel(QObject):
         self.resultActivated.emit(*target)
         self._set_list_visible(False)
 
-    async def search(self, query: str) -> None:
+    async def search(self, query: str, event_names: Mapping[int, str] | None = None) -> None:
+        # NRI-0023 task 8.2: the wiring hands the `id → имя` card of every
+        # game event with the query (the ladder's loaded sample, one pass);
+        # it is the only naming source for a sub-event's parent, which does
+        # not have to match the query itself. Absent — rows stay as before.
+        self._event_names = dict(event_names) if event_names else {}
         if not query.strip():
             self.results = {}
             self.results_changed.emit()
@@ -184,17 +201,34 @@ class SearchViewModel(QObject):
             )
             for entity in entities:
                 name = getattr(entity, "name", str(entity))
+                # NRI-0023 task 8.2 (spec global-search «Подсобытие названо
+                # через родителя»): a row of a sub-event carries its parent's
+                # name through « · » straight after the child's own name —
+                # read off the wiring's id → имя card; a parent the card
+                # cannot name (absent link, stale id) adds no prefix, the row
+                # stays the plain name. Duck-typed like every other surface:
+                # only events carry a parent link at all.
+                parent_id = event_parent_id(entity)
+                parent_name = (
+                    self._event_names.get(parent_id)
+                    if parent_id is not None
+                    else None
+                )
+                label = f"{name} · {parent_name}" if parent_name else str(name)
                 start_date = getattr(entity, "start_date", None)
+                # The start caption rides the single event-surface helper
+                # (task 8.1): a chosen time gains its «, HH:MM» tail, an
+                # untimed event prints word-for-word what it always did.
                 date_text = (
-                    format_game_date(
+                    format_event_start(
                         start_date,
-                        "",
-                        is_bc=era_flag(getattr(entity, "start_bc", False)),
+                        era_flag(getattr(entity, "start_bc", False)),
+                        event_start_time(entity),
                     )
                     if start_date
                     else ""
                 )
-                text = f"{name}  [{date_text}]" if date_text else name
+                text = f"{label}  [{date_text}]" if date_text else label
                 rows.append(
                     self._row(
                         "result",

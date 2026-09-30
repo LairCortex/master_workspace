@@ -486,6 +486,59 @@ async def test_coord_columns_migrate_idempotently_without_duplicates():
         await engine.dispose()
 
 
+# ── NRI-0023 task 2.1: events.parent_id / events.start_time ─────────────────
+
+NRI0023_EVENT_COLUMNS = ("parent_id", "start_time")
+
+
+async def test_old_game_gets_event_nesting_and_time_columns_idempotently(tmp_path):
+    """A pre-NRI-0023 file without the two event columns receives both through
+    the plain ALTER template, old rows read as NULL in both new slots, and a
+    second init_db neither fails nor duplicates a column (idempotence lives in
+    the PRAGMA check, not in a swallowed ALTER error)."""
+    db_path = tmp_path / "game.db"
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await _create_legacy_game_db(engine)
+        columns_before = await _column_names(engine, "events")
+        assert not set(NRI0023_EVENT_COLUMNS) & set(columns_before)
+        dates_before = await _date_snapshot(engine)
+
+        await init_db(engine)
+
+        columns = await _column_names(engine, "events")
+        for column in NRI0023_EVENT_COLUMNS:
+            assert columns.count(column) == 1, column
+        # the legacy row keeps its data and simply has no parent and no time
+        async with engine.connect() as conn:
+            assert (
+                await conn.execute(text("SELECT parent_id, start_time FROM events"))
+            ).fetchall() == [(None, None)]
+        assert await _date_snapshot(engine) == dates_before
+
+        # repeated open: still one of each column, no failure, no duplicates
+        await init_db(engine)
+        columns = await _column_names(engine, "events")
+        for column in NRI0023_EVENT_COLUMNS:
+            assert columns.count(column) == 1, column
+        assert len(columns) == len(set(columns))
+    finally:
+        await engine.dispose()
+
+
+async def test_fresh_schema_already_carries_event_nesting_and_time_columns():
+    """The fresh create_all schema carries both columns straight from the ORM
+    mapping (the fresh/migration parity the _MIGRATIONS loop relies on)."""
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        await init_db(engine)
+        columns = await _column_names(engine, "events")
+        for column in NRI0023_EVENT_COLUMNS:
+            assert columns.count(column) == 1, column
+    finally:
+        await engine.dispose()
+
+
 async def test_old_game_without_coord_columns_gets_them_empty(tmp_path):
     """A pre-C3a file receives the coordinate columns empty (NULL — «dates
     live in the date columns»), data intact, no rebuild."""

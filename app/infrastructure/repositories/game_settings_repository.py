@@ -51,9 +51,13 @@ CALENDAR_WIZARD_SEEN_YES = "1"
 #: Key of the game's «now» date (NRI-0021, design Д1): the coordinate of the
 #: active calendar with its era flag, stored as JSON ``{"coord": <encoded
 #: coordinate>, "bc": 0|1}`` through the :mod:`app.infrastructure.calendar_storage`
-#: codec.  The key is seeded nowhere — its absence is the rule "real today
-#: translated into the active calendar", the first explicit edit is the first
-#: write (spec «Игровая «сейчас» хранится одна на игру»).
+#: codec.  Since NRI-0023 (task 2.3) the same JSON carries the optional hour
+#: key ``"h"`` — an integer of the active calendar's day; the key is written
+#: only when a hour is set, so pre-0023 values stay byte-identical and stay
+#: readable ("no key = no hour").  The key is seeded nowhere — its absence is
+#: the rule "real today translated into the active calendar", the first
+#: explicit edit is the first write (spec «Игровая «сейчас» хранится одна на
+#: игру»).
 CURRENT_DATE_KEY = "current_date"
 
 
@@ -102,13 +106,17 @@ class GameSettingsRepository:
 
 @dataclass(frozen=True)
 class CurrentDateValue:
-    """The decoded stored «now»: a coordinate of the active calendar and the
-    era flag — the two fields design Д2 names as the value the service holds.
-    Pure data; every reading rule ("absent", "corrupted") lives in
+    """The decoded stored «now»: a coordinate of the active calendar, the era
+    flag and the optional hour — the value design Д2 names for the service to
+    hold, the hour added by NRI-0023 (task 2.3, spec «Игровая «сейчас»
+    хранится одна на игру»).  ``hour=None`` means «час не выставлен» — the
+    state every pre-0023 value and every fresh seed carries.  Pure data;
+    every reading rule ("absent", "corrupted", "out-of-range hour") lives in
     :class:`CurrentDateRepository`."""
 
     coord: GameCoord
     is_bc: bool
+    hour: int | None = None
 
 
 def _current_date_corrupt(reason: str, raw: str) -> None:
@@ -120,24 +128,34 @@ def _current_date_corrupt(reason: str, raw: str) -> None:
     )
 
 
-def _encode_current_date(coord: GameCoord, is_bc: bool) -> str:
-    """JSON body of design Д1: ``{"coord": <encode_coord text>, "bc": 0|1}``.
+def _encode_current_date(
+    coord: GameCoord, is_bc: bool, hour: int | None = None
+) -> str:
+    """JSON body of design Д1: ``{"coord": <encode_coord text>, "bc": 0|1}``,
+    NRI-0023 extended with ``"h": <int>`` only when a hour is set — a value
+    without an hour stays byte-identical to the pre-0023 format, so writing
+    never strands an older app on an unreadable key (v1-compatible codec).
     The coordinate codec owns the coordinate text and refuses non-coordinates
     itself (``TypeError``) — this wrapper never invents a stored date."""
-    return json.dumps(
-        {"coord": encode_coord(coord), "bc": 1 if is_bc else 0},
-        ensure_ascii=False,
-    )
+    body: dict = {"coord": encode_coord(coord), "bc": 1 if is_bc else 0}
+    if hour is not None:
+        body["h"] = hour
+    return json.dumps(body, ensure_ascii=False)
 
 
 def _decode_current_date(raw: str) -> CurrentDateValue | None:
     """Read the stored JSON back, ``None`` for anything unreadable.
 
     Every rejection (unparseable JSON, a foreign shape, a missing or non
-    ``0|1`` ``bc``, a coordinate text the codec itself refuses) logs the one
-    warning naming the reason and answers ``None`` — the caller then lives by
-    the absence rule; the row is never rewritten here (same discipline as
-    :meth:`CalendarSettingsService.load_and_apply`)."""
+    ``0|1`` ``bc``, an off-type ``h``, a coordinate text the codec itself
+    refuses) logs the one warning naming the reason and answers ``None`` —
+    the caller then lives by the absence rule; the row is never rewritten
+    here (same discipline as :meth:`CalendarSettingsService.load_and_apply`).
+    The NRI-0023 hour: an absent key means "not set"; a stored hour the
+    *active* calendar no longer has (a narrowed day after a calendar switch)
+    reads silently as "not set" — the signature loses its hour without any
+    write (design Д5, spec «Сужение суток чистит недоступный час»), while the
+    date itself keeps serving."""
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -152,13 +170,21 @@ def _decode_current_date(raw: str) -> CurrentDateValue | None:
     if isinstance(bc_raw, bool) or bc_raw not in (0, 1):
         _current_date_corrupt(f"era flag {bc_raw!r} is neither 0 nor 1", raw)
         return None
+    hour: int | None = None
+    if "h" in data:
+        h_raw = data["h"]
+        if isinstance(h_raw, bool) or not isinstance(h_raw, int):
+            _current_date_corrupt(f"hour {h_raw!r} is not an integer", raw)
+            return None
+        if 0 <= h_raw < current_calendar().day_hours:
+            hour = h_raw
     decoded = decode_coord(data.get("coord"))
     if isinstance(decoded, CoordCorrupted):
         _current_date_corrupt(
             "; ".join(f"{p.code}: {p.message}" for p in decoded.reasons), raw
         )
         return None
-    return CurrentDateValue(coord=decoded.coord, is_bc=bc_raw == 1)
+    return CurrentDateValue(coord=decoded.coord, is_bc=bc_raw == 1, hour=hour)
 
 
 class CurrentDateRepository:
@@ -195,7 +221,13 @@ class CurrentDateRepository:
             return None
         return value
 
-    async def save(self, coord: GameCoord, is_bc: bool) -> None:
-        """Store ``coord``/``is_bc`` as the game's «now», overwriting any
-        previous (even corrupted) value — «Перезапись вместо ремонта»."""
-        await self._settings.upsert(CURRENT_DATE_KEY, _encode_current_date(coord, is_bc))
+    async def save(
+        self, coord: GameCoord, is_bc: bool, hour: int | None = None
+    ) -> None:
+        """Store ``coord``/``is_bc`` (and the optional ``hour``) as the game's
+        «now», overwriting any previous (even corrupted) value — «Перезапись
+        вместо ремонта».  ``hour=None`` writes no ``h`` key at all, keeping
+        the value in the pre-0023 shape (v1-compatible codec)."""
+        await self._settings.upsert(
+            CURRENT_DATE_KEY, _encode_current_date(coord, is_bc, hour)
+        )

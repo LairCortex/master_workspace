@@ -7,11 +7,13 @@ guard questions:
 
 * :func:`find_convention_violations` — the 4.1 guard: nowhere under ``root``
   may a QML file mention ``Accessible.NoRole``, ``Accessible.ignored`` or
-  ``Accessible.value`` (design F3/F5/D9), and a stock text control instance
+  ``Accessible.value`` (design F3/F5/D9), a stock text control instance
   (``ThemeButton`` with word text / ``ThemeCheckBox`` with word text /
   ``ThemeTabButton`` with word text) must not carry its own
   ``Accessible.name``: штатно such a control's name IS its text (design F7),
-  so a usage-site annotation is a forbidden re-annotation. Since change
+  so a usage-site annotation is a forbidden re-annotation; and (task 13.1)
+  no ``ThemeCheckBox`` usage site may wire its action on ``onToggled``.
+  Since change
   nri-0022-entity-preview (task 7.1) the same guard also keeps the
   activation-description map: every non-empty string a
   ``Accessible.description`` / ``accessibleDescription`` binding assigns
@@ -25,7 +27,13 @@ guard questions:
   description at all (fixed limit ⑥ in AGENTS.md — Qt 6.10 gives a RichText
   link no own QAccessible node): a runtime fact pinned in
   ``tests/presentation/test_entity_preview_island.py``, not a vocabulary
-  entry.
+  entry. Since change nri-0023-event-nesting-and-time (task 13.1, design
+  Д15, live-audit OBS-2) the guard also keeps the checkbox-action convention:
+  a ``ThemeCheckBox`` usage site must not wire its action on ``onToggled`` —
+  the accessibility activation of a stock CheckBox writes ``checked``
+  without a user gesture (no ``toggled`` emit), so ``onToggled`` silently
+  loses the action for AT users; the action rides ``onClicked`` (the tick
+  stays a binding of the view model's state).
 
 * :func:`object_name_annotation_violation` — the 4.2 sample pin: a NAMED
   instance of a stock control must carry NO ``Accessible.name`` in its
@@ -99,6 +107,11 @@ _DESC_DECL_RE = re.compile(
 _OWN_NAME_RE = re.compile(r"(?<![.\w])Accessible\.name\s*:")
 _OWN_TEXT_RE = re.compile(r"(?<![.\w])text\s*:")
 _OWN_OBJECT_NAME_RE = re.compile(r"(?<![.\w])objectName\s*:")
+# Task 13.1 (design Д15): the checkbox action handler forbidden at a usage
+# site — accessibility activation of a stock CheckBox writes ``checked``
+# without emitting ``toggled``, so an onToggled wiring silently loses the
+# action for AT users (live audit 2026-09-29 OBS-2).
+_OWN_ON_TOGGLED_RE = re.compile(r"(?<![.\w])onToggled\s*:")
 _STOCK_OPEN_RE = re.compile(
     r"\b(" + "|".join(STOCK_CONTROL_TYPES) + r")\s*\{"
 )
@@ -329,6 +342,7 @@ class StockInstance:
     line: int
     has_own_name: bool
     text_kind: str | None  # None = no depth-1 text declaration at all
+    has_on_toggled: bool = False  # checkbox action wired on the wrong signal
 
 
 def _scan_instances(masked: str):
@@ -351,6 +365,10 @@ def _scan_instances(masked: str):
             dep[n.start()] == body_depth
             for n in _OWN_NAME_RE.finditer(struct, open_idx + 1, close_idx)
         )
+        has_toggled = any(
+            dep[t.start()] == body_depth
+            for t in _OWN_ON_TOGGLED_RE.finditer(struct, open_idx + 1, close_idx)
+        )
         text_kind = None
         for t in _OWN_TEXT_RE.finditer(struct, open_idx + 1, close_idx):
             if dep[t.start()] == body_depth:
@@ -362,6 +380,7 @@ def _scan_instances(masked: str):
                 line=_line_of(masked, open_idx),
                 has_own_name=has_name,
                 text_kind=text_kind,
+                has_on_toggled=has_toggled,
             ),
             open_idx,
             close_idx,
@@ -394,6 +413,17 @@ def find_convention_violations(root: Path) -> list[tuple[str, int, str]]:
                     (rel, inst.line,
                      f"{inst.type_name} with word text carries its own "
                      "Accessible.name — the text IS the штатно name (F7/D9)")
+                )
+            # The checkbox-action convention (NRI-0023 task 13.1, design Д15):
+            # an AT press writes ``checked`` without a user gesture, so the
+            # action must ride onClicked (the tick stays the VM's binding).
+            if inst.type_name == "ThemeCheckBox" and inst.has_on_toggled:
+                violations.append(
+                    (rel, inst.line,
+                     "ThemeCheckBox wires action on onToggled — the "
+                     "accessibility press writes checked without a user "
+                     "gesture, so the action must ride onClicked "
+                     "(NRI-0023 Д15/OBS-2)")
                 )
         # The fixed description map (NRI-0022 task 7.1): every non-empty
         # literal a description binding assigns must be a word of the map;

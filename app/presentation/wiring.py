@@ -31,6 +31,7 @@ from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.theme_date_popup import ThemeDatePopup
+from app.presentation.views.theme_hour_popup import ThemeHourPopup
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWindow
 from app.presentation.window_registry import WORLD_SNAPSHOT_KEY
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
@@ -86,6 +87,11 @@ class ApplicationWiring:
         # widget area is connected.
         self._now_date_vm = now_date_vm
         self._now_date_popup: ThemeDatePopup | None = None
+        # Task 12.6 (A1 host half, design Д14.1): the hour list's bridge window
+        # — the search island clips the component pop-up to its own fixed
+        # height, so the «now» selector opens this top level instead (the same
+        # parent-less posture as the date grid above).
+        self._now_hour_popup: ThemeHourPopup | None = None
         self._on_edit_event = None
         # Wave 5 (design D4, task 5.11): the single transaction finish point
         # over the game's one shared session, REQUIRED at construction — the
@@ -391,6 +397,13 @@ class ApplicationWiring:
                         backstory=result.backstory,
                         relations=relations,
                         event_type_id=result.event_type_id,
+                        # NRI-0023 task 7.1: the card's combo is authoritative
+                        # on edit — an id перецепляет, None поднимает в
+                        # основные (populate loads the stored link, so saving
+                        # an untouched card re-writes what was there).
+                        # Task 7.2: the «Час»/«Минута» pair, None = без времени.
+                        parent_id=result.parent_id,
+                        start_time=result.start_time,
                     )
                 else:
                     await event_service.create_event_with_relations(
@@ -403,6 +416,12 @@ class ApplicationWiring:
                         backstory=result.backstory,
                         relations=relations,
                         event_type_id=result.event_type_id,
+                        # NRI-0023 task 6.1: the sub-event link the dialog
+                        # carries (the «Создать подсобытие» prefill); a plain
+                        # create reads None and the service guard stands.
+                        # Task 7.2: the wall-clock start from the card's lists.
+                        parent_id=result.parent_id,
+                        start_time=result.start_time,
                     )
             except Exception as exc:  # noqa: BLE001 — the modal names the reason
                 # The service's unit of work already undid the partial write
@@ -416,16 +435,24 @@ class ApplicationWiring:
                 return False
             return True
 
-        # Add event button
-        def on_add_event():
+        # Add event button (and its NRI-0023 task 6.1 sibling, «Создать
+        # подсобытие»): ONE create-dialog factory. Without a parent it is the
+        # plain create card; with one (the row's context menu) the same card
+        # opens prefilled with the parent and the parent's start date.
+        def _open_create_dialog(prefill_parent: Any = None):
             # NRI-0021 task 4.4: the dialog's read-only «С начала» line reads
             # and follows the game's «now» through the widget VM.
             dialog = EventDialog(
                 event_dialog_vm, parent=window, theme=self._app._theme,
                 now_vm=self._now_date_vm,
             )
+            if prefill_parent is not None:
+                dialog.prefill_parent(prefill_parent)
             self._spawn(self._load_available_into_dialog(dialog))
             self._spawn(self._load_types_into_dialog(dialog))
+            # NRI-0023 task 7.1: the «Родительское событие» pool (the prefilled
+            # parent is one of its main events, spec «Родитель и дата подставлены»).
+            self._spawn(self._load_parents_into_dialog(dialog))
             self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
             self._app._wire_ai_buttons(dialog)
 
@@ -446,7 +473,33 @@ class ApplicationWiring:
             )
             dialog.open()
 
+        def on_add_event():
+            _open_create_dialog()
+
         self._timeline.add_event_requested.connect(on_add_event)
+
+        # Create subevent (NRI-0023 task 6.1, spec «Создание подсобытия правым
+        # кликом»): the row's context menu arrives as the ViewModel's signal,
+        # the parent's start date is re-read for the prefill, and the shared
+        # create factory opens the card (design Д7). A parent that is gone or
+        # unreadable is a silent no-op — the scale quoted a stale row (the
+        # same open-failure posture the edit flow keeps, no modal for a read).
+        async def on_subevent_create(parent_id: int) -> None:
+            try:
+                parent = await event_service.get_event(parent_id)
+            except Exception as exc:  # noqa: BLE001 — logged, no dialog
+                logging.getLogger("app.wiring").warning(
+                    "Не удалось загрузить родителя для подсобытия %s: %s",
+                    parent_id, exc,
+                )
+                return
+            if parent is None:
+                return
+            _open_create_dialog(parent)
+
+        self._timeline_vm.subevent_create_requested.connect(
+            lambda parent_id: self._spawn(on_subevent_create(parent_id))
+        )
 
         # Create standalone entities from timeline "+" context menu
         async def on_add_entity(entity_type: str):
@@ -512,6 +565,9 @@ class ApplicationWiring:
                 # populate() preselects this event's current type (W4 6.3).
                 dialog.set_event_types(list(await event_service.get_event_types()))
                 dialog.populate(event)
+                # NRI-0023 task 7.1: the parent pool loads AFTER populate — the
+                # exclusion of the edited event reads the id populate() loaded.
+                await self._load_parents_into_dialog(dialog)
                 self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
                 self._app._wire_ai_buttons(dialog)
 
@@ -622,7 +678,16 @@ class ApplicationWiring:
 
         # Search
         async def on_search(query):
-            await search_vm.search(query)
+            # NRI-0023 task 8.2 (design Д9, spec global-search «Подсобытие
+            # названо через родителя»): the row prefix names a sub-event's
+            # parent even when the parent itself never matched the query, so
+            # the VM gets the game-wide id → имя card — one pass over the
+            # ladder's loaded sample (the same gate the result-open path
+            # already uses); an id the card cannot name adds no prefix.
+            await search_vm.search(
+                query,
+                {event.id: event.name for event in timeline_vm.all_events},
+            )
 
         window.search_bar.search_requested.connect(
             lambda q: self._spawn(on_search(q))
@@ -764,7 +829,17 @@ class ApplicationWiring:
             events = await self._event_service.get_events_at_date(
                 era_key(target_date, bool(target_bc))
             )
-        snapshot.populate(events, target)
+        # NRI-0023 task 8.3 (design Д9, spec world-snapshot «Осиротевшее в
+        # срезе подсобытие получает заглушку»): the tree names an orphan's
+        # parent from the id → имя card — one pass over the ladder's loaded
+        # sample (the whole game's events), the same source the search prefix
+        # reads. In «все события» mode no parent can be out of the slice, so
+        # the card simply never gets asked.
+        snapshot.populate(
+            events,
+            target,
+            {event.id: event.name for event in self._timeline_vm.all_events},
+        )
 
     def _connect_now_date(self) -> None:
         """Game-«now» widget (NRI-0021 task 3.3): popup, write, broadcast.
@@ -789,6 +864,20 @@ class ApplicationWiring:
             lambda pair: self._spawn(self._apply_now_date(pair))
         )
         vm.datePopupRequested.connect(self._open_now_date_popup)
+        # NRI-0023 task 9.1: the neighbor hour list runs the same finish —
+        # one service transaction, then the applied-value mirror.
+        vm.hourChangeRequested.connect(
+            lambda hour: self._spawn(self._apply_now_hour(hour))
+        )
+        # Task 12.6 (A1 host half, re-audit 2026-09-29): the hour list needs
+        # the same bridge route as the grid — the island's fixed-height host
+        # cuts the component pop-up, so the combo asks, this connector opens
+        # the list window, and a pick re-enters the VM's own request channel
+        # (requestHour maps the index and bounds-checks it; the existing
+        # hourChangeRequested half finishes the transaction unchanged).
+        self._now_hour_popup = ThemeHourPopup()
+        self._now_hour_popup.hour_selected.connect(vm.requestHour)
+        vm.hourPopupRequested.connect(self._open_now_hour_popup)
 
     def _open_now_date_popup(
         self, x: float, y: float, width: float, height: float
@@ -801,24 +890,58 @@ class ApplicationWiring:
             (value.coord, value.is_bc) if value is not None else None,
         )
 
+    def _open_now_hour_popup(
+        self, x: float, y: float, width: float, height: float
+    ) -> None:
+        # Same rectangle contract as the grid above: the VM carries the
+        # combo's island-local rectangle, the facade maps it to global. The
+        # rows are the VM's live hour options — re-read here on every open,
+        # so a calendar switch that narrowed the day is reflected without
+        # any island rebuild (design Д4: the bounds are the calendar's).
+        self._now_hour_popup.open_at(
+            self._window.search_bar.now_date_anchor(x, y, width, height),
+            list(self._now_date_vm.hourOptions),
+            self._now_date_vm.selectedHourIndex,
+        )
+
     async def _apply_now_date(self, selected) -> None:
         """Finish one widget edit: service write, then mirror it into the VM.
 
         The popup bridge answers with a ``(coord, is_bc)`` pair (the grid's
-        own era flag). The service moves its value and counter only on a
-        committed transaction, so ``applyNow`` runs only on success; the
-        failure half of the AGENTS rule («any persistence error reaches the
-        user») is the modal, like every other save path here.
+        own era flag); the served hour rides along untouched (NRI-0023 task
+        9.1 — the date half and the hour half edit one and the same value).
+        The service moves its value and counter only on a committed
+        transaction, so ``applyNow`` runs only on success; the failure half
+        of the AGENTS rule («any persistence error reaches the user») is the
+        modal, like every other save path here.
         """
         coord, is_bc = selected
+        value = self._current_date_service.value
+        hour = value.hour if value is not None else None
         try:
-            await self._current_date_service.set_now(coord, is_bc)
+            await self._current_date_service.set_now(coord, is_bc, hour)
         except Exception as exc:  # noqa: BLE001 — the modal names the reason
             QMessageBox.critical(
                 self._window, "Ошибка", f"Не удалось изменить игровую дату: {exc}",
             )
             return
-        self._now_date_vm.applyNow(coord, is_bc)
+        self._now_date_vm.applyNow(coord, is_bc, hour)
+
+    async def _apply_now_hour(self, hour) -> None:
+        """Finish one hour-list edit (NRI-0023 task 9.1, spec «Час меняет
+        только подпись»): the day half of the served value stays put, only
+        the optional hour moves; same one-transaction finish and applied-
+        value mirror as the date half, same modal on failure."""
+        value = self._current_date_service.value
+        coord, is_bc = value.coord, value.is_bc
+        try:
+            await self._current_date_service.set_now(coord, is_bc, hour)
+        except Exception as exc:  # noqa: BLE001 — the modal names the reason
+            QMessageBox.critical(
+                self._window, "Ошибка", f"Не удалось изменить игровую дату: {exc}",
+            )
+            return
+        self._now_date_vm.applyNow(coord, is_bc, hour)
 
     # ── Shared handlers (the closures the old connect() shared between its
     # areas, promoted to private methods in wave B3) ─────────────────────────
@@ -866,6 +989,13 @@ class ApplicationWiring:
     async def _load_types_into_dialog(self, dialog) -> None:
         """Fill the event dialog's type selector with the game's set (W4)."""
         dialog.set_event_types(list(await self._event_service.get_event_types()))
+
+    async def _load_parents_into_dialog(self, dialog) -> None:
+        """Fill the event dialog's «Родительское событие» pool (NRI-0023
+        task 7.1): the whole event list is handed over — the ViewModel keeps
+        main events only out of it (spec «Чужих детей в списке нет») and the
+        facade excludes the edited event through its loaded id."""
+        dialog.set_parent_options(list(await self._event_service.get_all_events()))
 
     # ── Shared entity-card factory (task 5.10, design D5) ──────────────
     # One place for the card's opening ceremony: creation, populate, the

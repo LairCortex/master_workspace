@@ -46,6 +46,16 @@ Rectangle {
     // stays legible while the titles keep the shared library look.
     readonly property int bodyFontPixelSize:
         Tokens.px(root.islandTokens, "font.size.md", 13) + 2
+    // The content inset (live bug 2026-09-30: the card texts glued themselves
+    // to the borders). One token for the whole island — the same space.sm the
+    // library card exposes as its own content padding (CardPanel.padding) and
+    // the detail row uses inside its ThemeRatingCard — so the header line, the
+    // identity band and the long sections all breathe the same distance from
+    // every border. The band's TOP inset deliberately stays the shared
+    // space.xs of the three column roots (panelHeader.js axis): the padding
+    // moves the content off the edges, never the header off its line.
+    readonly property int contentPadding:
+        Tokens.px(root.islandTokens, "space.sm", 8)
 
     color: root.surfaceColor
 
@@ -66,6 +76,12 @@ Rectangle {
             objectName: "previewHeaderBand"
             Layout.fillWidth: true
             Layout.minimumWidth: 0
+            // The band keeps the shared 32 px height and the shared space.xs
+            // top inset (its y stays the header axis of the three columns);
+            // only its horizontal entry steps in by the content padding, so
+            // the caption reads over the card's content, not on the border.
+            Layout.leftMargin: root.contentPadding
+            Layout.rightMargin: root.contentPadding
             implicitHeight: PanelHeader.band()
             Layout.preferredHeight: implicitHeight
 
@@ -92,7 +108,11 @@ Rectangle {
                 id: previewScroll
                 objectName: "previewScroll"
                 anchors.fill: parent
-                anchors.margins: 1  // keep content off the 1px border
+                // The card's content inset: the 1px hairline plus the island's
+                // padding — the viewport itself (so the long sections, the
+                // music line and the last relation block too) never paints on
+                // the canvas border or crosses it.
+                anchors.margins: 1 + root.contentPadding
                 contentWidth: width
                 contentHeight: previewContent.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds

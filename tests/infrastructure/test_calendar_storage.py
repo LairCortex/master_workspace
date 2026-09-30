@@ -78,7 +78,7 @@ class TestCodecStandardPreset:
 
     def test_plain_preset_encodes_without_any_payload_fields(self):
         assert json.loads(encode_calendar(StandardCalendar())) == {
-            "v": 1, "kind": "standard",
+            "v": CALENDAR_STORAGE_VERSION, "kind": "standard",
         }
 
     def test_empty_or_default_equal_override_normalizes_to_no_field(self):
@@ -88,12 +88,12 @@ class TestCodecStandardPreset:
         for names in ({}, {5: "Май"}, all_default):
             payload = json.loads(encode_calendar(StandardCalendar(month_names=names)))
             assert "month_names" not in payload
-            assert payload == {"v": 1, "kind": "standard"}
+            assert payload == {"v": CALENDAR_STORAGE_VERSION, "kind": "standard"}
 
     def test_override_is_written_as_string_month_numbers(self):
         raw = encode_calendar(StandardCalendar(month_names={3: "Медвежарь"}))
         assert json.loads(raw) == {
-            "v": 1,
+            "v": CALENDAR_STORAGE_VERSION,
             "kind": "standard",
             "month_names": {"3": "Медвежарь"},
         }
@@ -136,7 +136,7 @@ class TestCodecCustomRoundTrip:
     def test_full_spec_fields_are_written_one_for_one(self):
         raw = json.loads(encode_calendar(CustomCalendar(CODEC_SPEC)))
         assert raw == {
-            "v": 1,
+            "v": CALENDAR_STORAGE_VERSION,
             "kind": "custom",
             "months": [
                 {"name": "Зимостой", "length": 30},
@@ -149,6 +149,10 @@ class TestCodecCustomRoundTrip:
                 {"name": "Эхо", "after_month": 2},
                 {"name": "Тишина", "after_month": 3},
             ],
+            # NRI-0023 (design Д5): the day size is written alongside the rest,
+            # here at the earthly default the default-built CODEC_SPEC carries.
+            "day_hours": 24,
+            "minutes_per_hour": 60,
         }
 
     def test_saved_spec_is_equal_to_the_read_one(self):
@@ -184,6 +188,113 @@ class TestCodecCustomRoundTrip:
         assert encode_calendar(decoded.calendar) == raw_once
 
 
+# ── NRI-0023 task 2.2: размер суток в кодеке (design Д5) ──────────────────
+
+ALIEN_DAY_SPEC = CalendarSpec(
+    months=BASE_MONTHS,
+    week_names=BASE_WEEK,
+    day_hours=10,
+    minutes_per_hour=100,
+)  # сценарий «Нездешние сутки»: десятичасовые сутки со ста минутами
+
+
+class TestCodecDaySizeVersions:
+    """v2 носит сутки, v1 доживает до чтения (design Д5, spec
+    «Календарь-настройки хранятся в базе игры»): запись всегда v2 с полями
+    суток, круговой проход сохраняет нездешний размер, а v1 без полей
+    толкуется как 24/60 молча — без причин и без перестройки ключей."""
+
+    def test_alien_day_round_trips_through_the_v2_payload(self):
+        original = CustomCalendar(ALIEN_DAY_SPEC)
+        raw = json.loads(encode_calendar(original))
+        assert raw["v"] == CALENDAR_STORAGE_VERSION == 2
+        assert raw["day_hours"] == 10
+        assert raw["minutes_per_hour"] == 100
+        decoded = decode_calendar(json.dumps(raw, ensure_ascii=False))
+        assert isinstance(decoded, CalendarDecoded)
+        restored = decoded.calendar
+        assert isinstance(restored, CustomCalendar)
+        assert restored.spec == ALIEN_DAY_SPEC
+        assert (restored.day_hours, restored.minutes_per_hour) == (10, 100)
+
+    def test_v1_custom_value_without_day_fields_reads_as_24_60_silently(self):
+        # сценарий «Значение версии 1 доживает до чтения»: ровно тот JSON,
+        # который писало приложение до NRI-0023, — без полей суток вовсе
+        raw = json.dumps(
+            {
+                "v": 1,
+                "kind": "custom",
+                "months": [
+                    {"name": "Зимостой", "length": 30},
+                    {"name": "Талолист", "length": 50},
+                ],
+                "week_names": list(BASE_WEEK),
+                "intercalary": [],
+            },
+            ensure_ascii=False,
+        )
+        decoded = decode_calendar(raw)
+        assert isinstance(decoded, CalendarDecoded)
+        spec = decoded.calendar.spec
+        assert (spec.day_hours, spec.minutes_per_hour) == (24, 60)
+        # месяцы/неделя восстановились — чтение v1 без потерь
+        assert spec.months == tuple(BASE_MONTHS[:2])
+        assert spec.week_names == BASE_WEEK
+
+    def test_v1_standard_value_still_decodes(self):
+        decoded = decode_calendar('{"v": 1, "kind": "standard"}')
+        assert isinstance(decoded, CalendarDecoded)
+        assert isinstance(decoded.calendar, StandardCalendar)
+
+    def test_stored_zero_day_size_is_the_kernel_below_min_reason(self):
+        # shape passes (числа целые), а нули отсекает ядро — полный список
+        # причин валидации, а не заглушка кодека
+        result = decode_calendar(
+            json.dumps(
+                {
+                    "v": 2,
+                    "kind": "custom",
+                    "months": [{"name": "Один", "length": 5}],
+                    "week_names": ["а", "б"],
+                    "intercalary": [],
+                    "day_hours": 0,
+                    "minutes_per_hour": 0,
+                }
+            )
+        )
+        assert isinstance(result, CalendarCorrupted)
+        assert codes_of(result.reasons) == {
+            "day_hours_below_min", "minutes_per_hour_below_min",
+        }
+
+
+DAY_SIZE_SHAPE_CASES = [
+    pytest.param(
+        '{"v": 2, "kind": "custom", "months": [{"name": "х", "length": 3}],'
+        ' "week_names": ["а", "б"], "intercalary": [],'
+        ' "day_hours": "24", "minutes_per_hour": 60}',
+        {"corrupt_shape"}, id="day_hours-is-a-string",
+    ),
+    pytest.param(
+        '{"v": 2, "kind": "custom", "months": [{"name": "х", "length": 3}],'
+        ' "week_names": ["а", "б"], "intercalary": [],'
+        ' "day_hours": 24, "minutes_per_hour": true}',
+        {"corrupt_shape"}, id="minutes_per_hour-is-a-bool",
+    ),
+]
+
+
+class TestCodecDaySizeShape:
+    """Целочисленность полей суток — часть shape-прохода кодека: строка или
+    bool не проходит, как и любое другое врёмное поле формата."""
+
+    @pytest.mark.parametrize(("raw", "expected_codes"), DAY_SIZE_SHAPE_CASES)
+    def test_non_integer_day_size_answers_corrupt_shape(self, raw, expected_codes):
+        result = decode_calendar(raw)
+        assert isinstance(result, CalendarCorrupted)
+        assert codes_of(result.reasons) == expected_codes
+
+
 # ── кодек хранения: повреждённые значения никогда не бросают ────────────
 
 CODEC_CORRUPT_CASES = [
@@ -196,7 +307,7 @@ CODEC_CORRUPT_CASES = [
     pytest.param('"просто строка"', {"corrupt_shape"}, id="json-string-not-object"),
     # ── версия формата ────────────────────────────────────────────────────
     pytest.param('{"kind": "standard"}', {"unknown_version"}, id="missing-v"),
-    pytest.param('{"v": 2, "kind": "standard"}', {"unknown_version"}, id="future-v"),
+    pytest.param('{"v": 3, "kind": "standard"}', {"unknown_version"}, id="future-v"),
     pytest.param('{"v": 0, "kind": "custom"}', {"unknown_version"}, id="zero-v"),
     # ── дискриминатор kind ────────────────────────────────────────────────
     pytest.param('{"v": 1}', {"corrupt_shape"}, id="missing-kind"),
@@ -612,6 +723,52 @@ class TestDraftCodecRoundTrip:
             ).draft.stage == stage
 
 
+class TestDraftCodecDaySizeVersions:
+    """NRI-0023 task 2.2 / design Д5: конверт и тело черновика переезжают на
+    v2 вместе с основным ключом (запись всегда v2, сутки — внутри тела), а
+    сохранённый v1-черновик читается молча с сутками 24/60."""
+
+    def test_write_is_always_v2_with_the_day_inside_the_body(self):
+        payload = json.loads(
+            encode_draft(CalendarDraft(spec=ALIEN_DAY_SPEC, stage=DRAFT_STAGE_WEEK))
+        )
+        assert payload["v"] == CALENDAR_DRAFT_VERSION == 2
+        assert payload["spec"]["v"] == CALENDAR_STORAGE_VERSION == 2
+        assert payload["spec"]["day_hours"] == 10
+        assert payload["spec"]["minutes_per_hour"] == 100
+
+    def test_alien_day_draft_round_trips(self):
+        draft = CalendarDraft(spec=ALIEN_DAY_SPEC, stage=DRAFT_STAGE_PREVIEW)
+        decoded = decode_draft(encode_draft(draft))
+        assert isinstance(decoded, DraftDecoded)
+        assert decoded.draft == draft
+        assert decoded.draft.spec.day_hours == 10
+
+    def test_v1_draft_envelope_and_body_read_with_the_earthly_day(self):
+        # черновик, записанный приложением до NRI-0023: конверт v1 и тело
+        # кастома без полей суток — читаются, сутки берутся 24/60
+        raw = json.dumps(
+            {
+                "v": 1,
+                "spec": {
+                    "v": 1,
+                    "kind": "custom",
+                    "months": [{"name": "Черновершь", "length": 12}],
+                    "week_names": ["Буд", "Ведь", "Творец", "Грозник", "Светлай"],
+                    "intercalary": [{"name": "Гром", "after_month": 1}],
+                },
+                "stage": DRAFT_STAGE_MONTHS,
+            },
+            ensure_ascii=False,
+        )
+        decoded = decode_draft(raw)
+        assert isinstance(decoded, DraftDecoded)
+        assert decoded.draft.stage == DRAFT_STAGE_MONTHS
+        spec = decoded.draft.spec
+        assert (spec.day_hours, spec.minutes_per_hour) == (24, 60)
+        assert spec.months == (MonthSpec("Черновершь", 12),)
+
+
 class TestDraftCodecWriteGuards:
     """Писатель строже читателя: в хранилище не попадает ни битая спека,
     ни неизвестная ступень — и то и другое拒绝 на глазах у мастера."""
@@ -640,7 +797,7 @@ DRAFT_CORRUPT_CASES = [
         {"spec": {}, "stage": DRAFT_STAGE_WEEK}, {"unknown_version"}, id="missing-v"
     ),
     pytest.param(
-        draft_body(base_spec(), v=2), {"unknown_version"}, id="future-v"
+        draft_body(base_spec(), v=3), {"unknown_version"}, id="future-v"
     ),
     # ── тело спеки ────────────────────────────────────────────────────────
     pytest.param(

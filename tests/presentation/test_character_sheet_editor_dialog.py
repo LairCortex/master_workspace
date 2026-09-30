@@ -466,10 +466,10 @@ async def test_snap_toggle_and_z_order_buttons(dlg, qtbot):
     assert snap.property("checked") is False
     assert vm.snap_enabled is False
 
-    snap.setProperty("checked", True)
-    snap.toggled.emit()      # the user-toggle signal (programmatic checked stays silent)
-    _pump(qtbot)
+    click_item(dlg.quick, snap)  # Д15 (NRI-0023 13.1): the click requests the
+    _pump(qtbot)                 # toggle from the VM's truth (onClicked)
     assert vm.snap_enabled is True
+    assert snap.property("checked") is True
 
     a = vm.place(FieldType.LABEL, 10.0, 10.0)
     b = vm.place(FieldType.TEXT, 20.0, 20.0)

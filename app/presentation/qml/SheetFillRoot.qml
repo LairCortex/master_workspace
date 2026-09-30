@@ -290,12 +290,14 @@ Rectangle {
                         text: "Вкл."
                         checked: root.panelRow ? root.panelRow.content === "true"
                                                : false
-                        onToggled: {
-                            var current = root.panelRow
-                                          && root.panelRow.content === "true"
-                            if (current !== checked)
-                                root.vm.toggle_checkbox(root.panelFid)
-                        }
+                        // Д15 (NRI-0023 task 13.1, live audit 2026-09-29
+                        // OBS-2): accessibility activation writes ``checked``
+                        // without a user gesture — on the old onToggled wiring
+                        // the tick moved but the VM never heard. The tick is
+                        // the stored state (binding); every activation is one
+                        // toggle REQUEST — the VM flips from its own truth
+                        // (and read-only fields refuse it there).
+                        onClicked: root.vm.toggle_checkbox(root.panelFid)
                     }
 
                     // dropdown — the widgets QComboBox (the canvas click-path

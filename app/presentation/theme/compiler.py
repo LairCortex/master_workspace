@@ -418,6 +418,27 @@ QComboBox QAbstractItemView {{
     selection-background-color: {t['color.accent']};
     selection-color: {t['color.accent.fg']};
 }}
+/* The «сейчас» hour list the fixed-height search island bridges out of its
+   host (task 12.6, A1 host half) follows the same named-class recipe as the
+   mention and date popups above: ``ThemeHourPopup`` is the top-level frame,
+   ``ThemeHourListView`` the list whose highlighted row takes the accent wash
+   — the same selection pair the ThemeComboBox popup rows paint with. */
+ThemeHourPopup {{
+    background: {t['color.bg.surface']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+}}
+ThemeHourListView {{
+    background: {t['color.bg.surface']};
+    color: {t['color.fg.primary']};
+    border: none;
+    outline: none;
+    selection-background-color: {t['color.accent']};
+    selection-color: {t['color.accent.fg']};
+}}
+ThemeHourListView::item {{
+    padding: {t['space.xs']} {t['space.sm']};
+}}
 GameCalendarGrid {{
     background: {t['color.bg.surface']};
     border: 1px solid {t['color.border']};

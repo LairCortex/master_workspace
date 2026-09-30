@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -21,12 +21,15 @@ from app.domain.game_calendar import GameCoord, as_game_coord
 from app.presentation.theme.rating import rating_to_color
 from app.presentation.utils.date_utils import (
     era_flag,
+    event_start_time,
+    format_event_start,
     format_game_date,
     iso_or_coord,
     split_date_era,
     worst_case_date_caption,
 )
 from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
+from app.presentation.views.timeline_rows import event_parent_id
 
 
 ICON_SIZE = 24
@@ -224,7 +227,17 @@ class WorldSnapshotViewModel(QObject):
     # it never computes the era itself.
     dateBc = Property(bool, lambda self: self._date_bc, notify=dateChanged)
 
-    def populate(self, events: Sequence[Any], for_date: date | None) -> None:
+    def populate(
+        self,
+        events: Sequence[Any],
+        for_date: date | None,
+        event_names: Mapping[int, str] | None = None,
+    ) -> None:
+        # ``event_names`` is the wiring's id → имя card of every game event
+        # (NRI-0023 task 8.3, design Д9): the slice alone cannot name the
+        # parent of an orphaned sub-event, and the stub row is spec'd to
+        # carry the parent's NAME. Absent card — an orphan just stays the
+        # plain row it always was (nothing invented from an unnamed id).
         events = list(events)
         self._clear_enabled = True
         if not events:
@@ -256,7 +269,7 @@ class WorldSnapshotViewModel(QObject):
                     entities[section][entity.id] = entity
 
         self._sections = {
-            "events": [self._event_row(event) for event in events],
+            "events": self._event_tree(events, event_names),
         }
         for section, values in entities.items():
             records = list(values.values())
@@ -370,6 +383,13 @@ class WorldSnapshotViewModel(QObject):
             if not children:
                 continue
             label, entity_type, emoji = _SECTION_META[section]
+            # The header count is the count of EVENTS (task 8.3, spec
+            # «Подсобытия в счётчике, заглушки — нет»): the always-expanded
+            # children are events and ride along, the parent stubs explain
+            # an orphan but are not events themselves.
+            event_count = sum(
+                1 for child in children if child["rowKind"] != "stubRow"
+            )
             rows.append(
                 {
                     "rowKind": "sectionHeader",
@@ -377,7 +397,7 @@ class WorldSnapshotViewModel(QObject):
                     "type": entity_type,
                     "id": -1,
                     "name": label,
-                    "displayText": f"{label} ({len(children)})",
+                    "displayText": f"{label} ({event_count})",
                     "ratingHex": _TRANSPARENT,
                     "fontBold": True,
                     "tooltipHtml": "",
@@ -394,10 +414,86 @@ class WorldSnapshotViewModel(QObject):
                 rows.extend(children)
         self._model.replace(rows)
 
-    def _event_row(self, event: Any) -> dict[str, Any]:
-        start = format_game_date(
+    def _event_tree(
+        self, events: Sequence[Any], event_names: Mapping[int, str] | None
+    ) -> list[dict[str, Any]]:
+        """The «События» section as the two-level tree of the slice (NRI-0023
+        task 8.3, spec «Состав снимка» / «Сортировка секций»): parents keep the
+        slice's chronological order, their sub-events follow immediately under
+        the parent (the slice already orders children chronologically, the
+        same (day, time, id) key as the ladder), a child whose parent the
+        slice excludes gets a parent STUB row directly above it — name only,
+        no dates, never selectable. The snapshot is a reading surface, not a
+        navigation control, so the tree is always fully expanded (design Д9);
+        with no links at all the list is word-for-word the old flat one.
+        """
+        present = {event.id for event in events}
+        children_of: dict[int, list[Any]] = {}
+        tops: list[tuple[Any, int | None]] = []
+        for event in events:
+            parent_id = event_parent_id(event)
+            if parent_id is not None and parent_id in present:
+                children_of.setdefault(parent_id, []).append(event)
+            else:
+                # A top-level event (no link) rides with parent_id None; an
+                # orphan keeps its out-of-slice parent id for the stub.
+                tops.append((event, parent_id))
+        rows: list[dict[str, Any]] = []
+        stubbed: set[int] = set()
+        for event, orphan_parent in tops:
+            if orphan_parent is not None and orphan_parent not in stubbed:
+                stubbed.add(orphan_parent)
+                stub = self._stub_row(orphan_parent, event_names)
+                if stub is not None:
+                    rows.append(stub)
+            # An orphan keeps its child depth under the stub it got — on the
+            # ladder a stubbed parent's children are indented too; without a
+            # nameable parent the orphan still reads as the child it is.
+            rows.append(self._event_row(event, depth=1 if orphan_parent else 0))
+            for child in children_of.get(event.id, ()):
+                rows.append(self._event_row(child, depth=1))
+        return rows
+
+    def _stub_row(
+        self, parent_id: int, event_names: Mapping[int, str] | None
+    ) -> dict[str, Any] | None:
+        """The parent placeholder: the stub is the parent's NAME over the
+        orphan group — no dates (the parent is not in the slice), no click
+        target (``rowKind != "entityRow"`` keeps :meth:`select` silent), no
+        stats entry (``_stats`` counts the events, never these rows). An id
+        the card cannot name produces no stub rather than a nameless one."""
+        name = (event_names or {}).get(parent_id)
+        if not name:
+            return None
+        return {
+            "rowKind": "stubRow",
+            "sectionKey": "events",
+            "type": "event",
+            "id": int(parent_id),
+            "name": str(name),
+            "displayText": str(name),
+            "ratingHex": _TRANSPARENT,
+            "fontBold": False,
+            "tooltipHtml": "",
+            "icon": _text_icon("📅"),
+            "iconKey": "event",
+            "iconText": "📅",
+            "iconPath": "",
+            "iconSize": ICON_SIZE,
+            "expanded": False,
+            "selectable": False,
+        }
+
+    def _event_row(self, event: Any, depth: int = 0) -> dict[str, Any]:
+        # NRI-0023 task 8.1 (design Д9, spec world-snapshot «Дата начала в
+        # строке события SHALL печататься с временем»): the start rides the
+        # single surface helper — a chosen time gains its «, HH:MM» tail, an
+        # untimed event prints word-for-word the caption it always had; the
+        # end stays a plain day (only the start carries a time).
+        start = format_event_start(
             getattr(event, "start_date", None),
-            is_bc=era_flag(getattr(event, "start_bc", False)),
+            era_flag(getattr(event, "start_bc", False)),
+            event_start_time(event),
         )
         end = format_game_date(
             getattr(event, "end_date", None),
@@ -405,13 +501,17 @@ class WorldSnapshotViewModel(QObject):
             is_bc=era_flag(getattr(event, "end_bc", False)),
         )
         name = str(getattr(event, "name", event))
+        # The tree's horizontal indent (task 8.3, spec «Подсобытие отступом
+        # под родителем»): a child's caption opens with the indent; a top-
+        # level row keeps its caption bit-for-bit, the empty-time half too.
+        indent = "" if depth <= 0 else "\u00a0" * (4 * depth)
         return {
             "rowKind": "entityRow",
             "sectionKey": "events",
             "type": "event",
             "id": int(event.id),
             "name": name,
-            "displayText": f"{start} — {end}  |  {name}",
+            "displayText": f"{indent}{start} — {end}  |  {name}",
             "ratingHex": _TRANSPARENT,
             "fontBold": False,
             "tooltipHtml": "",

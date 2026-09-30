@@ -119,6 +119,19 @@ def _custom_calendar() -> CustomCalendar:
     )
 
 
+def _ten_hour_calendar() -> CustomCalendar:
+    """The same two-month world narrowed to 10-hour days (NRI-0023 task 2.3):
+    every hour the 24-hour preset hosted from 10 up is out of its day."""
+    return CustomCalendar(
+        CalendarSpec(
+            months=(MonthSpec("А", 10), MonthSpec("Б", 10)),
+            week_names=("пн", "вт", "ср", "чт", "пт", "сб", "вс"),
+            intercalary=(IntercalarySpec("В", 1),),
+            day_hours=10,
+        )
+    )
+
+
 class TestCurrentDateRepository:
     @pytest.fixture(autouse=True)
     def _fresh_active_calendar(self):
@@ -174,6 +187,76 @@ class TestCurrentDateRepository:
         await repo.save(IntercalaryDay(44, 0), is_bc=True)
         assert await repo.load() == CurrentDateValue(IntercalaryDay(44, 0), True)
 
+    # ── NRI-0023 task 2.3: необязательный час «сейчас» (design Д5) ──────────
+
+    async def test_hour_writes_the_h_key_and_round_trips(self, async_session):
+        repo = CurrentDateRepository(async_session)
+        await repo.save(MonthDay(2088, 5, 1), is_bc=True, hour=14)
+        # the extended wire format: the v1 body with one trailing "h" key
+        assert json.loads(await self._stored_text(async_session)) == {
+            "coord": "M:2088:5:1",
+            "bc": 1,
+            "h": 14,
+        }
+        assert await repo.load() == CurrentDateValue(MonthDay(2088, 5, 1), True, 14)
+
+    async def test_hour_zero_is_a_written_hour_not_absence(self, async_session):
+        # «0» is a real hour of the day — the codec must not confuse it with
+        # «не выставлен» on either side of the wire.
+        repo = CurrentDateRepository(async_session)
+        await repo.save(MonthDay(2088, 5, 1), False, hour=0)
+        assert json.loads(await self._stored_text(async_session)) == {
+            "coord": "M:2088:5:1",
+            "bc": 0,
+            "h": 0,
+        }
+        assert await repo.load() == CurrentDateValue(MonthDay(2088, 5, 1), False, 0)
+
+    async def test_no_hour_writes_the_pre_0023_body_byte_identical(
+        self, async_session
+    ):
+        # v1-совместимость кодека: date-only edits keep writing exactly the
+        # old two-key JSON — an older app version still reads every write.
+        await CurrentDateRepository(async_session).save(MonthDay(2088, 5, 1), False)
+        assert await self._stored_text(async_session) == (
+            '{"coord": "M:2088:5:1", "bc": 0}'
+        )
+
+    async def test_narrow_day_clears_the_stored_hour_silently(
+        self, async_session, caplog
+    ):
+        # Spec «Сужение суток чистит недоступный час»: hour 23 survived under
+        # the 24-hour preset, a 10-hour calendar no longer hosts it — the
+        # date keeps serving, the hour reads as unset, nothing is written
+        # back and no warning is raised (design Д5: «чистит подпись без
+        # записи»).
+        repo = CurrentDateRepository(async_session)
+        await repo.save(MonthDay(2088, 1, 5), is_bc=True, hour=23)
+        set_current_calendar(_ten_hour_calendar())
+        try:
+            with caplog.at_level(logging.WARNING):
+                value = await repo.load()
+        finally:
+            reset_current_calendar()
+        assert value == CurrentDateValue(MonthDay(2088, 1, 5), True, None)
+        assert not caplog.records
+        # the row stays byte-identical — the clearing is a reading rule only
+        assert json.loads(await self._stored_text(async_session))["h"] == 23
+
+    async def test_negative_stored_hour_reads_as_unset(self, async_session):
+        # «вне 0 … day_hours−1» covers the under-edge too: a hand-written
+        # minus is not an hour of any day.
+        async_session.add(
+            GameSettingsModel(
+                key=CURRENT_DATE_KEY,
+                value='{"coord": "M:2088:5:1", "bc": 0, "h": -1}',
+            )
+        )
+        await async_session.commit()
+        assert await CurrentDateRepository(async_session).load() == (
+            CurrentDateValue(MonthDay(2088, 5, 1), False, None)
+        )
+
     @pytest.mark.parametrize(
         "raw",
         [
@@ -185,6 +268,9 @@ class TestCurrentDateRepository:
             '{"coord": "M:2088:5:1", "bc": "0"}',   # text is not the flag
             '{"coord": "Q:1:2", "bc": 0}',          # codec rejects the kind
             '{"coord": 7, "bc": 0}',                # coord is not text
+            '{"coord": "M:2088:5:1", "bc": 0, "h": "14"}',   # hour is not an int
+            '{"coord": "M:2088:5:1", "bc": 0, "h": true}',   # bool is never the hour
+            '{"coord": "M:2088:5:1", "bc": 0, "h": 14.5}',   # neither is a float
         ],
     )
     async def test_corrupted_value_reads_none_with_a_warning(

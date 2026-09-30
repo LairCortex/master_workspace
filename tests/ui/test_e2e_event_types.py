@@ -263,7 +263,15 @@ async def test_assigning_type_marks_scale_row_in_token_hex(app, wait_for):
     ))
 
     # Снятый тип: «Без типа» + save returns the dot to the muted token.
+    # The double-click that opened the card also left the row SELECTED (Qt
+    # emits the single-click before the double), and since NRI-0023 task 11.3
+    # (audit A5, spec «Дерево не грязнит акцент на залировке») an untyped
+    # mark over the selection wash wears the contrast family instead of the
+    # muted rank. The dot TOKEN story is about the type, so the probe drops
+    # the selection before reading the untyped face.
     await _assign_type_via_edit_dialog(window, wait_for, "Слух у костра", "Без типа")
+    window.timeline_widget.set_selected(None)
+    await helpers.wait_until_settled()
     await wait_for(lambda: (
         _type_dot_pixel(window, "Слух у костра")
         == token_color("color.fg.muted", theme.theme)

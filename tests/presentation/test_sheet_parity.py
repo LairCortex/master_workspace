@@ -46,6 +46,14 @@ EVENT_SHEET_LABELS = [
     ("eventBackstoryField", "Предыстория: *"),
 ]
 
+# NRI-0023 (task group 7): the card gained «Родительское событие:» plus the
+# hour/minute lists riding the start-date block. Their captions join the
+# full-set equality below but NOT the per-field row loop — that loop stays
+# the штатная six-field row-label pin, the time captions are pinned by the
+# set only (group 8's note); none of the three carries the «*», so the
+# mandatory-field assertions hold untouched.
+EVENT_SHEET_EXTRA_CAPTIONS = {"Родительское событие:", "Час:", "Минута:"}
+
 CARD_SHEET_LABELS = [
     ("entityNameField", "Название: *"),
     ("entityRatingSpin", "Рейтинг (1-20):"),
@@ -176,7 +184,9 @@ def test_event_sheet_captions_carry_the_shared_form(qtbot):
     qtbot.addWidget(dialog)
     dialog.show()
 
-    assert _caption_set(dialog.quick) == {label for _field, label in EVENT_SHEET_LABELS}
+    assert _caption_set(dialog.quick) == {
+        label for _field, label in EVENT_SHEET_LABELS
+    } | EVENT_SHEET_EXTRA_CAPTIONS
     for field_name, expected in EVENT_SHEET_LABELS:
         assert _row_label(dialog.quick, field_name) == expected
     # E2: every caption ends with the colon; the «*» marks exactly the

@@ -66,6 +66,8 @@ Item {
     signal eventClicked(int eventId)
     signal eventDoubleClicked(int eventId)
     signal selectionMissed()
+    // NRI-0023 task 6.1: the main-event row's right-click channel.
+    signal rowContextMenuRequested(int eventId, real x, real y)
 }
 """
 

@@ -5,7 +5,7 @@ it renders the frozen :class:`~app.presentation.viewmodels.calendar_wizard_viewm
 snapshots it is handed and forwards clicks/edits as intents — all flow,
 validation, draft and apply rules live in the view model (the repo's review
 rule: no business logic in the view).  A ``QStackedWidget`` carries the screens
-«выбор → неделя → месяцы → вставные дни → предпросмотр» plus the «отчёт»
+«выбор → неделя → месяцы → вставные дни → сутки → предпросмотр» plus the «отчёт»
 screen reached through «Применить», and the right-hand panel is the live
 preview: the very :class:`~app.presentation.views.calendar_grid.GameCalendarGrid`
 the date popups use, in its inert look (``interactive=False``,
@@ -84,6 +84,7 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     KIND_CUSTOM,
     KIND_STANDARD,
     STEP_CHOICE,
+    STEP_DAY,
     STEP_INTERCALARY,
     STEP_MONTHS,
     STEP_PREVIEW,
@@ -105,6 +106,17 @@ MONTH_LENGTH_MIN = 1
 MONTH_LENGTH_MAX = 9999
 MONTH_COUNT_MIN = 1
 MONTH_COUNT_MAX = 99
+
+# The «Сутки» spin bounds (NRI-0023 task 4.1).  The FLOOR of 0 is deliberate,
+# not sloppiness: the spec scenario «Ноль не проходит» requires the 0 to be
+# typeable so the stage answers with the inactive «Далее» and the Russian
+# reason — a spin minimum of 1 would hide the very misuse the scenario pins
+# (the domain gate ``*_below_min`` is what refuses it).  The ceiling is a
+# widget need, not a domain cap — the validator knows none («нет продуктовых
+# ограничений», валидация спеки ядра), the product's own 9999-scale of the
+# month-length spin is reused as the numeric ceiling here too.
+DAY_SIZE_MIN = 0
+DAY_SIZE_MAX = 9999
 
 #: Window title of the wizard.
 WIZARD_TITLE = "Настройка календаря"
@@ -183,6 +195,7 @@ class CalendarWizardDialog(QDialog):
             STEP_WEEK: self._build_week_page(),
             STEP_MONTHS: self._build_months_page(),
             STEP_INTERCALARY: self._build_intercalary_page(),
+            STEP_DAY: self._build_day_page(),
             STEP_PREVIEW: self._build_preview_page(),
             STEP_REPORT: self._build_report_page(),
         }
@@ -312,6 +325,10 @@ class CalendarWizardDialog(QDialog):
         )
         self._week_length_spin.valueChanged.connect(self._vm.set_week_length)
         self._month_count_spin.valueChanged.connect(self._vm.set_month_count)
+        self._day_hours_spin.valueChanged.connect(self._vm.set_day_hours)
+        self._minutes_per_hour_spin.valueChanged.connect(
+            self._vm.set_minutes_per_hour
+        )
         self._rule_add_button.clicked.connect(self._on_add_rule)
 
         self._vm.state_changed.connect(self._render)
@@ -421,15 +438,40 @@ class CalendarWizardDialog(QDialog):
         layout.addLayout(add_row)
         return page
 
+    def _build_day_page(self) -> QWidget:
+        # NRI-0023 task 4.1 (spec «Экран „Сутки“»): two number fields and no
+        # name fields — the screen sizes the day, it never names its hours or
+        # minutes; the year grid preview is independent of the day size.
+        page, layout = _step_page()
+        layout.addWidget(title("Сутки"))
+        day_hint = hint(
+            "Насколько длинен день этого мира: часов в сутках и минут в часе. "
+            "Земная норма — 24 и 60; нездешний мир живёт и своими числами."
+        )
+        day_hint.setWordWrap(True)
+        layout.addWidget(day_hint)
+        self._day_hours_spin = self._spin_row(layout, "Часов в сутках:")
+        self._day_hours_spin.setRange(DAY_SIZE_MIN, DAY_SIZE_MAX)
+        self._minutes_per_hour_spin = self._spin_row(layout, "Минут в часе:")
+        self._minutes_per_hour_spin.setRange(DAY_SIZE_MIN, DAY_SIZE_MAX)
+        layout.addStretch()
+        return page
+
     def _build_preview_page(self) -> QWidget:
         page, layout = _step_page()
         # The right-hand panel already owns the «Предпросмотр» caption over the
         # grid; a second one here was the double header (W1) — this step only
         # carries its summary block.
         layout.addWidget(title("Сводка"))
-        # «сводка (число месяцев, длина недели, число вставных дней)» — the
-        # grid itself lives in the right-hand panel next to every screen.
+        # «сводка (число месяцев, длина недели, число вставных дней, часы в
+        # сутках и минуты в часе)» — the grid itself lives in the right-hand
+        # panel next to every screen.  Word wrap like every other description
+        # of the step column (NRI-0018 Д7 «описания держат ширину колонки»):
+        # with the day size named in it (NRI-0023 task 4.1) the line is wider
+        # than the column and must wrap into it, not stretch the stack's
+        # sizeHint past the width the column was sized from.
         self._summary_label = hint("")
+        self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
         grid_hint = hint("Слева — сводка, справа — сетка будущего календаря. «Применить» — внизу.")
         grid_hint.setWordWrap(True)
@@ -509,11 +551,17 @@ class CalendarWizardDialog(QDialog):
         _bind_spin(self._month_count_spin, len(state.months))
         self._sync_month_rows(state)
         self._sync_rule_rows(state)
+        _bind_spin(self._day_hours_spin, state.day_hours)
+        _bind_spin(self._minutes_per_hour_spin, state.minutes_per_hour)
 
         self._summary_label.setText(
             f"Месяцев: {len(state.months)} · "
             f"Длина недели: {len(state.week_names)} · "
-            f"Вставных дней: {len(state.intercalary)}"
+            f"Вставных дней: {len(state.intercalary)} · "
+            # NRI-0023 task 4.1 (spec «Сводка называет сутки»): the preview
+            # summary names the day size next to the other parameters.
+            f"Часов в сутках: {state.day_hours} · "
+            f"Минут в часе: {state.minutes_per_hour}"
         )
         self._render_report(state)
         self._paint_preview(state.preview_calendar)

@@ -191,7 +191,7 @@ class TestLoadAndLegacyMigration:
         assert await _setting(async_session, LEGACY_MONTHS_KEY) is None
         stored = json.loads(await _setting(async_session, CALENDAR_SETTINGS_KEY))
         assert stored == {
-            "v": 1,
+            "v": 2,
             "kind": "standard",
             "month_names": {"3": "Медвежарь"},
         }
@@ -318,7 +318,7 @@ class TestCorruptedCalendarKey:
         assert any("game_calendar" in record.message for record in caplog.records)
 
     async def test_unknown_version_takes_the_same_path(self, async_session, caplog):
-        raw = '{"v": 2, "kind": "standard"}'
+        raw = '{"v": 3, "kind": "standard"}'
         await _put_setting(async_session, CALENDAR_SETTINGS_KEY, raw)
         service = CalendarSettingsService()
 

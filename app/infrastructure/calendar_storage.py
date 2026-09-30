@@ -3,9 +3,11 @@ D1/D2/D6) — the three format carriers moved verbatim out of
 ``app.domain.game_calendar`` (wave-6 decomposition, task 6.6) so the domain
 keeps pure calendar logic while JSON/text formats live in the infrastructure.
 
-The wire formats are unchanged: the versioned ``{"v": 1, "kind": ...}``
-calendar value (design D1), the wizard draft envelope wrapping that custom-spec
-body with a stage marker (design D6), and the discriminated
+The wire formats are versioned and keep every earlier version readable: the
+``{"v": 2, "kind": ...}`` calendar value (design D1; since NRI-0023 the custom
+kind carries the day size and a ``v: 1`` value without it still reads silently
+as 24/60, design Д5), the wizard draft envelope wrapping that custom-spec
+body with a stage marker (design D6, also v2 accepting v1), and the discriminated
 ``M:year:month:day`` / ``I:year:index`` coordinate text (design D2).  A broken
 stored value never raises: each decoder answers with machine-reason results
 (``CalendarCorrupted`` / ``DraftCorrupted`` / ``CoordCorrupted``) and the caller
@@ -39,12 +41,30 @@ from app.domain.game_calendar import (
 #: JSON format version :func:`encode_calendar` writes and
 #: :func:`decode_calendar` reads; a value stamped with any other version is
 #: reported as ``unknown_version`` rather than silently misread (spec
-#: «Календарь-настройки хранятся в базе игры»).
-CALENDAR_STORAGE_VERSION = 1
+#: «Календарь-настройки хранятся в базе игры»).  Since NRI-0023 (design Д5)
+#: the version is 2: the custom kind gained the day-size fields, while a
+#: stored ``v: 1`` value — which predates them and carries no day size —
+#: stays readable (see :data:`CALENDAR_READABLE_VERSIONS`).
+CALENDAR_STORAGE_VERSION = 2
+
+#: The format versions :func:`decode_calendar` accepts (design Д5): the
+#: current one plus the pre-NRI-0023 ``v: 1``, whose day-size-less custom
+#: values read as the earthly 24/60 silently — no warning, no key rebuild
+#: (spec «Значение версии 1 доживает до чтения»).  Writing is always the
+#: current version.
+CALENDAR_READABLE_VERSIONS = frozenset({1, CALENDAR_STORAGE_VERSION})
 
 #: ``kind`` discriminators of the stored value (design D1).
 _KIND_STANDARD = "standard"
 _KIND_CUSTOM = "custom"
+
+#: Day sizes a stored custom value falls back to when its payload carries no
+#: day fields — every ``v: 1`` value does (design Д5: «сутки → 24/60, без
+#: предупреждений и без каскада пересчёта», spec «Значение версии 1 доживает
+#: до чтения»); the numbers mirror the ``CalendarSpec`` field defaults, the
+#: one domain fact the fallback restates on purpose.
+_DAY_HOURS_DEFAULT = 24
+_MINUTES_PER_HOUR_DEFAULT = 60
 
 
 @dataclass(frozen=True)
@@ -145,12 +165,16 @@ class StandardCalendarStorageCarrier:
 
 class CustomCalendarStorageCarrier:
     """``kind: custom`` — the full spec: ``months`` (name + length),
-    ``week_names`` and ``intercalary`` (name + after_month), list order
+    ``week_names``, ``intercalary`` (name + after_month) and — since NRI-0023
+    (design Д5) — the day size ``day_hours``/``minutes_per_hour``, list order
     meaningful.
 
     Decoding goes field-by-field after a shape pass (both ``validate`` and
     ``CustomCalendar`` assume plain ints and strings) through the core's own
-    validation of the rebuilt spec.
+    validation of the rebuilt spec.  The day-size fields are optional on
+    reading: a ``v: 1`` value simply lacks them and lands on the same 24/60
+    the ``CalendarSpec`` defaults carry (spec «Значение версии 1 доживает до
+    чтения»), while a v2 the app itself wrote always has them.
     """
 
     kind = _KIND_CUSTOM
@@ -167,6 +191,8 @@ class CustomCalendarStorageCarrier:
                 {"name": rule.name, "after_month": rule.after_month}
                 for rule in spec.intercalary
             ],
+            "day_hours": spec.day_hours,
+            "minutes_per_hour": spec.minutes_per_hour,
         }
 
     def decode(self, data: dict) -> CalendarDecoded | CalendarCorrupted:
@@ -207,8 +233,24 @@ class CustomCalendarStorageCarrier:
                     f"and an integer after_month"
                 )
             intercalary.append(IntercalarySpec(entry["name"], entry["after_month"]))
+        # Day size (NRI-0023, design Д5): a field the value does not carry —
+        # every v1 value, and a hand-written v2 missing it — lands on the
+        # CalendarSpec's own 24/60 default; a present field must be a plain
+        # JSON integer (a too-small one is the kernel's ``*_below_min``
+        # validation reason below, not a shape lie here).
+        day_hours_raw = data.get("day_hours", _DAY_HOURS_DEFAULT)
+        minutes_raw = data.get("minutes_per_hour", _MINUTES_PER_HOUR_DEFAULT)
+        if not _is_stored_int(day_hours_raw) or not _is_stored_int(minutes_raw):
+            return _corrupt_shape(
+                "custom calendar day size day_hours/minutes_per_hour "
+                "must be JSON integers"
+            )
         spec = CalendarSpec(
-            months=tuple(months), week_names=tuple(week_raw), intercalary=tuple(intercalary)
+            months=tuple(months),
+            week_names=tuple(week_raw),
+            intercalary=tuple(intercalary),
+            day_hours=day_hours_raw,
+            minutes_per_hour=minutes_raw,
         )
         spec_problems = validate(spec)
         if spec_problems:
@@ -290,7 +332,7 @@ def _decode_calendar_data(data: object) -> CalendarDecoded | CalendarCorrupted:
             f"stored calendar must be a JSON object, got {type(data).__name__}"
         )
     version = data.get("v")
-    if version != CALENDAR_STORAGE_VERSION:
+    if version not in CALENDAR_READABLE_VERSIONS:
         return CalendarCorrupted(
             (
                 SpecProblem(
@@ -320,7 +362,16 @@ def _is_stored_int(value: object) -> bool:
 #: JSON format version :func:`encode_draft` writes and :func:`decode_draft`
 #: reads; a draft stamped with any other version reads as corruption rather
 #: than being silently misread — mirroring :data:`CALENDAR_STORAGE_VERSION`.
-CALENDAR_DRAFT_VERSION = 1
+#: Since NRI-0023 (design Д5) it is 2 together with the calendar value: the
+#: envelope's spec body then carries the day size, while a stored ``v: 1``
+#: draft (see :data:`CALENDAR_DRAFT_READABLE_VERSIONS`) still reads with the
+#: day landing on 24/60.
+CALENDAR_DRAFT_VERSION = 2
+
+#: Draft envelope versions :func:`decode_draft` accepts (design Д5): the
+#: current one plus the pre-NRI-0023 ``v: 1``, whose day-size-less spec body
+#: the shared calendar payload reader already decodes as 24/60.
+CALENDAR_DRAFT_READABLE_VERSIONS = frozenset({1, CALENDAR_DRAFT_VERSION})
 
 #: Machine codes of the wizard's build stages.  The stage stored in a draft is
 #: the first screen the assembly has NOT closed yet (design D6: "stage =
@@ -329,6 +380,9 @@ CALENDAR_DRAFT_VERSION = 1
 DRAFT_STAGE_WEEK = "week"
 DRAFT_STAGE_MONTHS = "months"
 DRAFT_STAGE_INTERCALARY = "intercalary"
+#: The «Сутки» screen of the custom flow (NRI-0023 task 4.1, spec calendar-wizard
+#: «Экран „Сутки“»): a draft left here already carries the day size in its spec.
+DRAFT_STAGE_DAY = "day"
 DRAFT_STAGE_PREVIEW = "preview"
 
 #: All stage codes a stored draft may carry.
@@ -336,6 +390,7 @@ DRAFT_STAGES: tuple[str, ...] = (
     DRAFT_STAGE_WEEK,
     DRAFT_STAGE_MONTHS,
     DRAFT_STAGE_INTERCALARY,
+    DRAFT_STAGE_DAY,
     DRAFT_STAGE_PREVIEW,
 )
 
@@ -380,7 +435,7 @@ def _draft_corrupt_shape(detail: str) -> DraftCorrupted:
 def encode_draft(draft: CalendarDraft) -> str:
     """Serialize a wizard draft into its stored JSON value (design D6).
 
-    ``{"v": 1, "spec": <custom value of the main codec>, "stage": "months"}``
+    ``{"v": 2, "spec": <custom value of the main codec>, "stage": "months"}``
     — the spec body is produced by :func:`encode_calendar` itself, so the
     draft and the main key share one spec representation and one evolution
     rhythm.  Writing is the read's strict gate: the spec goes through the
@@ -426,7 +481,7 @@ def decode_draft(raw: str) -> DraftDecoded | DraftCorrupted:
             f"stored draft must be a JSON object, got {type(data).__name__}"
         )
     version = data.get("v")
-    if version != CALENDAR_DRAFT_VERSION:
+    if version not in CALENDAR_DRAFT_READABLE_VERSIONS:
         return DraftCorrupted(
             (
                 SpecProblem(

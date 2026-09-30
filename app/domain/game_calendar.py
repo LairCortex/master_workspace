@@ -100,12 +100,17 @@ class CalendarSpec:
     The year length ``L`` is identical in every year; intercalary days sit
     after their host month and outside the week cycle.  Validation and the
     prefix tables are built by ``CustomCalendar``/``validate`` (D6/D7,
-    task group 2+).
+    task group 2+).  Since NRI-0023 (design Д4) the spec also carries the day
+    size — ``day_hours`` hours of ``minutes_per_hour`` minutes each, each ≥ 1
+    and defaulted to the earthly 24/60 so every pre-NRI-0023 construction of
+    a spec (tests, storage carriers) keeps working without the new fields.
     """
 
     months: tuple[MonthSpec, ...]
     week_names: tuple[str, ...]
     intercalary: tuple[IntercalarySpec, ...] = ()
+    day_hours: int = 24
+    minutes_per_hour: int = 60
 
 
 # ── Spec validation (design D6) ──────────────────────────────────────────
@@ -151,10 +156,12 @@ def validate(spec: CalendarSpec) -> list[SpecProblem]:
     Checks (design D6): at least one month; month name non-empty/unique and
     length ≥ 1; week length ≥ 2 and consistent with the names count; week and
     intercalary names non-empty/unique; every intercalary host month exists;
+    the day size of each value ≥ 1 (NRI-0023 design Д4 — the day of a spec
+    may be alien, but a zero-hour day or a zero-minute hour is unbuildable);
     and the int64 guard ``L ≤ MAX_YEAR_LENGTH``.  No product caps on sizes —
     only physical and logical reasons (spec «Гибкость без продуктовых
-    границ»).  A year outside MIN_YEAR…MAX_YEAR is a coordinate error, not a
-    spec problem.
+    границ»), the day size included.  A year outside MIN_YEAR…MAX_YEAR is a
+    coordinate error, not a spec problem.
     """
     problems: list[SpecProblem] = []
     months = tuple(spec.months)
@@ -202,6 +209,24 @@ def validate(spec: CalendarSpec) -> list[SpecProblem]:
                     f"{rule.after_month}, the calendar has months 1…{len(months)}",
                 )
             )
+
+    # Day size (NRI-0023, design Д4 / spec «Валидация спеки календаря»): the
+    # bounds are floors only — an alien 10-hour, 100-minute day is as valid
+    # as the earthly 24/60, and a zero anywhere is unbuildable.
+    if spec.day_hours < 1:
+        problems.append(
+            SpecProblem(
+                "day_hours_below_min",
+                f"the day has {spec.day_hours} hours < 1",
+            )
+        )
+    if spec.minutes_per_hour < 1:
+        problems.append(
+            SpecProblem(
+                "minutes_per_hour_below_min",
+                f"the hour has {spec.minutes_per_hour} minutes < 1",
+            )
+        )
 
     year_length = sum((month.length for month in months), 0) + len(intercalary)
     if year_length > MAX_YEAR_LENGTH:
@@ -331,6 +356,25 @@ class GameCalendar(Protocol):
         construction.  Names never enter keys, orders or coordinate
         arithmetic; overriding them relabels date captions only (spec
         «Источник имён месяцев»)."""
+        ...
+
+    @property
+    def day_hours(self) -> int:
+        """Hours in one day of this calendar (NRI-0023 task 1.2, design Д4) —
+        the single source of the hour bound every consumer of wall-clock time
+        reads (the event card's hour list, the «сейчас» hour list).  The
+        standard preset reports the fixed 24 (spec «Настройка кастомного
+        календаря»); a custom calendar answers its spec's ``day_hours``."""
+        ...
+
+    @property
+    def minutes_per_hour(self) -> int:
+        """Minutes in one hour of this calendar (NRI-0023 task 1.2, design
+        Д4) — the storage and listing unit of ``TimeOfDay``: the event's
+        ``start_time`` minutes count in this unit, so the stored number stays
+        monotonic in (hour, minute) under any spec.  The standard preset
+        reports the fixed 60; a custom calendar answers its spec's
+        ``minutes_per_hour``."""
         ...
 
 
@@ -534,6 +578,18 @@ class StandardCalendar:
         counter is the source of exact distances (NRI-0021 task 1.1)."""
         return sum(_GREGORIAN_MONTH_LENGTHS)
 
+    @property
+    def day_hours(self) -> int:
+        """The preset's fixed 24 hours — not configurable anywhere (spec
+        «Настройка кастомного календаря», NRI-0023 task 1.2)."""
+        return 24
+
+    @property
+    def minutes_per_hour(self) -> int:
+        """The preset's fixed 60 minutes (spec «Настройка кастомного
+        календаря», NRI-0023 task 1.2)."""
+        return 60
+
 
 # ── Active calendar accessor (roadmap piece C1, design D3) ───────────────
 
@@ -693,6 +749,20 @@ class CustomCalendar:
         calendar keeps: months plus intercalary slots, identical in every
         year (design D4)."""
         return self._year_length
+
+    @property
+    def day_hours(self) -> int:
+        """The spec's ``day_hours`` straight through (NRI-0023 task 1.2,
+        design Д4): the constructor's validation gate already guaranteed the
+        value is ≥ 1, the day may still be an alien 10-hour one."""
+        return self._spec.day_hours
+
+    @property
+    def minutes_per_hour(self) -> int:
+        """The spec's ``minutes_per_hour`` straight through (NRI-0023 task
+        1.2, design Д4): the unit in which a ``TimeOfDay`` counts its stored
+        minutes while this calendar is active."""
+        return self._spec.minutes_per_hour
 
     def day_index(self, coord: GameCoord, is_bc: bool = False) -> int:
         # ``to_key`` performs the existence refusal (D6) and both key scales

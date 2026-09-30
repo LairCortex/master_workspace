@@ -208,3 +208,73 @@ async def test_result_date_carries_the_bc_era_suffix():
     result_row = next(row for row in vm.rows if row["kind"] == "result")
     assert result_row["text"] == "Battle  [05 Март 44 г. до н.э.]"
     assert result_row["dateText"] == "05 Март 44 г. до н.э."
+
+
+# ── NRI-0023 task 8.2: the sub-event prefix and the time tail ────────────────
+
+
+async def test_sub_event_row_is_named_through_its_parent_and_stays_clickable():
+    """Spec global-search «Подсобытие названо через родителя»: the wiring's
+    id → имя card names a parent the query never matched; the row keeps the
+    child's own identity and stays the ordinary clickable result."""
+    from app.presentation.viewmodels.search_viewmodel import SearchViewModel
+
+    child = SimpleNamespace(
+        id=43, name="Встреча в таверне", start_date=None, parent_id=42
+    )
+    service = SimpleNamespace(search_all=AsyncMock(return_value={"events": [child]}))
+    vm = SearchViewModel(service)
+    vm.setQuery("Встреча")
+
+    await vm.search("Встреча", {42: "Бой у реки"})
+
+    result_row = next(row for row in vm.rows if row["kind"] == "result")
+    assert result_row["text"] == "Встреча в таверне · Бой у реки"
+    assert (result_row["type"], result_row["id"], result_row["clickable"]) == (
+        "event",
+        43,
+        True,
+    )
+    selected = track(vm.resultSelected)
+    vm.select(vm.rows.index(result_row))
+    assert selected == [("event", 43)]
+
+
+async def test_parent_the_card_cannot_names_adds_no_prefix():
+    """A link the id → имя card cannot resolve (no card at all, or a stale
+    id) leaves the row the plain name — the prefix is naming, never noise."""
+    from app.presentation.viewmodels.search_viewmodel import SearchViewModel
+
+    child = SimpleNamespace(id=43, name="Встреча", start_date=None, parent_id=42)
+    service = SimpleNamespace(search_all=AsyncMock(return_value={"events": [child]}))
+    vm = SearchViewModel(service)
+
+    await vm.search("Встреча")  # no card handed in
+    rows_no_card = [row for row in vm.rows if row["kind"] == "result"]
+    assert rows_no_card[0]["text"] == "Встреча"
+
+    await vm.search("Встреча", {99: "Другое событие"})  # stale parent id
+    rows_stale = [row for row in vm.rows if row["kind"] == "result"]
+    assert rows_stale[0]["text"] == "Встреча"
+
+
+async def test_time_tail_rides_the_search_row_date():
+    """Spec global-search «Время в дате строки» (the event-time tail on this
+    surface): a found event with time 9:05 prints the date with «, 09:05»,
+    an event without it prints the date word-for-word as before."""
+    from app.domain.time_of_day import TimeOfDay
+    from app.presentation.viewmodels.search_viewmodel import SearchViewModel
+
+    timed = SimpleNamespace(
+        id=1, name="Засека", start_date=date(1200, 1, 2), start_time=TimeOfDay(9, 5)
+    )
+    plain = SimpleNamespace(id=2, name="Дозор", start_date=date(1200, 1, 2))
+    service = SimpleNamespace(search_all=AsyncMock(return_value={"events": [timed, plain]}))
+    vm = SearchViewModel(service)
+
+    await vm.search("За")
+
+    rows = {row["id"]: row for row in vm.rows if row["kind"] == "result"}
+    assert rows[1]["text"] == "Засека  [02 Январь 1200, 09:05]"
+    assert rows[1]["dateText"] == "02 Январь 1200, 09:05"
+    assert rows[2]["text"] == "Дозор  [02 Январь 1200]"

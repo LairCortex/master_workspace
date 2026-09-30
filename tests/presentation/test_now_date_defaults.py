@@ -117,6 +117,19 @@ class TestEventDialogDefaults:
         assert dialog.vm.startBc is True and dialog.vm.endBc is True
         assert dialog.vm.startDisplay == "05 Март 44 г. до н.э."
 
+    def test_now_hour_is_not_inherited(self, qtbot):
+        """NRI-0023 scenario «Час „сейчас“ не наследуется» (spec «Дата
+        „сейчас“ — дефолт новых записей»): a «now» at «…, 20:00» seeds the
+        new event with the DAY only — the hour and minute lists stay empty,
+        the dialog consumes the coordinate half of the served value."""
+        dialog = EventDialog(
+            None, now_vm=NowDateViewModel(MonthDay(2090, 5, 1), False, 20)
+        )
+        qtbot.addWidget(dialog)
+        assert dialog.vm.startIso == "2090-05-01"
+        assert dialog.vm.start_time is None  # «без времени», не 20:00
+        assert dialog.vm.selectedHourIndex == 0 and dialog.vm.selectedMinuteIndex == 0
+
     def test_without_a_game_the_today_fallback_stays(self, qtbot):
         dialog = EventDialog(None)
         qtbot.addWidget(dialog)

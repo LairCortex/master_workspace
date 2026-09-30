@@ -118,3 +118,66 @@ def test_text_carrying_controls_keep_their_names_untouched(qtbot):
     assert check.role() == QAccessible.Role.CheckBox
     assert check.text(QAccessible.Name) == ""
     assert check_item.property("text") == "Бессрочно"
+
+
+def test_parent_and_time_combos_carry_the_design_map_names(qtbot):
+    """NRI-0023 tasks 7.1/7.2 (design Д8): the three dropdowns are штатные
+    ThemeComboBoxes — role from the library component, name from the usage
+    site («Родительское событие», «Час начала», «Минута начала»). Their popups
+    are native windows outside the island (documented limit ③)."""
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+
+    for object_name, expected in (
+        ("eventParentCombo", "Родительское событие"),
+        ("eventStartHourCombo", "Час начала"),
+        ("eventStartMinuteCombo", "Минута начала"),
+    ):
+        iface = _iface(dialog, object_name)
+        assert iface.role() == QAccessible.Role.ComboBox
+        assert iface.text(QAccessible.Name) == expected
+
+
+def test_no_end_checkbox_activation_reaches_the_view_model(qtbot):
+    """NRI-0023 task 13.1 (design Д15, live audit OBS-2): the accessibility
+    activation of «Бессрочно» must run the same toggle the mouse runs — on
+    the pre-fix ``onToggled`` wiring the offscreen press moved the tick but
+    silently never reached the VM, so «Дата конца» never hid. The dialog now
+    rides the card's working convention (EntityCardRoot D1: the tick is the
+    VM's bound state, every activation is a request read from the source of
+    truth); this pin is the offscreen half — the live AXPress re-audit runs
+    with the parent's live pass.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    from tests.presentation.qml_helpers import click_item
+
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+
+    check_item = find_item(dialog.quick, "eventNoEndCheck")
+    end_field = find_item(dialog.quick, "eventEndDateField")
+    actions = _iface(dialog, "eventNoEndCheck").actionInterface()
+    # The synthetic mouse half of this pin needs the widget realized on the
+    # scene (the entity-card D1 pin shows for the same reason).
+    dialog.show()
+    QApplication.processEvents()
+
+    assert dialog.vm.noEnd is False
+    assert end_field.property("visible") is True
+
+    # The QAccessible press channel (AGENTS pattern: actionInterface().
+    # doAction("Press")) — the VM flips and the end-date field hides.
+    actions.doAction("Press")
+    QApplication.processEvents()
+    assert dialog.vm.noEnd is True
+    assert end_field.property("visible") is False
+    assert check_item.property("checked") is True
+
+    # The mouse click (the ordinary user's path) toggles back through the
+    # very same VM call — the convention switch moved nobody off the bus.
+    click_item(dialog.quick, check_item)
+    QApplication.processEvents()
+    assert dialog.vm.noEnd is False
+    assert end_field.property("visible") is True
+    assert check_item.property("checked") is False

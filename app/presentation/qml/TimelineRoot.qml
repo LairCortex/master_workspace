@@ -1,5 +1,6 @@
-// Timeline flat-list island (change simplify-event-timeline-flat-list,
-// tasks 3.2, design D2–D5) — the QML half of the panel facade in
+// Timeline island (change simplify-event-timeline-flat-list, tasks 3.2,
+// design D2–D5; NRI-0023 task 5.3 turns the flat list into the two-level
+// tree) — the QML half of the panel facade in
 // app/presentation/views/timeline_island.py, whose module docstring pins the
 // exact root contract this file implements:
 //
@@ -71,6 +72,10 @@ Rectangle {
     signal eventClicked(int eventId)
     signal eventDoubleClicked(int eventId)
     signal selectionMissed()
+    // NRI-0023 task 6.1 (design Д7): a main-event row was right-clicked; the
+    // facade builds the native «Создать подсобытие» QMenu at the reported
+    // scene point. Child and stub rows never emit it (the delegate gate).
+    signal rowContextMenuRequested(int eventId, real x, real y)
 
     // ── palette bridge (colors/spacing only ever come from here) ────────────
     readonly property var islandTokens:
@@ -277,6 +282,35 @@ Rectangle {
                     cacheBuffer: root.detailedRowHeight * 4
                     boundsBehavior: Flickable.StopAtBounds
 
+                    // NRI-0023 task 5.3 (design Д6): expansion animation lives
+                    // on the view's штатные transitions, not on new timing
+                    // code. The model delivers an expand/collapse as plain
+                    // rowsInserted/rowsRemoved (TimelineRowModel.rebuild), the
+                    // ``add`` transition fades the appearing children in and
+                    // ``displaced`` slides the rows the group pushed aside —
+                    // spec «строки детей появляются под родителем с
+                    // анимацией». (This Qt build declares the displacement
+                    // hook under the name ``displaced`` on the view — the
+                    // Item-level ``displace`` spelling does not exist here;
+                    // a load-time QML error would otherwise kill the island.)
+                    add: Transition {
+                        objectName: "eventAddTransition"
+                        NumberAnimation {
+                            property: "opacity"
+                            from: 0
+                            to: 1.0
+                            duration: 120
+                        }
+                    }
+                    displaced: Transition {
+                        objectName: "eventDisplacedTransition"
+                        NumberAnimation {
+                            property: "y"
+                            duration: 150
+                            easing.type: Easing.OutQuad
+                        }
+                    }
+
                     delegate: TimelineRowDelegate {
                         width: eventList.width
                         // Equal height per kind: the caption line alone, or the
@@ -286,6 +320,16 @@ Rectangle {
                         selectedRow: root.selectedId >= 0 && eventId === root.selectedId
                         onRowClicked: root.eventClicked(eventId)
                         onRowDoubleClicked: root.eventDoubleClicked(eventId)
+                        // NRI-0023 (design Д8): the chevron's channel goes
+                        // straight to the ViewModel's expand state — a toggle
+                        // re-models the rows through the model diff, it never
+                        // touches the selection.
+                        onRowExpandRequested: vm.toggleExpand(eventId)
+                        // NRI-0023 task 6.1: a main-event row's right-click
+                        // forwards to the facade (native QMenu); the delegate
+                        // already silenced children and stubs.
+                        onRowContextMenuRequested: (x, y) =>
+                            root.rowContextMenuRequested(eventId, x, y)
                     }
 
                     // An external re-model restores the READING POSITION the old

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
@@ -96,11 +96,17 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
         self._tooltip_bridge = install_island_tooltips(quick, self._context)
         super().load_island_scene(quick)
 
-    def populate(self, events: Sequence[Any], for_date: Any) -> None:
+    def populate(
+        self,
+        events: Sequence[Any],
+        for_date: Any,
+        event_names: Mapping[int, str] | None = None,
+    ) -> None:
         # ``for_date`` is the snapshot bridge payload: a (coordinate, era)
         # pair since piece C3a (a bare date or None stay legal) — the ViewModel
-        # splits it.
-        self.vm.populate(events, for_date)
+        # splits it. ``event_names`` (NRI-0023 task 8.3) is the wiring's
+        # id → имя card the orphan stubs read the parent's name from.
+        self.vm.populate(events, for_date, event_names)
 
     def _open_date_popup(
         self, x: float, y: float, width: float, height: float

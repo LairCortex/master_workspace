@@ -91,9 +91,17 @@ def base_spec(
     months: tuple[MonthSpec, ...] = BASE_MONTHS,
     week_names: tuple[str, ...] = BASE_WEEK,
     intercalary: tuple[IntercalarySpec, ...] = (),
+    day_hours: int = 24,
+    minutes_per_hour: int = 60,
 ) -> CalendarSpec:
     """A small valid spec; each failing case overrides exactly one facet."""
-    return CalendarSpec(months=months, week_names=week_names, intercalary=intercalary)
+    return CalendarSpec(
+        months=months,
+        week_names=week_names,
+        intercalary=intercalary,
+        day_hours=day_hours,
+        minutes_per_hour=minutes_per_hour,
+    )
 
 
 def codes_of(problems) -> set[str]:
@@ -167,6 +175,8 @@ REJECT_CASES = [
             week_names=BASE_WEEK,
             intercalary=(),
             week_length=3,
+            day_hours=24,           # NRI-0023: сутки spec-форма несёт всегда
+            minutes_per_hour=60,
         ),
         {"week_length_mismatch"},
         id="week-length-not-equal-names-count",
@@ -190,6 +200,33 @@ REJECT_CASES = [
         lambda: base_spec(intercalary=(IntercalarySpec("Карнавал", -1),)),
         {"intercalary_unknown_month"},
         id="intercalary-negative-month",
+    ),
+    # NRI-0023 task 1.2 (design Д4): the day-size floors, one reason each.
+    pytest.param(
+        lambda: base_spec(day_hours=0),
+        {"day_hours_below_min"},
+        id="day-hours-zero",
+    ),
+    pytest.param(
+        lambda: base_spec(day_hours=-3),
+        {"day_hours_below_min"},
+        id="day-hours-negative",
+    ),
+    pytest.param(
+        lambda: base_spec(minutes_per_hour=0),
+        {"minutes_per_hour_below_min"},
+        id="minutes-per-hour-zero",
+    ),
+    pytest.param(
+        lambda: base_spec(minutes_per_hour=-1),
+        {"minutes_per_hour_below_min"},
+        id="minutes-per-hour-negative",
+    ),
+    # Spec scenario «Нулевой размер суток — отказ»: обе причины, не первая.
+    pytest.param(
+        lambda: base_spec(day_hours=0, minutes_per_hour=0),
+        {"day_hours_below_min", "minutes_per_hour_below_min"},
+        id="zero-day-size-both-reasons-reported",
     ),
     # Spec scenario «Пустое имя — отказ»: every reason is reported, not the first.
     pytest.param(
@@ -241,6 +278,17 @@ class TestFlexibleSpecsAccepted:
                     ),
                 ),
                 id="three-intercalary-days-after-one-month",
+            ),
+            # NRI-0023: спека «Нездешние сутки» — физические величины без
+            # продуктовых потолков, 10-часовой день со 100-минутным часом
+            # валидна целиком (сценарий + «Гибкость без продуктовых границ»).
+            pytest.param(
+                base_spec(day_hours=10, minutes_per_hour=100),
+                id="alien-day-10-hours-100-minutes",
+            ),
+            pytest.param(
+                base_spec(day_hours=1, minutes_per_hour=1),
+                id="minimal-day-1x1",
             ),
         ],
     )
@@ -2599,3 +2647,76 @@ class TestCustomDayIndex:
     def test_absent_coordinate_refuses(self, coord):
         with pytest.raises(InvalidGameDateError):
             self.CALENDAR.day_index(coord)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# NRI-0023 task 1.2 — the day size of the spec (design Д4): day_hours and
+# minutes_per_hour fields with the earthly defaults, the two new validation
+# floors (covered in the rejection table above), the day properties of
+# CustomCalendar/StandardCalendar and the GameCalendar protocol.  The day
+# size is a wall-clock fact, never a coordinate one: keys stay untouched.
+# ═════════════════════════════════════════════════════════════════════════
+
+class TestDaySizeOnCalendar:
+    def test_pre_0023_spec_constructor_works_without_day_fields(self):
+        # десятки старых конструкторов (тесты, кодек) не знают новых полей —
+        # дефолты дают земные 24/60, спека валидна как прежде
+        spec = CalendarSpec(months=BASE_MONTHS, week_names=BASE_WEEK)
+        assert (spec.day_hours, spec.minutes_per_hour) == (24, 60)
+        assert validate(spec) == []
+
+    def test_intercalary_carrying_constructor_also_works_without_them(self):
+        spec = CalendarSpec(
+            months=BASE_MONTHS,
+            week_names=BASE_WEEK,
+            intercalary=(IntercalarySpec("Гром", 2),),
+        )
+        assert (spec.day_hours, spec.minutes_per_hour) == (24, 60)
+
+    def test_custom_calendar_reports_the_specs_day_size(self):
+        # сценарий «Нездешние сутки»: потребители времени получают границы
+        # 0…9 и 0…99 именно из активного календаря
+        calendar = CustomCalendar(base_spec(day_hours=10, minutes_per_hour=100))
+        assert calendar.day_hours == 10
+        assert calendar.minutes_per_hour == 100
+
+    def test_custom_calendar_defaults_to_the_earthly_days(self):
+        calendar = CustomCalendar(base_spec())
+        assert (calendar.day_hours, calendar.minutes_per_hour) == (24, 60)
+
+    def test_standard_preset_days_are_the_fixed_24_over_60(self):
+        # пресет фиксирован «не настраивается нигде» — у конструктора
+        # аргумента размера суток физически нет
+        standard = StandardCalendar()
+        assert standard.day_hours == 24
+        assert standard.minutes_per_hour == 60
+        assert not {"day_hours", "minutes_per_hour"} & set(
+            inspect.signature(StandardCalendar.__init__).parameters
+        )
+
+    @pytest.mark.parametrize("is_bc", [False, True], ids=["ad", "bc"])
+    @pytest.mark.parametrize("coord", [
+        MonthDay(1, 1, 1),      # эпоха н.э. открывается
+        MonthDay(3, 2, 41),     # середина кастомного года
+        MonthDay(MAX_YEAR, 3, 20),  # верхняя граница шкалы лет
+    ])
+    def test_day_size_never_moves_a_single_key(self, coord, is_bc):
+        # сутки — величина часов, не координат: ключи одной и той же координаты
+        # побитово равны при земных и нездешних сутках (никакого пересчёта)
+        earthly = CustomCalendar(base_spec())
+        alien = CustomCalendar(base_spec(day_hours=10, minutes_per_hour=100))
+        assert alien.to_key(coord, is_bc) == earthly.to_key(coord, is_bc)
+        key = earthly.to_key(coord, is_bc)
+        assert alien.from_key(key, is_bc) == earthly.from_key(key, is_bc) == coord
+
+    def test_protocol_exposes_day_size_as_bodyless_properties(self):
+        # протокол (D2/Д4) даёт только контракт: свойства — безвредные
+        # заглушки наравне с month_names (строки-«многоточия» считает
+        # CI-гейт построчного покрытия)
+        assert isinstance(GameCalendar.day_hours, property)
+        assert isinstance(GameCalendar.minutes_per_hour, property)
+        assert GameCalendar.day_hours.fget(object()) is None
+        assert GameCalendar.minutes_per_hour.fget(object()) is None
+        # обе реализации новые свойства дают — протокол их по-прежнему пропускает
+        assert isinstance(StandardCalendar(), GameCalendar)
+        assert isinstance(CustomCalendar(base_spec()), GameCalendar)

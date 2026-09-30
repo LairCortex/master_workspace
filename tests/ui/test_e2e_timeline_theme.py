@@ -33,6 +33,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.presentation.theme.compiler import load_tokens, tokens_file_path
+from app.presentation.viewmodels.now_date_view_model import NowDateViewModel
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.timeline_island import TimelineWidget
 
@@ -42,10 +43,12 @@ from tests.ui.test_theme_grab import _contains_pixel, make_runtime, token_color
 ROW_HOVER_ALPHA = 0.25  # the delegate's wash alpha (TimelineRowDelegate.qml)
 
 
-def _evt(id_, start, end=None, name=None, color_index=None, description=None):
+def _evt(id_, start, end=None, name=None, color_index=None, description=None,
+         parent_id=None):
     event = SimpleNamespace(id=id_, start_date=start, end_date=end, name=name or f"E{id_}")
     event.event_type = None if color_index is None else SimpleNamespace(color_index=color_index)
     event.description = description
+    event.parent_id = parent_id
     return event
 
 
@@ -57,10 +60,10 @@ class _Service:
         return list(self._events)
 
 
-def _island(qtbot, runtime, events, size=(440, 260)):
+def _island(qtbot, runtime, events, size=(440, 260), now_vm=None):
     """A skinned flat-list island carrying ``events`` (seeded VM, no
     scheduler — the ``test_timeline_island`` pattern under a real QML root)."""
-    vm = TimelineViewModel(_Service(events))
+    vm = TimelineViewModel(_Service(events), now_vm=now_vm)
     vm._all_events = list(events)
     vm.events = list(events)
     vm._rebuild_rows()
@@ -496,3 +499,156 @@ def test_row_wash_is_rounded_like_the_other_list_items(qtbot, tmp_path, theme):
     assert _row_right_pixel(widget, row) == accent, theme
     corner = _pixel(widget, delegate, fx=0.002, fy=0.06)
     assert corner == surface, (theme, corner.name())
+
+
+# ── the tree over the pixels (NRI-0023 tasks 11.3/11.4, design Д13) ───────────
+
+
+def _expand(widget, vm, parent_id: int = 1) -> None:
+    """Open a parent and let the штатный ``add``/``displace`` transitions
+    settle (design Д6: the insert is animated — sampling pixels mid-flight
+    would grab a delegate under its entry-opacity animation)."""
+    vm.toggle_expand(parent_id)
+    QTest.qWait(250)
+    QApplication.processEvents()
+
+
+def _tree_events():
+    return [
+        _evt(1, date(1200, 1, 1), date(1200, 1, 1), "Родитель"),
+        _evt(2, date(1200, 1, 2), None, "Средний", parent_id=1),
+        _evt(3, date(1200, 1, 3), None, "Последний", parent_id=1),
+    ]
+
+
+def _child_item(widget, idx: int, object_name: str):
+    delegate = _delegate(widget, idx)
+    return next(i for i in delegate.childItems() if i.objectName() == object_name)
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_child_selection_leaves_the_gutter_canvas_and_flips_the_service_rank(
+    qtbot, tmp_path, theme
+):
+    """Pixel acceptance of the tree over the wash (task 11.3, design Д13,
+    spec «Выделение подсобытия не захватывает гуттер дерева» / «Дерево не
+    грязнит акцент на залировке»; live fix 2026-09-30 moved the trunk to the
+    row's left edge), both themes: with a child selected the gutter BETWEEN
+    the tree line at the row's left edge and the band answers the plain field
+    canvas (the audit's P3 «заливка поверх гуттера» is gone); inside the band
+    it is the accent itself; and the connector / elbow / muted untyped mark —
+    the service rank — read ``color.accent.fg`` over the wash (A5: grey never
+    dirtying the accent). The parent, selected, keeps the full-width band:
+    the child band is measurably narrower (width is the level's sign)."""
+    runtime = make_runtime(tmp_path, theme)
+    surface = _field_color(theme)
+    accent = token_color("color.accent", theme)
+    accent_fg = token_color("color.accent.fg", theme)
+    widget, vm = _island(qtbot, runtime, _tree_events())
+    _expand(widget, vm)
+    parent_row, child_mid, child_last = vm.index_for_event(1), vm.index_for_event(2), vm.index_for_event(3)
+    assert (parent_row, child_mid, child_last) == (0, 1, 2)
+    _reveal(widget, child_last)
+
+    widget.set_selected(2)
+    QTest.qWait(10)
+    QApplication.processEvents()
+
+    child = _delegate(widget, child_mid)
+    trunk_x = float(child.property("trunkX"))
+    wash_x = float(child.property("childWashX"))
+    # Live fix 2026-09-30: the tree line stands on the row's left edge (the
+    # parent card's own border street), the band hangs on the child indent.
+    assert trunk_x == 0.0, theme
+    assert wash_x == float(child.property("childIndent")), theme
+
+    # gutter between the line and the band: the canvas, not the accent — the
+    # band starts AT the child's indent column (the geometry pinned offscreen
+    # in test_timeline_accessibility; here the raster proof of the same fact).
+    # Sampled below the caption line — the elbow spans the whole gutter there.
+    gutter = _pixel(widget, child, fx=((trunk_x + wash_x) / 2) / child.width(),
+                    fy=0.83)
+    assert gutter == surface, (theme, gutter.name())
+    # inside the band: the accent itself
+    assert _row_right_pixel(widget, child_mid) == accent, theme
+
+    # service rank over the wash: trunk pixel and the mark/elbow properties
+    trunk = _child_item(widget, child_mid, "rowConnectorTrunk")
+    trunk_px = _pixel(widget, trunk, 0.5, 0.5)
+    assert abs(trunk_px.red() - accent_fg.red()) <= 2, theme
+    assert abs(trunk_px.green() - accent_fg.green()) <= 2, theme
+    assert abs(trunk_px.blue() - accent_fg.blue()) <= 2, theme
+    assert _child_item(widget, child_mid, "rowConnectorElbow").property(
+        "color") == accent_fg, theme
+    assert _child_item(widget, child_mid, "eventTypeMark").property(
+        "color") == accent_fg, theme  # untyped muted fallback flips (A5)
+    # …and the LAST child keeps the closing angle while a SIBLING is selected:
+    # the flip follows the row's own wash (the untouched neighbour stays the
+    # muted service rank on the canvas).
+    last = _delegate(widget, child_last)
+    trunk_l = _child_item(widget, child_last, "rowConnectorTrunk")
+    assert float(trunk_l.property("height")) == float(last.property("captionLineY"))
+    assert trunk_l.property("color") == token_color("color.fg.muted", theme), theme
+
+    # the parent keeps the full-width band: its selected wash reaches the
+    # left inset where the child's does not (band width = the level sign).
+    # Sampled below the caption line — on the mark line the flipped mark
+    # square would occupy the same street pixels.
+    widget.set_selected(1)
+    QTest.qWait(10)
+    QApplication.processEvents()
+    parent = _delegate(widget, parent_row)
+    assert _pixel(widget, parent, fx=4.0 / parent.width(), fy=0.83) \
+        == accent, theme  # no gutter over the parent's band
+    assert _pixel(widget, child, fx=4.0 / child.width(), fy=0.83) \
+        == surface, theme  # the unselected child's strip stays the canvas
+    wash_c = _child_item(widget, child_mid, "rowWash")
+    wash_p = _wash_item(widget, parent_row)
+    assert float(wash_c.property("width")) < float(wash_p.property("width"))
+    assert float(wash_p.property("x")) == 0.0
+    assert float(wash_c.property("x")) == wash_x
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_today_outline_stays_visible_on_the_selected_row(qtbot, tmp_path, theme):
+    """Pixel acceptance of A2 (task 11.4, spec scenario «Обводка видна на
+    выбранной строке»): the «сегодня» line over the solid accent wash switches
+    to the contrast family — the grabbed edge pixel is ``color.accent.fg``,
+    far from the accent fill it sits on (orange-on-orange is gone) — while
+    the unselected today row keeps the hover-derivation line as before."""
+    from app.domain.game_calendar import MonthDay
+
+    runtime = make_runtime(tmp_path, theme)
+    surface = _field_color(theme)
+    accent = token_color("color.accent", theme)
+    accent_fg = token_color("color.accent.fg", theme)
+    widget, vm = _island(
+        qtbot, runtime,
+        [_evt(1, date(1200, 1, 5), date(1200, 1, 5), "Сегодня"),
+         _evt(2, date(1200, 3, 7), None, "Позже")],
+        now_vm=NowDateViewModel(MonthDay(1200, 1, 5)),
+    )
+    row = vm.index_for_event(1)
+    _reveal(widget, row)
+    delegate = _delegate(widget, row)
+    fy_line = 0.5 / float(delegate.height())
+
+    # unselected: the hover-derivation line over the canvas (as pinned offscreen
+    # in test_timeline_now_surfaces) — the plain neighbour wears no line.
+    assert _pixel(widget, delegate, 0.97, fy_line) != surface
+    assert _pixel(widget, _delegate(widget, vm.index_for_event(2)), 0.97, fy_line) \
+        == surface
+
+    # selected: the SAME pixel is now the contrast family — and, verifiably,
+    # not the wash: the audit's defect was the line disappearing INTO the fill.
+    widget.set_selected(1)
+    QTest.qWait(10)
+    QApplication.processEvents()
+    edge = _pixel(widget, delegate, 0.97, fy_line)
+    assert abs(edge.red() - accent_fg.red()) <= 2, (theme, edge.name())
+    assert abs(edge.green() - accent_fg.green()) <= 2, theme
+    assert abs(edge.blue() - accent_fg.blue()) <= 2, theme
+    distance = max(abs(edge.red() - accent.red()),
+                   abs(edge.green() - accent.green()),
+                   abs(edge.blue() - accent.blue()))
+    assert distance > 20, (theme, edge.name(), accent.name())

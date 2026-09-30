@@ -8,8 +8,9 @@ the ``wait_idle()`` seam for the fire-and-read intents, on the real service
 over the in-memory aiosqlite session.
 
 Scenario map (spec calendar-wizard, tasks 6.1–6.4):
-* 6.1 — the stacked screens «выбор → неделя → месяцы → вставные дни →
-  предпросмотр», the Назад/Далее/Применить/Отменить gates, the inert preview
+* 6.1 — the stacked screens «выбор → неделя → месяцы → вставные дни → сутки →
+  предпросмотр» (the «сутки» step arrived with NRI-0023 task 4.1), the
+  Назад/Далее/Применить/Отменить gates, the inert preview
   grid (era hidden, cells dead, navigation alive) opened on the current game
   date with the year-1 fallback, and draft continuation through ``begin``;
 * 6.2 — the week spin 2…168 with the empty-tail grow / tail drop / seven-name
@@ -57,6 +58,7 @@ from app.domain.game_calendar import (
 )
 from app.infrastructure.calendar_storage import (
     CalendarDraft,
+    DRAFT_STAGE_DAY,
     DRAFT_STAGE_MONTHS,
     encode_calendar,
     encode_coord,
@@ -74,6 +76,7 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     KIND_CUSTOM,
     KIND_STANDARD,
     STEP_CHOICE,
+    STEP_DAY,
     STEP_INTERCALARY,
     STEP_MONTHS,
     STEP_PREVIEW,
@@ -91,6 +94,8 @@ from app.presentation.views.calendar_grid import (
 from app.presentation.layout_grid import WIDTH_STEP
 from app.presentation.views.calendar_wizard import (
     APPLY_ERROR_TITLE,
+    DAY_SIZE_MAX,
+    DAY_SIZE_MIN,
     STEP_COLUMN_MAX_WIDTH,
     WEEK_LENGTH_MAX,
     WEEK_LENGTH_MIN,
@@ -122,7 +127,7 @@ _SMALL_CUSTOM = CustomCalendar(
     )
 )
 
-_CUSTOM_ORDER = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_PREVIEW)
+_CUSTOM_ORDER = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_DAY, STEP_PREVIEW)
 
 
 def _vm(session, service=None, *, first_entry: bool = False) -> CalendarWizardViewModel:
@@ -247,7 +252,7 @@ class TestStepNavigation:
         assert not dlg._next_button.isEnabled()
 
         dlg._back_button.click()
-        assert dlg._stack.currentWidget() is dlg._pages[STEP_INTERCALARY]
+        assert dlg._stack.currentWidget() is dlg._pages[STEP_DAY]
 
     async def test_cancel_closes_and_keeps_the_draft_for_the_next_open(
         self, async_session, qtbot
@@ -560,6 +565,103 @@ class TestIntercalaryScreen:
         assert dlg._rule_rows[0][0].text() == "«без названия» → Декабрь"
 
 
+# ════════════════ NRI-0023 task 4.1 — экран «Сутки» ══════════════════════════
+
+
+class TestDayScreen:
+    """Spec «Экран „Сутки“» at the dialog level: two number fields prefilled
+    24/60 (or by the draft), zero darkens «Далее» with the Russian reason,
+    and the preview summary names the day size («Сводка называет сутки»)."""
+
+    async def test_two_spins_prefilled_with_the_earthly_day(
+        self, async_session, qtbot
+    ):
+        dlg = _dialog(qtbot, _vm(async_session))
+        await _walk_to(dlg, STEP_DAY)
+
+        assert [
+            label.text()
+            for label in dlg._pages[STEP_DAY].findChildren(QLabel)
+            if label.property("uiRole") == "title"
+        ] == ["Сутки"]
+        # «два числовых поля … с предвыбором 24 и 60»
+        assert dlg._day_hours_spin.value() == 24
+        assert dlg._minutes_per_hour_spin.value() == 60
+        # 0 is deliberately typeable — the «Ноль не проходит» gate catches it,
+        # the spin does not hide the misuse (see DAY_SIZE_MIN's comment).
+        assert (dlg._day_hours_spin.minimum(), dlg._day_hours_spin.maximum()) == (
+            DAY_SIZE_MIN,
+            DAY_SIZE_MAX,
+        )
+        assert (dlg._minutes_per_hour_spin.minimum(),) == (DAY_SIZE_MIN,)
+        assert dlg._next_button.isEnabled()
+        assert dlg._problems_label.text() == ""
+
+    async def test_zero_freezes_next_with_the_russian_reason(
+        self, async_session, qtbot
+    ):
+        dlg = _dialog(qtbot, _vm(async_session))
+        await _walk_to(dlg, STEP_DAY)
+
+        dlg._day_hours_spin.setValue(0)  # scenario «Ноль не проходит»
+
+        assert not dlg._next_button.isEnabled()
+        assert "в сутках меньше одного часа" in dlg._problems_label.text()
+        dlg._next_button.click()  # a dark button stays a dark button
+        await dlg.wait_idle()
+        assert dlg._stack.currentWidget() is dlg._pages[STEP_DAY]
+
+        dlg._day_hours_spin.setValue(10)
+        dlg._minutes_per_hour_spin.setValue(0)  # the second field has its own floor
+        assert not dlg._next_button.isEnabled()
+        assert "в часе меньше одной минуты" in dlg._problems_label.text()
+
+        dlg._minutes_per_hour_spin.setValue(100)
+        assert dlg._next_button.isEnabled()
+        assert dlg._problems_label.text() == ""
+
+    async def test_alien_sizes_open_the_preview_and_name_themselves_in_summary(
+        self, async_session, qtbot
+    ):
+        dlg = _dialog(qtbot, _vm(async_session))
+        await _walk_to(dlg, STEP_DAY)
+
+        dlg._day_hours_spin.setValue(10)
+        dlg._minutes_per_hour_spin.setValue(100)
+        dlg._next_button.click()
+        await dlg.wait_idle()
+
+        assert dlg._stack.currentWidget() is dlg._pages[STEP_PREVIEW]
+        # scenario «Сводка называет сутки»: «10 часов в сутках, 100 минут в
+        # часе» live in the summary beside the other parameters.
+        assert dlg._summary_label.text() == (
+            "Месяцев: 12 · Длина недели: 7 · Вставных дней: 0 · "
+            "Часов в сутках: 10 · Минут в часе: 100"
+        )
+
+    async def test_draft_resume_prefills_the_day_spins(self, async_session, qtbot):
+        # «или значения черновика»: the stored sizes are the preselect, and a
+        # draft left on «Сутки» reopens exactly that screen.
+        await CalendarSettingsService().save_draft(
+            async_session,
+            CalendarDraft(
+                spec=CalendarSpec(
+                    months=_SMALL_CUSTOM.spec.months,
+                    week_names=_SMALL_CUSTOM.spec.week_names,
+                    day_hours=10,
+                    minutes_per_hour=100,
+                ),
+                stage=DRAFT_STAGE_DAY,
+            ),
+        )
+        dlg = _dialog(qtbot, _vm(async_session))
+        await dlg.begin()
+
+        assert dlg._stack.currentWidget() is dlg._pages[STEP_DAY]
+        assert dlg._day_hours_spin.value() == 10
+        assert dlg._minutes_per_hour_spin.value() == 100
+
+
 # ════════════════════════ report screen and application ══════════════════════
 
 
@@ -670,7 +772,9 @@ class TestReportAndApply:
 async def _walk_from_months_to_preview(dlg: CalendarWizardDialog) -> None:
     dlg._next_button.click()  # months → intercalary
     await dlg.wait_idle()
-    dlg._next_button.click()  # intercalary → preview
+    dlg._next_button.click()  # intercalary → «Сутки» (NRI-0023 task 4.1)
+    await dlg.wait_idle()
+    dlg._next_button.click()  # «Сутки» (defaults 24/60) → preview
     await dlg.wait_idle()
     assert dlg._stack.currentWidget() is dlg._pages[STEP_PREVIEW]
 
@@ -741,6 +845,8 @@ class TestSkin:
         dlg._rule_name_edit.setText("Громовик")
         dlg._rule_add_button.click()
         dlg._next_button.click()
+        await dlg.wait_idle()
+        dlg._next_button.click()  # «Сутки» defaults 24/60 → preview
         await dlg.wait_idle()
         dlg._apply_button.click()  # empty report → instant apply on preview
         await dlg.wait_idle()

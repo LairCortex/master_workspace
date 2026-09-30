@@ -22,10 +22,20 @@ from PySide6.QtQml import QQmlEngine
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from app.presentation.theme.compiler import load_tokens, tokens_file_path
 from app.presentation.utils import image_utils
 from app.presentation.views import entity_preview as preview_module
 from app.presentation.views.entity_preview import EntityPreviewWidget
 from tests.presentation.qml_helpers import find_item, find_items, track, walk_items
+
+
+def _token_px(key: str) -> float:
+    """Numeric value of a spacing token (both themes carry the same one)."""
+    tokens = load_tokens(tokens_file_path())
+    assert tokens is not None, "the token file must stay valid for the pins"
+    light, dark = tokens[key]["light"], tokens[key]["dark"]
+    assert light == dark, (key, light, dark)
+    return float(light.removesuffix("px"))
 
 
 class _NowStub(QObject):
@@ -264,6 +274,68 @@ def test_picture_takes_half_the_band_and_scales_with_the_column(qtbot, width):
     picture = find_item(widget.quick, "previewImageBlock")
     assert abs(picture.width() - row.width() / 2) <= 1.0
     assert abs(picture.height() - picture.width() * 4 / 3) <= 1.0
+
+
+def test_the_content_breathes_the_token_inset_off_every_border(qtbot):
+    """Live bug 2026-09-30 (the user's screenshot): every text of the shown
+    card glued itself to a border — the «Карточка: …» band to the column's
+    left edge, the long sections to the canvas hairline on the right, the last
+    relation block to the bottom. The whole content now rides one token
+    (space.sm — the padding the library card exposes for its children): the
+    header line steps in by it, and the scroll viewport sits one padding plus
+    the 1px hairline inside the canvas on all four sides, so nothing paints on
+    a border. The band's TOP inset stays the shared space.xs (the header axis
+    of the three columns, pinned in test_panel_header_band.py)."""
+    widget = _preview(
+        qtbot,
+        "character",
+        _linked_character(),
+        now_vm=_NowStub(date(1203, 1, 1)),
+        size=(420, 1600),  # tall enough that the composition never scrolls
+    )
+    pad = _token_px("space.sm")
+    canvas = find_item(widget.quick, "previewCanvas")
+    scroll = find_item(widget.quick, "previewScroll")
+    canvas_pos = canvas.mapToScene(QPointF(0, 0))
+    scroll_pos = scroll.mapToScene(QPointF(0, 0))
+    inset = 1 + pad  # the card's hairline + its content padding
+
+    # The viewport is inset by the padding on every side of the canvas…
+    assert abs(scroll_pos.x() - (canvas_pos.x() + inset)) <= 1.0
+    assert abs(scroll_pos.y() - (canvas_pos.y() + inset)) <= 1.0
+    assert abs(canvas_pos.x() + canvas.width() - inset
+               - (scroll_pos.x() + scroll.width())) <= 1.0
+    assert abs(canvas_pos.y() + canvas.height() - inset
+               - (scroll_pos.y() + scroll.height())) <= 1.0
+
+    # …the band caption steps in by the padding from the island's frame…
+    band_title = find_item(widget.quick, "previewBandTitle")
+    band_pos = band_title.mapToScene(QPointF(0, 0))
+    assert abs(band_pos.x() - (_token_px("space.xs") + pad)) <= 1.0
+
+    # …and every readable line of the card stays inside the padded rect, the
+    # long sections and the music link included (nothing cut at the edge).
+    viewport_right = scroll_pos.x() + scroll.width()
+    viewport_bottom = scroll_pos.y() + scroll.height()
+    readable = [find_item(widget.quick, name) for name in (
+        "previewName", "previewRating", "previewDates", "previewAge",
+        "previewMusic",
+    )]
+    readable += [
+        *find_items(widget.quick, "previewSectionText"),
+        *find_items(widget.quick, "previewRelatedLabel"),
+        *_related_rows(widget),
+    ]
+    assert len(readable) >= 10
+    for item in readable:
+        pos = item.mapToScene(QPointF(0, 0))
+        assert pos.x() >= scroll_pos.x() - 1.0, item.objectName()
+        assert pos.x() + item.width() <= viewport_right + 1.0, item.objectName()
+        assert pos.y() >= scroll_pos.y() - 1.0, item.objectName()
+        assert (
+            item.mapToScene(QPointF(0, item.height())).y()
+            <= viewport_bottom + 1.0
+        ), item.objectName()
 
 
 def test_body_text_reads_two_px_above_the_md_token(qtbot):

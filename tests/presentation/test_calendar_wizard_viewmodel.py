@@ -37,6 +37,7 @@ from app.domain.game_calendar import (
 )
 from app.infrastructure.calendar_storage import (
     CalendarDraft,
+    DRAFT_STAGE_DAY,
     DRAFT_STAGE_MONTHS,
     DRAFT_STAGE_PREVIEW,
     encode_calendar,
@@ -52,6 +53,7 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     KIND_CUSTOM,
     KIND_STANDARD,
     STEP_CHOICE,
+    STEP_DAY,
     STEP_INTERCALARY,
     STEP_MONTHS,
     STEP_PREVIEW,
@@ -94,7 +96,7 @@ _TARGET_FORM = CustomCalendar(
     CalendarSpec(months=_CUSTOM_MONTHS, week_names=STANDARD_WEEK_NAMES)
 )
 
-_FLOW_ORDER = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_PREVIEW)
+_FLOW_ORDER = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_DAY, STEP_PREVIEW)
 
 
 def _vm(session, service=None, *, first_entry: bool = False) -> CalendarWizardViewModel:
@@ -367,8 +369,9 @@ class TestMonthsStep:
         await vm.begin()
         assert vm.state.step == STEP_PREVIEW  # continued from the saved stage
 
-        vm.go_back()
-        vm.go_back()
+        vm.go_back()  # preview → «Сутки» (NRI-0023 task 4.1)
+        vm.go_back()  # «Сутки» → вставные дни
+        vm.go_back()  # …→ месяцы
         assert vm.state.step == STEP_MONTHS
 
         vm.set_month_count(2)  # host month 12 is gone beneath the rule
@@ -435,6 +438,108 @@ class TestIntercalaryStep:
             "Веха",
             "Молния",
         )
+
+
+class TestDayStep:
+    # spec «Экран „Сутки“» (NRI-0023 task 4.1): two numbers prefilled 24/60,
+    # the ≥ 1 floor gate with Russian phrases, the values through the draft.
+    async def test_defaults_pass_straight_through_to_the_preview_and_draft(
+        self, async_session
+    ):
+        service = CalendarSettingsService()
+        vm = _vm(async_session, service)
+        await _flow_to(vm, STEP_DAY)
+
+        state = vm.state
+        assert (state.day_hours, state.minutes_per_hour) == (24, 60)  # «предвыбор 24/60»
+        assert state.can_advance and state.problems == ()
+
+        await vm.try_advance()  # scenario «Дефолт и пропуск»
+
+        assert vm.state.step == STEP_PREVIEW
+        draft = await service.load_draft(async_session)
+        assert draft.stage == DRAFT_STAGE_PREVIEW
+        assert draft.spec.day_hours == 24 and draft.spec.minutes_per_hour == 60
+
+    async def test_alien_world_sizes_reach_draft_and_preview_calendar(
+        self, async_session
+    ):
+        service = CalendarSettingsService()
+        vm = _vm(async_session, service)
+        await _flow_to(vm, STEP_DAY)
+
+        vm.set_day_hours(10)  # scenario «Нездешний мир»
+        vm.set_minutes_per_hour(100)
+
+        assert vm.state.can_advance and vm.state.problems == ()
+        await vm.try_advance()
+
+        draft = await service.load_draft(async_session)
+        assert (draft.spec.day_hours, draft.spec.minutes_per_hour) == (10, 100)
+        preview = vm.state.preview_calendar
+        assert (preview.day_hours, preview.minutes_per_hour) == (10, 100)
+
+    async def test_zero_hours_and_zero_minutes_hold_next_with_russian_reason(
+        self, async_session
+    ):
+        vm = _vm(async_session)
+        await _flow_to(vm, STEP_DAY)
+
+        vm.set_day_hours(0)  # scenario «Ноль не проходит»
+
+        state = vm.state
+        assert not state.can_advance
+        assert "в сутках меньше одного часа" in state.problem_phrases
+        await vm.try_advance()  # a misfired «Далее» must not move the flow
+        assert vm.state.step == STEP_DAY
+
+        vm.set_day_hours(10)
+        vm.set_minutes_per_hour(0)
+        assert not vm.state.can_advance
+        assert "в часе меньше одной минуты" in vm.state.problem_phrases
+
+        vm.set_minutes_per_hour(100)
+        assert vm.state.can_advance and vm.state.problems == ()
+
+    async def test_invalid_day_keeps_the_last_valid_preview(self, async_session):
+        vm = _vm(async_session)
+        await _flow_to(vm, STEP_DAY)
+        last_valid = vm.state.preview_calendar
+
+        vm.set_minutes_per_hour(0)  # «Невалидная форма не рисует мусор»
+
+        assert vm.state.preview_calendar is last_valid
+
+    async def test_continued_draft_resumes_the_day_screen_prefilled(
+        self, async_session
+    ):
+        seed = CalendarDraft(
+            spec=CalendarSpec(
+                months=(MonthSpec("Черновершь", 20),),
+                week_names=("Буд", "Ведь"),
+                day_hours=10,
+                minutes_per_hour=100,
+            ),
+            stage=DRAFT_STAGE_DAY,
+        )
+        await CalendarSettingsService().save_draft(async_session, seed)
+
+        vm = _vm(async_session)
+        await vm.begin()
+
+        state = vm.state
+        assert state.step == STEP_DAY  # resumed on the «Сутки» screen itself
+        # «или значения черновика» — the draft's sizes are the preselect
+        assert (state.day_hours, state.minutes_per_hour) == (10, 100)
+
+    async def test_back_from_preview_returns_to_the_day_screen(self, async_session):
+        vm = _vm(async_session)
+        await _flow_to(vm, STEP_PREVIEW)
+
+        vm.go_back()
+
+        assert vm.state.step == STEP_DAY  # the flow «… → Сутки → Предпросмотр»
+        assert vm.state.can_advance and vm.state.can_go_back
 
 
 class TestNavigationAndPreview:
@@ -542,11 +647,19 @@ class TestDraftSemantics:
         assert draft.spec.intercalary == ()
 
         vm.add_intercalary("Гром", 2)
-        await vm.try_advance()  # → preview
+        await vm.try_advance()  # → «Сутки» (NRI-0023 task 4.1: the new stage)
+
+        draft = await service.load_draft(async_session)
+        assert draft.stage == DRAFT_STAGE_DAY
+        assert draft.spec.intercalary == (IntercalarySpec("Гром", 2),)
+
+        await vm.try_advance()  # → preview on the untouched 24/60 preselect
 
         draft = await service.load_draft(async_session)
         assert draft.stage == DRAFT_STAGE_PREVIEW
         assert draft.spec.intercalary == (IntercalarySpec("Гром", 2),)
+        # the day size rides in the draft too (spec «Черновик мастера» + v2)
+        assert (draft.spec.day_hours, draft.spec.minutes_per_hour) == (24, 60)
 
     async def test_reopening_continues_from_the_draft_prefilled(self, async_session):
         seed = CalendarDraft(
@@ -657,7 +770,8 @@ class TestReportScreen:
         vm = _vm(async_session)
         await _custom_months_on(vm)
         await vm.try_advance()  # months → intercalary
-        await vm.try_advance()  # intercalary → preview
+        await vm.try_advance()  # intercalary → «Сутки»
+        await vm.try_advance()  # «Сутки» (defaults 24/60) → preview
         assert vm.state.can_apply
         await vm.apply()
 
@@ -701,6 +815,7 @@ class TestReportScreen:
         await _custom_months_on(vm)
         await vm.try_advance()
         await vm.try_advance()
+        await vm.try_advance()  # …→ «Сутки» → предпросмотр
         await vm.apply()
 
         (line,) = vm.state.report_lines
@@ -741,6 +856,7 @@ class TestReportScreen:
         await vm.try_advance()  # → intercalary
         vm.add_intercalary("Первый гром", 3)
         vm.add_intercalary("Второй гром", 3)  # the target keeps just two rules
+        await vm.try_advance()  # → «Сутки»
         await vm.try_advance()  # → preview
         await vm.apply()
 
@@ -760,6 +876,7 @@ class TestReportScreen:
         await _custom_months_on(vm)
         await vm.try_advance()
         await vm.try_advance()
+        await vm.try_advance()  # …→ «Сутки» → предпросмотр
         await vm.apply()  # → the report screen
         # each passed stage of this very flow left a draft behind (task 5.2)
         assert await service.load_draft(async_session) is not None
@@ -829,6 +946,7 @@ class TestReportScreen:
         await _custom_months_on(vm)
         await vm.try_advance()
         await vm.try_advance()
+        await vm.try_advance()  # …→ «Сутки» → предпросмотр
         succeeded: list[str] = []
         failed: list[str] = []
         vm.apply_succeeded.connect(lambda: succeeded.append("ok"))

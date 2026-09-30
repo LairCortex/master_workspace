@@ -104,11 +104,19 @@ Rectangle {
         spacing: 0
 
         // NRI-0021 task 3.2 (spec «Виджет „Сейчас: <дата>“ в главном окне»):
-        // the game-date row above the search field, centered through the
-        // library ThemeDateField (role Button and press live inside the
-        // component; the usage site carries the name — here the caption
-        // itself, design Д4). Activation emits through the VM to the Python
-        // widgets bridge; no QML Popup is involved (spec qml-shell).
+        // the game-date row above the search field, built on the library
+        // ThemeDateField (role Button and press live inside the component;
+        // the usage site carries the name — here the caption itself, design
+        // Д4). Activation emits through the VM to the Python widgets bridge;
+        // no QML Popup is involved (spec qml-shell).
+        //
+        // NRI-0023 group 12 (design Д14.5; the audit-A9 left alignment is
+        // retired by the user request of 2026-09-30): the chip and the hour
+        // selector stay ONE pair (the combo's space.xs left margin is the gap
+        // between them) and the pair is horizontally CENTERED in the panel —
+        // the two invisible fillWidth spacers keep the pair's middle on the
+        // island's middle. Setting an hour grows the chip inside its worstCase
+        // floor, which widens the pair symmetrically: the middle never moves.
         RowLayout {
             objectName: "nowDateRow"
             Layout.fillWidth: true
@@ -131,6 +139,57 @@ Rectangle {
                     const point = nowDateField.mapToItem(root, 0, 0)
                     root.nowVm.requestDatePopup(
                         point.x, point.y, nowDateField.width, nowDateField.height)
+                }
+            }
+
+            // NRI-0023 task 9.1 (spec «Виджет „Сейчас: <дата>“»): the optional
+            // hour list beside the chip — «—» plus 0 … day_hours−1 of the
+            // active calendar (the bounds and the index mapping live in the
+            // VM, design Д4: no consumer hardcodes 24). A pick only asks the
+            // VM; the wiring's service transaction decides, and the caption
+            // grows the «…, HH:00» tail while every derived surface stays on
+            // the day it was computed from (spec «Час меняет только
+            // подпись»). ThemeComboBox carries its role inside the component,
+            // the usage site names the trigger; the native drop-down window
+            // is the documented tree limit ③ (never an island node).
+            //
+            // Group 12 (design Д14.2/Д14.3, audit H1/H2/A5/A7): the closed
+            // control prints the VM's labelled display text («Час: —» — the
+            // list rows stay bare numbers), keeps the chip's height (the
+            // component's space.xs vertical padding) and a fixed width taken
+            // from the calendar's worst label («Час: 23»), and the empty
+            // value paints at the muted rank.
+            ThemeComboBox {
+                id: nowHourCombo
+                objectName: "nowHourCombo"
+                visible: root.nowVm !== null
+                Layout.leftMargin: Tokens.px(root.islandTokens, "space.xs", 4)
+                model: root.nowVm !== null ? root.nowVm.hourOptions : []
+                currentIndex: root.nowVm !== null ? root.nowVm.selectedHourIndex : 0
+                displayText: root.nowVm !== null ? root.nowVm.hourDisplay : ""
+                worstCaseText:
+                    root.nowVm !== null ? root.nowVm.worstCaseHourOption : ""
+                valueIsPlaceholder:
+                    root.nowVm !== null && root.nowVm.selectedHourIndex === 0
+                Accessible.name: "Час сейчас"
+                // Task 12.6 (A1 host half of design Д14.1): this island's
+                // facade fixes the widget to the island's implicit height, so
+                // the component's own pop-up could never grow to its full
+                // list here — the hour rows leave for the widgets-bridge
+                // window through the VM, the very route the date chip beside
+                // this row already takes. Taller hosts (the event sheet) keep
+                // the in-component pop-up untouched.
+                externalPopup: true
+                onPopupOpenRequested: {
+                    if (!root.nowVm)
+                        return
+                    const point = nowHourCombo.mapToItem(root, 0, 0)
+                    root.nowVm.requestHourPopup(
+                        point.x, point.y, nowHourCombo.width, nowHourCombo.height)
+                }
+                onActivated: {
+                    if (root.nowVm)
+                        root.nowVm.requestHour(index)
                 }
             }
 

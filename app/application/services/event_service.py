@@ -11,6 +11,7 @@ from app.application.services.mention_rewrite import rewrite_mentions
 from app.application.services.relation_sync import sync_related
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
+from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.db.models import (
     EventModel,
     event_character,
@@ -30,6 +31,17 @@ COLOR_INDEX_MAX = 8
 #: ``update_event_with_relations`` default: leave the event's type untouched.
 #: A plain ``None`` default could not tell "no type" from "caller predates W4".
 TYPE_UNSET = object()
+
+#: ``update_event_with_relations`` default: leave the parent link untouched.
+#: Same reason as ``TYPE_UNSET`` (NRI-0023, design Д1): a plain ``None`` could
+#: not tell "подъём в основные" (explicit de-parenting) from a caller that
+#: predates the sub-event feature.
+PARENT_UNSET = object()
+
+#: ``update_event_with_relations`` default: leave the wall-clock start untouched.
+#: Same precedent as the sentinels above (NRI-0023, task 7.2): a plain ``None``
+#: could not tell "clear the time" from a caller that predates the time field.
+START_TIME_UNSET = object()
 
 #: NRI-0022 (task 6.1, design D7): how each card type is a member of events —
 #: the stable type key → (event M2M association table, entity id column) of the
@@ -219,6 +231,22 @@ class EventService:
 
     # ── Save-with-relations (ported 1:1 from the main.py closures) ───────
 
+    async def _guard_parent(self, parent_id: int, event_id: int | None = None) -> None:
+        """Two-level nesting guard (NRI-0023, task 3.2, design Д1): the parent
+        must exist, must itself be parentless (a sub-event never gets its own
+        children) and must not be the edited event.  Raises Russian ``ValueError``
+        — the wiring's save handler turns any exception into the one modal the
+        user sees («Не удалось сохранить событие: …»).  The UI list of parents
+        only ever offers main events; this guard is the write-time backstop
+        against any bypass."""
+        if event_id is not None and parent_id == event_id:
+            raise ValueError("событие не может быть родителем самого себя")
+        parent = await self._event_repo.get_by_id(parent_id)
+        if parent is None:
+            raise ValueError(f"родительское событие {parent_id} не найдено")
+        if parent.parent_id is not None:
+            raise ValueError("родительское событие не может быть подсобытием")
+
     async def create_event_with_relations(
         self,
         name: str,
@@ -230,6 +258,8 @@ class EventService:
         event_type_id: int | None = None,
         start_bc: bool = False,
         end_bc: bool = False,
+        parent_id: int | None = None,
+        start_time: TimeOfDay | None = None,
     ):
         """Create an event (with description) and sync all four M2M collections.
 
@@ -241,8 +271,15 @@ class EventService:
         The optional ``event_type_id`` (W4) assigns a type at creation
         (None = без типа). ``start_bc``/``end_bc`` (task 3.4) carry the dates'
         eras into the ORM era columns; the model hooks derive the keys.
+        ``parent_id`` (NRI-0023, task 3.2) attaches the new event as a
+        sub-event of that main event (None = main event); the link is guarded
+        before anything is written.  ``start_time`` (NRI-0023, task 7.2) is
+        the optional wall-clock start (None = «весь день, с утра», stored as
+        NULL — never a fabricated 00:00).
         """
         async with self._uow.transaction():
+            if parent_id is not None:
+                await self._guard_parent(parent_id)
             event = await self.create_event(
                 name=name,
                 characteristics=characteristics,
@@ -252,6 +289,8 @@ class EventService:
                 event_type_id=event_type_id,
                 start_bc=start_bc,
                 end_bc=end_bc,
+                parent_id=parent_id,
+                start_time=start_time,
             )
             await self._session.refresh(
                 event, attribute_names=self.RELATION_ATTRS + ["event_type"],
@@ -277,6 +316,8 @@ class EventService:
         event_type_id: Any = TYPE_UNSET,
         start_bc: bool = False,
         end_bc: bool = False,
+        parent_id: Any = PARENT_UNSET,
+        start_time: Any = START_TIME_UNSET,
     ):
         """Update event fields + description and resync all four M2M collections.
 
@@ -288,9 +329,17 @@ class EventService:
         (id or None for «без типа») reassigns the type; callers that predate
         the feature leave the sentinel and keep the current one.
         ``start_bc``/``end_bc`` (task 3.4) rewrite the dates' eras; the model
-        hooks re-derive the chronological keys.
+        hooks re-derive the chronological keys. ``parent_id`` (NRI-0023,
+        task 3.2): an id re-parents (перецепка), ``None`` lifts the event to
+        main (подъём в основные); the sentinel keeps the link untouched for
+        callers that predate the feature.  A non-sentinel id is guarded
+        before anything is written.  ``start_time`` (NRI-0023, task 7.2):
+        a ``TimeOfDay`` sets the wall-clock start, ``None`` clears it to
+        «весь день»; the sentinel leaves it untouched.
         """
         async with self._uow.transaction():
+            if parent_id is not PARENT_UNSET and parent_id is not None:
+                await self._guard_parent(parent_id, event_id)
             current = await self.get_event(event_id)
             old_name = current.name if current else None
             fields: dict[str, Any] = {
@@ -299,6 +348,10 @@ class EventService:
             }
             if event_type_id is not TYPE_UNSET:
                 fields["event_type_id"] = event_type_id
+            if parent_id is not PARENT_UNSET:
+                fields["parent_id"] = parent_id
+            if start_time is not START_TIME_UNSET:
+                fields["start_time"] = start_time
             await self.update_event(event_id, **fields)
             updated_event = await self.get_event(event_id)
             if updated_event is None:

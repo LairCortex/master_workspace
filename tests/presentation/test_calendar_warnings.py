@@ -34,6 +34,9 @@ def test_all_validation_codes_are_mapped_in_non_latin():
         "empty_intercalary_name",
         "duplicate_intercalary_name",
         "intercalary_unknown_month",
+        # NRI-0023 task 4.1: the day-size floors of the «Сутки» screen.
+        "day_hours_below_min",
+        "minutes_per_hour_below_min",
         "year_length_overflow",
     )
     for code in validation_codes:

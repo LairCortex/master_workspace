@@ -15,6 +15,8 @@ item's scene position. Names mirror the retired view addresses one-for-one
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
@@ -138,14 +140,44 @@ def row_delegate(window, idx: int):
     """The materialized delegate answering for row ``idx`` (``None`` = the
     recycling window does not carry it — reveal the row first).
 
-    The flat list knows exactly one row kind: the delegate's ``eventRow``
-    objectName contract (TimelineRowDelegate.qml), addressed by its delivered
-    ``index``.
+    The list now knows two row kinds (NRI-0023 tree): event rows and the
+    window-only parent stubs; a click/geometry address names the row the
+    model delivers at ``idx``, whatever kind it paints.
     """
     for it in walk_items(root(window)):
-        if it.objectName() == "eventRow" and it.property("index") == idx:
+        if it.objectName() in ("eventRow", "stubRow") and it.property("index") == idx:
             return it
     return None
+
+
+def settled_row_delegate(window, idx: int, timeout_s: float = 3.0):
+    """The delegate answering for row ``idx``, waited out to a CONSISTENT
+    state (NRI-0023 insert-delivery).
+
+    An expansion/shift reaches the view as ``rowsInserted``/``rowsRemoved``
+    (design Д6) and the delegates re-anchor through the view's polish + the
+    штатный ``displaced`` animation — briefly, a live delegate can still
+    quote the PRE-shift attached ``index`` while it slides to its new row.
+    A synthetic click must not race that window. Wait until the delegate at
+    ``idx`` also paints the model's row ``idx`` (identity agreement) AND has
+    stopped moving (two samples across a 30 ms gap on the same y — every
+    declared transition is 150 ms, a still row is a settled row). On timeout
+    the last lookup is returned for the callers' assertion to report."""
+    entry = vm(window).row_model.get(idx)
+    expected = entry.get("eventId") if entry else None
+    deadline = time.perf_counter() + timeout_s
+    delegate = None
+    while time.perf_counter() < deadline:
+        delegate = row_delegate(window, idx)
+        if delegate is not None and expected is not None \
+                and delegate.property("eventId") == expected:
+            y0 = delegate.mapToScene(QPointF(0, 0)).y()
+            QTest.qWait(30)
+            QApplication.processEvents()
+            if delegate.mapToScene(QPointF(0, 0)).y() == y0:
+                return delegate
+        pump(4)
+    return delegate
 
 
 def reveal(window, idx: int):
@@ -153,7 +185,7 @@ def reveal(window, idx: int):
     return its laid-out delegate."""
     root(window).scrollToIndex.emit(idx)
     pump(8)
-    delegate = row_delegate(window, idx)
+    delegate = settled_row_delegate(window, idx)
     assert delegate is not None, f"row {idx} did not materialize"
     return delegate
 
@@ -170,9 +202,10 @@ def scene_point(window, it, x: float | None = None, y_ratio: float = 0.5) -> QPo
 def row_center(window, idx: int) -> QPoint:
     """Scene point on row ``idx`` in the text zone: right of the type mark, on
     the row proper — the MouseArea spans the whole row, the inset just mirrors
-    where a user aims.
+    where a user aims. The settled lookup keeps the point honest while an
+    insert-delivery is still animating the row shift.
     """
-    delegate = row_delegate(window, idx)
+    delegate = settled_row_delegate(window, idx)
     assert delegate is not None, f"row {idx} is not laid out"
     x = min(60, max(delegate.width() - 2, 2))
     return scene_point(window, delegate, x=x)

@@ -27,8 +27,12 @@ from app.domain.game_calendar import (
 from app.presentation.views.timeline_rows import (
     DETAIL_MAX_CHARS,
     OPEN_END_MARK,
+    ROW_EVENT,
+    ROW_STUB,
     Row,
     build_rows,
+    event_parent_id,
+    event_time_minutes,
     row_detail,
     window_contains,
 )
@@ -38,10 +42,11 @@ from app.presentation.views.timeline_rows import (
 
 class _Ev:
     """Minimal duck-typed event-like object (id/start/end/name [+event_type,
-    +description, +start_bc/end_bc])."""
+    +description, +start_bc/end_bc, +parent_id/start_time_raw])."""
 
     def __init__(self, id, start_date, end_date, name, event_type=None,
-                 description=None, start_bc=False, end_bc=False):
+                 description=None, start_bc=False, end_bc=False,
+                 parent_id=None, start_time_raw=None):
         self.id = id
         self.start_date = start_date
         self.end_date = end_date
@@ -51,15 +56,22 @@ class _Ev:
         self.end_bc = end_bc
         if description is not None:
             self.description = description
+        # NRI-0023 tree fields — set only when given, so the attribute-less
+        # legacy shape stays constructible and keeps reading «plain event».
+        if parent_id is not None:
+            self.parent_id = parent_id
+        if start_time_raw is not None:
+            self.start_time_raw = start_time_raw
 
 
 def _event(id_, start, end, name, color_index=None, description=None,
-           start_bc=False, end_bc=False):
+           start_bc=False, end_bc=False, parent_id=None, start_time_raw=None):
     event_type = (
         None if color_index is None else type("T", (), {"color_index": color_index})()
     )
     return _Ev(id_, start, end, name, event_type=event_type, description=description,
-               start_bc=start_bc, end_bc=end_bc)
+               start_bc=start_bc, end_bc=end_bc,
+               parent_id=parent_id, start_time_raw=start_time_raw)
 
 
 def _description(characteristics="", backstory=""):
@@ -131,6 +143,19 @@ def test_captions_follow_the_game_month_names():
     set_current_calendar(StandardCalendar(month_names={3: "Медвежарь"}))
     row, = build_rows([_event(1, date(1200, 3, 5), date(1200, 3, 9), "Имя")])
     assert row.caption == "05 Медвежарь 1200 — 09 Медвежарь 1200 · Имя"
+
+
+def test_caption_carries_the_chosen_time_after_the_start_date():
+    # NRI-0023 task 8.1 (spec event-time «Время в строке»): the ladder row
+    # prints its start through the shared surface helper — the time tail
+    # comes right after the start date, the end stays a plain day; a row
+    # without the domain face keeps the old caption (the None pin above).
+    from app.domain.time_of_day import TimeOfDay
+
+    event = _event(1, date(1200, 3, 5), None, "Слух", start_time_raw=9 * 60 + 5)
+    event.start_time = TimeOfDay(9, 5)
+    row, = build_rows([event])
+    assert row.caption == "05 Март 1200, 09:05 — ∞ · Слух"
 
 
 # ── type token (duck-typed) ───────────────────────────────────────────────────
@@ -553,3 +578,308 @@ class TestWindowContains:
         window = (MonthDay(1200, 1, 1), MonthDay(1200, 2, 20))
         with pytest.raises(InvalidGameDateError):
             window_contains(window, MonthDay(1200, 9, 1), False)
+
+
+# ── the two-level tree (NRI-0023 task 5.1, spec «Дерево событий») ─────────────
+
+
+class TestTree:
+    """``build_rows`` lays the events as the ladder's tree (design Д6): one
+    top-level row per main event, children directly under their EXPANDED
+    parent, the window-excluded parent of a shown child rendered as a name
+    stub. The order of both levels is ``(start, время, id)`` — untimed rows
+    precede timed ones, a full tie falls to ``id`` (spec event-time «Время
+    участвует в порядке внутри дня»), mirroring the repository's SQL order."""
+
+    PARENT = staticmethod(lambda: _event(1, date(1200, 1, 5), date(1200, 1, 9), "Поход"))
+
+    def _sample(self):
+        """Parent plus five children: one untimed (id 2), three at 09:00
+        (ids 4, 5, 6) and one at 14:30 (id 3) — all on January 6."""
+        return [
+            _event(1, date(1200, 1, 5), date(1200, 1, 9), "Поход"),
+            _event(2, date(1200, 1, 6), None, "Разведка"),  # без времени
+            _event(3, date(1200, 1, 6), None, "Привал", start_time_raw=14 * 60 + 30),
+            _event(4, date(1200, 1, 6), None, "Засека", start_time_raw=9 * 60),
+            _event(5, date(1200, 1, 6), None, "Дозор", start_time_raw=9 * 60),
+            _event(6, date(1200, 1, 6), None, "Пикет", start_time_raw=9 * 60),
+        ]
+
+    def _children(self, sample):  # attach all five to the parent
+        return [sample[0]] + [
+            _event(e.id, e.start_date, e.end_date, e.name,
+                   start_time_raw=getattr(e, "start_time_raw", None),
+                   parent_id=1)
+            for e in sample[1:]
+        ]
+
+    def test_children_are_hidden_while_the_parent_is_collapsed(self):
+        """Spec «Свёрнутый родитель детей прячет»: no child rows at all, and
+        the parent announces itself as the one carrying a section."""
+        rows = build_rows(self._children(self._sample()))
+        assert [(r.kind, r.event_id, r.depth, r.parent_id) for r in rows] == [
+            (ROW_EVENT, 1, 0, None)
+        ]
+        assert rows[0].has_children is True
+
+    def test_expanded_parent_carries_children_directly_under_it(self):
+        """Spec «Подсобытия под родителем с отступом»: children ride at depth
+        1 with parent_id set, ordered (день, время, id) — untimed first, the
+        09:00 trio ahead of 14:30, ties by id."""
+        sample = self._children(self._sample())
+        rows = build_rows(sample, expanded={1})
+        assert [(r.kind, r.event_id, r.depth, r.parent_id) for r in rows] == [
+            (ROW_EVENT, 1, 0, None),
+            (ROW_EVENT, 2, 1, 1),  # без времени — раньше всех
+            (ROW_EVENT, 4, 1, 1),  # 09:00, id 4
+            (ROW_EVENT, 5, 1, 1),  # 09:00, id 5
+            (ROW_EVENT, 6, 1, 1),  # 09:00, id 6
+            (ROW_EVENT, 3, 1, 1),  # 14:30 — последней
+        ]
+
+    # ── the group-closing scalar (NRI-0023 task 11.1, design Д11) ────────────
+
+    def test_only_the_last_emitted_child_of_a_group_closes_the_branch(self):
+        """Task 11.1: ``is_last_sibling`` is true on the LAST child of the
+        group (and on the only child), false on every middle child and on the
+        parent — the delegate paints the «└» angle exactly where the trunk
+        must stop."""
+        rows = build_rows(self._children(self._sample()), expanded={1})
+        assert [(r.event_id, r.is_last_sibling) for r in rows] == [
+            (1, False),  # the parent is never its children's last sibling
+            (2, False),
+            (4, False),
+            (5, False),
+            (6, False),
+            (3, True),  # the 14:30 row is the group's last — the «└»
+        ]
+
+    def test_a_single_child_is_its_own_last_sibling(self):
+        parent = _event(1, date(1200, 1, 5), None, "Родитель")
+        child = _event(2, date(1200, 1, 6), None, "Единственный", parent_id=1)
+        rows = build_rows([parent, child], expanded={1})
+        assert [(r.event_id, r.is_last_sibling) for r in rows] == [
+            (1, False), (2, True)
+        ]
+
+    def test_the_windowed_group_closes_on_its_last_visible_child(self):
+        """The flag answers the EMITTED group: a third child the window cuts
+        away must not keep the group's last row promising a continuation."""
+        parent = _event(1, date(1200, 1, 5), None, "Поход")
+        first = _event(2, date(1200, 1, 6), None, "в окне", parent_id=1)
+        second = _event(3, date(1200, 1, 7), None, "тоже в окне", parent_id=1)
+        outside = _event(4, date(1200, 3, 1), None, "за окном", parent_id=1)
+        window = (date(1200, 1, 6), date(1200, 1, 7))
+        rows = build_rows([parent, first, second, outside], window, expanded={1})
+        assert [(r.event_id, r.is_last_sibling) for r in rows] == [
+            (1, False), (2, False), (3, True)
+        ]
+
+    def test_top_level_and_stub_rows_never_carry_the_group_flag(self):
+        """Task 11.1's negative half: a stub is top-level decoration and a
+        top-level event has no sibling group — both stay False however many
+        rows follow them."""
+        parent = _event(1, date(1200, 1, 1), date(1200, 1, 2), "Поход")
+        first = _event(2, date(1200, 8, 14), None, "в окне", parent_id=1)
+        second = _event(3, date(1200, 8, 14), None, "тоже в окне", parent_id=1)
+        neighbour = _event(4, date(1200, 8, 14), None, "сосед сверху")
+        rows = build_rows([parent, first, second, neighbour], self._FAR_WINDOW)
+        assert [(r.kind, r.event_id, r.is_last_sibling) for r in rows] == [
+            (ROW_STUB, 1, False),  # the stub itself never closes a branch
+            (ROW_EVENT, 2, False),
+            (ROW_EVENT, 3, True),  # the last orphan does
+            (ROW_EVENT, 4, False),  # a top-level row has no group
+        ]
+        # …and collapsed/flat samples carry the flag nowhere.
+        assert not any(r.is_last_sibling for r in build_rows([parent, first]))
+
+    def test_the_same_time_tie_runs_in_id_order_stably(self):
+        """Spec «Несколько подсобытий в одно время уживаются»: identical date
+        and time is not merged and not disputed — the trio runs подряд by id,
+        and the order repeats identically on every re-build (input shuffled
+        both times)."""
+        sample = self._children(self._sample())
+        first = [r.event_id for r in build_rows(sample, expanded={1})]
+        second = [r.event_id for r in build_rows(list(reversed(sample)), expanded={1})]
+        assert first == second == [1, 2, 4, 5, 6, 3]
+
+    def test_children_order_prefers_the_day_over_the_time(self):
+        """Spec «Порядок разных дней не трогает»: a later-in-the-day child of
+        the previous day still precedes the next day's untimed child."""
+        sample = [
+            _event(1, date(1200, 1, 1), None, "Родитель"),
+            _event(2, date(1200, 1, 4), None, "вчера вечером",
+                   start_time_raw=23 * 60, parent_id=1),
+            _event(3, date(1200, 1, 5), None, "сегодня без времени", parent_id=1),
+        ]
+        rows = build_rows(sample, expanded={1})
+        assert [r.event_id for r in rows] == [1, 2, 3]
+
+    def test_main_events_also_order_by_time_inside_one_day(self):
+        """Spec «Порядок строк»: top level obeys the same tuple — untimed,
+        then время, ties by id (the repository's order, mirrored here)."""
+        sample = [
+            _event(9, date(1200, 3, 5), None, "в 14:30", start_time_raw=14 * 60 + 30),
+            _event(4, date(1200, 3, 5), None, "без времени"),
+            _event(7, date(1200, 3, 5), None, "в 9:00", start_time_raw=9 * 60),
+        ]
+        rows = build_rows(sample)
+        assert [r.event_id for r in rows] == [4, 7, 9]
+
+    # ── the parent stub (spec «Окно фильтрации и пустое состояние») ──────────
+
+    _FAR_WINDOW = (date(1200, 8, 14), date(1200, 8, 14))
+
+    def _orphan_sample(self):
+        return [
+            _event(1, date(1200, 1, 1), date(1200, 1, 2), "Поход"),  # вне окна
+            _event(2, *self._FAR_WINDOW, "Дефиле в таверне", parent_id=1),
+        ]
+
+    def test_window_excluded_parent_becomes_a_stub_over_its_child(self):
+        """Spec «Осиротевший ребёнок получает заглушку»: the stub is the bare
+        parent NAME — no dates, no token, no detail — with the orphan child
+        at depth 1 right under it."""
+        rows = build_rows(self._orphan_sample(), self._FAR_WINDOW)
+        assert [(r.kind, r.event_id) for r in rows] == [
+            (ROW_STUB, 1), (ROW_EVENT, 2)
+        ]
+        stub, child = rows
+        assert stub.caption == "Поход"
+        assert stub.detail == ""
+        assert stub.token_key is None
+        assert (stub.depth, stub.parent_id) == (0, None)
+        assert stub.has_children is True
+        assert (child.depth, child.parent_id) == (1, 1)
+        assert child.has_children is False
+
+    def test_a_collapsed_window_crossing_parent_needs_no_stub(self):
+        """The stub answers «where is the parent» only when its row cannot
+        be shown — a parent inside the window rides its own row, collapsed
+        children hidden, and no stub is fabricated."""
+        parent = _event(1, date(1200, 8, 13), date(1200, 8, 15), "Поход")
+        child = _event(2, *self._FAR_WINDOW, "Дефиле", parent_id=1)
+        rows = build_rows([parent, child], self._FAR_WINDOW)
+        assert [(r.kind, r.event_id) for r in rows] == [(ROW_EVENT, 1)]
+        assert build_rows([], []) == []  # the empty sample guard stays
+
+    def test_stub_group_rides_where_the_parent_would_have_stood(self):
+        """The stub+orphans group is keyed by the parent's own order tuple,
+        so the ladder keeps its chronological face: the February orphan group
+        slots between the January neighbour (whose span reaches into the
+        window) and a later February event, exactly where the parent itself
+        would have stood."""
+        january = _event(7, date(1200, 1, 10), date(1200, 2, 4), "Январь")
+        parent = _event(1, date(1200, 2, 1), date(1200, 2, 2), "Февраль")
+        orphan = _event(2, date(1200, 2, 5), None, "Осиротел", parent_id=1)
+        later = _event(8, date(1200, 2, 4), date(1200, 2, 5), "Позже родителя")
+        window = (date(1200, 2, 3), date(1200, 2, 5))  # parent's Feb 1–2 misses
+        rows = build_rows([january, parent, orphan, later], window)
+        assert [(r.kind, r.event_id) for r in rows] == [
+            (ROW_EVENT, 7), (ROW_STUB, 1), (ROW_EVENT, 2), (ROW_EVENT, 8),
+        ]
+
+    def test_stub_never_takes_the_today_outline(self):
+        """The outline needs a DATE; the stub shows none — even a parent
+        starting exactly «today» leaves its stub unmarked and the outline
+        simply absent."""
+        parent = _event(1, _TODAY, _TODAY, "Сегодняшний")
+        child = _event(2, date(1300, 1, 1), None, "В окне", parent_id=1)
+        rows = build_rows([parent, child], (date(1300, 1, 1), date(1300, 1, 2)),
+                          now=_TODAY)
+        assert [(r.kind, r.is_now) for r in rows] == [
+            (ROW_STUB, False), (ROW_EVENT, False),
+        ]
+
+    # ── degenerate and foreign shapes ─────────────────────────────────────────
+
+    def test_dangling_and_self_parents_ride_the_top_level(self):
+        """A parent id the sample never held (dangling FK) or naming the
+        event itself is nobody's parent — the row stays a plain top-level
+        event, no stub and no recursion."""
+        dangling = _event(2, date(1200, 1, 6), None, "сирота", parent_id=999)
+        self_parent = _event(3, date(1200, 1, 7), None, "сам себе", parent_id=3)
+        rows = build_rows([dangling, self_parent])
+        assert [(r.kind, r.event_id, r.depth) for r in rows] == [
+            (ROW_EVENT, 2, 0), (ROW_EVENT, 3, 0),
+        ]
+
+    def test_foreign_parent_and_time_values_read_as_absent(self):
+        """The duck-typed readers accept ints only: bools, strings and floats
+        (auto-Mock noise from test doubles) read «без родителя» / «без
+        времени», like the NULLable columns in storage."""
+        parent = _event(1, date(1200, 1, 1), None, "main")
+        weird = SimpleNamespace(
+            id=2, start_date=date(1200, 1, 2), end_date=None, name="шум",
+            parent_id=True, start_time_raw="14:30",
+        )
+        assert event_parent_id(weird) is None
+        assert event_time_minutes(weird) is None
+        assert event_parent_id(parent) is None  # attribute-less legacy shape
+        assert event_time_minutes(parent) is None
+        rows = build_rows([parent, weird], expanded={1})
+        assert [(r.event_id, r.depth) for r in rows] == [(1, 0), (2, 0)]
+
+    def test_expanded_parent_shows_only_window_crossing_children(self):
+        parent = _event(1, date(1200, 1, 5), date(1200, 1, 9), "Поход")
+        inside = _event(2, date(1200, 1, 6), None, "в окне", parent_id=1)
+        outside = _event(3, date(1200, 1, 20), None, "за окном", parent_id=1)
+        window = (date(1200, 1, 6), date(1200, 1, 6))
+        rows = build_rows([parent, inside, outside], window, expanded={1})
+        assert [(r.event_id, r.depth) for r in rows] == [(1, 0), (2, 1)]
+
+    def test_the_today_outline_lands_on_the_first_emitted_event_row(self):
+        """With the tree the outline follows emission order: the parent (not
+        yet today) rides first, so its child starting «today» carries it."""
+        parent = _event(1, date(1200, 8, 13), None, "Накануне")
+        child = _event(2, _TODAY, None, "Сегодня", parent_id=1)
+        rows = build_rows([parent, child], now=_TODAY, expanded={1})
+        assert [(r.event_id, r.is_now) for r in rows] == [(1, False), (2, True)]
+
+
+class TestTreelessSampleIsWordForWordTheOldFlatList:
+    """Task 5.1's pin: with nothing expanded the tree core reproduces the
+    pre-NRI-0023 flat list EXACTLY — same rows, same order, same texts. The
+    comparison is with the outputs of the old core as they were last pinned
+    in this file (full Row equality, default tree fields included)."""
+
+    def test_flat_sample_output_is_frozen(self):
+        events = [
+            _event(20, date(2026, 1, 1), None, "наши дни", color_index=1),
+            _event(1, date(1, 1, 1), None, "1 год до н.э.", start_bc=True,
+                   description=_description(characteristics="сага")),
+            _event(2, date(500, 6, 1), None, "500 лет до н.э.", start_bc=True),
+            _event(3, date(1, 1, 1), None, "наша эра"),
+            _event(9, date(1200, 3, 5), None, "второе-в-дне"),
+            _event(4, date(1200, 3, 5), None, "первое-в-дне", color_index=2),
+        ]
+        assert build_rows(events) == [
+            Row(event_id=2, start=date(500, 6, 1), end=None,
+                name="500 лет до н.э.", token_key=None,
+                caption="01 Июнь 500 г. до н.э. — ∞ · 500 лет до н.э.",
+                start_bc=True),
+            Row(event_id=1, start=date(1, 1, 1), end=None,
+                name="1 год до н.э.", token_key=None,
+                caption="01 Январь 1 г. до н.э. — ∞ · 1 год до н.э.",
+                detail="сага", start_bc=True),
+            Row(event_id=3, start=date(1, 1, 1), end=None, name="наша эра",
+                token_key=None, caption="01 Январь 1 — ∞ · наша эра"),
+            Row(event_id=4, start=date(1200, 3, 5), end=None,
+                name="первое-в-дне", token_key="color.chart.2",
+                caption="05 Март 1200 — ∞ · первое-в-дне"),
+            Row(event_id=9, start=date(1200, 3, 5), end=None,
+                name="второе-в-дне", token_key=None,
+                caption="05 Март 1200 — ∞ · второе-в-дне"),
+            Row(event_id=20, start=date(2026, 1, 1), end=None, name="наши дни",
+                token_key="color.chart.1",
+                caption="01 Январь 2026 — ∞ · наши дни"),
+        ]
+
+    def test_expanding_ids_that_bear_no_children_changes_nothing(self):
+        """The expansion set is inert against a nesting-free sample: rows
+        with unknown ids inside it must not move, mark or reformat a row."""
+        events = [
+            _event(4, date(1200, 3, 5), None, "первое"),
+            _event(9, date(1200, 3, 5), None, "второе"),
+        ]
+        assert build_rows(events, expanded={404, 9}) == build_rows(events)

@@ -138,6 +138,16 @@ class TestComposition:
         assert keys == ["characteristics", "backstory", "personality", "tasks"]
         assert labels == ["Характеристики", "Предыстория", "Личность", "Задачи"]
 
+    def test_chosen_time_rides_the_start_side_of_the_date_line(self):
+        # NRI-0023 task 8.1 (spec event-time «Время в строке»): the preview
+        # prints the start through the shared surface helper — the time tail
+        # sits after the date, the end stays a day.
+        from app.domain.time_of_day import TimeOfDay
+
+        vm = EntityPreviewViewModel()
+        vm.show_entity("character", _entity(start_time=TimeOfDay(9, 5)))
+        assert vm.dateText == "01 Январь 1200, 09:05 — Бессрочно"
+
     def test_item_has_no_foreign_fields(self):
         # Spec scenario «У предмета нет чужих полей»: the section set follows
         # the attributes the type carries — no «Личность», no «Задачи».

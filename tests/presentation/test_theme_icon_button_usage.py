@@ -23,6 +23,7 @@ nested blocks cannot launder a size in or out.
 from __future__ import annotations
 
 import re
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,6 +150,25 @@ def test_sheet_header_close_glyph_is_the_library_icon_button():
 
 # ── islands on the shared shell engine (facade-identical context) ─────────────
 
+def _walk(root):
+    stack = [root]
+    while stack:
+        for child in stack.pop().childItems():
+            yield child
+            stack.append(child)
+
+
+class _TreeService:
+    """The smallest service the seeded timeline VM tolerates (the pattern of
+    the timeline suites) — no scheduler is ever run here."""
+
+    def __init__(self, events):
+        self._events = list(events)
+
+    async def get_all_events(self):
+        return list(self._events)
+
+
 def _load_island(qtbot, qapp, tmp_path, source: Path, context: dict):
     """An island root on the production shell (setup_qml_shell: one import
     path, the Nri scope, the palette bridge), sized to its implicit root like
@@ -200,6 +220,36 @@ def test_timeline_add_glyph_is_the_square(qtbot, qapp, tmp_path):
         {"vm": TimelineViewModel(None)},
     )
     _assert_square_glyph(find_item(widget, "addButton"), "timeline +")
+
+
+def test_timeline_chevron_wears_the_ghost_keeps_the_square(qtbot, qapp, tmp_path):
+    """NRI-0023 task 11.2 (design Д12): the ladder's disclosure chevron is the
+    SAME library square where it is actually rendered — 32×32 on the row —
+    but in the ghost (flat) set: ``ghost: true`` at the usage site, and the
+    wash pair (``accentBackground: row.selectedRow``) rides the same control.
+    The a11y face (role/name/Press) is pinned in test_timeline_accessibility;
+    the ghost face itself in test_theme_icon_button."""
+    events = [
+        SimpleNamespace(id=1, name="Поход", start_date=date(1200, 1, 1),
+                        end_date=date(1200, 1, 1), description=None,
+                        event_type=None, parent_id=None),
+        SimpleNamespace(id=2, name="Разведка", start_date=date(1200, 1, 2),
+                        end_date=None, description=None,
+                        event_type=None, parent_id=1),
+    ]
+    vm = TimelineViewModel(_TreeService(events))
+    vm._all_events = list(events)
+    vm.events = list(events)
+    vm.toggle_expand(1)  # the chevron paints on the expanded parent too
+    widget = _load_island(
+        qtbot, qapp, tmp_path, QML_ROOT / "TimelineRoot.qml", {"vm": vm}
+    )
+    chevrons = [i for i in _walk(widget.rootObject())
+                if i.objectName() == "rowChevron" and i.isVisible()]
+    assert len(chevrons) == 1
+    chevron = chevrons[0]
+    _assert_square_glyph(chevron, "chevron")  # the gauge is the component's
+    assert chevron.property("ghost") is True
 
 
 def test_event_types_arrows_are_the_squares(qtbot, qapp, tmp_path):

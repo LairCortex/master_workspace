@@ -31,6 +31,8 @@ def _event(
     organizations=(),
     characters=(),
     items=(),
+    parent_id=None,
+    start_time=None,
 ):
     return SimpleNamespace(
         id=event_id,
@@ -41,6 +43,11 @@ def _event(
         organizations=list(organizations),
         characters=list(characters),
         items=list(items),
+        # NRI-0023 duck-typed optionals (tasks 8.1/8.3): the parent self-FK
+        # and the domain-face start time; None reads as «top-level» / «без
+        # времени» exactly as the NULLable columns do.
+        parent_id=parent_id,
+        start_time=start_time,
     )
 
 
@@ -343,3 +350,154 @@ def test_reset_without_a_game_leaves_the_field(qtbot):
     with qtbot.assertNotEmitted(vm.dateChanged):
         vm.clear()
     assert vm.dateIso == "1200-03-04"
+
+
+# ── NRI-0023 task 8.3: the «События» section as a two-level tree ────────────
+
+# The tree indent is the non-breaking-space block the child caption opens
+# with; the tests spell it the same way the ViewModel does.
+INDENT = "\u00a0" * 4
+
+
+def _event_rows(vm):
+    """The «События» section rows only — the section header excluded."""
+    return [
+        row
+        for row in _rows(vm)
+        if row["sectionKey"] == "events" and row["rowKind"] != "sectionHeader"
+    ]
+
+
+def test_children_are_indented_directly_under_their_parent(qapp):
+    """Spec «Подсобытие отступом под родителем» + «Дети идут сразу за
+    родителем»: two parents in slice order, the second's child lands under
+    it — indented, not in the common chronological row; always expanded
+    (the snapshot never asks to open a section)."""
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [
+            _event(1, "Первый поход"),
+            _event(2, "Вторая война"),
+            _event(3, "Осада", parent_id=2),
+        ],
+        date(1200, 1, 15),
+    )
+    vm.toggleSection("events")
+
+    event_rows = _event_rows(vm)
+    assert [row["name"] for row in event_rows] == [
+        "Первый поход",
+        "Вторая война",
+        "Осада",
+    ]
+    assert event_rows[2]["displayText"].startswith(INDENT)
+    assert not event_rows[0]["displayText"].startswith(INDENT)
+    assert not event_rows[1]["displayText"].startswith(INDENT)
+    # The indent is display-only: identity and click data are untouched.
+    assert event_rows[2]["id"] == 3 and event_rows[2]["rowKind"] == "entityRow"
+
+
+def test_orphaned_child_gets_a_parent_stub_above_it(qapp):
+    """Spec «Осиротевшее в срезе подсобытие получает заглушку»: the parent is
+    out of the slice, so its NAME heads the orphan as a stub — and the stats
+    count every real event while the stub contributes nothing."""
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [
+            _event(1, "Родитель с детьми"),
+            _event(2, "Первый сын", parent_id=1),
+            _event(3, "Второй сын", parent_id=1),
+            _event(4, "Сирота", parent_id=9),
+        ],
+        date(1200, 1, 15),
+        {9: "Ушедший отец"},
+    )
+    vm.toggleSection("events")
+
+    event_rows = _event_rows(vm)
+    assert [(row["rowKind"], row["name"]) for row in event_rows] == [
+        ("entityRow", "Родитель с детьми"),
+        ("entityRow", "Первый сын"),
+        ("entityRow", "Второй сын"),
+        ("stubRow", "Ушедший отец"),
+        ("entityRow", "Сирота"),
+    ]
+    stub = event_rows[3]
+    # Name only: no dates in the stub caption, and it is no click target.
+    assert stub["displayText"] == "Ушедший отец"
+    assert stub["selectable"] is False
+    orphans = [row for row in event_rows if row["displayText"].startswith(INDENT)]
+    assert [row["name"] for row in orphans] == ["Первый сын", "Второй сын", "Сирота"]
+    # «Подсобытия в счётчике, заглушки — нет»: four real events, one stub.
+    assert "Событий: 4" in vm.statsText
+    header = next(row for row in _rows(vm) if row["rowKind"] == "sectionHeader")
+    # The label is the registry caption with the icon prefix; the count is
+    # the four real events — the stub row is not counted.
+    assert header["displayText"].endswith("события (4)")
+
+
+def test_an_unnamed_orphan_stays_a_plain_row(qapp):
+    """An orphan whose parent the id → имя card cannot name gets no
+    half-empty stub — the row simply reads as it did before the tree."""
+    vm = WorldSnapshotViewModel()
+    vm.populate([_event(4, "Сирота", parent_id=9)], date(1200, 1, 15), {7: "Чужой"})
+    vm.toggleSection("events")
+
+    event_rows = _event_rows(vm)
+    assert [row["rowKind"] for row in event_rows] == ["entityRow"]
+    assert "Событий: 1" in vm.statsText
+
+
+def test_child_in_the_slice_without_a_card_never_becomes_a_stub(qapp):
+    """The link resolves inside the slice: the child rides under its parent
+    even when no card came in at all (nothing to name, nothing to stub)."""
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [_event(1, "Родитель"), _event(2, "Дитя", parent_id=1)],
+        date(1200, 1, 15),
+    )
+    vm.toggleSection("events")
+    event_rows = _event_rows(vm)
+    assert [row["rowKind"] for row in event_rows] == ["entityRow", "entityRow"]
+    assert event_rows[1]["displayText"].startswith(INDENT)
+
+
+def test_a_tree_free_slice_is_the_old_flat_print(qapp):
+    """The task's word-for-word pin (empty parents, empty time): with no
+    links in the slice the events section is bit-for-bit the pre-NRI-0023
+    flat list — same captions, same order, no indent anywhere."""
+    vm = WorldSnapshotViewModel()
+    events = [_event(1, "Первое"), _event(2, "Второе")]
+    vm.populate(events, date(1200, 1, 15))
+    vm.toggleSection("events")
+    flat = _event_rows(vm)
+
+    def _plain(rows):
+        # QIcon instances carry identity, not equality — the print comparison
+        # reads the render slots that matter and drops the icon object.
+        return [{k: v for k, v in row.items() if k != "icon"} for row in rows]
+
+    reference = WorldSnapshotViewModel()
+    # The same slice through the same code path with an explicit empty card:
+    # the indent/stub machinery contributes nothing.
+    reference.populate(events, date(1200, 1, 15), {})
+    reference.toggleSection("events")
+    assert _plain(_rows(reference)) == _plain(_rows(vm))
+    assert all(not row["displayText"].startswith(INDENT) for row in flat)
+    assert flat[0]["displayText"] == "01 Январь 1200 — 01 Февраль 1200  |  Первое"
+
+
+def test_snapshot_row_prints_the_chosen_time(qapp):
+    """Spec world-snapshot «Время в дате строки снимка»: 14:30 rides the
+    start as «, 14:30», the end stays a plain day."""
+    from app.domain.time_of_day import TimeOfDay
+
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [_event(1, "Совет", start_time=TimeOfDay(14, 30))], date(1200, 1, 15)
+    )
+    vm.toggleSection("events")
+    event_row = _event_rows(vm)[0]
+    assert event_row["displayText"] == (
+        "01 Январь 1200, 14:30 — 01 Февраль 1200  |  Совет"
+    )

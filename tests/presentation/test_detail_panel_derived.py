@@ -229,6 +229,32 @@ class TestLiveRecompute:
             model.index(0, 0), type(model).SummaryRole
         )
 
+    def test_hour_only_edit_leaves_age_and_duration_as_they_were(self):
+        """NRI-0023 task 9.1 (spec «Час меняет только подпись»): the same
+        day with the «now» hour set keeps the duration suffix («сегодня»)
+        and the entity «Возраст» summary word for word — both are computed
+        from the coordinate alone, and an hour-only edit does not even move
+        the ``nowChanged`` broadcast that would re-render them."""
+        now_vm = NowDateViewModel(MonthDay(2090, 5, 1))
+        vm = DetailPanelViewModel(now_vm=now_vm)
+        vm.show_event(
+            _event(
+                start_date=date(2090, 5, 1),  # starts «сегодня»
+                characters=[_entity(start=date(2088, 5, 1))],
+            )
+        )
+        date_text = vm.dateText
+        model = vm.characters
+        summary_role = type(model).SummaryRole
+        summary = model.data(model.index(0, 0), summary_role)
+        assert date_text.endswith("· сегодня")
+        assert "<b>Возраст:</b> 2 года" in summary
+
+        now_vm.applyNow(MonthDay(2090, 5, 1), False, 20)  # только час
+
+        assert vm.dateText == date_text
+        assert model.data(model.index(0, 0), summary_role) == summary
+
     def test_now_edit_after_clear_is_a_noop(self):
         now_vm = NowDateViewModel(MonthDay(2090, 5, 1))
         vm = DetailPanelViewModel(now_vm=now_vm)

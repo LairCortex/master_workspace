@@ -18,6 +18,7 @@ from app.domain.game_calendar import (
     as_game_coord,
     current_calendar,
 )
+from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.calendar_storage import (
     CoordDecoded,
     decode_coord,
@@ -365,6 +366,44 @@ class EventModel(CoordDateSlots, Base):
     event_type_id: Mapped[int | None] = mapped_column(
         ForeignKey("event_types.id", ondelete="SET NULL"), nullable=True, default=None,
     )
+    # Sub-event link (NRI-0023, design Д1): NULL marks a main event, otherwise
+    # it points at the parent event.  Exactly two levels — a child may never
+    # itself become a parent — is a save-time rule of the event service, not
+    # of the schema; CASCADE only keeps the link from dangling even under a
+    # manual DB edit (the product has no deletions).
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), nullable=True, default=None,
+    )
+    # Event start time (NRI-0023, design Д2): one nullable INTEGER of minutes
+    # from the start of the game day — the public ``start_time`` property
+    # below maps it to the domain ``TimeOfDay`` the same storage law
+    # CoordDateSlots realizes for the dates (attribute = «_raw» column, the
+    # public name carries the domain value; NULL ⟷ None means «без времени»).
+    start_time_raw: Mapped[int | None] = mapped_column(
+        "start_time", Integer, nullable=True, default=None,
+    )
+
+    @property
+    def start_time(self) -> TimeOfDay | None:
+        """Start time as the domain ``TimeOfDay`` (NRI-0023, design Д2), or
+        ``None`` for «весь день, с утра» — never a fabricated 00:00.  The
+        stored minutes count in the *active calendar's* hour (Д4), so one and
+        the same number reads as another time in a world whose hour is longer
+        or shorter — the spec's calendar-swap reinterpretation, no migration.
+        Sorting queries use the mapped ``start_time_raw`` column directly."""
+        if self.start_time_raw is None:
+            return None
+        return TimeOfDay.from_minutes(
+            self.start_time_raw, current_calendar().minutes_per_hour
+        )
+
+    @start_time.setter
+    def start_time(self, value: TimeOfDay | None) -> None:
+        self.start_time_raw = (
+            None
+            if value is None
+            else value.to_minutes(current_calendar().minutes_per_hour)
+        )
 
     description: Mapped[DescriptionModel | None] = relationship(lazy="selectin")
     event_type: Mapped[EventTypeModel | None] = relationship(lazy="selectin")

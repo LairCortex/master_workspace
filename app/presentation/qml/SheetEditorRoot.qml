@@ -473,7 +473,14 @@ Rectangle {
                             text: "Привязка к сетке"
                             enabled: root.vmReady
                             checked: root.vmReady && root.vm.snapOn
-                            onToggled: root.vm.set_snap_enabled(checked)
+                            // Д15 (NRI-0023 task 13.1, live audit 2026-09-29
+                            // OBS-2): accessibility activation writes
+                            // ``checked`` without a user gesture, so the old
+                            // onToggled wiring moved the tick but never reached
+                            // the VM. The tick is the VM's state (binding);
+                            // every activation is a toggle request read from
+                            // the source of truth, like EntityCardRoot D1.
+                            onClicked: root.vm.set_snap_enabled(!root.vm.snapOn)
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -654,7 +661,17 @@ Rectangle {
                                         objectName: "minCheck"
                                         text: "min"
                                         checked: root.hasMin
-                                        onToggled: root.applyBounds()
+                                        // Д15 (NRI-0023 task 13.1, live audit
+                                        // 2026-09-29 OBS-2): the AT press of a
+                                        // stock CheckBox announces the click
+                                        // WITHOUT writing ``checked`` (its
+                                        // Toggle writes the tick but never
+                                        // announces), so the next bound state
+                                        // is read from the source of truth —
+                                        // the panelProps mirror the tick only
+                                        // reflects. Mouse clicks land here too.
+                                        onClicked: root.applyBounds(!root.hasMin,
+                                                                    root.hasMax)
                                     }
                                     ThemeField {
                                         id: minField
@@ -665,7 +682,8 @@ Rectangle {
                                         // checkbox text only — the field needs
                                         // the spelled-out name.
                                         Accessible.name: "Минимум"
-                                        onEditingFinished: root.applyBounds()
+                                        onEditingFinished: root.applyBounds(
+                                            minCheck.checked, maxCheck.checked)
                                     }
                                 }
                                 RowLayout {
@@ -676,7 +694,9 @@ Rectangle {
                                         objectName: "maxCheck"
                                         text: "max"
                                         checked: root.hasMax
-                                        onToggled: root.applyBounds()
+                                        // Д15: same truth-read convention as minCheck
+                                        onClicked: root.applyBounds(root.hasMin,
+                                                                    !root.hasMax)
                                     }
                                     ThemeField {
                                         id: maxField
@@ -684,7 +704,8 @@ Rectangle {
                                         Layout.fillWidth: true
                                         enabled: maxCheck.checked
                                         Accessible.name: "Максимум"
-                                        onEditingFinished: root.applyBounds()
+                                        onEditingFinished: root.applyBounds(
+                                            minCheck.checked, maxCheck.checked)
                                     }
                                 }
 
@@ -695,7 +716,13 @@ Rectangle {
                                     text: "Включение по умолчанию"
                                     checked: root.panelRow ? root.panelRow.content === "true"
                                                            : false
-                                    onToggled: root.vm.toggle_checkbox(root.panelFid)
+                                    // Д15 (NRI-0023 task 13.1): the tick is the
+                                    // stored state (binding), every activation
+                                    // is one toggle REQUEST — the VM flips from
+                                    // its own truth, so an accessibility press
+                                    // reaches it (the old onToggled wiring did
+                                    // not, live audit 2026-09-29 OBS-2).
+                                    onClicked: root.vm.toggle_checkbox(root.panelFid)
                                 }
 
                                 // ── dropdown branch ─────────────────────────
@@ -1000,11 +1027,17 @@ Rectangle {
         value: root.rowType === "number" && root.panelRow ? root.panelRow.content : ""
     }
 
-    function applyBounds() {
+    // Д15 (NRI-0023 task 13.1): the bound-state flags arrive as arguments —
+    // a checkbox click passes the toggled truth (hasMin/hasMax), a draft edit
+    // passes what the ticks currently show. Reading ``checked`` here would
+    // lie to the AT path (its press announces the click without writing the
+    // tick) and read stale values even from the mouse once the tick is only
+    // the VM's reflection.
+    function applyBounds(minOn, maxOn) {
         if (!panelSelected)
             return
-        var newMin = minCheck.checked ? Number(minField.text) : null
-        var newMax = maxCheck.checked ? Number(maxField.text) : null
+        var newMin = minOn ? Number(minField.text) : null
+        var newMax = maxOn ? Number(maxField.text) : null
         if (vm.set_min_value(panelFid, newMin)) {
             if (vm.set_max_value(panelFid, newMax))
                 refreshProps()

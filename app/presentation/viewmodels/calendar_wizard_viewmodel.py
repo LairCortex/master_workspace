@@ -2,7 +2,8 @@
 
 A frozen :class:`CalendarWizardState` snapshots everything the modal dialog
 (group 6) has to show: the current step, the partial custom-form (week names,
-months, intercalary rules), the ``can_advance``/``can_apply`` button gates, the
+months, intercalary rules, day size), the ``can_advance``/``can_apply`` button
+gates, the
 :class:`~app.domain.game_calendar.SpecProblem` list of the current step with
 its Russian phrases (rendered through :mod:`app.presentation.utils.calendar_warnings`,
 the domain never localizes), the pending shift report and its human-readable
@@ -58,6 +59,7 @@ from app.domain.game_calendar import (
 )
 from app.infrastructure.calendar_storage import (
     CalendarDraft,
+    DRAFT_STAGE_DAY,
     DRAFT_STAGE_INTERCALARY,
     DRAFT_STAGE_MONTHS,
     DRAFT_STAGE_PREVIEW,
@@ -79,12 +81,19 @@ STEP_CHOICE = "choice"
 STEP_WEEK = DRAFT_STAGE_WEEK
 STEP_MONTHS = DRAFT_STAGE_MONTHS
 STEP_INTERCALARY = DRAFT_STAGE_INTERCALARY
+STEP_DAY = DRAFT_STAGE_DAY
 STEP_PREVIEW = DRAFT_STAGE_PREVIEW
 STEP_REPORT = "report"
 
 #: The custom flow in «Далее» order; leaving a stage stores the following one
 #: as the draft stage (design D6: the stage is the first NOT YET closed screen).
-_CUSTOM_FLOW: tuple[str, ...] = (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_PREVIEW)
+_CUSTOM_FLOW: tuple[str, ...] = (
+    STEP_WEEK,
+    STEP_MONTHS,
+    STEP_INTERCALARY,
+    STEP_DAY,
+    STEP_PREVIEW,
+)
 
 # ── defaults standing in for the unclosed stages (design D6) ────────────────
 
@@ -105,6 +114,12 @@ _DEFAULT_MONTHS: tuple[MonthSpec, ...] = tuple(
 
 #: The partial-spec default for a first custom week (piece C3b, design D2).
 _DEFAULT_WEEK_NAMES: tuple[str, ...] = tuple(STANDARD_WEEK_NAMES)
+
+#: The partial-spec default for the «Сутки» screen (NRI-0023 task 4.1, spec
+#: «Экран „Сутки“»): the earthly 24/60 preselect, mirroring the ``CalendarSpec``
+#: field defaults — the same restatement the storage fallback deliberately does.
+_DEFAULT_DAY_HOURS = 24
+_DEFAULT_MINUTES_PER_HOUR = 60
 
 # ── report caption vocabulary (presentation, design D10) ────────────────────
 
@@ -149,6 +164,8 @@ class CalendarWizardState:
     week_names: tuple[str, ...]
     months: tuple[MonthSpec, ...]
     intercalary: tuple[IntercalarySpec, ...]
+    day_hours: int
+    minutes_per_hour: int
     can_advance: bool
     can_apply: bool
     can_go_back: bool
@@ -231,6 +248,10 @@ class CalendarWizardViewModel(QObject):
         self._week_names: tuple[str, ...] = _DEFAULT_WEEK_NAMES
         self._months: tuple[MonthSpec, ...] = _DEFAULT_MONTHS
         self._intercalary: tuple[IntercalarySpec, ...] = ()
+        # The «Сутки» screen preselects the earthly 24/60 (or the draft's own
+        # values once one is continued — spec «Экран „Сутки“»).
+        self._day_hours: int = _DEFAULT_DAY_HOURS
+        self._minutes_per_hour: int = _DEFAULT_MINUTES_PER_HOUR
 
         # Report state (only non-default on the «Отчёт» screen).
         self._report: ShiftReport | None = None
@@ -252,18 +273,20 @@ class CalendarWizardViewModel(QObject):
         «Далее» gate and the problem phrases can never lag behind an edit.
         """
         problems = tuple(validate(self._spec()))
-        in_build_step = self._step in (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY)
+        in_build_step = self._step in (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY, STEP_DAY)
         return CalendarWizardState(
             step=self._step,
             kind=self._kind,
             week_names=self._week_names,
             months=self._months,
             intercalary=self._intercalary,
+            day_hours=self._day_hours,
+            minutes_per_hour=self._minutes_per_hour,
             can_advance=(self._step == STEP_CHOICE and self._kind == KIND_CUSTOM)
             or (in_build_step and not problems),
             # «Применить» is available on the choice screen for the preset and on
             # the preview — that form is already a built calendar there (only a
-            # validated intercalary screen can open it); a programmatic misuse
+            # validated «Сутки» screen can open it); a programmatic misuse
             # of a corrupted form is refused by :meth:`apply`'s own guard.
             can_apply=(self._step == STEP_CHOICE and self._kind == KIND_STANDARD)
             or self._step == STEP_PREVIEW,
@@ -290,6 +313,11 @@ class CalendarWizardViewModel(QObject):
             self._week_names = tuple(draft.spec.week_names)
             self._months = tuple(draft.spec.months)
             self._intercalary = tuple(draft.spec.intercalary)
+            # The day size rides in the draft's spec (NRI-0023 task 2.2): a
+            # continued flow reopens «Сутки» on the stored values, a pre-NRI-0023
+            # v1 draft lands on the codec's silent 24/60.
+            self._day_hours = draft.spec.day_hours
+            self._minutes_per_hour = draft.spec.minutes_per_hour
             self._step = draft.stage
             self._recompute_preview()
         self.state_changed.emit()
@@ -383,6 +411,18 @@ class CalendarWizardViewModel(QObject):
         self._intercalary = tuple(rules)
         self._changed()
 
+    def set_day_hours(self, hours: int) -> None:
+        """Edit «часов в сутках» (NRI-0023 task 4.1); the domain keeps only
+        the ≥ 1 floor, so a 0 typed into the spin stays in the form and makes
+        the stage invalid — «Далее» goes dark with the Russian reason."""
+        self._day_hours = hours
+        self._changed()
+
+    def set_minutes_per_hour(self, minutes: int) -> None:
+        """Edit «минут в часе» — the same floor-only rule as the hours."""
+        self._minutes_per_hour = minutes
+        self._changed()
+
     # ── flow intents ────────────────────────────────────────────────────────
 
     async def try_advance(self) -> None:
@@ -465,6 +505,8 @@ class CalendarWizardViewModel(QObject):
             months=self._months,
             week_names=self._week_names,
             intercalary=self._intercalary,
+            day_hours=self._day_hours,
+            minutes_per_hour=self._minutes_per_hour,
         )
 
     def _target_calendar(self) -> GameCalendar | None:

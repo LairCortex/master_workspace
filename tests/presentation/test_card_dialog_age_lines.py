@@ -32,7 +32,7 @@ from app.domain.game_calendar import (
 from app.presentation.viewmodels.now_date_view_model import NowDateViewModel
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
-from tests.presentation.qml_helpers import find_item
+from tests.presentation.qml_helpers import find_item, track
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +126,26 @@ class TestCardAgeVm:
         with qtbot.waitSignal(dialog.vm.ageTextChanged):
             dialog.vm.applyNow(MonthDay(2091, 5, 1), False)
         assert dialog.vm.ageText == "Возраст: 3 года"
+
+    def test_hour_only_edit_never_touches_the_age_line(self, qtbot):
+        """NRI-0023 task 9.1 (spec «Час меняет только подпись»): setting the
+        «now» hour on the day the age was counted to keeps the line word for
+        word — the age reads the coordinate, and an hour-only edit never
+        fires the ``nowChanged`` broadcast the card subscribes to, so the
+        line is not even re-rendered."""
+        now_vm = _now_vm(MonthDay(2091, 5, 1))
+        dialog = EntityCardDialog(None, "character", now_vm=now_vm)
+        qtbot.addWidget(dialog)
+        dialog.vm.set_dates(start=date(2088, 5, 1), end=date(2092, 5, 1))
+        assert dialog.vm.ageText == "Возраст: 3 года"
+
+        age_changes = track(dialog.vm.ageTextChanged)
+        now_changes = track(now_vm.nowChanged)
+        now_vm.applyNow(MonthDay(2091, 5, 1), False, 20)  # тот же день, час
+
+        assert dialog.vm.ageText == "Возраст: 3 года"
+        assert age_changes == []
+        assert now_changes == []
 
 
 class TestCardIslandRow:

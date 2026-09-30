@@ -15,9 +15,11 @@ single presentation-side translation into it.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping, Sequence
+
+from app.domain.time_of_day import TimeOfDay
 
 #: The four M2M attribute names of an event, in the registry's EVENT order.
 #: Part of the contract: the dialog fills exactly these, the wiring forwards
@@ -39,7 +41,18 @@ def relation_items(refs: Sequence[RelatedRef]) -> list[dict[str, int]]:
 
 @dataclass(frozen=True)
 class EventDialogResult:
-    """The common payload of both event-dialog flows (create and edit)."""
+    """The common payload of both event-dialog flows (create and edit).
+
+    ``parent_id`` (NRI-0023 tasks 6.1/7.1) is the sub-event link the dialog
+    carries: the «Создать подсобытие» flow prefills it, the card's «Родительское
+    событие» combo edits it (populate loads the stored link, «—» lifts the
+    event to main), and both connector branches feed it to the service guard.
+    ``start_time`` (NRI-0023 task 7.2, spec «Необязательное время начала
+    события») is the card's «Час»/«Минута» pair as the domain value or None —
+    an empty selection is never a fabricated 00:00.
+    Keyword-only with defaults: the required positional contract of every
+    existing result construction stays bit-for-bit unchanged.
+    """
 
     name: str
     start_date: date
@@ -53,6 +66,8 @@ class EventDialogResult:
     characters: tuple[RelatedRef, ...]
     items: tuple[RelatedRef, ...]
     locations: tuple[RelatedRef, ...]
+    parent_id: int | None = field(default=None, kw_only=True)
+    start_time: TimeOfDay | None = field(default=None, kw_only=True)
 
     def as_relations_payload(self) -> dict[str, list[dict[str, int]]]:
         """The four desired lists in the service's wire format."""

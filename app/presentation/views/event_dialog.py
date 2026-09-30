@@ -29,7 +29,7 @@ from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH
 from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.theme import get_default_theme
-from app.presentation.utils.date_utils import era_flag, split_date_era
+from app.presentation.utils.date_utils import era_flag, event_start_time, split_date_era
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     EventDialogIslandViewModel,
     RelatedSectionState,
@@ -355,6 +355,29 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         if root is not None and shiboken6.isValid(root):
             root.setProperty("sheetScrimAlpha", alpha)
 
+    def prefill_parent(self, parent: Any) -> None:
+        """Open the create dialog as a sub-event of ``parent`` (NRI-0023
+        task 6.1, spec «Создание подсобытия правым кликом»): the parent id
+        rides the save contract through ``vm.parent_id``, the start date is
+        the parent's one (its era included). The start TIME stays empty —
+        the «Час»/«Минута» combos (task 7.2) keep their штатный «—» default,
+        the spec pins the prefilled time as empty. The end date keeps the
+        flow's own default, exactly as in a plain create."""
+        self.vm.parent_id = getattr(parent, "id", None)
+        start = getattr(parent, "start_date", None)
+        if start is not None:
+            self.vm.set_dates(
+                start=start, start_bc=era_flag(getattr(parent, "start_bc", False))
+            )
+
+    def set_parent_options(self, events: list[Any]) -> None:
+        """Fill the «Родительское событие» combo's candidate pool (task 7.1):
+        the connector's event list goes to the ViewModel as-is; the VM keeps
+        main events only, and the edited event is excluded through the id this
+        facade already holds — which is why the connector loads it AFTER
+        populate() in the edit flow."""
+        self.vm.set_parent_options(list(events), exclude_id=self._event_id)
+
     def populate(self, event: Any) -> None:
         self._event_id = getattr(event, "id", None)
         self.setWindowTitle("Редактировать событие")
@@ -362,6 +385,12 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         event_type = getattr(event, "event_type", None)
         self._pending_type_id = getattr(event_type, "id", None)
         self.vm.set_event_types(self.vm._types, self._pending_type_id)
+        # NRI-0023 tasks 7.1/7.2: the parent link and the wall-clock start
+        # ride the very slots the card's combos edit, so a save that never
+        # touches them re-writes what was loaded (and an out-of-bounds hour
+        # from a narrowed calendar reads empty — the VM's sanitisation).
+        self.vm.parent_id = getattr(event, "parent_id", None)
+        self.vm.set_start_time(event_start_time(event))
         start = getattr(event, "start_date", None)
         end = getattr(event, "end_date", None)
         if start is not None:
@@ -428,6 +457,11 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             "start_bc": self.vm._start_bc,
             "end_bc": self.vm._end_bc,
             "event_type_id": self.vm.selected_type_id,
+            # NRI-0023 task 6.1/7.1: the sub-event link (prefill on the
+            # «Создать подсобытие» flow, the combo's value once edited);
+            # task 7.2: the optional wall-clock start, None = без времени.
+            "parent_id": self.vm.parent_id,
+            "start_time": self.vm.start_time,
             **relations,
         }
         if self._event_id is not None:

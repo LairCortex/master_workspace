@@ -16,6 +16,8 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
 
 import app.application.services.current_date_service as current_date_module
@@ -139,7 +141,7 @@ class TestNowDateWidgetFlow:
                 SimpleNamespace(critical=lambda *args: reported.append(args)),
             )
 
-            async def boom(coord, is_bc=False):
+            async def boom(coord, is_bc=False, hour=None):
                 raise RuntimeError("диск сгорел")
 
             monkeypatch.setattr(service, "set_now", boom)
@@ -164,6 +166,186 @@ class TestNowDateWidgetFlow:
             window.close()
             await application.shutdown()
 
+    async def test_hour_choice_writes_saves_and_moves_the_caption_only(
+        self, qapp, tmp_path
+    ):
+        """NRI-0023 task 9.1 full round trip (spec «Час меняет только
+        подпись», «Час помнится после перезапуска»): combo activation → the
+        VM's request channel → one service transaction (the day half rides
+        along untouched) → the applied-value mirror repaints the caption and
+        the island combo — while the ``nowChanged`` broadcast every derived
+        surface (возраст/длительности/обводка/прокрутка) subscribes to never
+        fires for the hour."""
+        application = Application(qapp)
+        window = await application.start(_game_db(tmp_path, "NowHour"))
+        try:
+            wiring = application._wiring
+            vm = wiring.now_date_vm
+            service = application._current_date_service
+            now_changed = track(vm.nowChanged)
+            combo = find_item(window.search_bar.quick, "nowHourCombo")
+            chip = find_item(window.search_bar.quick, "nowDateField")
+
+            # 21-я строка списка — час 20; запись идёт через set_now.
+            vm.requestHour(21)
+            edited = CurrentDateValue(
+                MonthDay(FROZEN_TODAY.year, FROZEN_TODAY.month, FROZEN_TODAY.day),
+                False,
+                20,
+            )
+            assert await _drain(lambda: service.value == edited)
+            assert service.revision == 1
+            assert await _drain(lambda: vm.caption.endswith(", 20:00"))
+            assert vm.hour == 20
+            assert chip.property("display") == vm.caption
+            assert combo.property("currentIndex") == 21
+            # производные не дёргались: канал nowChanged для часа молчит
+            assert now_changed == []
+
+            # «—» снимает час: подпись и сохранённое значение возвращаются
+            # к виду «без часа» (тот же канал, та же транзакция).
+            vm.requestHour(0)
+            assert await _drain(lambda: service.value.hour is None)
+            assert service.revision == 2
+            assert vm.caption == "Сейчас: 14 Март 2027"
+            assert combo.property("currentIndex") == 0
+            assert now_changed == []
+        finally:
+            window.close()
+            await application.shutdown()
+
+    async def test_date_edit_keeps_the_set_hour(self, qapp, tmp_path):
+        """The popup answers with the date half only; the served hour is the
+        other half of the same value and rides the write untouched — the
+        value that comes back is (новая дата, преждний час)."""
+        application = Application(qapp)
+        window = await application.start(_game_db(tmp_path, "NowKeepHour"))
+        try:
+            wiring = application._wiring
+            vm = wiring.now_date_vm
+            service = application._current_date_service
+            now_changed = track(vm.nowChanged)
+
+            vm.requestHour(21)  # час 20
+            assert await _drain(lambda: service.value.hour == 20)
+
+            vm.requestDatePopup(0.0, 0.0, 10.0, 10.0)
+            popup = wiring._now_date_popup
+            popup.calendar.day_selected.emit(MonthDay(44, 11, 3))
+
+            edited = CurrentDateValue(MonthDay(44, 11, 3), False, 20)
+            assert await _drain(lambda: service.value == edited)
+            assert service.revision == 2
+            # смена ДНЯ — это редактирование и для производных: канал сработал
+            assert await _drain(lambda: now_changed != [])
+            assert vm.caption == "Сейчас: 03 Ноябрь 44, 20:00"
+        finally:
+            window.close()
+            await application.shutdown()
+
+    async def test_hour_popup_bridges_over_the_low_host_and_picks_hours_and_dash(
+        self, qapp, tmp_path
+    ):
+        """Task 12.6 (A1 host half, spec «Все значения часов достижимы»): the
+        list opens as its own top level, taller than the fixed-height search
+        island that clips it (the live defect offscreen-invisible in the old
+        posture) — the wheel/click route to hour 23 lands exactly there, and
+        reopening with the current row highlighted answers «—» on its click."""
+        application = Application(qapp)
+        window = await application.start(_game_db(tmp_path, "NowHourBridge"))
+        try:
+            wiring = application._wiring
+            vm = wiring.now_date_vm
+            service = application._current_date_service
+            now_changed = track(vm.nowChanged)
+
+            vm.requestHourPopup(263.0, 78.0, 70.0, 24.0)  # the live anchor rect
+            popup = wiring._now_hour_popup
+            assert popup is not None and popup.isVisible()
+            assert popup.parent() is None  # widgets bridge, never inside the host
+            # The A1 pin in the real composition: the window outgrows the
+            # island widget that previously cut the QML popup to ~2.3 rows.
+            assert popup.height() > window.search_bar.height()
+            assert [
+                popup.list.item(i).text() for i in range(popup.list.count())
+            ] == list(vm.hourOptions)  # «—» + 0…23, the VM's active-day list
+            assert popup.list.currentRow() == 0
+
+            # «колесо до конца, выбрать 23» — the deepest row, real mouse
+            # click on its viewport rect after scrolling it into view.
+            item = popup.list.item(popup.list.count() - 1)
+            popup.list.setCurrentRow(popup.list.count() - 1)
+            QTest.qWait(20)
+            QTest.mouseClick(
+                popup.list.viewport(), Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                popup.list.visualItemRect(item).center(),
+            )
+            edited = CurrentDateValue(
+                MonthDay(FROZEN_TODAY.year, FROZEN_TODAY.month, FROZEN_TODAY.day),
+                False,
+                23,
+            )
+            assert await _drain(lambda: service.value == edited)
+            assert service.revision == 1
+            assert await _drain(lambda: vm.caption.endswith(", 23:00"))
+            assert now_changed == []  # час — только подпись (spec)
+
+            # Reopen: the current hour is the highlighted row; «—» returns.
+            vm.requestHourPopup(263.0, 78.0, 90.0, 24.0)
+            assert popup.list.currentRow() == 24
+            popup.list.setCurrentRow(0)  # the «—» head, scrolled back in view
+            QTest.qWait(20)
+            QTest.mouseClick(
+                popup.list.viewport(), Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                popup.list.visualItemRect(popup.list.item(0)).center(),
+            )
+            assert await _drain(lambda: service.value.hour is None)
+            assert service.revision == 2
+            assert await _drain(lambda: vm.caption == "Сейчас: 14 Март 2027")
+            assert now_changed == []
+        finally:
+            window.close()
+            await application.shutdown()
+
+    async def test_failed_hour_write_reports_and_leaves_the_caption_alone(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        """Same modal posture as the date half: a failed hour transaction
+        never moves the served value, the mirror or the caption."""
+        application = Application(qapp)
+        window = await application.start(_game_db(tmp_path, "NowHourFail"))
+        try:
+            wiring = application._wiring
+            vm = wiring.now_date_vm
+            service = application._current_date_service
+
+            reported = []
+            monkeypatch.setattr(
+                wiring_module,
+                "QMessageBox",
+                SimpleNamespace(critical=lambda *args: reported.append(args)),
+            )
+
+            async def boom(coord, is_bc=False, hour=None):
+                raise RuntimeError("диск сгорел")
+
+            monkeypatch.setattr(service, "set_now", boom)
+            now_changed = track(vm.nowChanged)
+
+            vm.requestHour(21)
+
+            assert await _drain(lambda: reported != [])
+            assert "диск сгорел" in reported[0][2]
+            assert service.value.hour is None
+            assert service.revision == 0
+            assert vm.caption == "Сейчас: 14 Март 2027"
+            assert now_changed == []
+        finally:
+            window.close()
+            await application.shutdown()
+
 
 def test_connector_without_the_now_pair_has_no_widget_area():
     """A unit-built connector (no service, no VM) simply has no widget
@@ -177,4 +359,5 @@ def test_connector_without_the_now_pair_has_no_widget_area():
     wiring._connect_now_date()
 
     assert wiring._now_date_popup is None
+    assert wiring._now_hour_popup is None
     assert wiring.now_date_vm is None

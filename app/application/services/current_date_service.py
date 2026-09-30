@@ -55,7 +55,10 @@ class CurrentDateService:
 
         ``today`` is injectable so tests freeze "the real today" (spec «Новая
         игра стартует сегодняшним днём»); production passes nothing and the
-        system date is read here, at game open — never stored anywhere.
+        system date is read here, at game open — never stored anywhere.  The
+        seeded value carries no hour (spec «без часа»): «час не выставлен» is
+        the state of every untouched game, and the read wrapper has already
+        dropped a stored hour a narrowed day no longer hosts (design Д5).
         """
         stored = await CurrentDateRepository(self._uow.session).load()
         if stored is None:
@@ -65,13 +68,17 @@ class CurrentDateService:
         self._value = stored
         return stored
 
-    async def set_now(self, coord: GameCoord, is_bc: bool = False) -> None:
+    async def set_now(
+        self, coord: GameCoord, is_bc: bool = False, hour: int | None = None
+    ) -> None:
         """Persist the master's edit: one transaction, one upsert (Д1/Д2).
 
-        Any error rolls the write back and re-raises with the served value
-        untouched — the counter and the in-memory «now» only follow a
-        committed transaction."""
+        ``hour`` is the NRI-0023 optional «сейчас» hour (design Д5); ``None``
+        — the default — writes the pre-0023 value without the ``h`` key, so a
+        date-only edit stays byte-identical.  Any error rolls the write back
+        and re-raises with the served value untouched — the counter and the
+        in-memory «now» only follow a committed transaction."""
         async with self._uow.transaction():
-            await CurrentDateRepository(self._uow.session).save(coord, is_bc)
-        self._value = CurrentDateValue(coord=coord, is_bc=is_bc)
+            await CurrentDateRepository(self._uow.session).save(coord, is_bc, hour)
+        self._value = CurrentDateValue(coord=coord, is_bc=is_bc, hour=hour)
         self._revision += 1

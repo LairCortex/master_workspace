@@ -12,7 +12,10 @@ from datetime import date
 import datetime
 
 
+from PySide6.QtCore import Qt
+
 from app.infrastructure.llm.config import LlmConfig
+from app.domain.game_calendar import as_game_coord
 from app.infrastructure.llm.errors import LlmHttpError
 from app.application.services.event_service import EventService
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
@@ -270,6 +273,77 @@ async def test_search_result_resets_an_excluding_window(app, wait_for):
     assert vm.selected_event is not None and vm.selected_event.name == "Ранний"
 
 
+async def test_search_click_on_a_collapsed_subevent_expands_then_highlights(
+    app, wait_for
+):
+    """NRI-0023 task 8.2 (spec event-subevents «Переход к свёрнутому
+    подсобытию раскрывает цепочку»): the search result route reveals the
+    parent BEFORE the highlight lands — the clicked child's row appears under
+    its parent and carries the selection, all through the real
+    result_selected channel."""
+    application, window = app
+    db_path = application._db_path
+    await helpers.create_event_via_ui(
+        window, wait_for, "Поход",
+        start_date=date(1200, 7, 1), end_date=date(1200, 7, 2),
+    )
+    await helpers.create_event_via_ui(
+        window, wait_for, "Разведка",
+        start_date=date(1200, 7, 1), end_date=date(1200, 7, 1),
+    )
+    await helpers.wait_until_settled()
+    parent_id = query_db(db_path, "SELECT id FROM events WHERE name = 'Поход'")[0][0]
+    child_id = query_db(db_path, "SELECT id FROM events WHERE name = 'Разведка'")[0][0]
+    canvas = timeline_probe.tape(window)
+    vm = timeline_probe.vm(window)
+
+    # Link «Разведка» under «Поход» through the card (task 7.1's own channel).
+    window.timeline_widget.event_double_clicked.emit(child_id)
+    await wait_for(lambda: any(
+        d.isVisible() and d.event_id == child_id
+        for d in window.findChildren(EventDialog)
+    ))
+    dialog = next(
+        d for d in window.findChildren(EventDialog)
+        if d.isVisible() and d.event_id == child_id
+    )
+    dialog.vm.selectParent(1)
+    dialog.save_button.click()
+    await wait_for(lambda: query_db(
+        db_path, "SELECT parent_id FROM events WHERE id = ?", (child_id,)
+    ) == [(parent_id,)])
+    await helpers.wait_until_settled()
+
+    # The precondition: the tree is collapsed by default, so the child has
+    # no row at all while its parent does.
+    assert vm.expanded_parent_ids == frozenset()
+    assert canvas.index_for_event(child_id) is None
+    assert canvas.index_for_event(parent_id) is not None
+
+    # The real query channel (task 8.2): the connector hands the VM the
+    # id → имя card, so the child's row names the parent the query never
+    # matched («Подсобытие названо через родителя»).
+    window.search_bar.search_requested.emit("Разведка")
+    search_vm = application._wiring._search_vm
+    await wait_for(lambda: any(
+        row["kind"] == "result" for row in search_vm.rows
+    ))
+    result_rows = [row for row in search_vm.rows if row["kind"] == "result"]
+    assert result_rows[0]["text"] == "Разведка · Поход  [01 Июль 1200]"
+
+    # The search click on the collapsed child: chain first, highlight second.
+    window.search_bar.result_selected.emit("event", child_id)
+    await helpers.wait_until_settled()
+
+    assert vm.expanded_parent_ids == frozenset({parent_id})
+    assert vm.selected_event is not None and vm.selected_event.id == child_id
+    assert canvas.selected_id == child_id
+    child_index = canvas.index_for_event(child_id)
+    assert child_index is not None
+    assert canvas.rows[child_index].depth == 1
+    assert canvas.rows[child_index - 1].event_id == parent_id
+
+
 async def test_create_related_entity_from_card(app, wait_for, menu_qmenu, modal_qdialog):
     """4.6 Card sub-flow: the popup is populated, its links are applied.
 
@@ -350,10 +424,14 @@ async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):
     calls: list = []
     # NRI-0022 (group 2): the panel lives in the «Обзор мира…» window; the
     # real menu action opens it, the wiring answers the panel's signals.
+    # NRI-0023 task 8.3: every dispatch also hands the id → имя card (the
+    # orphan stubs' naming source) — one event in this game, one entry.
     snapshot = helpers.open_world_snapshot(application, window)
     monkeypatch.setattr(
         snapshot, "populate",
-        lambda events, target_date: calls.append((len(events), target_date)),
+        lambda events, target_date, event_names=None: calls.append(
+            (len(events), target_date, sorted((event_names or {}).values()))
+        ),
     )
 
     # "Показать всё" (None) and a concrete date
@@ -362,7 +440,10 @@ async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):
     snapshot.snapshot_requested.emit(datetime.date(1300, 5, 15))
     await helpers.wait_until_settled()
 
-    assert calls == [(1, None), (1, datetime.date(1300, 5, 15))]
+    assert calls == [
+        (1, None, ["МоментВремени"]),
+        (1, datetime.date(1300, 5, 15), ["МоментВремени"]),
+    ]
 
 
 async def test_mention_search_success(app, wait_for, menu_qmenu):
@@ -629,3 +710,156 @@ async def test_sheet_list_refresh_skips_a_missing_or_dead_dialog(app, wait_for):
         application._sheet_list_dialog = None
 
     assert dead.refreshed == 1
+
+
+async def test_subevent_create_menu_prefills_dialog_and_links_parent(
+    app, wait_for, menu_qmenu
+):
+    """NRI-0023 task 6.1 (spec «Создание подсобытия правым кликом»), full E2E
+    round: a right click on a main event row runs through the island's context
+    menu (item «Создать подсобытие»), and the pick opens the create card
+    prefilled with the parent and the parent's start date («время пустое» is
+    the штатный default — the time lists arrive in task 7.2); saving writes
+    the sub-event link through the service guard."""
+    application, window = app
+    db_path = application._db_path
+    await helpers.create_event_via_ui(
+        window, wait_for, "Поход",
+        start_date=date(1200, 7, 1), end_date=date(1200, 7, 2),
+    )
+    parent_id = query_db(db_path, "SELECT id FROM events WHERE name = 'Поход'")[0][0]
+    canvas = timeline_probe.tape(window)
+    row_index = canvas.index_for_event(parent_id)
+
+    helpers.pick_menu_action(menu_qmenu, "Создать подсобытие")
+    timeline_probe.click(
+        window,
+        timeline_probe.row_center(window, row_index),
+        button=Qt.MouseButton.RightButton,
+    )
+    await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
+    dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
+    load_done = helpers.watch_available_entity_load(dialog)
+    await wait_for(lambda: len(load_done) == 4)
+
+    # The spec's «Родитель и дата подставлены»: parent + parent's start date,
+    # and this is still the CREATE flow (no event id loaded).
+    assert dialog.vm.parent_id == parent_id
+    assert dialog.vm._start_date == as_game_coord(date(1200, 7, 1))
+    assert dialog.event_id is None
+
+    dialog.name_input.setText("Разведка")
+    dialog.characteristics_input.setContent("Вышли на рассвете")
+    assert dialog.save_button.isEnabled()
+    dialog.save_button.click()
+    await wait_for(lambda: helpers.has_event_named(window, "Разведка"))
+    assert query_db(
+        db_path, "SELECT parent_id FROM events WHERE name = 'Разведка'"
+    ) == [(parent_id,)]
+
+
+async def test_subevent_request_for_a_gone_parent_stays_quiet(app, wait_for):
+    """A row may quote an id that is no longer there (a reload raced the
+    open): the connector's parent read answers nothing and no card opens."""
+    application, window = app
+    timeline_probe.vm(window).subevent_create_requested.emit(404)
+    await helpers.wait_until_settled()
+    assert not [d for d in window.findChildren(EventDialog) if d.isVisible()]
+
+
+async def test_subevent_open_failure_logs_instead_of_a_dialog(
+    app, wait_for, message_boxes, monkeypatch
+):
+    """The open-failure posture (as everywhere in this suite): a failed parent
+    read is a quiet warning — never a modal, never a half-open card."""
+    application, window = app
+
+    async def boom(self, event_id):
+        raise RuntimeError("repo down")
+
+    monkeypatch.setattr(EventService, "get_event", boom)
+    timeline_probe.vm(window).subevent_create_requested.emit(1)
+    await helpers.wait_until_settled()
+    assert not [d for d in window.findChildren(EventDialog) if d.isVisible()]
+    assert message_boxes == []
+
+
+async def test_card_parent_and_time_fields_round_trip(app, wait_for):
+    """NRI-0023 task 7.1/7.2, full user round: the edit dialog's parent pool
+    offers «—» + the mains (self and sub-events excluded), the combo перецепляет
+    and writes the wall clock through the connector, a reopen shows the saved
+    pair, and «—»/«—» promotes to main and clears the time (specs
+    «Поле „Родительское событие“…», event-time «Списки часов и минут…»)."""
+    application, window = app
+    db_path = application._db_path
+    await helpers.create_event_via_ui(
+        window, wait_for, "Поход",
+        start_date=date(1200, 7, 1), end_date=date(1200, 7, 2),
+    )
+    await helpers.create_event_via_ui(
+        window, wait_for, "Пир",
+        start_date=date(1200, 9, 1), end_date=date(1200, 9, 1),
+    )
+    parent_id = query_db(db_path, "SELECT id FROM events WHERE name = 'Поход'")[0][0]
+    feast_id = query_db(db_path, "SELECT id FROM events WHERE name = 'Пир'")[0][0]
+
+    def open_dialog(event_id: int) -> EventDialog:
+        return next(
+            d for d in window.findChildren(EventDialog)
+            if d.isVisible() and d.event_id == event_id
+        )
+
+    # Перецепка + время: «Пир» едет под «Поход» с началом в 14:30.
+    window.timeline_widget.event_double_clicked.emit(feast_id)
+    await wait_for(lambda: any(
+        d.isVisible() and d.event_id == feast_id
+        for d in window.findChildren(EventDialog)
+    ))
+    dialog = open_dialog(feast_id)
+    # The pool loaded after populate: «—» + mains, the edited event absent.
+    assert dialog.vm.parentNames == ["—", "Поход"]
+    assert dialog.vm.selectedParentIndex == 0
+    dialog.vm.selectParent(1)
+    dialog.vm.selectHour(15)  # «14»
+    dialog.vm.selectMinute(7)  # «30» на ровной лестнице
+    dialog.save_button.click()
+    await wait_for(lambda: query_db(
+        db_path, "SELECT parent_id, start_time FROM events WHERE id = ?", (feast_id,),
+    ) == [(parent_id, 14 * 60 + 30)])
+    await helpers.wait_until_settled()
+
+    # Spec «Чужих детей в списке нет»: «Пир» стал подсобытием и из пула исчез.
+    await helpers.create_event_via_ui(
+        window, wait_for, "Разведка",
+        start_date=date(1200, 7, 1), end_date=date(1200, 7, 1),
+    )
+    scout_id = query_db(db_path, "SELECT id FROM events WHERE name = 'Разведка'")[0][0]
+    window.timeline_widget.event_double_clicked.emit(scout_id)
+    await wait_for(lambda: any(
+        d.isVisible() and d.event_id == scout_id
+        for d in window.findChildren(EventDialog)
+    ))
+    scout_dialog = open_dialog(scout_id)
+    assert scout_dialog.vm.parentNames == ["—", "Поход"]
+    scout_dialog.vm.requestCancel()
+    await wait_for(lambda: not scout_dialog.isVisible())
+
+    # Scenario «Время задано» at the reopen: saved hour/minute/parent stand
+    # selected; then «—» + «—» — подъём в основные и время стёрто.
+    window.timeline_widget.event_double_clicked.emit(feast_id)
+    await wait_for(lambda: any(
+        d.isVisible() and d.event_id == feast_id
+        for d in window.findChildren(EventDialog)
+    ))
+    reopen = open_dialog(feast_id)
+    assert reopen.vm.selectedParentIndex == 1  # «Поход» prefilled
+    assert reopen.vm.selectedHourIndex == 15  # «14»
+    assert reopen.vm.selectedMinuteIndex == 7  # «30»
+    reopen.vm.selectParent(0)
+    reopen.vm.selectHour(0)  # минута гасится вместе с часом
+    assert reopen.vm.minuteEnabled is False
+    reopen.save_button.click()
+    await wait_for(lambda: query_db(
+        db_path, "SELECT parent_id, start_time FROM events WHERE id = ?", (feast_id,),
+    ) == [(None, None)])
+    await helpers.wait_until_settled()
