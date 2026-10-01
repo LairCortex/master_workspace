@@ -67,6 +67,7 @@ Rectangle {
                 id: closeButton
                 objectName: "closeButton"
                 text: "Закрыть"
+                iconName: "x"
                 onClicked: root.closeRequested()
             }
         }

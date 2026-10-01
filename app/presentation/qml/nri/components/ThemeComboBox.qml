@@ -173,41 +173,31 @@ ComboBox {
 
     indicator: control.skinned ? themedArrow : null
 
-    // The arrow is a token-colored triangle: the Canvas paints by assigning
-    // the bridge's fg value to the context (a value pass-through — the same
-    // way every other slot binds color — never a computation).
+    // Lucide icon pass 2026-09-30: the indicator is the library chevron-down
+    // glyph (the hand-drawn Canvas triangle retires; the chevron is the same
+    // down-pointing affordance, token-tinted through ThemeIcon — the bridge
+    // value pass-through rule is untouched).
     //
     // Positioning is the component's own job (nri-0015, E4=B5; pocket since
-    // NRI-0023 Д14.2): the triangle sits inside the reserved right band, one
+    // NRI-0023 Д14.2): the glyph sits inside the reserved right band, one
     // space.xs from the frame — the value area (which ends at rightPadding)
     // and the arrow never share pixels. Д14.4: while the popup is open the
     // arrow flips (rotation is an Item transform, no repaint); a mere focus
     // keeps it down — «открыт» and «в фокусе» become distinguishable.
-    Canvas {
+    ThemeIcon {
         id: themedArrow
         objectName: "themeComboArrow"
         visible: control.skinned  // floats invisible while off-skin
         x: control.width - width - Tokens.px(control.islandTokens, "space.xs", 4)
         y: control.topPadding + (control.availableHeight - height) / 2
-        implicitWidth: control.arrowSize
-        implicitHeight: control.arrowSize
+        name: "chevron-down"
+        // ThemeIcon's width/height follow its size — the pocket gauge stays
+        // the component's arrowSize, same square the Canvas occupied.
+        size: control.arrowSize
+        tint: control.fgColor
         rotation: control.popup && control.popup.visible ? 180 : 0
         transformOrigin: Item.Center
-        onPaint: {
-            var ctx = getContext("2d")
-            ctx.reset()
-            ctx.fillStyle = String(control.fgColor)
-            ctx.beginPath()
-            ctx.moveTo(width * 0.15, height * 0.35)
-            ctx.lineTo(width * 0.85, height * 0.35)
-            ctx.lineTo(width * 0.5, height * 0.75)
-            ctx.closePath()
-            ctx.fill()
-        }
-        onVisibleChanged: if (visible) requestPaint()
     }
-    onFgColorChanged: themedArrow.requestPaint()
-    onFontChanged: themedArrow.requestPaint()
 
     // Д14.1 (A1): the widest printable value is measured from the MODEL, never
     // from the realized rows (a lazy list's contentWidth only ever knows the

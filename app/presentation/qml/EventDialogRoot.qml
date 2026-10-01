@@ -284,10 +284,14 @@ Rectangle {
             id: tabs
             objectName: "eventRelatedTabs"
             Layout.fillWidth: true
-            ThemeTabButton { text: "Организации" }
-            ThemeTabButton { text: "Персонажи" }
-            ThemeTabButton { text: "Предметы" }
-            ThemeTabButton { text: "Локации" }
+            // The registry-order glyphs of the four relation tabs (the same
+            // captions order), from the one type→icon map (Lucide pass
+            // 2026-09-30). The sheet sizes itself to its content, so the
+            // bar never squeezes these captions below their iconed natural.
+            ThemeTabButton { text: "Организации"; iconName: eventDialogVm.relatedTabIcons[0] }
+            ThemeTabButton { text: "Персонажи"; iconName: eventDialogVm.relatedTabIcons[1] }
+            ThemeTabButton { text: "Предметы"; iconName: eventDialogVm.relatedTabIcons[2] }
+            ThemeTabButton { text: "Локации"; iconName: eventDialogVm.relatedTabIcons[3] }
         }
 
         StackLayout {
@@ -324,6 +328,9 @@ Rectangle {
                 id: saveButton
                 objectName: "eventSaveButton"
                 text: "Сохранить"
+                // Lucide icon pass 2026-09-30: the save chip shared with the
+                // entity-card and sheet save buttons.
+                iconName: "save"
                 accentBackground: true
                 enabled: eventDialogVm.valid
                 onClicked: eventDialogVm.requestSave()

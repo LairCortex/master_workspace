@@ -214,11 +214,13 @@ Rectangle {
             ThemeButton {
                 objectName: "createButton"
                 text: "Создать"
+                iconName: "plus"
                 onClicked: root.createRequested()
             }
             ThemeButton {
                 objectName: "presetButton"
                 text: "Создать из пресета…"
+                iconName: "file-plus"
                 visible: sheetListVm.presetButtonVisible
                 onClicked: root.presetRequested()
             }
@@ -226,6 +228,7 @@ Rectangle {
                 id: openButton
                 objectName: "openButton"
                 text: "Открыть"
+                iconName: "folder-open"
                 accentBackground: true
                 enabled: sheetListVm.canOpen
                 onClicked: root.openRequested()
@@ -233,12 +236,14 @@ Rectangle {
             ThemeButton {
                 objectName: "renameButton"
                 text: "Переименовать"
+                iconName: "pencil"
                 enabled: sheetListVm.canRename
                 onClicked: root.renameRequested()
             }
             ThemeButton {
                 objectName: "deleteButton"
                 text: "Удалить"
+                iconName: "trash"
                 enabled: sheetListVm.canDelete
                 onClicked: root.deleteRequested()
             }
@@ -248,6 +253,8 @@ Rectangle {
             ThemeButton {
                 objectName: "closeButton"
                 text: "Закрыть"
+                // Ряд ограничен пином ширины 720 (test_island_dialog_sizing):
+                // глиф «x» отсюда снят — место было низким приоритетом иконки.
                 onClicked: root.closeRequested()
             }
         }

@@ -54,7 +54,7 @@ STEP = 40
 TARGETS = {
     "sheet-list": 440,
     "table-panel": 440,
-    "launcher": 480,
+    "launcher": 600,
     "preset": 560,
     "llm-setup": 640,
     "xlsx-import": 640,

@@ -6,7 +6,8 @@ The production root QML over a REAL ViewModel and the REAL widget VM:
   from the accent derivation (border against the selection's fill), exactly
   one row, and a «now» edit MOVES the outline without a model reset (which
   would rewind the view's head — the spec forbids the edit from scrolling);
-* task 5.2 — the «➜ Сейчас» header button resolves by ``objectName``, sits
+* task 5.2 — the «Сейчас» header button (crosshair glyph beside the caption
+  since the 2026-09-30 icon pass) resolves by ``objectName``, sits
   beside the window chip, is named by its text (stock Button, no re-annotation),
   reads its availability from ``vm.nowScrollEnabled`` and answers a press
   with the VM's scroll request on the island's own ``scrollToIndex`` channel;
@@ -261,7 +262,7 @@ def test_now_edit_moves_the_outline_without_scrolling(qtbot):
 
 def test_the_hour_moves_neither_the_outline_nor_the_scroll_target(qtbot):
     """NRI-0023 task 9.1 pin (spec «Час меняет только подпись»): setting an
-    hour on the game-«now» leaves the today-outline and the «➜ Сейчас»
+    hour on the game-«now» leaves the today-outline and the «Сейчас»
     target on the day they were computed from — the derived surfaces read
     the coordinate, and the ``nowChanged`` broadcast that triggers them
     stays silent for an hour-only edit."""
@@ -285,7 +286,7 @@ def test_the_hour_moves_neither_the_outline_nor_the_scroll_target(qtbot):
     _retire(panel, qtbot)
 
 
-# ── task 5.2 — the «➜ Сейчас» header button ──────────────────────────────────
+# ── task 5.2 — the «Сейчас» header button ─────────────────────────────────────
 
 
 def test_header_button_resolves_by_object_name_beside_the_chip(qtbot):
@@ -297,7 +298,11 @@ def test_header_button_resolves_by_object_name_beside_the_chip(qtbot):
     # A stock text Button: the caption IS its accessibility name, the usage
     # site adds no annotation (nri-0012 contract, guard-pinned by
     # tests/test_qml_accessibility_conventions.py).
-    assert button.property("text") == "➜ Сейчас"
+    assert button.property("text") == "Сейчас"
+    assert button.property("iconName") == "crosshair"
+    # The chip's dropdown caret is its trailing Lucide chevron, never caption
+    # text (live fix 2026-09-30 A1).
+    assert chip.property("trailingIconName") == "chevron-down"
     # «рядом с чипом окна» — left of the chip, before the «+» on the band.
     scene_x = [
         item.mapToScene(QPointF(0, 0)).x() for item in (button, chip, add)
@@ -338,7 +343,7 @@ def test_press_requests_the_scroll_to_the_row_after_now(qtbot):
 
     assert scrolls == [(1,)]  # track() collects emit-argument tuples
     assert vm.rows[scrolls[0][0]].event_id == 2
-    assert panel._root.property("windowText") == "Все дни ▾"  # окно не сдвинулось
+    assert panel._root.property("windowText") == "Все дни"  # окно не сдвинулось
     assert panel._root.property("selectedId") == -1  # выбор не сдвинулся
     _retire(panel, qtbot)
 

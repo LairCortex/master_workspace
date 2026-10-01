@@ -220,13 +220,14 @@ def test_event_wave_button_stands_in_the_header_slot(qtbot):
 
 
 def _ai_buttons_on_the_row(widget, field_name: str) -> set[str]:
-    """Names of the visible ✨ AI buttons whose row is the field's row:
+    """Names of the visible ✨ (Lucide «sparkles» since the 2026-09-30 icon
+    pass) AI buttons whose row is the field's row:
     shared vertical centre and a start right of the field's right edge."""
     field = find_item(widget, field_name)
     fx, fy, fw, fh = _scene_rect(field)
     found: set[str] = set()
     for item in walk_items(widget.rootObject()):
-        if item.property("aiState") is None or item.property("text") != "✨":
+        if item.property("aiState") is None or item.property("iconName") != "sparkles":
             continue
         if not item.property("visible"):
             continue

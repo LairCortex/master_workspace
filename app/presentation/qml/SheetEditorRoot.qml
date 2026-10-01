@@ -143,30 +143,35 @@ Rectangle {
             ThemeButton {
                 objectName: "editUndoButton"
                 text: "Отменить"
+                iconName: "undo-2"
                 enabled: root.vmReady && root.vm.canUndo
                 onClicked: root.undoRequested()
             }
             ThemeButton {
                 objectName: "editRedoButton"
                 text: "Повторить"
+                iconName: "redo-2"
                 enabled: root.vmReady && root.vm.canRedo
                 onClicked: root.redoRequested()
             }
             ThemeButton {
                 objectName: "editCopyButton"
                 text: "Копировать"
+                iconName: "copy"
                 enabled: editActionsRow.hasSelection
                 onClicked: root.copyRequested()
             }
             ThemeButton {
                 objectName: "editPasteButton"
                 text: "Вставить"
+                iconName: "clipboard-paste"
                 enabled: root.vmReady && root.vm.hasClipboard
                 onClicked: root.pasteActionRequested()
             }
             ThemeButton {
                 objectName: "editDuplicateButton"
                 text: "Дублировать"
+                iconName: "copy-plus"
                 enabled: editActionsRow.hasSelection
                 onClicked: root.duplicateRequested()
             }
@@ -241,20 +246,30 @@ Rectangle {
                 spacing: root.gapSm
 
                 Repeater {
+                    // «Поле»/«Область» wear the upstream successors of the
+                    // retired «text-select»/«align-left» names (the vendored
+                    // commit ships the same drawings under the live ones).
                     model: [
-                        {tool: "pointer", label: "Указатель", name: "paletteTool-pointer"},
-                        {tool: "place_label", label: "Подпись", name: "paletteTool-label"},
-                        {tool: "place_text", label: "Поле", name: "paletteTool-text"},
+                        {tool: "pointer", label: "Указатель",
+                         name: "paletteTool-pointer", icon: "mouse-pointer"},
+                        {tool: "place_label", label: "Подпись",
+                         name: "paletteTool-label", icon: "type"},
+                        {tool: "place_text", label: "Поле",
+                         name: "paletteTool-text", icon: "text-cursor-input"},
                         {tool: "place_textarea", label: "Область",
-                         name: "paletteTool-textarea"},
+                         name: "paletteTool-textarea", icon: "text-align-start"},
                         {tool: "place_checkbox", label: "Чекбокс",
-                         name: "paletteTool-checkbox"},
-                        {tool: "place_number", label: "Число", name: "paletteTool-number"},
+                         name: "paletteTool-checkbox", icon: "square-check"},
+                        {tool: "place_number", label: "Число",
+                         name: "paletteTool-number", icon: "hash"},
                         {tool: "place_dropdown", label: "Список",
-                         name: "paletteTool-dropdown"},
-                        {tool: "place_image", label: "Картинка", name: "paletteTool-image"},
-                        {tool: "place_rect", label: "Рамка", name: "paletteTool-rect"},
-                        {tool: "place_line", label: "Линия", name: "paletteTool-line"}
+                         name: "paletteTool-dropdown", icon: "list"},
+                        {tool: "place_image", label: "Картинка",
+                         name: "paletteTool-image", icon: "image"},
+                        {tool: "place_rect", label: "Рамка",
+                         name: "paletteTool-rect", icon: "square"},
+                        {tool: "place_line", label: "Линия",
+                         name: "paletteTool-line", icon: "minus"}
                     ]
                     delegate: ThemeButton {
                         id: toolButton
@@ -263,6 +278,7 @@ Rectangle {
                         Layout.fillWidth: true
                         Layout.minimumHeight: 32
                         text: modelData.label
+                        iconName: modelData.icon
                         checkable: true
                         // one-shot placement resets the tool to the pointer
                         // in the VM; the exclusive look mirrors vm.currentTool
@@ -394,7 +410,7 @@ Rectangle {
                     // — no Layout size here (the component owns the gauge).
                     ThemeIconButton {
                         objectName: "railUpButton"
-                        text: "↑"
+                        iconName: "arrow-up"
                         // nri-0012 task 3.3: glyph-only button — the name is
                         // the tooltip's action word (design map).
                         Accessible.name: "Вверх"
@@ -405,7 +421,7 @@ Rectangle {
                     }
                     ThemeIconButton {
                         objectName: "railDownButton"
-                        text: "↓"
+                        iconName: "arrow-down"
                         Accessible.name: "Вниз"
                         Nri.tooltip: "Вниз"
                         enabled: root.pageCount > 1
@@ -415,7 +431,7 @@ Rectangle {
                     }
                     ThemeIconButton {
                         objectName: "railDeleteButton"
-                        text: "−"
+                        iconName: "minus"
                         Accessible.name: "Удалить страницу"
                         Nri.tooltip: "Удалить страницу"
                         enabled: root.pageCount > 1
@@ -425,7 +441,7 @@ Rectangle {
                     }
                     ThemeIconButton {
                         objectName: "railAddButton"
-                        text: "+"
+                        iconName: "plus"
                         Accessible.name: "Добавить страницу"
                         Nri.tooltip: "Добавить страницу после текущей"
                         enabled: root.pageCount > 0
@@ -451,7 +467,10 @@ Rectangle {
             // ── property panel (properties_panel.py port) ───────────────────
             Rectangle {
                 Layout.preferredWidth: 260
-                Layout.minimumWidth: 260
+                // QA 2026-09-30 S-1: the panel never gets narrower than its
+                // button row — the two no-glyph captions (see the row below)
+                // keep their full width and the canvas absorbs the surplus.
+                Layout.minimumWidth: Math.max(260, panelActionsRow.implicitWidth)
                 Layout.fillHeight: true
                 color: "transparent"
 
@@ -483,11 +502,31 @@ Rectangle {
                             onClicked: root.vm.set_snap_enabled(!root.vm.snapOn)
                         }
                         RowLayout {
+                            id: panelActionsRow
+                            objectName: "panelActionsRow"
                             Layout.fillWidth: true
                             spacing: root.gapSm
+                            // No Lucide glyphs here (icon pass 2026-09-30):
+                            // the two share the 260 px panel row, and the
+                            // measured offscreen caption is already 118 px —
+                            // glyph + gap would elide both captions (the fit
+                            // probe in tests/presentation/
+                            // test_sheet_window_islands_qml.py). The 120 px
+                            // palette row absorbs its glyphs; these two don't.
+                            // QA 2026-09-30 S-1: without a glyph there is no
+                            // spare caption channel, so the ThemeDateField
+                            // width-floor pattern rides on the usage sites —
+                            // a fillWidth item defaults to a 0 layout minimum
+                            // and the fill distribution could shave the
+                            // caption a fraction under its implicit width
+                            // (the offscreen «На передний пл…» of the QA
+                            // render); Layout.minimumWidth keeps every
+                            // caption whole and the elide stays the unused
+                            // last resort it is in the library.
                             ThemeButton {
                                 objectName: "bringFrontButton"
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: implicitWidth
                                 text: "На передний план"
                                 enabled: root.panelSelected
                                 onClicked: root.vm.bring_to_front()
@@ -495,6 +534,7 @@ Rectangle {
                             ThemeButton {
                                 objectName: "sendBackButton"
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: implicitWidth
                                 text: "На задний план"
                                 enabled: root.panelSelected
                                 onClicked: root.vm.send_to_back()
@@ -776,6 +816,7 @@ Rectangle {
                                         ThemeButton {
                                             objectName: "optionAddButton"
                                             text: "Добавить"
+                                            iconName: "plus"
                                             onClicked: root.addOption()
                                         }
                                     }
@@ -784,11 +825,12 @@ Rectangle {
                                         ThemeButton {
                                             objectName: "optionRemoveButton"
                                             text: "Удалить"
+                                            iconName: "trash"
                                             onClicked: root.removeOption()
                                         }
                                         ThemeIconButton {
                                             objectName: "optionUpButton"
-                                            text: "↑"
+                                            iconName: "arrow-up"
                                             // nri-0012 task 3.3: glyph-only —
                                             // named by the action (design map).
                                             Accessible.name: "Поднять опцию"
@@ -796,7 +838,7 @@ Rectangle {
                                         }
                                         ThemeIconButton {
                                             objectName: "optionDownButton"
-                                            text: "↓"
+                                            iconName: "arrow-down"
                                             Accessible.name: "Опустить опцию"
                                             onClicked: root.moveOption(1)
                                         }
@@ -843,12 +885,14 @@ Rectangle {
                                         objectName: "imagePickButton"
                                         Layout.fillWidth: true
                                         text: "Выбрать файл…"
+                                        iconName: "folder-open"
                                         onClicked: root.imagePickRequested(root.panelFid)
                                     }
                                     ThemeButton {
                                         objectName: "imageClearButton"
                                         Layout.fillWidth: true
                                         text: "Очистить"
+                                        iconName: "eraser"
                                         onClicked: root.vm.set_image_id(root.panelFid, null)
                                     }
                                     Text {
@@ -890,12 +934,14 @@ Rectangle {
             ThemeButton {
                 objectName: "exportPdfButton"
                 text: "Экспорт в PDF…"
+                iconName: "file-down"
                 onClicked: root.exportPdfRequested()
             }
             ThemeButton {
                 id: saveButton
                 objectName: "saveButton"
                 text: "Сохранить"
+                iconName: "save"
                 accentBackground: true
                 onClicked: root.saveRequested()
             }

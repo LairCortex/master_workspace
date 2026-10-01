@@ -185,6 +185,115 @@ def test_qss_chrome_button_has_hover_and_pressed(tokens):
     qss = compile_qss(tokens, "dark")
     assert 'QWidget[uiRole="chrome"] QPushButton:hover' in qss
     assert 'QWidget[uiRole="chrome"] QPushButton:pressed' in qss
+    assert 'QWidget[uiRole="chrome"] QPushButton[uiRole="primary"]:hover' in qss
+    assert 'QWidget[uiRole="chrome"] QPushButton[uiRole="primary"]:pressed' in qss
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_qss_chrome_button_base_is_the_plain_qml_face(tokens, theme):
+    # Live defect 2026-10-01: the base rule WAS the primary face (accent fill
+    # + bold accent.fg), so every chrome button read as primary. The base now
+    # mirrors the QML ThemeButton's rest state: canvas fill, border hairline,
+    # primary ink, NO font-weight.
+    qss = compile_qss(tokens, theme)
+    base = re.search(
+        r'QWidget\[uiRole="chrome"\] QPushButton\s*\{([^}]*)\}', qss
+    )
+    assert base, "в chrome-листе нет базового правила QPushButton"
+    rule = base.group(1)
+    assert f"background: {tokens['color.bg.canvas'][theme]};" in rule
+    assert f"color: {tokens['color.fg.primary'][theme]};" in rule
+    assert f"border: 1px solid {tokens['color.border'][theme]};" in rule
+    assert "font-weight" not in rule
+    assert tokens["color.accent"][theme] not in rule
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_qss_primary_chrome_button_is_the_accent_face(tokens, theme):
+    # The opt-in face (catalog role "primary"): accent fill, accent.fg
+    # caption, border in the fill's own color so no frame differs under it;
+    # still no bold — the library paints its primary caption in the regular
+    # weight too.
+    qss = compile_qss(tokens, theme)
+    primary = re.search(
+        r'QWidget\[uiRole="chrome"\] QPushButton\[uiRole="primary"\]\s*\{([^}]*)\}',
+        qss,
+    )
+    assert primary, "в chrome-листе нет правила QPushButton[uiRole=\"primary\"]"
+    rule = primary.group(1)
+    assert f"background: {tokens['color.accent'][theme]};" in rule
+    assert f"color: {tokens['color.accent.fg'][theme]};" in rule
+    assert f"border: 1px solid {tokens['color.accent'][theme]};" in rule
+    assert "font-weight" not in rule
+
+
+# ── QA 2026-10-01: disabled chrome button drops the accent to the canvas ─────
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_qss_chrome_button_disabled_is_canvas_with_muted_caption(tokens, theme):
+    # The defect (measured 2026-10-01): the disabled rule greyed ONLY the
+    # caption, leaving muted ink on the accent fill — 1.10:1 dark / 1.13:1
+    # light, unreadable. The rule now carries the canvas background itself;
+    # the border is untouched by every rule above, so the base
+    # ``color.border`` hairline survives without re-declaration.
+    qss = compile_qss(tokens, theme)
+    disabled = re.search(
+        r'QWidget\[uiRole="chrome"\] QPushButton:disabled\s*\{([^}]*)\}', qss
+    )
+    assert disabled, "в chrome-листе нет правила QPushButton:disabled"
+    rule = disabled.group(1)
+    assert f"background: {tokens['color.bg.canvas'][theme]};" in rule
+    assert f"color: {tokens['color.fg.muted'][theme]};" in rule
+    # the accent fill must not survive anywhere inside the disabled rule
+    assert tokens["color.accent"][theme] not in rule
+    # ordering contract: :disabled rides AFTER :hover/:pressed — with equal
+    # specificity (property + class + one pseudo-state) the later rule is
+    # what wins for ``background`` on a disabled widget.
+    assert (
+        qss.index("QPushButton:pressed")
+        < qss.index("QPushButton:disabled")
+    )
+    assert qss.index("QPushButton:hover") < qss.index("QPushButton:disabled")
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_qss_primary_chrome_button_disabled_matches_the_plain_one(tokens, theme):
+    # QML ThemeButton contract: disabled drops to the canvas fill regardless
+    # of accentBackground.  ``[uiRole="primary"]`` makes the hover/pressed
+    # selectors more specific than the plain ``:disabled``, so the primary
+    # face needs its own disabled twin — the LAST button rules of the sheet —
+    # with the very same canvas+muted pair and the border hairline restored
+    # (the primary face paints the border in the accent color).
+    qss = compile_qss(tokens, theme)
+    disabled = re.search(
+        r'QWidget\[uiRole="chrome"\] QPushButton\[uiRole="primary"\]:disabled'
+        r'\s*\{([^}]*)\}',
+        qss,
+    )
+    assert disabled, "в chrome-листе нет правила QPushButton[uiRole=\"primary\"]:disabled"
+    rule = disabled.group(1)
+    assert f"background: {tokens['color.bg.canvas'][theme]};" in rule
+    assert f"color: {tokens['color.fg.muted'][theme]};" in rule
+    assert f"border: 1px solid {tokens['color.border'][theme]};" in rule
+    assert tokens["color.accent"][theme] not in rule
+    # ordering contract: the primary disabled twin rides after the primary
+    # hover/pressed, whose specificity would otherwise keep the accent fill
+    # under a disabled primary button.
+    assert (
+        qss.index('QPushButton[uiRole="primary"]:pressed')
+        < qss.index('QPushButton[uiRole="primary"]:disabled')
+    )
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_disabled_caption_on_canvas_clears_the_wcag_floor(tokens, theme):
+    # The point of the rule: the muted caption on the disabled canvas fill is
+    # readable text, not a smudge (the painted pixels are pinned in
+    # tests/ui/test_theme_grab.py; this pins the token math itself).
+    muted = token_rgb(tokens, theme, "color.fg.muted")
+    canvas = token_rgb(tokens, theme, "color.bg.canvas")
+    assert muted is not None and canvas is not None
+    assert _contrast_ratio(muted, canvas) >= 4.5, theme
 
 
 # ── accent-derived highlights (W2a D5) ─────────────────────────────────────
@@ -308,19 +417,32 @@ def test_chrome_sheet_themes_the_radio_indicator_from_tokens(tokens, theme):
     )
     assert box, "в chrome-листе нет правила ::indicator у QRadioButton"
     rule = box.group(1)
-    assert "width: 16px;" in rule
-    assert "height: 16px;" in rule
+    # 2026-10-01 live measurement: the 16 px box read oversized — the radio
+    # shrank to 14 px.
+    assert "width: 14px;" in rule
+    assert "height: 14px;" in rule
     assert f"border: 1px solid {tokens['color.border'][theme]};" in rule
     assert f"background: {tokens['color.bg.canvas'][theme]};" in rule
-    # «радио — круг» (Д8): the circle is the half of the 16 px box.
-    assert "border-radius: 8px;" in rule
+    # «радио — круг» (Д8): the circle is the half of the 14 px box.
+    assert "border-radius: 7px;" in rule
 
     checked = re.search(
         r'QWidget\[uiRole="chrome"\] QRadioButton::indicator:checked\s*\{([^}]*)\}',
         qss,
     )
     assert checked, "выбранное состояние радио не тематизировано"
-    assert tokens["color.accent"][theme] in checked.group(1)
+    body = checked.group(1)
+    accent = tokens["color.accent"][theme]
+    canvas = tokens["color.bg.canvas"][theme]
+    # Ring + dot, not the retired solid fill (2026-10-01: the full accent
+    # disc read as a glowing blob): accent border, the dot is the
+    # qradialgradient core over the canvas.
+    assert f"border-color: {accent};" in body
+    assert (
+        "qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, "
+        f"stop:0 {accent}, stop:0.35 {accent}, stop:0.4 {canvas})" in body
+    )
+    assert f"background: {accent};" not in body
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])

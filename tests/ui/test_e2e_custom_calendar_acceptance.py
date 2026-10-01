@@ -372,12 +372,12 @@ async def test_custom_calendar_from_wizard_to_every_caption_and_restart(
         _click(qtbot, _day_cell(grid, 9))
         await wait_for(lambda: not range_popup.isVisible())
         assert timeline_probe.chip_caption(window) == (
-            "05 Ведодей 1 — 09 Ведодей 1 ▾"
+            "05 Ведодей 1 — 09 Ведодей 1"
         )
         timeline_probe.click_object(window, "windowChip")
         await wait_for(range_popup.isVisible)
         _click(qtbot, range_popup.reset_button)
-        await wait_for(lambda: timeline_probe.chip_caption(window) == "Все дни ▾")
+        await wait_for(lambda: timeline_probe.chip_caption(window) == "Все дни")
         await helpers.wait_until_settled()
 
         # ── C. an open-ended event ON THE INTERCALARY DAY (all clicks) ──────
@@ -541,7 +541,7 @@ async def test_custom_calendar_from_wizard_to_every_caption_and_restart(
         assert next(r for r in tape2.rows if r.name == BC_EVENT).caption == (
             f"{BC_CAPTION} · {BC_EVENT}"
         )
-        assert timeline_probe.chip_caption(window2) == "Все дни ▾"
+        assert timeline_probe.chip_caption(window2) == "Все дни"
 
         helpers.click_timeline_event(window2, BC_EVENT)
         await wait_for(lambda: window2.detail_panel.vm.title == BC_EVENT)

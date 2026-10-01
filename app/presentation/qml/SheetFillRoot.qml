@@ -121,12 +121,14 @@ Rectangle {
             ThemeButton {
                 objectName: "editUndoButton"
                 text: "Отменить"
+                iconName: "undo-2"
                 enabled: root.vmReady && root.vm.canUndo
                 onClicked: root.undoRequested()
             }
             ThemeButton {
                 objectName: "editRedoButton"
                 text: "Повторить"
+                iconName: "redo-2"
                 enabled: root.vmReady && root.vm.canRedo
                 onClicked: root.redoRequested()
             }
@@ -340,12 +342,14 @@ Rectangle {
                             objectName: "fillImagePickButton"
                             Layout.fillWidth: true
                             text: "Выбрать…"
+                            iconName: "folder-open"
                             onClicked: root.imagePickRequested(root.panelFid)
                         }
                         ThemeButton {
                             objectName: "fillImageClearButton"
                             Layout.fillWidth: true
                             text: "Убрать"
+                            iconName: "eraser"
                             onClicked: root.vm.clear_image(root.panelFid)
                         }
                     }
@@ -362,12 +366,14 @@ Rectangle {
             ThemeButton {
                 objectName: "bindButton"
                 text: "Привязать…"
+                iconName: "link"
                 visible: !root.readOnly
                 onClicked: root.bindRequested()
             }
             ThemeButton {
                 objectName: "unbindButton"
                 text: "Отвязать"
+                iconName: "unlink"
                 visible: !root.readOnly
                 // the migrated _sync_bind_buttons: the facade pushes the bind
                 // state after load/bind/unbind (the VM fires no bind signal)
@@ -379,6 +385,7 @@ Rectangle {
                 id: saveButton
                 objectName: "saveButton"
                 text: "Сохранить"
+                iconName: "save"
                 visible: !root.readOnly
                 accentBackground: true
                 onClicked: root.saveRequested()

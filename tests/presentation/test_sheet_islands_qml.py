@@ -385,3 +385,30 @@ def test_preset_island_paints_surface_and_accent_tokens(qtbot, preset_vm, palett
     assert button_pixel(widget, find_item(widget, "okButton"), image) == token_rgb(
         tokens["color.accent"]
     )
+
+
+# ── Lucide icon pass 2026-09-30: the action row grows its glyphs, the texts
+# stay the captions and the accessibility names (stock controls, the same
+# rule every other island row follows).
+
+def test_list_action_row_carries_its_pass_glyphs(qtbot, list_vm, palette):
+    widget = load_island(qtbot, SHEET_LIST_QML, list_vm, palette, (720, 520))
+    # closeButton carries no glyph: the row is capped by the 720 width pin
+    # (test_island_dialog_sizing), and its spot was the pass' lowest priority.
+    expected = {"createButton": "plus",
+                "presetButton": "file-plus",
+                "openButton": "folder-open",
+                "renameButton": "pencil",
+                "deleteButton": "trash"}
+    for name, icon in expected.items():
+        button = find_item(widget, name)
+        assert button.property("iconName") == icon, name
+        assert button.property("text") != "", name  # caption stays
+    assert find_item(widget, "closeButton").property("iconName") == ""
+
+
+def test_preset_create_button_carries_its_pass_glyph(qtbot, preset_vm, palette):
+    widget = load_island(qtbot, SHEET_PRESET_QML, preset_vm, palette, (540, 500))
+    ok = find_item(widget, "okButton")
+    assert ok.property("iconName") == "plus"
+    assert ok.property("text") == "Создать"

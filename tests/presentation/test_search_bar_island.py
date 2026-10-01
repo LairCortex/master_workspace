@@ -128,6 +128,9 @@ async def test_headers_and_results_have_distinct_row_contracts_and_select(qtbot,
     assert len(find_items(bar.quick, "searchNoMatchRow")) == 0
 
     header = find_item(bar.quick, "searchSectionHeader")
+    # Lucide pass 2026-09-30: the header's glyph is the VM row's iconName —
+    # the one type→icon map reaching the paint through the row model.
+    assert find_item(bar.quick, "searchSectionHeaderIcon").property("name") == "calendar-days"
     click_item(bar.quick, header)
     assert selected == []
 

@@ -32,6 +32,10 @@ from app.application.services.table_host_service import (
 )
 from app.infrastructure.table_host.http import DEFAULT_PORT
 from app.infrastructure.table_host.lan import local_ipv4_addresses
+from app.presentation.views.lucide_icons import (
+    ACCENT_INK_TOKEN_KEY,
+    lucide_icon,
+)
 
 
 def qr_pixmap(url: str, scale: int = 4) -> QPixmap:
@@ -104,9 +108,19 @@ class TableHostPanel(QDialog):
         set_role(self.seat_list, "list")
         self.player_list = QListWidget(self)
         set_role(self.player_list, "list")
+        # The compiled sheet paints the ordinary chrome face on every button;
+        # only «Открыть стол» opts into the primary face, so its glyph wears
+        # the accent.fg caption ink (F2) while the plain buttons' glyphs keep
+        # the default fg.primary ink of their captions.
         self.start_button = QPushButton("Открыть стол", self)
+        set_role(self.start_button, "primary")
+        self.start_button.setIcon(
+            lucide_icon("play", ink_token=ACCENT_INK_TOKEN_KEY)
+        )
         self.stop_button = QPushButton("Остановить", self)
+        self.stop_button.setIcon(lucide_icon("circle-stop"))
         self.kick_button = QPushButton("Выгнать", self)
+        self.kick_button.setIcon(lucide_icon("user-minus"))
         # TB5 (NRI-0016): no QDialog button may swallow Enter from the port
         # field — pressing Return in the panel must never start or stop anything.
         for button in (self.start_button, self.stop_button, self.kick_button):

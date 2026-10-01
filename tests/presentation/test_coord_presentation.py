@@ -620,7 +620,7 @@ class TestMixedEraWindowOnTheSingleKey:
         chip = window_chip_text(
             (IntercalaryDay(500, 0), True), (MonthDay(100, 2, 10), False)
         )
-        assert chip == "День Маски 500 г. до н.э. — 10 Второмес 100 ▾"
+        assert chip == "День Маски 500 г. до н.э. — 10 Второмес 100"
 
 
 class TestPopupWidgetsUseTheGameCalendarGrid:

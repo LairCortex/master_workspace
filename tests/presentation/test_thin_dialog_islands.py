@@ -29,6 +29,19 @@ def test_xlsx_import_root_object_names(qtbot):
     assert root.property("defaultButton").objectName() == "importButton"
 
 
+def test_xlsx_import_buttons_carry_their_pass_glyphs(qtbot):
+    """Lucide icon pass 2026-09-30: browse/download get their glyphs and the
+    tri-state action button carries the analysis glyph in the initial state
+    (the done-state «Закрыть» is glyph-less by design); «Отмена» stays bare.
+    The state captions are pin-tested elsewhere untouched — only added."""
+    dlg = XlsxImportDialog()
+    qtbot.addWidget(dlg)
+    assert find_item(dlg.quick, "browseButton").property("iconName") == "folder-search"
+    assert find_item(dlg.quick, "downloadButton").property("iconName") == "download"
+    assert find_item(dlg.quick, "importButton").property("iconName") == "search-check"
+    assert find_item(dlg.quick, "cancelButton").property("iconName") == ""
+
+
 def test_image_viewer_root_object_names(qtbot):
     img = QImage(4, 4, QImage.Format.Format_RGB32)
     img.fill(Qt.GlobalColor.red)
@@ -39,6 +52,16 @@ def test_image_viewer_root_object_names(qtbot):
     assert "viewerImage" in names
     assert "closeButton" in names
     assert root.property("defaultButton").objectName() == "closeButton"
+
+
+def test_image_viewer_close_button_carries_its_pass_glyph(qtbot):
+    """Lucide icon pass 2026-09-30: «Закрыть» keeps its caption, the «x»
+    glyph rides in front of it."""
+    dlg = ImageViewerDialog(None, None)
+    qtbot.addWidget(dlg)
+    close = find_item(dlg.quick, "closeButton")
+    assert close.property("iconName") == "x"
+    assert close.property("text") == "Закрыть"
 
 
 def test_doc_viewer_root_has_textarea_no_buttons(qtbot, tmp_path):

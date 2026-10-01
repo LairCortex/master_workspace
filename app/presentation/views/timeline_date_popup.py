@@ -61,11 +61,13 @@ from app.presentation.utils.date_utils import (
 from app.presentation.views.calendar_grid import GameCalendarGrid
 
 # ── «Выбор даты» chip + popover captions (W3b D9; migrated with the popover) ─
-#: Chip caption while no window is applied; the caret marks it as a dropdown
-#: (spec «Выбор даты»: без окна кнопка отображает «Все дни»). The island's QML
-#: chip renders this text, which the facade pushes onto the root as
-#: ``windowText`` — Python stays the caption's single writer.
-WINDOW_CHIP_ALL = "Все дни ▾"
+#: Chip caption while no window is applied; the dropdown caret is the QML
+#: chip's own trailing Lucide chevron (ThemeButton ``trailingIconName``, live
+#: fix 2026-09-30 A1), never part of this text (spec «Выбор даты»: без окна
+#: кнопка отображает «Все дни»). The island's QML chip renders this text,
+#: which the facade pushes onto the root as ``windowText`` — Python stays the
+#: caption's single writer.
+WINDOW_CHIP_ALL = "Все дни"
 #: Popover hint line guiding the two taps that pick the range (D9).
 WINDOW_PICK_START = "Кликните дату начала"
 WINDOW_PICK_END = "Кликните дату окончания"
@@ -83,7 +85,7 @@ WINDOW_DOUBLE_HEIGHT_FACTOR = 2
 
 
 def window_chip_text(start, end) -> str:
-    """Chip caption for the active window: «Все дни ▾» or game-formatted bounds.
+    """Chip caption for the active window: «Все дни» or game-formatted bounds.
 
     Bounds ride as the popover applies them — a bare coordinate (== «н.э.»,
     since piece C3a a plain ``date`` of the same numbers) or a
@@ -96,7 +98,7 @@ def window_chip_text(start, end) -> str:
         return WINDOW_CHIP_ALL
     return (
         f"{format_game_date(start_date, is_bc=bool(start_bc))} — "
-        f"{format_game_date(end_date, is_bc=bool(end_bc))} ▾"
+        f"{format_game_date(end_date, is_bc=bool(end_bc))}"
     )
 
 

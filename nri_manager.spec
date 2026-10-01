@@ -144,6 +144,15 @@ a = Analysis(
         # library script imported by the three roots, not a qmldir type.
         ("app/presentation/qml/nri/components/panelHeader.js",
          "app/presentation/qml/nri/components"),
+        # Lucide glyph pair of the library ThemeIcon (user request 2026-09-30):
+        # icons.js is the GENERATED path data (scripts/vendor_lucide.py expands
+        # the ISC-licensed SVGs vendored under app/presentation/qml/nri/
+        # components/icons/ — those stay a build-time source, the runtime reads
+        # only the generated map) and ThemeIcon.qml is its brush.
+        ("app/presentation/qml/nri/components/icons.js",
+         "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/ThemeIcon.qml",
+         "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/CardPanel.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/HintText.qml",

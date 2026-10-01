@@ -5,8 +5,10 @@ Spec main-window «Подписи вкладок деталей читаемы �
 and that same caption is the tab's accessibility name and its tooltip
 (scenario «Подпись и имя доступности одно»); no short-caption field survives
 in the registry. The strip no longer needs the «all tabs whole» threshold:
-the tabs share the panel's whole width (stretch beyond their natural widths,
-shrink proportionally below them) and a narrow column shortens the captions
+the tabs share the panel's whole width in EQUAL shares (stretched beyond
+their natural widths, shrunk in equal shares below them — the 2026-10-01
+law retired the proportional-to-caption distribution, where a longer caption
+fattened its tab) and a narrow column shortens the captions
 with the ellipsis instead of clipping the strip — the retired threshold is
 gone from the panel, the placement memory and the splitter floors (see
 test_main_window_default_start.py).
@@ -15,8 +17,9 @@ Pins: registry guard (the tab_label field is gone from EntityDescriptor);
 the view model exposes only the full titles; on the shown island every tab's
 text, QAccessible name and tooltip-bridge request equal the full caption; at
 the default width every caption stands whole while the tabs together fill the
-bar's whole width; in a narrow column the tabs shrink proportionally to their
-natural widths and the eliding labels prove the shortened captions.
+bar's whole width in equal shares; in a narrow column the tabs shrink to
+equal shares of the column (the caption length buys no pixels) and the
+eliding labels prove the shortened captions.
 """
 from __future__ import annotations
 
@@ -35,8 +38,9 @@ from tests.presentation.qml_helpers import find_item, walk_items
 
 FULL_TAB_LABELS = ["Организации", "Персонажи", "Предметы", "Локации"]
 # 1280 — the default window width; the detail column it leaves the panel
-# must show every full caption whole while the tabs fill the strip (spec
-# scenario «Все вкладки прочитаны на дефолте»).
+# must show every full caption whole while the tabs fill the strip in
+# equal shares (spec scenario «Вкладки делят колонку равными долями на
+# дефолте», renamed 2026-10-01 from «Все вкладки прочитаны на дефолте»).
 DEFAULT_PANEL_WIDTH = 1280
 # A column clearly narrower than the natural captions: the tabs must shrink
 # and the labels must elide instead of the strip leaking out of the panel
@@ -73,6 +77,24 @@ def test_view_model_publishes_full_titles_only():
     assert list(vm.tabTitles) == FULL_TAB_LABELS
     # The short-caption half of the NRI-0015 API retired with the registry field.
     assert not hasattr(vm, "tabLabels")
+
+
+def test_tab_icons_align_with_the_titles_and_come_from_the_one_map():
+    # Lucide pass 2026-09-30: the strip's glyph column is index-aligned with
+    # TAB_TITLES and reads the presentation.entity_icons map — the panel's
+    # own storage of icon names retired (the QML stays iconless: the numbers
+    # live in the DetailPanelRoot.qml comment).
+    from app.domain import entity_registry
+    from app.presentation.entity_icons import icon_for
+    from app.presentation.viewmodels.detail_panel_view_model import (
+        DetailPanelViewModel,
+    )
+
+    vm = DetailPanelViewModel()
+    assert list(vm.tabIcons) == [
+        icon_for(entity_registry.resolve(key)) for key in vm.ENTITY_TYPES
+    ]
+    assert list(vm.tabIcons) == ["building", "user-round", "sword", "map-pin"]
 
 
 # ── the shown island: text = name = tooltip = full caption (task 4.1) ───────
@@ -143,8 +165,9 @@ def test_tab_text_accessible_name_and_tooltip_are_one_caption(qtbot):
 
 
 def test_tabs_stretch_to_fill_the_strip_whole_at_the_default_width(qtbot):
-    """Spec «Все вкладки прочитаны на дефолте» + the stretch half of the
-    NRI-0019 contract: whole captions AND the tabs share the bar's width."""
+    """Spec «Вкладки делят колонку равными долями на дефолте» + the stretch half of the
+    NRI-0019 contract: whole captions AND the tabs share the bar's width in
+    equal shares (2026-10-01: the caption length buys no tab extra pixels)."""
     panel = _shown_panel(qtbot, DEFAULT_PANEL_WIDTH)
     root = panel.quick.rootObject()
     bar = _bar(panel)
@@ -159,20 +182,26 @@ def test_tabs_stretch_to_fill_the_strip_whole_at_the_default_width(qtbot):
     # natural-width row left the strip's remainder empty; the spacing between
     # underline tabs is zero, so the sum lands on the bar exactly).
     assert abs(sum(tab.width() for tab in tabs) - bar.width()) <= 1.0
+    # Equal shares: the four widths are one width.
+    widths = [tab.width() for tab in tabs]
+    assert max(widths) - min(widths) <= 1.0
 
 
 def test_tabs_shrink_with_elided_captions_in_a_narrow_column(qtbot):
-    """Spec «Узкая колонка сокращает подписи»: below the natural widths the
-    tabs shrink proportionally to those widths and their labels elide —
-    the strip stays inside the panel instead of clipping."""
+    """Spec «Узкая колонка сокращает подписи» + the equal-share law (spec
+    qml-components «Вкладки делят ширину полосы», 2026-10-01 re-pin): below
+    the natural widths every tab keeps the SAME share of the bar — the
+    retired proportional-to-caption shrink gave the longer captions more
+    pixels than the shorter ones — and the labels elide; the strip stays
+    inside the panel instead of clipping."""
     panel = _shown_panel(qtbot, NARROW_PANEL_WIDTH)
     root = panel.quick.rootObject()
     bar = _bar(panel)
     tabs = _tabs(panel)
-    ratios = []
+    widths = []
     for tab, full in zip(tabs, FULL_TAB_LABELS):
         assert tab.width() < tab.property("implicitWidth"), full
-        ratios.append(tab.width() / tab.property("implicitWidth"))
+        widths.append(tab.width())
         # The shortened caption: the label has less room than its full text
         # (its elide: Text.ElideRight is pinned at the component source in
         # test_qml_components — the caption then renders as «Организаци…»).
@@ -180,10 +209,22 @@ def test_tabs_shrink_with_elided_captions_in_a_narrow_column(qtbot):
         assert label.width() < label.property("implicitWidth"), full
         scene = tab.mapToItem(root, QPointF(0, 0))
         assert scene.x() + tab.width() <= root.width() + 0.5, full
-    # Proportional shrink: every tab lost the same share of its natural width.
-    assert max(ratios) - min(ratios) < 0.05
+    # Equal shares: the caption length does not buy a tab extra pixels.
+    assert max(widths) - min(widths) <= 1.0
     # The shrunk tabs still fill the bar — they narrow, they do not leave a gap.
-    assert abs(sum(tab.width() for tab in tabs) - bar.width()) <= 1.0
+    assert abs(sum(widths) - bar.width()) <= 1.0
+
+
+def test_detail_tab_strip_stays_iconless(qtbot):
+    # Lucide pass 2026-09-30: the glyph-capable component answers here with
+    # an EMPTY icon name — the iconed naturals (121.8/110.4/103.0/91.6 px)
+    # exceed even the default-width bar (measured numbers in the
+    # DetailPanelRoot.qml comment), so this strip paints no glyph.
+    panel = _shown_panel(qtbot, NARROW_PANEL_WIDTH)
+    for tab in _tabs(panel):
+        assert tab.property("iconName") == ""
+        glyphs = [i for i in walk_items(tab) if i.objectName() == "themeTabIcon"]
+        assert len(glyphs) == 1 and glyphs[0].property("visible") is False
 
 
 def test_bare_manager_first_open_is_a_silent_noop():

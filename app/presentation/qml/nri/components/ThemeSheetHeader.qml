@@ -81,7 +81,7 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: Tokens.px(islandTokens, "space.md", 16)
         anchors.verticalCenter: parent.verticalCenter
-        text: "✕"
+        iconName: "x"
         // Icon-like glyph: the tree names it by the action it performs
         // (design D3 — the annotation lives with the component).
         Accessible.name: "Закрыть"

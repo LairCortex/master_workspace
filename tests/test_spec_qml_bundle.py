@@ -82,6 +82,13 @@ EXPECTED_COMPONENT_FILES = (
     # 2026-09-26, docs/qa/2026-09-26-header-alignment.md) — a library script
     # imported by the three roots, same shipping rule as tokens.js.
     "panelHeader.js",
+    # Lucide glyph pair (user request 2026-09-30): the generated icons.js map
+    # and its ThemeIcon brush. The SVGs they derive from live in the icons/
+    # subdirectory as a build-time source only (scripts/vendor_lucide.py) —
+    # the directory scan below counts module files only, the subdirectory is
+    # deliberately not bundled.
+    "icons.js",
+    "ThemeIcon.qml",
     "ThemeButton.qml",
     "ThemeField.qml",
     "ThemeTextArea.qml",

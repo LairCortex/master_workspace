@@ -269,7 +269,7 @@ class TestPanelDataContract:
         panel = _island(qtbot, vm, root_qml)
         vm.window = (date(1200, 1, 1), date(1200, 3, 9))
         panel.update_events(vm.events)
-        assert panel._root.property("windowText") == "01 Январь 1200 — 09 Март 1200 ▾"
+        assert panel._root.property("windowText") == "01 Январь 1200 — 09 Март 1200"
         vm.window = None  # an external reset lives past the chip
         panel.update_events(vm.events)
         assert panel._root.property("windowText") == WINDOW_CHIP_ALL
@@ -398,7 +398,7 @@ class TestStandInKnobGuards:
         assert panel._root.property("selectedId") == -1  # spun up normally
 
     def test_now_scroll_refused_connection_is_swallowed(self, qtbot, root_qml):
-        """Same tolerance for the «➜ Сейчас» subscription (NRI-0021): the
+        """Same tolerance for the «Сейчас» subscription (NRI-0021): the
         island spins up normally and the stand-in's signal stays inert."""
         panel = _island(qtbot, self.RefusingNowScrollVM(), root_qml)
         assert panel._root.property("selectedId") == -1
@@ -468,7 +468,7 @@ class TestDateWindowPopupEntry:
         assert received == [((MonthDay(1200, 1, 5), False), (MonthDay(1200, 1, 9), False))]
         assert not popup.isVisible()
         assert panel._root.property("windowText") == (
-            "05 Январь 1200 — 09 Январь 1200 ▾"
+            "05 Январь 1200 — 09 Январь 1200"
         )
 
     def test_mixed_era_window_reaches_channel_and_chip_with_suffix(
@@ -485,7 +485,7 @@ class TestDateWindowPopupEntry:
         popup.end_calendar.day_selected.emit(MonthDay(100, 12, 31))
         assert received == [((MonthDay(500, 1, 1), True), (MonthDay(100, 12, 31), False))]
         assert panel._root.property("windowText") == (
-            "01 Январь 500 г. до н.э. — 31 Декабрь 100 ▾"
+            "01 Январь 500 г. до н.э. — 31 Декабрь 100"
         )
 
     def test_earlier_second_tap_rearms_instead_of_backwards_range(
@@ -577,7 +577,7 @@ class TestDateWindowPopupEntry:
         panel._on_window_range(date(1200, 4, 3), date(1200, 5, 6))
         assert received == [(date(1200, 4, 3), date(1200, 5, 6))]
         assert panel._root.property("windowText") == (
-            "03 Апрель 1200 — 06 Май 1200 ▾"
+            "03 Апрель 1200 — 06 Май 1200"
         )
         assert panel._window_range == (date(1200, 4, 3), date(1200, 5, 6))
 

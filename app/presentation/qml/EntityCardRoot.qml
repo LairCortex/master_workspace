@@ -115,11 +115,25 @@ Rectangle {
                             visible: entityCardVm.imageAvailable
                             cache: false
                         }
-                        HintText {
-                            objectName: "entityImagePlaceholder"
+                        // The empty picture slot: the Lucide «image» glyph
+                        // above the hint (user request 2026-09-30 — the mute
+                        // text-only placeholder gets its icon affordance).
+                        Column {
                             anchors.centerIn: parent
-                            text: "Нет изображения"
+                            spacing: Tokens.px(root.islandTokens, "space.xs", 4)
                             visible: !entityCardVm.imageAvailable
+                            ThemeIcon {
+                                objectName: "entityImagePlaceholderIcon"
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                name: "image"
+                                size: 32
+                                tint: Tokens.token(root.islandTokens, "color.fg.muted", "gray")
+                            }
+                            HintText {
+                                objectName: "entityImagePlaceholder"
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "Нет изображения"
+                            }
                         }
                         MouseArea {
                             objectName: "entityImageOpenArea"
@@ -133,11 +147,15 @@ Rectangle {
                         ThemeButton {
                             objectName: "entityImagePickButton"
                             text: "Выбрать файл"
+                            // Lucide icon pass 2026-09-30: the file-picker
+                            // affordance rides in front of the caption.
+                            iconName: "folder-open"
                             onClicked: entityCardVm.requestImagePick()
                         }
                         ThemeButton {
                             objectName: "entityImageClearButton"
                             text: "Убрать"
+                            iconName: "eraser"
                             enabled: entityCardVm.imageAvailable
                             onClicked: entityCardVm.requestImageClear()
                         }
@@ -353,7 +371,7 @@ Rectangle {
                         }
                         ThemeIconButton {
                             objectName: "entityMusicEditButton"
-                            text: "✎"
+                            iconName: "pencil"
                             // NRI-0017 task 4.2 (FI-4=CR2): glyph text is no
                             // caption to a reader, so this icon button is an
                             // icon button — named by the action at the
@@ -409,6 +427,11 @@ Rectangle {
                         ThemeTabButton {
                             objectName: "entityRelatedTab_" + modelData.attr
                             text: modelData.label
+                            // The section type's glyph from the one map
+                            // (Lucide pass 2026-09-30); the sheet sizes to
+                            // its content, so the captions stay whole with
+                            // the glyph (measured offscreen this pass).
+                            iconName: modelData.iconName
                         }
                     }
                 }
@@ -437,6 +460,9 @@ Rectangle {
                     objectName: "entityOpenSheetButton"
                     visible: entityCardVm.characterSheetAvailable
                     text: "Открыть чар-лист"
+                    // Lucide icon pass 2026-09-30: the sheet glyph (the same
+                    // paper the character-sheet islands open into).
+                    iconName: "scroll-text"
                     onClicked: entityCardVm.requestCharacterSheet()
                 }
                 Item { Layout.fillWidth: true }
@@ -444,6 +470,9 @@ Rectangle {
                     id: saveButton
                     objectName: "entitySaveButton"
                     text: "Сохранить"
+                    // Lucide icon pass 2026-09-30: the save chip matches the
+                    // editor/fill save buttons of the same island family.
+                    iconName: "save"
                     accentBackground: true
                     enabled: entityCardVm.saveEnabled
                     onClicked: entityCardVm.requestSave()

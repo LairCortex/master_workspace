@@ -13,11 +13,12 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor
 
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import GameCoord, as_game_coord
+from app.presentation.entity_icons import icon_for
 from app.presentation.theme.rating import rating_to_color
 from app.presentation.utils.date_utils import (
     era_flag,
@@ -28,7 +29,7 @@ from app.presentation.utils.date_utils import (
     split_date_era,
     worst_case_date_caption,
 )
-from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
+from app.presentation.utils.image_utils import resolve_preview_path
 from app.presentation.views.timeline_rows import event_parent_id
 
 
@@ -43,35 +44,25 @@ SUPPORTED_ENTITY_TYPES = frozenset(
     )
 )
 _TRANSPARENT = "#00000000"
-# Section header copy and glyphs are this view's presentation surface; the
-# collection keys, canonical order and type ids derive from the entity
-# registry (wave 3, A4 — including the plural morphology it centralizes).
-_SECTION_KINDS: tuple[tuple[EntityType, str, str], ...] = (
-    (EntityType.EVENT, "📅  Активные события", "📅"),
-    (EntityType.LOCATION, "📍  Локации", "📍"),
-    (EntityType.ORGANIZATION, "👥  Организации", "👥"),
-    (EntityType.CHARACTER, "🧑  Персонажи", "🧑"),
-    (EntityType.ITEM, "🗡  Предметы", "🗡"),
+# Section header copy is this view's presentation surface; the collection
+# keys, canonical order and type ids derive from the entity registry (wave 3,
+# A4 — including the plural morphology it centralizes). The Lucide glyph of
+# a section is NOT stored here: since the 2026-09-30 Lucide pass the icons
+# live in the one map ``presentation.entity_icons`` (one knowledge, one place).
+_SECTION_KINDS: tuple[tuple[EntityType, str], ...] = (
+    (EntityType.EVENT, "Активные события"),
+    (EntityType.LOCATION, "Локации"),
+    (EntityType.ORGANIZATION, "Организации"),
+    (EntityType.CHARACTER, "Персонажи"),
+    (EntityType.ITEM, "Предметы"),
 )
 _SECTION_ORDER: tuple[str, ...] = tuple(
-    entity_registry.descriptor(etype).plural for etype, _, _ in _SECTION_KINDS
+    entity_registry.descriptor(etype).plural for etype, _ in _SECTION_KINDS
 )
-_SECTION_META: dict[str, tuple[str, str, str]] = {
-    entity_registry.descriptor(etype).plural: (header, etype.value, glyph)
-    for etype, header, glyph in _SECTION_KINDS
+_SECTION_META: dict[str, tuple[str, str]] = {
+    entity_registry.descriptor(etype).plural: (header, etype.value)
+    for etype, header in _SECTION_KINDS
 }
-
-
-def _text_icon(text: str, size: int = ICON_SIZE) -> QIcon:
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setFont(
-        QFont("Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji", int(size * 0.7))
-    )
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
-    painter.end()
-    return QIcon(pixmap)
 
 
 class WorldSnapshotRowModel(QAbstractListModel):
@@ -87,9 +78,8 @@ class WorldSnapshotRowModel(QAbstractListModel):
         "ratingHex",
         "fontBold",
         "tooltipHtml",
-        "icon",
         "iconKey",
-        "iconText",
+        "iconName",
         "iconPath",
         "iconSize",
         "expanded",
@@ -382,7 +372,7 @@ class WorldSnapshotViewModel(QObject):
             children = self._sections.get(section, [])
             if not children:
                 continue
-            label, entity_type, emoji = _SECTION_META[section]
+            label, entity_type = _SECTION_META[section]
             # The header count is the count of EVENTS (task 8.3, spec
             # «Подсобытия в счётчике, заглушки — нет»): the always-expanded
             # children are events and ride along, the parent stubs explain
@@ -401,9 +391,8 @@ class WorldSnapshotViewModel(QObject):
                     "ratingHex": _TRANSPARENT,
                     "fontBold": True,
                     "tooltipHtml": "",
-                    "icon": _text_icon(emoji),
                     "iconKey": entity_type,
-                    "iconText": emoji,
+                    "iconName": icon_for(entity_type),
                     "iconPath": "",
                     "iconSize": ICON_SIZE,
                     "expanded": self._expanded[section],
@@ -475,9 +464,8 @@ class WorldSnapshotViewModel(QObject):
             "ratingHex": _TRANSPARENT,
             "fontBold": False,
             "tooltipHtml": "",
-            "icon": _text_icon("📅"),
             "iconKey": "event",
-            "iconText": "📅",
+            "iconName": icon_for(EntityType.EVENT),
             "iconPath": "",
             "iconSize": ICON_SIZE,
             "expanded": False,
@@ -515,9 +503,8 @@ class WorldSnapshotViewModel(QObject):
             "ratingHex": _TRANSPARENT,
             "fontBold": False,
             "tooltipHtml": "",
-            "icon": _text_icon("📅"),
             "iconKey": "event",
-            "iconText": "📅",
+            "iconName": icon_for(EntityType.EVENT),
             "iconPath": "",
             "iconSize": ICON_SIZE,
             "expanded": False,
@@ -528,11 +515,9 @@ class WorldSnapshotViewModel(QObject):
         rating = self._rating_of(entity)
         name = str(getattr(entity, "name", entity))
         display = name if rating <= 1 else f"{name}  [{rating}/20]"
-        pixmap = load_entity_preview(entity, slot_size=ICON_SIZE)
         # the plural morphology lives in the registry only (wave 3, A4)
         section_key = entity_registry.collection(entity_type)
-        icon_text = _SECTION_META[section_key][2]
-        icon = QIcon(pixmap) if not pixmap.isNull() else _text_icon(icon_text)
+        icon_name = icon_for(entity_type)
         preview_path = resolve_preview_path(entity)
         tooltip = [f"<b>{name}</b> ({entity_type})", f"Рейтинг: {rating}/20"]
         description = getattr(entity, "description", None)
@@ -551,9 +536,11 @@ class WorldSnapshotViewModel(QObject):
             ),
             "fontBold": rating >= 15,
             "tooltipHtml": "<br>".join(tooltip),
-            "icon": icon,
             "iconKey": entity_type,
-            "iconText": icon_text,
+            # The section glyph stays delivered even when the photo wins
+            # (iconPath) — the QML fallback paints it for entities without
+            # a picture (Lucide pass 2026-09-30).
+            "iconName": icon_name,
             "iconPath": (
                 preview_path.resolve().as_uri()
                 if preview_path is not None and preview_path.exists()

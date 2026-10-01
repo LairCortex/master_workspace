@@ -4,7 +4,6 @@ from datetime import date
 from types import SimpleNamespace
 
 from PySide6.QtCore import QModelIndex, Qt
-from PySide6.QtGui import QIcon, QPixmap
 
 from app.domain.game_calendar import MonthDay
 from app.presentation.viewmodels.now_date_view_model import NowDateViewModel
@@ -93,7 +92,7 @@ def test_populate_builds_render_ready_flat_rows_and_stats(qapp):
     for row in rows:
         assert {
             "type", "id", "name", "ratingHex", "fontBold",
-            "tooltipHtml", "icon",
+            "tooltipHtml", "iconName",
         } <= row.keys()
     assert any(row["type"] == "character" and row["fontBold"] for row in rows)
     location_row = next(
@@ -163,13 +162,10 @@ def test_sections_keep_expansion_across_populate(qapp):
     )
 
 
-def test_ordering_icon_size_boldness_and_selection(qapp, monkeypatch):
-    pixmap = QPixmap(24, 24)
-    pixmap.fill()
-    monkeypatch.setattr(
-        "app.presentation.viewmodels.world_snapshot_view_model.load_entity_preview",
-        lambda _entity, slot_size: pixmap if slot_size == 24 else QPixmap(),
-    )
+def test_ordering_icon_name_boldness_and_selection(qapp):
+    # Lucide pass 2026-09-30: the icon slots carry the library glyph NAME the
+    # QML ThemeIcon paints (the emoji-rendered QIcon and its photo-preview
+    # monkeypatch retired with the mute-text icon practice).
     vm = WorldSnapshotViewModel()
     selected = []
     vm.entitySelected.connect(lambda kind, entity_id: selected.append((kind, entity_id)))
@@ -202,8 +198,8 @@ def test_ordering_icon_size_boldness_and_selection(qapp, monkeypatch):
         r for r in rows
         if r["rowKind"] == "entityRow" and r["type"] == "character"
     )
-    assert isinstance(character_row["icon"], QIcon)
-    assert 24 in [size.width() for size in character_row["icon"].availableSizes()]
+    assert character_row["iconName"] == "user-round"
+    assert character_row["iconSize"] == 24
     assert character_row["fontBold"] is True
 
     character_index = next(
@@ -473,9 +469,9 @@ def test_a_tree_free_slice_is_the_old_flat_print(qapp):
     flat = _event_rows(vm)
 
     def _plain(rows):
-        # QIcon instances carry identity, not equality — the print comparison
-        # reads the render slots that matter and drops the icon object.
-        return [{k: v for k, v in row.items() if k != "icon"} for row in rows]
+        # The print comparison reads the render slots; icon objects left the
+        # rows with the Lucide pass, so every key already compares by value.
+        return [dict(row) for row in rows]
 
     reference = WorldSnapshotViewModel()
     # The same slice through the same code path with an explicit empty card:

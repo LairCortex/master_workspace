@@ -15,14 +15,21 @@ losing its look or its states (scenario «AI-кнопка осталась со�
 identical in both component sources so the gauge can never drift apart.
 
 Spec qml-components «Плоская (ghost) гарнитура кнопки библиотеки» (NRI-0023
-Д12): a usage that asks for ``ghost: true`` gets no face at all at rest —
-neither fill nor border, only the glyph — and the compiler's derivations as
-the hover/pressed wash, pixel-pinned in BOTH themes over the same canvas the
-row's wash sits on; the gauge and the accessibility are untouched; and a
-ghost combined with ``accentBackground`` hands the glyph to ``color.accent.fg``
-while the background stays transparent (the chevron-over-selection pair).
-Sites that never asked for ghost keep the previous face — pinned here as a
-property check and pixel-tested for the whole library in the gallery.
+Д12, owner rework of the 2026-09-30 live audits): a usage that asks for
+``ghost: true`` wears NO own face in ANY state — neither fill nor border at
+rest, hovered or pressed, only the glyph. The first cut answered hover/press
+with the compiler's derivations (color.accent.hover/pressed); being the
+accent under an alpha they printed as a light rounded chip over the hovered
+row's own wash and wherever the 32 px square overhangs a shorter band — the
+same-day rework retired them, the background's ghost branch is the constant
+"transparent" in every state. The interaction story is the row's (its wash,
+its tooltip) and the state flip lives in the glyph tint: a ghost combined
+with ``accentBackground`` (the chevron-over-selection pair) shares that
+constant and hands the glyph to ``color.accent.fg``. Pixel-pinned in BOTH
+themes over the same canvas the row's wash sits on; the gauge and the
+accessibility are untouched. Sites that never asked for ghost keep the
+previous face — pinned here as a property check and pixel-tested for the
+whole library in the gallery.
 """
 from __future__ import annotations
 
@@ -103,7 +110,7 @@ Item {
         onClicked: probeRoot.clicks += 1
     }
     // The chevron-over-selection pair: ghost + accentBackground — the
-    // background stays transparent, the glyph takes color.accent.fg.
+    // background wears no face in any state, the glyph takes color.accent.fg.
     ThemeIconButton {
         id: ghostAccent
         objectName: "probeGhostAccent"
@@ -119,9 +126,9 @@ Item {
     // ghost branch in ThemeButton trips these without any pixel luck.
     readonly property string ghostFace: ghost.background.color.toString()
     readonly property int ghostBorderW: ghost.background.border.width
-    readonly property color ghostGlyph: ghost.contentItem.color
+    readonly property color ghostGlyph: ghost.iconTint
     readonly property string ghostAccentFace: ghostAccent.background.color.toString()
-    readonly property color ghostAccentGlyph: ghostAccent.contentItem.color
+    readonly property color ghostAccentGlyph: ghostAccent.iconTint
     readonly property string solidFace: glyph.background.color.toString()
     readonly property int solidBorderW: glyph.background.border.width
 }
@@ -205,8 +212,11 @@ def test_ai_button_takes_the_square_and_keeps_its_states(qtbot, qapp, tmp_path):
     assert (ai.width(), ai.height()) == (SIDE, SIDE)
     assert (ai.implicitWidth(), ai.implicitHeight()) == (SIDE, SIDE)
     # Look and states untouched (spec «AI-кнопка осталась собой»): the idle
-    # glyph is «✨», the observable aiState contract stays the proxy/default.
-    assert ai.property("text") == "✨"
+    # face is the Lucide «sparkles» glyph (2026-09-30 icon pass — the mute
+    # «✨» text glyph retired, the state contract did not), the observable
+    # aiState contract stays the proxy/default.
+    assert ai.property("iconName") == "sparkles"
+    assert ai.property("text") == ""
     assert ai.property("aiState") == "disabled"
 
     # The generating state repaints the glyph to «…» without leaving the
@@ -214,7 +224,23 @@ def test_ai_button_takes_the_square_and_keeps_its_states(qtbot, qapp, tmp_path):
     ai.setProperty("isGenerating", True)
     widget.grab()
     assert ai.property("text") == "…"
+    assert ai.property("iconName") == ""
     assert (ai.width(), ai.height()) == (SIDE, SIDE)
+
+    # The stop half of a batch wave (A4, live fix 2026-09-30): while the wave
+    # runs the press stops it and the face prints the Lucide «circle-stop»
+    # instead of the «…» — the retired mute «⏹» text, in glyph form.
+    ai.setProperty("isCancelling", True)
+    widget.grab()
+    assert ai.property("text") == ""
+    assert ai.property("iconName") == "circle-stop"
+
+    # Idle again: the sparkles face returns (third state of the pin).
+    ai.setProperty("isGenerating", False)
+    ai.setProperty("isCancelling", False)
+    widget.grab()
+    assert ai.property("text") == ""
+    assert ai.property("iconName") == "sparkles"
 
     iface = QAccessible.queryAccessibleInterface(ai)
     assert iface.role() == QAccessible.Role.Button
@@ -235,24 +261,8 @@ def test_the_square_side_is_one_component_constant(component):
     assert re.search(r"\bimplicitHeight:\s*side\b", source), component
 
 
-# ── the flat (ghost) set (NRI-0023 task 11.2, design Д12) ─────────────────────
-
-
-def _composite(base: QColor, over: QColor) -> QColor:
-    """The raster composite of ``over`` (its own alpha) on ``base`` — the
-    same analytic form the timeline wash pins use; comparisons keep ±2."""
-    a = over.alphaF()
-    return QColor(
-        round(over.red() * a + base.red() * (1 - a)),
-        round(over.green() * a + base.green() * (1 - a)),
-        round(over.blue() * a + base.blue() * (1 - a)),
-    )
-
-
-def _is_close(actual: QColor, wanted: QColor) -> bool:
-    return (abs(actual.red() - wanted.red()) <= 2
-            and abs(actual.green() - wanted.green()) <= 2
-            and abs(actual.blue() - wanted.blue()) <= 2)
+# ── the flat (ghost) set (NRI-0023 task 11.2, design Д12, owner rework
+#    of the 2026-09-30 live audits: no own face in ANY state) ─────────────────
 
 
 def _scene_pixel(widget: QQuickWidget, item: QQuickItem,
@@ -268,20 +278,19 @@ def _scene_pixel(widget: QQuickWidget, item: QQuickItem,
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_ghost_button_is_invisible_until_the_pointer_arrives(qtbot, qapp,
-                                                             tmp_path, theme):
-    """Spec «Плоская (ghost) гарнитура кнопки библиотеки», scenario
-    «Призрачная кнопка невидима до наведения» + the library's pixel rule for
-    both themes: at rest neither fill nor border is painted — the corner of
-    the 32×32 hit square answers the canvas verbatim, the face property is
-    transparent and its border width 0; the PRESSED state (synthetic mouse
-    events do reach Controls offscreen) paints the compiler's
-    ``color.accent.pressed`` derivation as an exact composite over the same
-    canvas, and releasing returns the plain canvas. The hover half of the
-    wash is the same ghost branch one step shallower (``accentHover``, the
-    accessors themselves are token-probe-pinned by ``test_qml_components``);
-    hover events never reach embedded Controls offscreen — the live-audit
-    half of the state, pinned live in
+def test_ghost_button_wears_no_face_in_any_state(qtbot, qapp,
+                                                 tmp_path, theme):
+    """Spec «Плоская (ghost) гарнитура кнопки библиотеки» (owner rework of
+    the 2026-09-30 live audits), pixel-pinned in both themes: the ghost
+    wears NO own face in ANY state. At rest the face property is transparent
+    with border width 0 and the corner of the 32×32 hit square answers the
+    canvas verbatim; the PRESSED state (synthetic mouse events do reach
+    Controls offscreen) changes NOTHING — the same transparent property and
+    the same canvas pixel, where the retired first cut answered the
+    compiler's ``color.accent.pressed`` as a composite chip; releasing keeps
+    the plain canvas. Hover is the same constant branch one step shallower —
+    hover events never reach embedded Controls offscreen, the source half of
+    that state is pinned by the ghost-branch guards below, the live half in
     ``docs/qa/2026-09-29-timeline-tree-design-fixes.md``. Neighbours never
     move (nothing geometry-wise changes) and the ghost keeps the штатный
     32×32 gauge."""
@@ -305,29 +314,26 @@ def test_ghost_button_is_invisible_until_the_pointer_arrives(qtbot, qapp,
     assert int(root.property("ghostBorderW")) == 0, theme
     assert _scene_pixel(widget, ghost, 3, 3) == canvas_col, theme
 
-    # pressed: the deeper derivation as an exact composite (held pixel).
+    # pressed: the state lands on the control, yet the face does not move —
+    # the constant branch wears nothing (the retired chip was exactly the
+    # ``color.accent.pressed`` composite at this very corner).
     center = ghost.mapToScene(QPointF(ghost.width() / 2, ghost.height() / 2))
     pos = QPoint(int(center.x()), int(center.y()))
     QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, pos)
     QTest.qWait(10)
     QApplication.processEvents()
-    qtbot.waitUntil(
-        lambda: QColor(str(root.property("ghostFace")))
-        == QColor(tokens["color.accent.pressed"]),
-        timeout=5000,
-    )
-    pressed_px = _scene_pixel(widget, ghost, 3, 3)
-    assert _is_close(
-        pressed_px, _composite(canvas_col, QColor(tokens["color.accent.pressed"]))
-    ), (theme, pressed_px.name())
+    assert ghost.property("pressed") is True, theme  # the state landed
+    assert QColor(str(root.property("ghostFace"))).alpha() == 0, theme
+    assert _scene_pixel(widget, ghost, 3, 3) == canvas_col, theme
     QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, pos)
     QTest.qWait(10)
     QApplication.processEvents()
 
-    # released: the face is transparent again — the pressed flash was the
-    # background node's paint only, the hit square stayed put.
+    # released: still nothing of its own — the press never painted and the
+    # hit square stayed put.
     _assert_icon_square(ghost)
     assert QColor(str(root.property("ghostFace"))).alpha() == 0, theme
+    assert int(root.property("ghostBorderW")) == 0, theme
     assert _scene_pixel(widget, ghost, 3, 3) == canvas_col, theme
 
     # Scenario «Привычные кнопки не задеты»: the non-ghost sibling still
@@ -337,20 +343,53 @@ def test_ghost_button_is_invisible_until_the_pointer_arrives(qtbot, qapp,
     assert widget.errors() == []
 
 
-def test_the_ghost_branch_reads_the_compiler_derivations_only():
-    """Source-level contract of the ghost face (the grep idiom of the a11y
-    convention guards — and the library rule: hover/pressed are exactly the
-    compiler's ``accentHover``/``accentPressed`` derivations, no color math,
-    no literals): the ghost branch in ThemeButton's background answers the
-    accessors, and its rest color is the transparent literal."""
+def test_the_ghost_branch_answers_the_transparent_literal_only():
+    """Source-level contract of the ghost face after the owner rework of the
+    2026-09-30 live audits (the grep idiom of the a11y convention guards):
+    the ghost branch in ThemeButton's background is a CONSTANT — its single
+    answer is the transparent literal, in every state. The retired first
+    cut's derivation reads (``accentHover``/``accentPressed``) and the
+    ``pressed``/``hovered`` states they rode must stay out of the branch —
+    re-adding them would reprint the accent-under-alpha chip over the
+    row's own wash; no color math and no other literal may appear."""
     source = (COMPONENTS_DIR / "ThemeButton.qml").read_text(encoding="utf-8")
     branch = source.split("if (control.ghost)", 1)[1].split("if (!control.enabled)", 1)[0]
-    assert "control.accentPressed(" in branch
-    assert "control.accentHover(" in branch
-    assert '"transparent"' in branch
+    assert branch.count("return") == 1, branch
+    assert 'return "transparent";' in branch, branch
+    # the retired hover/pressed face must not creep back into the branch
+    assert "control.accentPressed(" not in branch
+    assert "control.accentHover(" not in branch
+    assert "control.pressed" not in branch
+    assert "control.hovered" not in branch
     # …and the border line: a ghost wears no border.
     border_line = [ln for ln in source.splitlines() if "border.width:" in ln][0]
     assert "control.ghost ? 0" in border_line
+
+
+def test_the_ghost_pair_on_an_accent_fill_shares_the_constant():
+    """Source contract of the live fix 2026-09-30 (the light chip the user
+    saw around the ladder chevron on the selected row): the derivations are
+    the accent under an alpha — over the solid selection band the 32 px
+    square overhangs they printed as a rounded chip. The pair therefore
+    shares the plain ghost's constant: the ghost answer never consults
+    ``accentBackground`` (no pair branch, no short-circuit guard of its own
+    — the constant IS the suppression), and it stands in the color binding
+    before any state or accent-derivation branch is reached. The pixel half
+    is pinned by ``test_ghost_with_accent_background_hands_the_glyph_to_accent_fg``;
+    sites that never asked for ghost keep their derivation pair
+    word-for-word."""
+    source = (COMPONENTS_DIR / "ThemeButton.qml").read_text(encoding="utf-8")
+    branch = source.split("if (control.ghost)", 1)[1].split("if (!control.enabled)", 1)[0]
+    assert "control.accentBackground" not in branch, branch
+    # the constant is returned before the binding ever reads a state or an
+    # accent branch — nothing can repaint the pair over the selection band.
+    constant = source.index('return "transparent";')
+    assert constant < source.index("if (control.accentBackground)")
+    assert constant < source.index("control.pressed")
+    # the non-ghost half keeps its derivation pair (scenario «Привычные
+    # кнопки не задеты» at the source level).
+    assert "control.accentPressed(control.accentColor)" in source
+    assert "control.accentHover(control.accentColor)" in source
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
@@ -358,22 +397,47 @@ def test_ghost_with_accent_background_hands_the_glyph_to_accent_fg(
     qtbot, qapp, tmp_path, theme
 ):
     """The pair the ladder chevron rides over the selection wash (design Д12):
-    ghost wins the BACKGROUND (transparent at rest — the wash chip never
-    returns), accentBackground wins the GLYPH (``color.accent.fg``) — so the
-    glyph reads over the accent without punching a canvas hole in it."""
+    ghost wins the BACKGROUND, accentBackground wins the GLYPH
+    (``color.accent.fg``) — so the glyph reads over the accent without
+    punching a canvas hole in it. The live fix 2026-09-30 tightened the
+    background half from «transparent at rest» to «no face in ANY state»:
+    the synthetic press (which DOES reach Controls offscreen — the plain-ghost
+    test rides it) must leave the face transparent and the corner pixel the
+    canvas verbatim, where the retired behavior answered the pressed
+    derivation as a composite (the reported chip). Hover is the same branch
+    one step shallower — unreachable to synthetic mouse events offscreen, its
+    suppression is source-pinned by the guard above and the live half by
+    the 2026-09-30 re-audit."""
     runtime = make_runtime(tmp_path, theme)
     palette = QmlPalette(runtime)
     widget = load_probe(qtbot, qapp, runtime, tmp_path, palette)
     tokens = palette.tokens
-    find_item(widget, "probeCanvas").setProperty(
-        "color", QColor(tokens["color.bg.canvas"])
-    )
+    canvas_col = QColor(tokens["color.bg.canvas"])
+    find_item(widget, "probeCanvas").setProperty("color", canvas_col)
 
     root = widget.rootObject()
     accent = find_item(widget, "probeGhostAccent")
     _assert_icon_square(accent)
+    # at rest: no face, only the flipped glyph stands on the band
     assert QColor(str(root.property("ghostAccentFace"))).alpha() == 0, theme
     assert root.property("ghostAccentGlyph") == QColor(tokens["color.accent.fg"]), theme
     # the plain ghost keeps the primary glyph rank — only the accent pair flips
     assert root.property("ghostGlyph") == QColor(tokens["color.fg.primary"]), theme
+
+    # pressed: the face stays transparent and the pixel stays the canvas —
+    # the pair wears no face in ANY state (the retired chip was exactly this
+    # paint: accent under an alpha printed around the glyph, composite
+    # ``_composite(canvas_col, pressed)`` at this very corner).
+    center = accent.mapToScene(QPointF(accent.width() / 2, accent.height() / 2))
+    pos = QPoint(int(center.x()), int(center.y()))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier, pos)
+    QTest.qWait(10)
+    QApplication.processEvents()
+    assert accent.property("pressed") is True, theme  # the state landed
+    assert QColor(str(root.property("ghostAccentFace"))).alpha() == 0, theme
+    assert _scene_pixel(widget, accent, 3, 3) == canvas_col, theme
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier, pos)
+    QTest.qWait(10)
+    QApplication.processEvents()
+    assert QColor(str(root.property("ghostAccentFace"))).alpha() == 0, theme
     assert widget.errors() == []

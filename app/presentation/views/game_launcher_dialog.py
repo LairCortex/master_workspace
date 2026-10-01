@@ -56,7 +56,10 @@ class GameLauncherDialog(IslandDialogMixin, QDialog):
         super().__init__(parent)
         self._theme = theme
         self.setWindowTitle("Master Workspace — Выбор игры")
-        self.setMinimumSize(480, 400)
+        # Width half is the 600 step of the ui-layout-grid scale, raised from
+        # 480 for the launcher's Lucide action row (F1, live audit
+        # 2026-09-30); it must stay in sync with LauncherRoot's implicitWidth.
+        self.setMinimumSize(600, 400)
         self._selected_path: str | None = None
 
         # View model + palette live for the dialog's whole life and are its

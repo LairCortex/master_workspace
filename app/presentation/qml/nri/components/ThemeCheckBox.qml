@@ -33,6 +33,20 @@ CheckBox {
     topPadding: Tokens.px(islandTokens, "space.sm", 8)
     bottomPadding: Tokens.px(islandTokens, "space.sm", 8)
 
+    // F2 (live audit 2026-09-30, docs/qa/2026-09-30-lucide-pass-main-window.md):
+    // the stock accessibility activation of a CheckBox writes ``checked``
+    // without a user gesture — the tick flipped while ``clicked`` (and every
+    // onClicked action wired at the usage sites, the launcher's theme toggle
+    // among them) stayed silent, so the tick lied about the state the
+    // NRI-0016 D2 semantics hangs on. The press machinery is the component's,
+    // per the NRI-0012 D2 rule and the ThemeTabButton precedent (NRI-0017 F4):
+    // one accessibility Press runs the very ``click()`` a mouse click runs —
+    // checked toggles once and clicked emits once (both counted by the
+    // offscreen pin tests/presentation/test_theme_checkbox_accessibility.py,
+    // off-skin included). Only the handler is attached; the штатно role,
+    // name and state slots stay untouched (4.1/4.2 guards stay green).
+    Accessible.onPressAction: control.click()
+
     // Caption metrics drive the optical placement of the box (spec «Чекбокс
     // ставит индикатор и подпись на один оптический центр»): descent+leading
     // half is the ink hang below the geometric line center; the cap at 1 keeps

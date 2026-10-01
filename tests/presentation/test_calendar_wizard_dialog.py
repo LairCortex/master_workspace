@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPoint
-from PySide6.QtGui import QAccessible
+from PySide6.QtGui import QAccessible, QColor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -826,6 +826,63 @@ class TestSkin:
             "GameCalendarEraCheck",
         ):
             assert name in popup_sheet
+
+    async def test_reopening_after_a_theme_switch_wears_the_skin(
+        self, async_session, qtbot, tmp_path
+    ):
+        # QA 2026-09-30 F3: the runtime pushes the chrome QSS in apply() only,
+        # so a wizard constructed after the session's theme switch stayed on
+        # the OS palette (dark body under the light theme).  The constructor
+        # now applies like every other widget window — the catalog sheet is
+        # already on the root before the dialog is ever shown.
+        runtime = _runtime(tmp_path, broken=False)
+        assert runtime.set_theme("light")  # the earlier switch in the session
+        dlg = _dialog(qtbot, _vm(async_session), theme=runtime)
+        assert dlg.styleSheet() == runtime.qss() != ""
+
+    async def test_scrollable_rule_list_viewport_wears_the_canvas_both_themes(
+        self, async_session, qtbot, tmp_path
+    ):
+        # QA 2026-09-30 F3 re-check (2026-10-01, minor observation): the
+        # scroll-area viewport is a separate widget no root sheet reaches, so
+        # the strip behind the intercalary rows kept the OS fill in BOTH
+        # themes — muted rule captions read 2.3:1 on it under the light
+        # theme.  The chrome sheet's two-level child chain paints the content
+        # box (which setWidgetResizable stretches over the viewport) with the
+        # step canvas token; the pixel below is the strip a user sees.
+        runtime = _runtime(tmp_path, broken=False)
+        tokens = load_tokens(tokens_file_path())
+        dlg = _dialog(qtbot, _vm(async_session), theme=runtime)
+        await dlg.begin()
+        await _walk_to(dlg, STEP_INTERCALARY)
+        dlg._rule_name_edit.setText("Громовик")
+        dlg._rule_add_button.click()
+        scroll = dlg._stack.currentWidget().findChild(QScrollArea)
+        assert scroll is not None
+        dlg.resize(1477, 648)  # the screen size the live re-check measured on
+        dlg.show()
+        qtbot.waitExposed(dlg)
+
+        def strip_wears_current_canvas() -> bool:
+            # sample the empty strip below the single row, off the edge
+            image = scroll.viewport().grab().toImage()
+            strip = image.pixelColor(image.width() // 2, image.height() - 6)
+            return strip == QColor(tokens["color.bg.canvas"][runtime.theme])
+
+        # QSS re-polish into child widgets travels via posted events; on a
+        # busy full-suite process the first grab can still precede it (the
+        # W2a-review pump of test_theme_catalog).  Timing only — the hard
+        # criterion stays the theme-pinned equalities below.
+        qtbot.waitUntil(strip_wears_current_canvas, timeout=5000)
+        image = scroll.viewport().grab().toImage()
+        strip = image.pixelColor(image.width() // 2, image.height() - 6)
+        assert strip == QColor(tokens["color.bg.canvas"]["dark"])
+        assert runtime.set_theme("light")  # live switch, the same C++ widgets
+        qtbot.waitUntil(strip_wears_current_canvas, timeout=5000)
+        image = scroll.viewport().grab().toImage()
+        assert image.pixelColor(image.width() // 2, image.height() - 6) == (
+            QColor(tokens["color.bg.canvas"]["light"])
+        )
 
     async def test_off_skin_theme_does_not_break_the_flow(
         self, async_session, qtbot, tmp_path

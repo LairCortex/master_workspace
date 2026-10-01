@@ -174,12 +174,27 @@ Rectangle {
                                 Accessible.onPressAction: entityPreviewVm.requestImage()
                             }
 
-                            HintText {
-                                objectName: "previewImagePlaceholder"
+                            // The empty slot gets the Lucide «image» glyph
+                            // above the hint (user request 2026-09-30); the
+                            // HintText keeps the placeholder's objectName and
+                            // its caption — the icon is decoration.
+                            Column {
                                 anchors.centerIn: parent
-                                text: "Нет изображения"
-                                italic: true
+                                spacing: Tokens.px(root.islandTokens, "space.xs", 4)
                                 visible: entityPreviewVm.imageSource === ""
+                                ThemeIcon {
+                                    objectName: "previewImagePlaceholderIcon"
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    name: "image"
+                                    size: 32
+                                    tint: root.mutedColor
+                                }
+                                HintText {
+                                    objectName: "previewImagePlaceholder"
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: "Нет изображения"
+                                    italic: true
+                                }
                             }
 
                             MouseArea {

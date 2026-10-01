@@ -27,6 +27,7 @@ ThemeButton {
     property string current_text: proxy ? proxy.currentText : ""
     property string aiState: proxy ? proxy.aiState : "disabled"
     property bool isGenerating: proxy ? proxy.generating : false
+    property bool isCancelling: proxy ? proxy.isCancelling : false
 
     signal generate_requested(
         string entityType,
@@ -35,7 +36,13 @@ ThemeButton {
         string currentText
     )
 
-    text: isGenerating ? "…" : "✨"
+    // The ✨ face is the Lucide «sparkles» glyph (user request 2026-09-30);
+    // the busy state keeps its «…» caption exactly as the spec pins it — an
+    // ellipsis is text, not an icon. While a batch wave runs the press stops
+    // it, and the button prints the Lucide «circle-stop» glyph in place of
+    // the retired mute «⏹» text (A4, live fix 2026-09-30).
+    iconName: isCancelling ? "circle-stop" : (isGenerating ? "" : "sparkles")
+    text: isCancelling ? "" : (isGenerating ? "…" : "")
     accentBackground: aiState === "active"
     enabled: proxy ? proxy.clickable : !isGenerating
 

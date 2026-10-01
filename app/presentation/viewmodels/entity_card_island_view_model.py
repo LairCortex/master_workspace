@@ -11,6 +11,7 @@ from app.domain.game_calendar import (
     InvalidGameDateError,
     as_game_coord,
 )
+from app.presentation.entity_icons import icon_for
 from app.presentation.utils.date_utils import (
     AGE_ENTITY_TYPES,
     AGE_LABEL,
@@ -245,6 +246,9 @@ class EntityCardIslandViewModel(QObject):
                 "attr": cfg.attr,
                 "label": cfg.label,
                 "entityType": cfg.entity_type.value,
+                # The tab's Lucide glyph from the one type→icon map (Lucide
+                # pass 2026-09-30, one knowledge, one place).
+                "iconName": icon_for(cfg.entity_type),
                 "section": self._sections[cfg.attr],
             }
             for cfg in self._related_configs

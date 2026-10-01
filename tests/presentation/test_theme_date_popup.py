@@ -212,9 +212,9 @@ def test_timeline_range_popup_regression_contract_is_unchanged(qtbot):
         popup.end_calendar,
     ]
     assert callable(popup._fit_low_screen)
-    assert window_chip_text(None, None) == "Все дни ▾"
+    assert window_chip_text(None, None) == "Все дни"
     assert window_chip_text(date(1200, 1, 2), date(1200, 1, 3)) == (
-        "02 Январь 1200 — 03 Январь 1200 ▾"
+        "02 Январь 1200 — 03 Январь 1200"
     )
 
 

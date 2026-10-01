@@ -135,14 +135,14 @@ async def test_window_chip_filters_by_intersection_and_resets(app, wait_for):
 
     visible = {event.name for event in tape.events}
     assert visible == {"Через окно", "Открытый раньше"}
-    assert timeline_probe.chip_caption(window) == "10 Август 1200 — 20 Август 1200 ▾"
+    assert timeline_probe.chip_caption(window) == "10 Август 1200 — 20 Август 1200"
 
     popup.reset_button.click()  # «Сбросить» — the window's only reset
     await helpers.wait_until_settled()
     assert {event.name for event in tape.events} == {
         "Через окно", "До окна", "Открытый раньше",
     }
-    assert timeline_probe.chip_caption(window) == "Все дни ▾"
+    assert timeline_probe.chip_caption(window) == "Все дни"
 
 
 async def test_add_menu_new_event_item_opens_the_editor(app, wait_for, menu_qmenu):

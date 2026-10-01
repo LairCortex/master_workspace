@@ -221,7 +221,7 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
     popup.start_calendar.day_selected.emit(MonthDay(1200, 3, 5))
     popup.start_calendar.day_selected.emit(MonthDay(1200, 3, 25))
     await helpers.wait_until_settled()
-    assert timeline_probe.chip_caption(window) == "05 Март 1200 — 25 Март 1200 ▾"
+    assert timeline_probe.chip_caption(window) == "05 Март 1200 — 25 Март 1200"
     # Intersection rule: «До зимы» closed before the window, the open-ended
     # event starts after it — only the crossing winter event stays visible.
     assert {event.name for event in timeline_probe.tape(window).events} == {
@@ -229,7 +229,7 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
     }
     popup.reset_button.click()
     await helpers.wait_until_settled()
-    assert timeline_probe.chip_caption(window) == "Все дни ▾"
+    assert timeline_probe.chip_caption(window) == "Все дни"
 
     # ── 8. World snapshot through the REAL bridge: the ViewModel answers
     # with a (coordinate, era) pair, the wiring keys the query and the

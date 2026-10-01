@@ -190,6 +190,9 @@ def test_qmldir_declares_module_and_future_component_entries():
             # NRI-0018 task 1.2: the square small-action glyph button (spec
             # qml-components «Квадратная мелкая кнопка действия библиотеки»).
             "ThemeIconButton",
+            # User request 2026-09-30: the Lucide glyph brush (its path data
+            # lives in the generated icons.js, scripts/vendor_lucide.py).
+            "ThemeIcon",
         )
     ]
     assert TOKENS_JS.is_file()
@@ -528,6 +531,93 @@ def test_all_component_types_load_without_bridge_in_context(qtbot, qapp, runtime
     assert widget.rootObject().property("anySkinned") is False
 
 
+# The trailing-glyph branch of ThemeButton (live fix 2026-09-30 A1: the
+# window chip's caret moved out of the caption into the button's own
+# trailing icon slot — the mirror of the leading block).
+TRAILING_ICON_SCENE = """
+import QtQuick
+import nri.components
+
+Item {
+    objectName: "trailingIconProbe"
+    implicitWidth: 420
+    implicitHeight: 200
+
+    ThemeButton {
+        id: plain
+        objectName: "trailingPlain"
+        text: "Chip"
+        x: 10; y: 10
+    }
+    ThemeButton {
+        id: trailing
+        objectName: "trailingOne"
+        text: "Chip"
+        trailingIconName: "chevron-down"
+        x: 10; y: 50
+    }
+    ThemeButton {
+        id: both
+        objectName: "trailingBoth"
+        text: "Chip"
+        iconName: "plus"
+        trailingIconName: "chevron-down"
+        x: 10; y: 90
+    }
+}
+"""
+
+
+def _glyph_in(item: QQuickItem, object_name: str) -> QQuickItem:
+    """The one node of this name inside a button (per-button addressing —
+    every instance carries the component's own objectName contract)."""
+    found = [i for i in _walk_items(item) if i.objectName() == object_name]
+    assert len(found) == 1, f"expected one {object_name!r} in {item.objectName()}"
+    return found[0]
+
+
+def test_theme_button_trailing_icon_mirrors_the_leading_block(qtbot, qapp, runtime, palette, tmp_path):
+    """The trailing slot is the leading block's mirror (same gauge and gap,
+    visible exactly when the name is non-empty): an empty name leaves the
+    caption-only layout untouched and the node hidden; a name adds
+    iconSize + iconGap to the implicit group and paints the glyph AFTER the
+    caption; leading and trailing stack into one group."""
+    if QQuickStyle.name() != "Basic":  # design D4 — set once, never re-set
+        QQuickStyle.setStyle("Basic")
+    scene_file = tmp_path / "trailing_icon_probe.qml"
+    scene_file.write_text(TRAILING_ICON_SCENE, encoding="utf-8")
+    engine = setup_qml_shell(qapp, runtime)
+    widget = QQuickWidget(engine, None)
+    qtbot.addWidget(widget)
+    widget.resize(420, 200)
+    palette.setParent(widget)
+    widget.rootContext().setContextProperty("islandPalette", palette)
+    widget.setSource(QUrl.fromLocalFile(str(scene_file)))
+    assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    widget.grab()  # font metrics of the caption before the widths are truth
+
+    plain = _find_item(widget, "trailingPlain")
+    trailing = _find_item(widget, "trailingOne")
+    both = _find_item(widget, "trailingBoth")
+    size = float(trailing.property("iconSize"))
+    gap = float(trailing.property("iconGap"))
+
+    # visible exactly when the name is non-empty…
+    assert bool(_glyph_in(plain, "themeButtonTrailingIcon").property("visible")) is False
+    assert bool(_glyph_in(trailing, "themeButtonTrailingIcon").property("visible")) is True
+    # …and the width law: the trailing glyph + gap extend the implicit group.
+    assert float(trailing.property("implicitWidth")) == pytest.approx(
+        float(plain.property("implicitWidth")) + size + gap)
+    assert float(both.property("implicitWidth")) == pytest.approx(
+        float(trailing.property("implicitWidth")) + size + gap)
+    # painted AFTER the caption, at the shared gap.
+    caption = _glyph_in(trailing, "themeButtonCaption")
+    glyph = _glyph_in(trailing, "themeButtonTrailingIcon")
+    assert float(glyph.x()) == pytest.approx(
+        float(caption.x()) + float(caption.width()) + gap)
+    assert widget.errors() == []
+
+
 # ── group 4 (tasks 4.1–4.4): gallery island, pixel acceptance, retheme ────────
 #
 # The gallery (``qml_components_gallery.qml``, shipped under tests/ — not an
@@ -807,30 +897,31 @@ def test_gallery_surfaces_match_tokens_in_both_themes(qtbot, qapp, runtime, them
 
 def test_gallery_tabs_stretch_and_shrink_with_the_bar_width(qtbot, qapp, runtime, palette):
     # NRI-0019 (spec qml-components «Вкладки делят ширину полосы»): the strip's
-    # tabs share the bar's whole width — stretched beyond their natural widths
-    # while there is room, shrunk proportionally below them when the bar
-    # narrows. This is the component-side mechanism every island usage site
-    # gets for free (detail panel, event dialog, entity card, sheet list).
+    # tabs share the bar's whole width in EQUAL shares — stretched beyond their
+    # natural widths while there is room, shrunk in equal shares below them
+    # when the bar narrows (the caption length buys no tab extra pixels). This
+    # is the component-side mechanism every island usage site gets for free
+    # (detail panel, event dialog, entity card, sheet list).
     widget = load_gallery(qtbot, qapp, runtime, palette)
     bar = _find_item(widget, "galleryTabBar")
     tab_sel = _find_item(widget, "galleryTabSelected")
     tab_plain = _find_item(widget, "galleryTabPlain")
 
     # The gallery hands the bar 200 px against two short captions: the tabs
-    # are stretched and cover the bar with no leftover gap.
+    # are stretched, cover the bar with no leftover gap, and split it evenly.
     assert bar.width() == 200
     assert tab_sel.width() > tab_sel.property("implicitWidth")
     assert tab_plain.width() > tab_plain.property("implicitWidth")
     assert abs(tab_sel.width() + tab_plain.width() - bar.width()) <= 1.0
+    assert abs(tab_sel.width() - tab_plain.width()) <= 1.0
 
-    # A narrow bar: the tabs drop below their natural widths in the same
-    # proportion — captions will elide, the strip itself stays whole.
+    # A narrow bar: the tabs drop below their natural widths in EQUAL shares
+    # (not proportionally to their captions) — both captions will elide, the
+    # strip itself stays whole.
     bar.setProperty("width", 40)
     assert tab_sel.width() < tab_sel.property("implicitWidth")
     assert tab_plain.width() < tab_plain.property("implicitWidth")
-    ratio_sel = tab_sel.width() / tab_sel.property("implicitWidth")
-    ratio_plain = tab_plain.width() / tab_plain.property("implicitWidth")
-    assert abs(ratio_sel - ratio_plain) < 0.05
+    assert abs(tab_sel.width() - tab_plain.width()) <= 1.0
     assert abs(tab_sel.width() + tab_plain.width() - bar.width()) <= 1.0
     # The shortened caption renders with the ellipsis: the label really has
     # less room than its text, and the component declares the elide the
@@ -841,6 +932,116 @@ def test_gallery_tabs_stretch_and_shrink_with_the_bar_width(qtbot, qapp, runtime
     for tab in (tab_sel, tab_plain):
         label = tab.property("contentItem")
         assert label.width() < label.property("implicitWidth")
+    assert widget.errors() == []
+
+
+# ── tab equal-share regression (2026-10-01) ──────────────────────────────────
+#
+# The defect: with a SKINNED palette the RowLayout bar distributed the surplus
+# PROPORTIONALLY to the natural caption widths — «Шаблоны»/«Листы» in an
+# 800 px bar measured 460/340. The off-skin gallery run hid it: every
+# unskinned tab shares the same natural width, so the proportional law
+# coincidentally produced equal shares and the old pins stayed green. This
+# scene reproduces the customer's setup (real QmlPalette, ColumnLayout,
+# fillWidth bar) with captions of visibly different length and pins the
+# component law: equal shares = bar width / tab count, wide AND narrow, the
+# captions eliding below their natural widths (spec qml-components «Вкладки
+# делят ширину полосы»).
+
+UNEVEN_TABS_SCENE = """
+import QtQuick
+import QtQuick.Layouts
+import nri.components
+
+Item {
+    objectName: "unevenTabsProbe"
+    // Sized from QML: a never-shown offscreen QQuickWidget does not push its
+    // view size into the root, so the scene carries the width the customer's
+    // reproduce used (800) and the test re-shares it via setProperty.
+    width: 800
+    height: 100
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+        ThemeTabBar {
+            objectName: "unevenTabBar"
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignTop
+            ThemeTabButton { objectName: "unevenTabLong"; text: "Шаблоны" }
+            ThemeTabButton { objectName: "unevenTabShort"; text: "Листы" }
+        }
+    }
+}
+"""
+
+
+def load_uneven_tabs_scene(qtbot, qapp, runtime, palette: QmlPalette, scene_file: Path):
+    """The uneven-captions bar on the one shared shell engine, skinned.
+
+    Same plumbing as ``load_probe_scene`` (production import path, per-test
+    isolated engine, bridge pinned to the widget's lifetime).
+    """
+    if QQuickStyle.name() != "Basic":
+        QQuickStyle.setStyle("Basic")
+    scene_file.write_text(UNEVEN_TABS_SCENE, encoding="utf-8")
+    engine = setup_qml_shell(qapp, runtime)
+    widget = QQuickWidget(engine, None)
+    qtbot.addWidget(widget)
+    widget.resize(800, 100)
+    palette.setParent(widget)
+    widget.rootContext().setContextProperty("islandPalette", palette)
+    widget.setSource(QUrl.fromLocalFile(str(scene_file)))
+    assert widget.status() == QQuickWidget.Status.Ready, widget.errors()
+    return widget
+
+
+def test_skinned_tabs_with_uneven_captions_split_the_bar_in_equal_shares(
+    qtbot, qapp, runtime, palette, tmp_path
+):
+    widget = load_uneven_tabs_scene(
+        qtbot, qapp, runtime, palette, tmp_path / "uneven_tabs.qml")
+    widget.grab()  # caption metrics land before the widths become truth
+    bar = _find_item(widget, "unevenTabBar")
+    long_tab = _find_item(widget, "unevenTabLong")
+    short_tab = _find_item(widget, "unevenTabShort")
+
+    # The defect's signature is present: different captions, different naturals.
+    assert long_tab.property("skinned") is True
+    assert long_tab.property("implicitWidth") > short_tab.property("implicitWidth")
+
+    # The roomy bar: an equal half each — NOT 460/340 (the proportional defect).
+    assert bar.width() == 800
+    assert long_tab.width() == pytest.approx(bar.width() / 2, abs=0.5)
+    assert short_tab.width() == pytest.approx(bar.width() / 2, abs=0.5)
+    assert abs(long_tab.width() + short_tab.width() - bar.width()) <= 1.0
+
+    # The bar's implicit width stays the NATURAL sum (the content-driven sheet
+    # sizes still ask it), not the sum of the equal shares.
+    assert bar.property("implicitWidth") == pytest.approx(
+        long_tab.property("implicitWidth") + short_tab.property("implicitWidth"),
+        abs=0.5,
+    )
+
+    # A narrow bar: equal shares too, both captions under their naturals,
+    # the elide mechanism intact (the label has less room than its text).
+    # The scene root is re-sized directly — a hidden offscreen widget never
+    # pushes its view size into the root.
+    root = widget.rootObject()
+    root.setProperty("width", 100)
+    widget.grab()
+    assert long_tab.width() == pytest.approx(bar.width() / 2, abs=0.5)
+    assert short_tab.width() == pytest.approx(bar.width() / 2, abs=0.5)
+    for tab in (long_tab, short_tab):
+        assert tab.width() < tab.property("implicitWidth")
+        label = tab.property("contentItem")
+        assert label.width() < label.property("implicitWidth")
+
+    # Resizing back re-shares live — no stale geometry, no binding loop.
+    root.setProperty("width", 800)
+    widget.grab()
+    assert long_tab.width() == pytest.approx(400.0, abs=0.5)
+    assert short_tab.width() == pytest.approx(400.0, abs=0.5)
     assert widget.errors() == []
 
 
@@ -1334,20 +1535,26 @@ def test_combo_indicator_is_painted_inside_the_field_in_both_themes(
     def _fg_hits(img: QImage) -> list[tuple[float, float]]:
         """fg-token pixels around the field in the item-local coordinate
         system (a ±4 px ring beyond the frame is included — an indicator
-        crossing or floating over the border lands in the scan)."""
+        crossing or floating over the border lands in the scan). The match
+        carries a per-channel tolerance: the Lucide chevron is an antialiased
+        Shape stroke, so only its core pixels hit the token exactly (the
+        Canvas triangle before it filled flat — the tolerance keeps both
+        readable while the other colors in the ring stay farther away)."""
         sx = img.width() / widget.width()
         sy = img.height() / widget.height()
         ox, oy = origin.x() * sx, origin.y() * sy
         hits = []
         for py in range(max(0, int(oy) - 4), min(img.height(), int(oy + h * sy) + 4)):
-            for px in range(max(0, int(ox) - 4), min(img.width(), int(ox + w * sx) + 4)):
+            for px in range(max(0, int(ox) - 4), min(img.width(), int(ox + w * sx))):
                 c = img.pixelColor(px, py)
-                if (c.red(), c.green(), c.blue()) == fg_rgb:
+                if all(abs(v - t) <= 60 for v, t in zip(
+                    (c.red(), c.green(), c.blue()), fg_rgb
+                )):
                     hits.append(((px - ox) / sx, (py - oy) / sy))
         return hits
 
-    # The Canvas paints on the render pass — wait for the arrow to appear,
-    # then judge the settled grab.
+    # The arrow glyph (library ThemeIcon since the Lucide pass) paints on the
+    # render pass — wait for it to appear, then judge the settled grab.
     qtbot.waitUntil(lambda: len(_fg_hits(_grab_rgb(widget))) >= 3, timeout=5000)
     img = _grab_rgb(widget)
     fg_hits = _fg_hits(img)

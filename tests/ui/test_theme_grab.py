@@ -388,6 +388,287 @@ def test_checkbox_indicator_and_button_band_are_painted_on_the_row(qtbot, tmp_pa
     assert round(chk.implicitHeight()) == round(chip_span)
 
 
+# ── QA 2026-10-01: the disabled chrome button drops to the canvas + muted ────
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_disabled_chrome_button_paints_canvas_with_muted_caption(qtbot, tmp_path, theme):
+    """Pixel acceptance for the compiled chrome sheet (measured defect: the
+    disabled ``QPushButton`` kept the accent fill under its muted caption —
+    1.10:1 dark / 1.13:1 light, unreadable on every widget window: wizard
+    «Далее», table panel «Остановить», xlsx import, LLM setup). The disabled
+    button now paints the canvas token, its caption the muted token, its
+    hairline the untouched border token, and no accent pixel survives on it;
+    the WCAG floor is recomputed from the very tokens the pixels answered.
+    After the same-day face split the ENABLED plain button wears the very
+    same canvas fill and border hairline (its caption the primary ink) — the
+    non-vacuity below pins that the sheet, not the OS style, painted it."""
+    from PySide6.QtWidgets import QPushButton, QWidget
+
+    from tests.presentation.test_theme_compile import _contrast_ratio
+
+    runtime = make_runtime(tmp_path, theme)
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.setProperty("uiRole", "chrome")
+    root.setStyleSheet(runtime.qss())  # the exact sheet apply() pushes to roots
+    enabled = QPushButton("Вкл", root)
+    enabled.setGeometry(6, 6, 96, 40)
+    button = QPushButton("Далее", root)
+    button.setGeometry(110, 6, 96, 40)
+    button.setEnabled(False)
+    root.resize(212, 52)
+    root.show()
+    qtbot.waitExposed(root)
+
+    canvas = token_color("color.bg.canvas", theme)
+    muted = token_color("color.fg.muted", theme)
+    accent = token_color("color.accent", theme)
+    border = token_color("color.border", theme)
+    fg = token_color("color.fg.primary", theme)
+    assert canvas != accent  # the enabled/disabled claims below must differ
+
+    # Non-vacuity: the ENABLED sibling carries the sheet's plain face — the
+    # canvas fill token AND the border-token hairline.  A root that never got
+    # the sheet would show the OS button box, which paints neither.
+    enabled_image = enabled.grab().toImage()
+    enabled_scale = enabled_image.width() / max(enabled.width(), 1)
+    assert enabled_image.pixelColor(
+        int(4 * enabled_scale), enabled_image.height() // 2
+    ) == canvas, theme
+    assert enabled_image.pixelColor(0, enabled_image.height() // 2) == border, theme
+    assert _contains_pixel(enabled_image, fg), theme
+
+    image = button.grab().toImage()
+    scale = image.width() / max(button.width(), 1)
+    mid_y = image.height() // 2
+    # The fill band (padding starts after the 1 px border, the caption «Далее»
+    # is far from the left padding strip): the canvas token, not the accent.
+    assert image.pixelColor(int(4 * scale), mid_y) == canvas, theme
+    # The hairline keeps the base border token — the disabled rule re-declares
+    # nothing above, so the frame survives untouched.
+    assert image.pixelColor(0, mid_y) == border, theme
+    # Neither channel of the accent token exists between muted and canvas, so
+    # even one accent pixel anywhere on the button would betray the old fill.
+    assert not _contains_pixel(image, accent), theme
+    # The caption ink is the muted token itself…
+    assert _contains_pixel(image, muted), theme
+    # …and the pair the eye actually gets clears the WCAG AA floor.
+    ratio = _contrast_ratio(
+        (muted.red(), muted.green(), muted.blue()),
+        (canvas.red(), canvas.green(), canvas.blue()),
+    )
+    assert ratio >= 4.5, (theme, ratio)
+
+
+# ── QA 2026-10-01: a disabled chrome button greys its Lucide glyph with the caption ─
+
+def _ink_line_t(pixel: QColor, base: QColor, ink: QColor, tol: int = 2):
+    """Coverage ``t`` of an ``ink``-colored glyph over a ``base`` fill that
+    produced ``pixel`` (anti-aliasing only varies alpha, so the channels stay
+    in lockstep), or ``None`` when the pixel is no such blend.  Border hairline
+    and corner AA, and Qt's palette-based automatic disabled pixmap tint, all
+    land off the line — the discriminating power of the checks below."""
+    ts = []
+    for channel in (QColor.red, QColor.green, QColor.blue):
+        b, i, p = channel(base), channel(ink), channel(pixel)
+        if i == b:
+            if abs(p - b) > tol:
+                return None
+            continue
+        t = (p - b) / (i - b)
+        if not -0.03 <= t <= 1.03:
+            return None
+        ts.append(t)
+    return None if max(ts) - min(ts) > 0.08 else sum(ts) / len(ts)
+
+
+def _ink_column_runs(image, base: QColor, ink: QColor, inset: int):
+    """Column runs inside ``inset`` whose every non-base pixel lies on the
+    base→ink line; only runs carrying at least one exact-``ink`` pixel qualify
+    (border-edge AA never reaches full coverage).  Returns
+    ``[(x0, x1, exact_ink_pixels), ...]`` — one run per glyph/caption cluster."""
+    columns = set()
+    for x in range(inset, image.width() - inset):
+        for y in range(inset, image.height() - inset):
+            pixel = image.pixelColor(x, y)
+            if pixel == base:
+                continue
+            if pixel == ink or (
+                (t := _ink_line_t(pixel, base, ink)) is not None and t >= 0.5
+            ):
+                columns.add(x)
+                break
+    runs = []
+    for x in sorted(columns):
+        if runs and x <= runs[-1][1] + 1:
+            runs[-1][1] = x
+        else:
+            runs.append([x, x])
+    qualified = []
+    for x0, x1 in runs:
+        exact = 0
+        offenders = 0
+        for x in range(x0, x1 + 1):
+            for y in range(inset, image.height() - inset):
+                pixel = image.pixelColor(x, y)
+                if pixel == ink:
+                    exact += 1
+                elif pixel != base and _ink_line_t(pixel, base, ink) is None:
+                    offenders += 1
+        assert offenders == 0, (
+            f"columns {x0}-{x1} carry {offenders} pixel(s) off the "
+            f"{base.name()}→{ink.name()} ink line (Qt auto-tint or border bleed?)"
+        )
+        if exact:
+            qualified.append((x0, x1, exact))
+    return qualified
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_disabled_chrome_icon_button_glyph_follows_the_muted_caption(
+    qtbot, tmp_path, theme, monkeypatch
+):
+    """Whole-button pixel pin for the Lucide disabled mode (F2, the surfaces
+    behind «Остановить»/«Выгнать» and the wizard's rule-row buttons after the
+    2026-10-01 face split).  The QColor-level pin in
+    tests/presentation/test_lucide_icons.py only proves
+    ``QIcon::pixmap(Disabled)``; the sibling text-button pin only proves
+    fill+caption.  This one drives the real ``QPushButton`` draw route under
+    the compiled chrome sheet and demands the engine's Disabled ink actually
+    reaches the pixels: the disabled plain button fills with the canvas token
+    while its glyph AND caption pixels all lie on the single canvas→muted
+    line (Qt's automatic disabled tint, audit glyph (205,173,128) vs caption
+    (154,151,143), is off that line), the enabled plain sibling pairs the same
+    canvas fill with an fg.primary glyph, and the primary-role sibling
+    («Открыть стол») is the one that keeps the accent fill with an accent.fg
+    glyph.  The measured muted/canvas contrast clears WCAG AA from the very
+    tokens the pixels answered."""
+    from PySide6.QtWidgets import QPushButton, QWidget
+
+    from app.presentation.views import lucide_icons
+    from app.presentation.views.lucide_icons import ACCENT_INK_TOKEN_KEY, lucide_icon
+    from tests.presentation.test_theme_compile import _contrast_ratio
+
+    runtime = make_runtime(tmp_path, theme)
+    monkeypatch.setattr(lucide_icons, "get_default_theme", lambda: runtime)
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.setProperty("uiRole", "chrome")
+    root.setStyleSheet(runtime.qss())  # the exact sheet apply() pushes to roots
+
+    def icon_button(x: int, *, enabled: bool, primary: bool = False) -> QPushButton:
+        # The production surfaces: icon + caption, «Остановить» exactly as the
+        # table-host panel builds its plain disabled-by-default stop button,
+        # and «Открыть стол» as the one primary-role button of the row.
+        caption = "Открыть стол" if primary else "Остановить"
+        button = QPushButton(caption, root)
+        if primary:
+            button.setProperty("uiRole", "primary")
+        button.setIcon(
+            lucide_icon(
+                "play" if primary else "circle-stop",
+                ink_token=ACCENT_INK_TOKEN_KEY if primary else "color.fg.primary",
+            )
+        )
+        button.setGeometry(x, 6, 150, 44)
+        button.setEnabled(enabled)
+        return button
+
+    enabled = icon_button(6, enabled=True)
+    disabled = icon_button(162, enabled=False)
+    primary = icon_button(318, enabled=True, primary=True)
+    root.resize(474, 56)
+    root.show()
+    qtbot.waitExposed(root)
+
+    canvas = token_color("color.bg.canvas", theme)
+    muted = token_color("color.fg.muted", theme)
+    accent = token_color("color.accent", theme)
+    accent_fg = token_color("color.accent.fg", theme)
+    fg = token_color("color.fg.primary", theme)
+    inset = 8  # clears the 1 px hairline and the 6 px radius.sm corner curve
+
+    # ── non-vacuity: the enabled plain sibling is canvas fill + fg.primary
+    # glyph (the sheet's ordinary face, not the OS box).
+    enabled_image = enabled.grab().toImage()
+    scale = enabled_image.width() / max(enabled.width(), 1)
+    assert enabled_image.pixelColor(
+        int(4 * scale), enabled_image.height() // 2
+    ) == canvas, theme
+    # The glyph is the leftmost cluster whose ink reaches full coverage; its
+    # width is the 16 px icon box, and every pixel of it (and of every caption
+    # cluster) must ride the canvas→fg.primary line — _ink_column_runs asserts
+    # that while grouping.
+    enabled_runs = _ink_column_runs(enabled_image, canvas, fg, int(8 * scale))
+    assert enabled_runs, (theme, "no fg.primary ink cluster on the enabled button")
+    en_glyph_x0, en_glyph_x1, en_glyph_exact = enabled_runs[0]
+    assert 12 * scale <= en_glyph_x1 - en_glyph_x0 + 1 <= 20 * scale, (
+        theme,
+        en_glyph_x0,
+        en_glyph_x1,
+    )
+    assert en_glyph_exact >= 10, (theme, en_glyph_exact)
+    assert not _contains_pixel(enabled_image, muted), (
+        theme, "the enabled glyph must not speak the disabled ink"
+    )
+
+    # ── the primary sibling is the one that keeps the accent fill, and its
+    # glyph speaks accent.fg (the ink its caption is painted with).
+    primary_image = primary.grab().toImage()
+    p_scale = primary_image.width() / max(primary.width(), 1)
+    assert primary_image.pixelColor(
+        int(4 * p_scale), primary_image.height() // 2
+    ) == accent, theme
+    primary_runs = _ink_column_runs(primary_image, accent, accent_fg, int(8 * p_scale))
+    assert primary_runs, (theme, "no accent.fg ink cluster on the primary button")
+    assert primary_runs[0][2] >= 10, (theme, primary_runs[0])
+
+    # ── the disabled button: canvas fill, no accent residue anywhere…
+    image = disabled.grab().toImage()
+    d_scale = image.width() / max(disabled.width(), 1)
+    mid_y = image.height() // 2
+    assert image.pixelColor(int(4 * d_scale), mid_y) == canvas, theme
+    assert not _contains_pixel(image, accent), theme
+    assert not _contains_pixel(image, accent_fg), (
+        theme, "a surviving accent.fg pixel betrays the Qt-auto-tinted or "
+        "engine-skipped glyph"
+    )
+    # …and EVERY painted pixel inside the inset (glyph and caption alike) is a
+    # blend on the single canvas→muted line, with both clusters carrying the
+    # exact muted token: one tone for glyph and caption, no third tint.
+    d_inset = int(8 * d_scale)
+    painted = 0
+    for y in range(d_inset, image.height() - d_inset):
+        for x in range(d_inset, image.width() - d_inset):
+            pixel = image.pixelColor(x, y)
+            if pixel == canvas:
+                continue
+            painted += 1
+            if pixel == muted:
+                continue
+            assert _ink_line_t(pixel, canvas, muted) is not None, (
+                theme,
+                (x, y, pixel.name()),
+                "disabled ink pixel off the canvas→muted line",
+            )
+    assert painted > 50, (theme, painted)  # the button really painted glyph+caption
+    # Where the enabled sibling carried its accent.fg glyph cluster, the very
+    # same columns now carry the exact muted token: the engine's Disabled ink
+    # reached the glyph, not Qt's palette tint (which lands off the line).
+    disabled_runs = _ink_column_runs(image, canvas, muted, d_inset)
+    assert disabled_runs, (theme, "no muted ink cluster on the disabled button")
+    di_glyph_x0, di_glyph_x1, di_glyph_exact = disabled_runs[0]
+    assert abs(di_glyph_x0 - en_glyph_x0) <= 2 * d_scale, (theme, di_glyph_x0, en_glyph_x0)
+    assert abs(di_glyph_x1 - en_glyph_x1) <= 2 * d_scale, (theme, di_glyph_x1, en_glyph_x1)
+    assert di_glyph_exact >= 10, (theme, di_glyph_exact)
+    ratio = _contrast_ratio(
+        (muted.red(), muted.green(), muted.blue()),
+        (canvas.red(), canvas.green(), canvas.blue()),
+    )
+    assert ratio >= 4.5, (theme, ratio)
+
+
 # ── W2a pilots (add-widget-catalog-chrome-mechanics-w2a) ───────────────────
 
 @pytest.mark.parametrize("theme", ["dark", "light"])

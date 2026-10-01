@@ -46,8 +46,13 @@
 //     edge in its ghost (flat) set, glyph at the larger caption-step size,
 //     vertically anchored to the SAME caption line as the mark and the elbow
 //     (task 11.2, design Д12 — the live audit's «chip opposite to the wash»
-//     is gone: transparent at rest, the compiler's derivations on hover, the
-//     ``accent.fg`` glyph over the selection wash), the штатный Button role
+//     is gone: the ghost wears no own face in ANY state, on any row (the
+//     2026-09-30 rework retired even the hover/pressed derivations — the
+//     accent under an alpha printed a rounded chip over the hovered row's
+//     wash and wherever the 32 px square overhangs a shorter band); the
+//     «accent.fg glyph flat on the selection wash» is the whole state
+//     feedback, the row's own wash and tooltip carry the hover), the штатный
+//     Button role
 //     with the usage-site name of the action it
 //     performs and the fixed «Развернуть или свернуть раздел» description
 //     (the nri-0022 map word, guard-pinned by tests/qml_a11y_scan.py); its
@@ -59,7 +64,11 @@
 // (``color.accent.fg`` over the selection wash); the type mark is the bare
 // ``color.chart.N`` token square on the left (muted ``color.fg.muted`` for
 // untyped, no outline, so it keeps its color over the selection wash), riding
-// the caption line; the selection wash is the accent itself, hover the
+// the caption line — the colour is the type's identity and the marker is a
+// square (the live audit's O4: the 2026-09-30 Lucide pass briefly swapped it
+// for a shared «hash» glyph, the owner retracted that the same day and the
+// square returned); the selection
+// wash is the accent itself, hover the
 // compiler's accent-derivation pair — a token COLOR plus a scalar alpha,
 // because QML's color parser cannot read the sheet's rgba() form; off-skin the
 // guarded lookups land on the same pinned named Qt globals the other controls
@@ -166,10 +175,12 @@ Item {
             row.rowDoubleClicked()
     }
 
-    // Row geometry: mark at TEXT_LEFT_PAD, mark side MARK_SIZE, text at
-    // TEXT_INDENT = 8 + 8 + 4, right bleed TEXT_LEFT_PAD (the migrated
-    // ladder row's rhythm, kept identical so the mark/text pair reads the
-    // same as every earlier scale). The block hugs the row's top so the
+    // Row geometry: mark cell at TEXT_LEFT_PAD sized MARK_SIZE (the glyph
+    // rides this cell centered on both axes — a larger Lucide gauge stays
+    // on the mark's centre, so the elbow's meeting point does not move),
+    // text at TEXT_INDENT = 8 + 8 + 4, right bleed TEXT_LEFT_PAD (the
+    // migrated ladder row's rhythm, kept identical so the mark/text pair
+    // reads the same as every earlier scale). The block hugs the row's top so the
     // caption line — and the mark riding it — sits at the same height in a
     // one-line and a two-line row. NRI-0023 shifts the whole content block
     // right by depth × CHILD_INDENT (the spec's «горизонтальным отступом»)
@@ -340,7 +351,10 @@ Item {
     // Task 11.3 (design Д13, spec «Дерево не грязнит акцент на залировке»):
     // only the MUTED untyped fallback flips to ``color.accent.fg`` over the
     // selection — a typed mark keeps its chart color (pinned since the flat
-    // list: «the mark keeps its color over the wash»).
+    // list: «the mark keeps its color over the wash»). History: the 2026-09-30
+    // Lucide pass briefly wore a shared «hash» ThemeIcon here (audit O4); the
+    // owner retracted that the same day — the square is the marker, the bare
+    // chart colour is the type's identity, the elbow meets it on this cell.
     Rectangle {
         objectName: "eventTypeMark"
         visible: !row.stubRow
@@ -398,15 +412,20 @@ Item {
     // NRI-0023 task 5.3 (spec «Шеврон раскрытия дерева», design Д8) restyled
     // by task 11.2 (design Д12, spec qml-components «Плоская (ghost) гарнитура
     // кнопки библиотеки»): the disclosure glyph of a parent row is the library
-    // square in its GHOST set — transparent at rest (no canvas chip, no frame;
-    // the audit's «квадратик с точкой» and the hole it burned into the accent
-    // wash are both gone), the compiler's derivations answering hover/press,
-    // the glyph at the larger caption step of the skin (``font.size.lg``) and
-    // riding the SAME caption line as the mark and the elbow (the audit's A1
-    // vertical drift is gone). Over the selection wash ``accentBackground``
-    // hands the glyph to ``color.accent.fg`` while the background stays
-    // transparent — the ghost branch of ThemeButton reads it before the accent
-    // fill, so the chip never returns. The hit gauge stays the library's
+    // square in its GHOST set — NO own face in ANY state, on any row: at
+    // rest, hover and press alike it is only the glyph (no canvas chip, no
+    // frame; the audit's «квадратик с точкой» and the hole it burned into the
+    // accent wash are both gone — and the owner's 2026-09-30 rework retired
+    // even the hover/pressed derivations, which being the accent under an
+    // alpha printed a rounded chip over the hovered row's wash and wherever
+    // the 32 px square overhangs the band), the chevron of the skin's Lucide
+    // set (since 2026-09-30 the «▸/▾» text glyph is the library ThemeIcon —
+    // «chevron-right»/«chevron-down») and riding the SAME caption line as the
+    // mark and the elbow (the audit's A1 vertical drift is gone). Over the
+    // selection wash ``accentBackground`` hands the glyph to
+    // ``color.accent.fg`` — that flip is the whole state story there; on the
+    // plain rows the hover answer is the row's own wash and tooltip, the
+    // glyph itself stays flat on whatever the row wears. The hit gauge stays the library's
     // 32×32; Accessibility (nri-0012 contract, nri-0022 description map): the
     // stock Button role ships with the control, the NAME is this usage site's
     // and names the action («Развернуть подсобытия»/«Свернуть подсобытия» — a
@@ -414,14 +433,17 @@ Item {
     // hidden meaning of the activation («Развернуть или свернуть раздел» — the
     // fixed map word), and the Press runs the same expand channel as the mouse
     // click, never the row's own gesture. Offscreen-pinned through
-    // actionInterface().doAction("Press") in test_timeline_accessibility.py.
+    // actionInterface().doAction("Press") in test_timeline_accessibility.py;
+    // the faceless-on-wash states in test_theme_icon_button_usage.py.
     ThemeIconButton {
         id: rowChevron
         objectName: "rowChevron"
         visible: row.chevronRow
-        text: row.expanded ? "▾" : "▸"
+        iconName: row.expanded ? "chevron-down" : "chevron-right"
         ghost: true
-        font.pixelSize: Tokens.px(row.islandTokens, "font.size.lg", 14)
+        // The Lucide chevron at the library glyph gauge stands where the
+        // NRI-0023 comment placed the «larger caption step» text glyph — the
+        // icon is a step above the caption line by design.
         anchors.right: parent.right
         anchors.rightMargin: 2
         anchors.verticalCenter: rowText.verticalCenter

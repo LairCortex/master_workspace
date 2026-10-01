@@ -3,6 +3,7 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from app.domain import entity_registry
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from tests.presentation.qml_helpers import track
 
@@ -84,6 +85,7 @@ async def test_completed_empty_search_publishes_non_clickable_no_match_row():
         "id": None,
         "dateText": "",
         "clickable": False,
+        "iconName": "",
     }]
     assert vm.listVisible is True
 
@@ -110,6 +112,8 @@ async def test_results_publish_headers_and_render_ready_identity_date_rows():
             "id": None,
             "dateText": "",
             "clickable": False,
+            # the section's glyph rides the row from the one type→icon map
+            "iconName": "calendar-days",
         },
         {
             "kind": "result",
@@ -118,6 +122,7 @@ async def test_results_publish_headers_and_render_ready_identity_date_rows():
             "id": 42,
             "dateText": "02 Январь 1200",
             "clickable": True,
+            "iconName": "",
         },
         {
             "kind": "sectionHeader",
@@ -126,6 +131,7 @@ async def test_results_publish_headers_and_render_ready_identity_date_rows():
             "id": None,
             "dateText": "",
             "clickable": False,
+            "iconName": "building",
         },
         {
             "kind": "result",
@@ -134,9 +140,36 @@ async def test_results_publish_headers_and_render_ready_identity_date_rows():
             "id": 7,
             "dateText": "",
             "clickable": True,
+            "iconName": "",
         },
     ]
     assert vm.listVisible is True
+
+
+async def test_section_headers_carry_the_one_map_glyph_and_unknown_keys_stay_plain():
+    # Lucide pass 2026-09-30: every section header's iconName comes from the
+    # presentation.entity_icons map; a collection the registry does not know
+    # keeps the tolerant caption fallback and paints no glyph.
+    from app.domain.enums.entity_type import EntityType
+    from app.presentation.entity_icons import icon_for
+
+    payload = {
+        collection: [SimpleNamespace(id=1, name="X", start_date=None)]
+        for collection in ("events", "organizations", "characters", "items", "locations")
+    }
+    vm, _ = _vm(payload)
+    await vm.search("x")
+    headers = {row["text"]: row["iconName"] for row in vm.rows if row["kind"] == "sectionHeader"}
+    for entity_type in entity_registry.SEARCH_TYPES:
+        desc = entity_registry.descriptor(entity_type)
+        caption = f"— {desc.plural_label} (1) —"
+        assert headers[caption] == icon_for(entity_type)
+    assert icon_for(EntityType.EVENT) == "calendar-days"
+
+    vm, _ = _vm({"ghosts": [SimpleNamespace(name="Boo")]})
+    await vm.search("x")
+    assert vm.rows[0]["kind"] == "sectionHeader"
+    assert vm.rows[0]["iconName"] == ""
 
 
 async def test_only_result_rows_select_and_selection_hides_list():

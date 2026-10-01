@@ -228,10 +228,19 @@ QMenuBar[uiRole="menu"]::item {{
 QMenuBar[uiRole="menu"]::item:selected {{
     background: {t['color.bg.surface']};
 }}
+/* Live measurement 2026-10-01: the old base rule was the QML ThemeButton's
+   PRIMARY face (accent fill, accent.fg bold caption), so every button of a
+   chrome window read as primary («Отменить»/«Назад»/«Далее» all accent-filled
+   in the calendar wizard).  The base face now mirrors the library's ordinary
+   button: canvas fill, 1 px border hairline, primary ink, regular weight; the
+   :hover/:pressed derivations above the disabled rules are the very same
+   accent washes the library composites over its canvas.  A primary action
+   opts in through the catalog role (``set_role(btn, "primary")``): accent
+   fill, accent.fg caption, border in the fill's own color — the library draws
+   no frame there, so the hairline must never differ from the fill. */
 QWidget[uiRole="chrome"] QPushButton {{
-    background: {t['color.accent']};
-    color: {t['color.accent.fg']};
-    font-weight: {t['font.weight.bold']};
+    background: {t['color.bg.canvas']};
+    color: {t['color.fg.primary']};
     border: 1px solid {t['color.border']};
     border-radius: {t['radius.sm']};
     padding: {t['space.xs']} {t['space.sm']};
@@ -242,8 +251,41 @@ QWidget[uiRole="chrome"] QPushButton:hover {{
 QWidget[uiRole="chrome"] QPushButton:pressed {{
     background: {pressed};
 }}
+QWidget[uiRole="chrome"] QPushButton[uiRole="primary"] {{
+    background: {t['color.accent']};
+    color: {t['color.accent.fg']};
+    border: 1px solid {t['color.accent']};
+}}
+QWidget[uiRole="chrome"] QPushButton[uiRole="primary"]:hover {{
+    background: {hover};
+}}
+QWidget[uiRole="chrome"] QPushButton[uiRole="primary"]:pressed {{
+    background: {pressed};
+}}
+/* QA 2026-10-01 (замер обеих тем): the old disabled rule greyed ONLY the
+   caption, leaving muted ink on the accent fill — contrast 1.10:1 dark /
+   1.13:1 light, unreadable («Далее» on the wizard preview step, «Остановить»
+   on the table panel, every disabled widget-window button).  The disabled
+   state now drops to the canvas fill like the QML ThemeButton's own disabled
+   contract (canvas + muted ≈ 5.7:1 dark / 5.0:1 light); the border keeps the
+   base ``color.border`` hairline — nothing between the base rule and here
+   touches ``border``, so no re-declaration is needed.  The plain :disabled
+   rule carries the same specificity as :hover/:pressed (property + class +
+   one pseudo-state) and a disabled widget can still be flagged under the
+   mouse, so it rides after them and the later rule is what wins for
+   ``background``.  The PRIMARY pair must stay the LAST ``QPushButton`` rules
+   of the sheet: ``[uiRole="primary"]`` raises the primary hover/pressed above
+   the plain :disabled in specificity, so without their own disabled rules a
+   disabled primary button would keep its accent fill; the border is
+   re-declared here because the primary face paints it in the accent color. */
 QWidget[uiRole="chrome"] QPushButton:disabled {{
+    background: {t['color.bg.canvas']};
     color: {t['color.fg.muted']};
+}}
+QWidget[uiRole="chrome"] QPushButton[uiRole="primary"]:disabled {{
+    background: {t['color.bg.canvas']};
+    color: {t['color.fg.muted']};
+    border: 1px solid {t['color.border']};
 }}
 /* NRI-0018 Д8 (ui-widget-catalog «Нативные индикаторы проверки
    тематизируются»): the wizard's «Стандартный/Кастомный» are widget radios
@@ -251,11 +293,17 @@ QWidget[uiRole="chrome"] QPushButton:disabled {{
    popup grids (see the popup sheet) — come from the tokens instead of the
    white native OS cell.  Scoped to the attached root exactly like every
    other rule here; off-skin this sheet is never applied and the switches
-   keep the native look (D7).  The checked state is the solid accent fill:
-   Qt QSS draws no tick/dot without bitmap assets and generated artifacts
+   keep the native look (D7).  The checked checkbox is the solid accent
+   fill: Qt QSS draws no tick without bitmap assets and generated artifacts
    never reach the disk — the same state language the popup-era box and the
-   QML checkbox speak.  Geometry: 16 px box, the checkbox corner on
-   radius.sm, the radio the circle half of the box («радио — круг»). */
+   QML checkbox speak.  The checked radio is a ring plus a small centred
+   dot: the live measurement of 2026-10-01 found the solid accent disc too
+   bright a blob on the canvas, so the checked radio keeps the accent
+   border and draws its dot through qradialgradient (accent core, canvas
+   beyond stop 0.4 — the dot stays well under the ring's diameter, never a
+   lit area).  Geometry: 16 px checkbox box with the corner on radius.sm;
+   the radio measured down to 14 px, the circle the half of that box
+   («радио — круг»). */
 QWidget[uiRole="chrome"] QRadioButton {{
     background: transparent;
     color: {t['color.fg.primary']};
@@ -276,17 +324,17 @@ QWidget[uiRole="chrome"] QCheckBox::indicator:checked {{
     background: {t['color.accent']};
     border-color: {t['color.accent']};
 }}
-QWidget[uiRole="chrome"] QRadioButton::indicator {{
-    width: 16px;
-    height: 16px;
+ QWidget[uiRole="chrome"] QRadioButton::indicator {{
+    width: 14px;
+    height: 14px;
     subcontrol-position: left center;
     border: 1px solid {t['color.border']};
-    border-radius: 8px;
+    border-radius: 7px;
     background: {t['color.bg.canvas']};
 }}
 QWidget[uiRole="chrome"] QRadioButton::indicator:checked {{
-    background: {t['color.accent']};
     border-color: {t['color.accent']};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 {t['color.accent']}, stop:0.35 {t['color.accent']}, stop:0.4 {t['color.bg.canvas']});
 }}
 QWidget[uiRole="chrome"] QListWidget,
 QWidget[uiRole="chrome"] QTreeView,
@@ -294,6 +342,20 @@ QWidget[uiRole="chrome"] QPlainTextEdit {{
     background: {t['color.bg.surface']};
     color: {t['color.fg.primary']};
     border: 1px solid {t['color.border']};
+}}
+/* QA 2026-09-30 F3 re-check (2026-10-01, docs/qa/2026-09-30-lucide-pass-qt-
+   widgets.md): the wizard's scrollable row lists kept the OS viewport fill in
+   BOTH themes — muted rule captions sat at 2.3:1 on the light one.  A root
+   sheet never reaches the QAbstractScrollArea viewport widget, and a
+   background on the QScrollArea itself does not either (Qt keeps painting the
+   viewport from its OS palette); the canonical two-level child chain below is
+   what lands on the content box, which with ``setWidgetResizable`` always
+   covers the viewport, so the strip behind the rows wears the step canvas.
+   The chain matches only that box: a scrollbar is a ``QWidget`` subclass and
+   so passes the first level, but scrollbars have no widget children, and the
+   rows under the box are one level too deep — they keep their own roles. */
+QWidget[uiRole="chrome"] QScrollArea > QWidget > QWidget {{
+    background: {t['color.bg.canvas']};
 }}
 [uiRole="title"] {{
     font-size: {t['font.size.lg']};

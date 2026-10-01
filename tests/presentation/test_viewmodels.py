@@ -620,7 +620,8 @@ class TestTimelineViewModelIslandModel:
         assert all(ref() is None for ref in refs)  # nothing in the VM kept them
 
 
-# ── «➜ Сейчас» button (nri-0021 task 5.2, design Д6) ─────────────────────────
+# ── «Сейчас» button (crosshair glyph since the 2026-09-30 icon pass;
+#    nri-0021 task 5.2, design Д6) ────────────────────────────────────────────
 
 class TestTimelineNowScrollButton:
     """Python owns the button's whole rule (design Д6): the target index

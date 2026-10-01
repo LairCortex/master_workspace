@@ -77,6 +77,7 @@ from tests.presentation.qml_helpers import (
     island_row_texts,
     island_rows,
     track,
+    walk_items,
 )
 
 EDITOR_QML = Path(qml_shell.__file__).resolve().parent / "SheetEditorRoot.qml"
@@ -874,3 +875,125 @@ def test_fill_checkbox_press_toggles_stored_value(qtbot, fill_case, palette):
     _pump(1)
     assert fvm.values.get(ids["chk"]) is False
     assert check.property("checked") is False
+
+
+
+# ── Lucide icon pass 2026-09-30: the captioned buttons keep their texts and
+# add the glyph (ThemeButton.iconName) — one table per island row, read off
+# the real roots the same way test_theme_icon_button_usage pins the library.
+
+EDITOR_CHROME_GLYPHS = {
+    # the «Правка» row and the bottom chrome — always visible
+    "editUndoButton": "undo-2",
+    "editRedoButton": "redo-2",
+    "editCopyButton": "copy",
+    "editPasteButton": "clipboard-paste",
+    "editDuplicateButton": "copy-plus",
+    "exportPdfButton": "file-down",
+    "saveButton": "save",
+}
+
+EDITOR_PALETTE_GLYPHS = {
+    # the narrow 120 px tool rail: «Поле»/«Область» wear the upstream
+    # successors of the retired «text-select»/«align-left» names
+    "paletteTool-pointer": "mouse-pointer",
+    "paletteTool-label": "type",
+    "paletteTool-text": "text-cursor-input",
+    "paletteTool-textarea": "text-align-start",
+    "paletteTool-checkbox": "square-check",
+    "paletteTool-number": "hash",
+    "paletteTool-dropdown": "list",
+    "paletteTool-image": "image",
+    "paletteTool-rect": "square",
+    "paletteTool-line": "minus",
+}
+
+
+def _glyph_and_caption(button):
+    glyphs = [i for i in walk_items(button)
+              if i.objectName() == "themeButtonIcon"]
+    captions = [i for i in walk_items(button)
+                if i.objectName() == "themeButtonCaption"]
+    assert len(glyphs) == 1 and len(captions) == 1
+    return glyphs[0], captions[0]
+
+
+def test_editor_chrome_buttons_carry_their_pass_glyphs(qtbot, vm, palette):
+    widget = load_editor(qtbot, vm, palette)
+    for name, icon in EDITOR_CHROME_GLYPHS.items():
+        button = find_item(widget, name)
+        assert button.property("iconName") == icon, name
+        glyph, caption = _glyph_and_caption(button)
+        assert glyph.property("visible") is True, name
+        assert caption.property("visible") is True, name  # text stays
+        assert caption.property("text") == button.property("text"), name
+
+
+def test_editor_palette_glyphs_do_not_elide_the_captions(qtbot, vm, palette):
+    """The 120 px tool rail is the narrow row of the icon pass: each tool
+    button grows by glyph + gap (20 px) and must still show its full caption
+    — the fit gate that let the palette in (the 260 px panel's «На передний/
+    задний план» failed exactly this probe and stayed text-only)."""
+    widget = load_editor(qtbot, vm, palette)
+    for name, icon in EDITOR_PALETTE_GLYPHS.items():
+        button = find_item(widget, name)
+        assert button.property("iconName") == icon, name
+        glyph, caption = _glyph_and_caption(button)
+        assert glyph.property("visible") is True, name
+        assert caption.width() >= caption.property("implicitWidth"), name
+
+
+def test_editor_panel_actions_keep_their_captions_whole(qtbot, vm, palette):
+    """QA 2026-09-30 S-1: the panel's «На передний план»/«На задний план»
+    deliberately wear no glyph, so their captions are the only channel — on a
+    narrowed island the fill distribution used to shave a button a fraction
+    under its implicit width and ThemeButton's last-resort elide ate the text
+    («На передний пл…»). The usage-site Layout.minimumWidth floors keep both
+    captions whole at any panel width: button width rides its implicit width
+    and the caption's painted width never drops below its implicit one."""
+    widget = load_editor(qtbot, vm, palette, size=(900, 700))
+    for name in ("bringFrontButton", "sendBackButton"):
+        button = find_item(widget, name)
+        assert button.width() >= button.implicitWidth() - 0.01, name
+        captions = [i for i in walk_items(button)
+                    if i.objectName() == "themeButtonCaption"]
+        assert len(captions) == 1, name
+        caption = captions[0]
+        full = caption.property("implicitWidth")
+        assert full > 0, name  # the caption is measured, not empty
+        assert caption.width() >= full - 0.01, name
+        assert caption.property("paintedWidth") >= full - 0.01, name
+
+
+def test_editor_panel_branch_buttons_carry_their_pass_glyphs(
+    qtbot, typed_case, palette
+):
+    vm, _, dd_id, _ = typed_case
+    widget = load_editor(qtbot, vm, palette)
+    vm.select(dd_id)
+    _pump(2)
+    assert find_item(widget, "optionAddButton").property("iconName") == "plus"
+    assert find_item(widget, "optionRemoveButton").property("iconName") == "trash"
+    img_id = vm.place("image", 100.0, 100.0)
+    vm.select(img_id)
+    _pump(2)
+    assert (find_item(widget, "imagePickButton").property("iconName")
+            == "folder-open")
+    assert find_item(widget, "imageClearButton").property("iconName") == "eraser"
+
+
+def test_fill_buttons_carry_their_pass_glyphs(qtbot, fill_case, palette):
+    fvm, ids = fill_case
+    widget = load_fill(qtbot, fvm, palette)
+    for name, icon in {"editUndoButton": "undo-2",
+                       "editRedoButton": "redo-2",
+                       "bindButton": "link",
+                       "unbindButton": "unlink",
+                       "saveButton": "save"}.items():
+        assert find_item(widget, name).property("iconName") == icon, name
+    fvm.select(ids["img"])
+    _pump(2)
+    assert (find_item(widget, "fillImagePickButton").property("iconName")
+            == "folder-open")
+    assert (find_item(widget, "fillImageClearButton").property("iconName")
+            == "eraser")

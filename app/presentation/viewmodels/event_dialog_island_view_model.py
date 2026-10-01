@@ -8,7 +8,9 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.llm_status import LlmStatus
+from app.domain import entity_registry
 from app.domain.date_era import duration_parts, era_key
+from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import (
     GameCoord,
     InvalidGameDateError,
@@ -16,6 +18,7 @@ from app.domain.game_calendar import (
     current_calendar,
 )
 from app.domain.time_of_day import TimeOfDay
+from app.presentation.entity_icons import icon_for
 from app.presentation.utils.date_utils import (
     format_duration_words,
     format_event_start,
@@ -35,6 +38,14 @@ SINCE_LABEL = "С начала: "
 #: specs «Поле „Родительское событие“…» and «Списки часов и минут…»): index 0
 #: of every model means «нет значения» — no parent, no hour, no minute.
 EMPTY_OPTION = "—"
+#: Lucide glyphs of the dialog's four relation tabs, in the registry's EVENT
+#: relation order (the same order as the tab captions) — read off the one
+#: type→icon map (Lucide pass 2026-09-30, one knowledge, one place).
+RELATED_TAB_ICONS: tuple[str, ...] = tuple(
+    icon_for(ref.entity_type)
+    for ref in entity_registry.related_refs(EntityType.EVENT)
+)
+
 AI_STATE_PROPERTY = "aiState"
 AI_STATE_ACTIVE = "active"
 AI_STATE_DISABLED = "disabled"
@@ -155,7 +166,7 @@ class AiStateHolder(QObject):
 
     Only a signal declared in the very same class can notify a PySide6
     ``Property`` (a cross-class ``notify`` registers as non-bindable), so all
-    five QML-facing proxy properties and ``stateChanged`` live here while each
+    six QML-facing proxy properties and ``stateChanged`` live here while each
     proxy keeps its own rules through the hooks referenced from below.
     """
 
@@ -171,11 +182,19 @@ class AiStateHolder(QObject):
     generating = Property(bool, lambda self: self._is_generating(), notify=stateChanged)
     clickable = Property(bool, lambda self: self._is_clickable(), notify=stateChanged)
     currentText = Property(str, lambda self: self._current_text(), notify=stateChanged)
+    # A4 (live fix 2026-09-30): a batch wave makes the AI button a stop — the
+    # QML face reads this instead of the retired mute «⏹» text() the widgets
+    # era left behind. Declared HERE (same class as ``stateChanged``) for the
+    # bindability rule above; each proxy keeps its own answer through the hook.
+    isCancelling = Property(bool, lambda self: self._is_cancelling(), notify=stateChanged)
 
     def update_llm_state(self, status: str, has_world_prompt: bool) -> None:
         self._status = status
         self._has_world_prompt = has_world_prompt
         self._refresh_ai_state()
+
+    def _is_cancelling(self) -> bool:
+        return False
 
     def _refresh_ai_state(self) -> None:
         self._ai_state = AI_STATE_ACTIVE if self._is_ai_active() else AI_STATE_DISABLED
@@ -296,9 +315,6 @@ class EntityGenerateProxy(AiStateHolder):
     def isEnabled(self) -> bool:
         return not self._single
 
-    def text(self) -> str:
-        return "⏹" if self._wave else "✨"
-
     def click(self) -> None:
         self.requestGenerate()
 
@@ -316,6 +332,11 @@ class EntityGenerateProxy(AiStateHolder):
         )
 
     def _is_generating(self) -> bool:
+        return self._wave
+
+    def _is_cancelling(self) -> bool:
+        # A4: while the wave runs the button's press stops it — the QML face
+        # prints the Lucide «circle-stop» glyph on this answer.
         return self._wave
 
     def _is_clickable(self) -> bool:
@@ -454,6 +475,9 @@ class EventDialogIslandViewModel(QObject):
     charactersSection = Property(QObject, lambda self: self.characters, constant=True)
     itemsSection = Property(QObject, lambda self: self.items, constant=True)
     locationsSection = Property(QObject, lambda self: self.locations, constant=True)
+    relatedTabIcons = Property(
+        "QVariant", lambda self: list(RELATED_TAB_ICONS), constant=True
+    )
 
     def _set_name(self, value: str) -> None:
         if value != self._name:

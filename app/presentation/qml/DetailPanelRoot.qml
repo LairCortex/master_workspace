@@ -254,9 +254,10 @@ Rectangle {
                 // derived name is the live-platform half only (AGENTS F4); the
                 // bound-text control keeps the 4.1 convention guard silent.
                 // NRI-0019: the retired width: implicitWidth (NRI-0015 M1 tail) —
-                // the bar's row now shares its width between the tabs (ThemeTabBar),
-                // so the whole column is used and a narrow column shortens the
-                // captions with the ellipsis instead of clipping the strip.
+                // the bar now shares its width EQUALLY between the tabs
+                // (ThemeTabBar), so the whole column is used and a narrow
+                // column shortens the captions with the ellipsis instead of
+                // clipping the strip.
                 Repeater {
                     model: detailPanelVm.tabTitles
                     ThemeTabButton {
@@ -265,6 +266,22 @@ Rectangle {
                         required property string modelData
                         required property int index
                         text: modelData
+                        // Measured 2026-09-30 offscreen (this file's tab
+                        // strip at the panel's real widths): without glyphs
+                        // the four naturals are 101.8/90.4/83.0/71.6 px.
+                        // Under the bar's equal-share law (2026-10-01) the
+                        // 382 px bar at the default 390 px column hands each
+                        // tab 95.5 px — the longest caption runs ~6 px over
+                        // it and the ellipsis takes the tail; every iconName
+                        // adds 20 px (16 glyph + 4 gap), pushing three of the
+                        // four naturals (121.8/110.4/103.0/91.6) over the
+                        // share — a strip of elided captions at the DEFAULT
+                        // width. This consumer therefore stays iconless
+                        // (Lucide pass 2026-09-30 decision; the event dialog
+                        // 720 px and the entity card 760 px sheets keep
+                        // their glyphs — wide enough that even the glyphed
+                        // naturals stay under the equal share).
+                        iconName: ""
                         Accessible.name: detailPanelVm.tabTitles[index]
                         HoverHandler {
                             onHoveredChanged: tooltipBridge.tooltipRequested(

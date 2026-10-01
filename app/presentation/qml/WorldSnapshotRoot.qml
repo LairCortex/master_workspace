@@ -78,6 +78,18 @@ Rectangle {
                 }
             }
 
+            // No Lucide glyphs on this header's buttons (icon pass
+            // 2026-09-30, measured offscreen at the root's real widths): the
+            // date field's worst-case floor leaves «Показать всё» — the
+            // OBS-1 clipper (docs/qa/2026-09-25-accessibility-audit.md) —
+            // exactly zero slack. Offscreen probe: at the 520 px first-open
+            // frame the row's right edge ends at 502/520 without glyphs and
+            // at 522/542 (past the panel edge) once «Показать» and «Сброс»
+            // take their 20 px each; at the audit's saved 1028 px frame the
+            // pre-pass row already ends at 1024/1028, matching the observed
+            // live clip. eye/refresh-ccw/list would each regress OBS-1, so
+            // the whole row stays text-only — the same probe rule that kept
+            // bring-to-front/send-to-back bare in SheetEditorRoot.qml.
             ThemeButton {
                 objectName: "snapshotShowButton"
                 text: "Показать"
@@ -122,7 +134,7 @@ Rectangle {
                     required property string ratingHex
                     required property bool fontBold
                     required property string tooltipHtml
-                    required property string iconText
+                    required property string iconName
                     required property string iconPath
                     required property int iconSize
                     required property bool expanded
@@ -166,6 +178,19 @@ Rectangle {
                         anchors.rightMargin: 8
                         spacing: 6
 
+                        // Disclosure glyph of the section header (Lucide pass
+                        // 2026-09-30): the «▸/▾» that used to be typed into
+                        // the caption — paint outside the name — is now the
+                        // library ThemeIcon beside the section icon. Entity
+                        // rows carry no chevron (always-visible leaves).
+                        ThemeIcon {
+                            visible: rowKind === "sectionHeader"
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: expanded ? "chevron-down" : "chevron-right"
+                            size: 14
+                            tint: root.foregroundColor
+                        }
+
                         Item {
                             width: iconSize
                             height: parent.height
@@ -178,11 +203,14 @@ Rectangle {
                                 fillMode: Image.PreserveAspectFit
                                 visible: iconPath !== ""
                             }
-                            Text {
+                            // No photo — the section's Lucide glyph stands in
+                            // (the old emoji Text fallback retired with it).
+                            ThemeIcon {
                                 anchors.centerIn: parent
-                                text: iconText
-                                font.pixelSize: iconSize * 0.7
                                 visible: iconPath === ""
+                                name: iconName
+                                size: iconSize
+                                tint: root.foregroundColor
                             }
                         }
 
@@ -191,9 +219,7 @@ Rectangle {
                             height: parent.height
                             verticalAlignment: Text.AlignVCenter
                             elide: Text.ElideRight
-                            text: rowKind === "sectionHeader"
-                                ? (expanded ? "▾  " : "▸  ") + displayText
-                                : displayText
+                            text: displayText
                             color: root.foregroundColor
                             font.bold: fontBold
                             font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)

@@ -1,15 +1,19 @@
 """NRI-0018/NRI-0019 — the main window starts whole; the tabs follow the column.
 
 Spec main-window «Размещение окон помнится и возвращается в экраны»: without
-a remembered placement the window opens at 1280×800 — the size the full tab
-captions and the snapshot date row read whole — and role "main" is attached
+a remembered placement the window opens at 1280×800 — the size the snapshot
+date row reads whole (the tab captions follow the column since the
+2026-10-01 equal-share law, see below) — and role "main" is attached
 plain: NRI-0019 retired the all-tabs-whole width provider (the tabs now
 stretch/shrink with elision, so a narrow saved frame returns AS saved; the
 geometry mechanic itself is pinned in test_geometry_memory.py). The splitter
 panes stand on one modest usability floor — no more the tabs threshold —
-while the default split still gives the detail column the whole-caption room
-(spec «Все вкладки прочитаны на дефолте»). The OBS-1 live follow-up (NRI-0017
-audit: «Показать всё» clipped at the 1028×708 saved frame) is pinned HERE too,
+while the default split hands the detail column its four EQUAL tab shares
+(the 2026-10-01 re-pin of «Все вкладки прочитаны на дефолте» — renamed
+«Вкладки делят колонку равными долями на дефолте» — for the
+library's equal-share law — see the test's comment). The OBS-1 live
+follow-up (NRI-0017 audit: «Показать всё» clipped at the 1028×708 saved frame)
+is pinned HERE too,
 on the snapshot's own home: since NRI-0022 (task 2.4) the whole «Дата:» action
 row stands inside the «Обзор мира» window at its first-open default.
 """
@@ -56,7 +60,7 @@ def _whole_items_in_panel(quick_widget) -> list[tuple[str, float]]:
 # ── the default frame (task 4.1/4.3) ────────────────────────────────────────
 
 
-def test_main_window_opens_at_the_whole_tabs_default_frame(qtbot):
+def test_main_window_opens_at_the_default_frame(qtbot):
     window = _main_window(qtbot)
     # The frame without any remembered placement: 1280×800 (spec «Первый
     # запуск шире прежнего минимума»)…
@@ -82,8 +86,17 @@ def test_splitter_panels_stand_on_one_usability_floor(qtbot):
     ] == [floor, floor, floor]
 
 
-def test_tabs_are_whole_in_the_detail_column_at_the_default(qtbot):
-    """Spec scenario «Все вкладки прочитаны на дефолте» on the composed window."""
+def test_tabs_share_the_detail_column_in_equal_shares_at_the_default(qtbot):
+    """Spec scenario «Вкладки делят колонку равными долями на дефолте»
+    (renamed from «Все вкладки прочитаны на дефолте»), re-pinned 2026-10-01
+    for the library's equal-share law (spec qml-components «Вкладки делят
+    ширину полосы»): at the default split the four tabs divide the bar into
+    four EQUAL widths — the caption length buys no tab extra pixels. NOTE the
+    honest deviation from the old whole-caption assertion: the proportional
+    distribution used to hand «Организации» (natural 101.8 px) more than an
+    equal share (99 px at the 396 px default column), so its caption now
+    loses its tail to the ellipsis by a few pixels at the default column —
+    the same mechanism the narrow-column scenario already blesses."""
     window = _main_window(qtbot)
     window.show()
     QApplication.processEvents()
@@ -96,9 +109,10 @@ def test_tabs_are_whole_in_the_detail_column_at_the_default(qtbot):
     ]
     tabs.sort(key=lambda tab: tab.mapToItem(detail_root, QPointF(0, 0)).x())
     assert len(tabs) == 4
+    widths = [tab.width() for tab in tabs]
+    # Equal shares: one width for all four captions of different lengths.
+    assert max(widths) - min(widths) <= 1.0
     for tab in tabs:
-        # Whole caption at the default split…
-        assert tab.width() >= tab.property("implicitWidth") - 0.5
         # …standing inside the island.
         scene = tab.mapToItem(detail_root, QPointF(0, 0))
         assert scene.x() + tab.width() <= detail_root.width() + 0.5

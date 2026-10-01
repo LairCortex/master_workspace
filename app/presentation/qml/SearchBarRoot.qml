@@ -215,6 +215,7 @@ Rectangle {
 
             ThemeButton {
                 objectName: "searchButton"
+                iconName: "search"
                 text: "Найти"
                 onClicked: searchBarVm.requestSearch()
             }
@@ -261,18 +262,34 @@ Rectangle {
                     Rectangle {
                         objectName: "searchSectionHeader"
                         width: searchResultsList.width
-                        height: headerText.implicitHeight
+                        height: Math.max(
+                            headerText.implicitHeight, headerIcon.size)
                             + 2 * Tokens.px(root.islandTokens, "space.xs", 4)
                         color: root.borderColor
                         enabled: false
 
+                        // The section's Lucide glyph rides the VM row (the
+                        // one type→icon map on the Python side, Lucide pass
+                        // 2026-09-30) — paint beside the bold caption, the
+                        // world-snapshot header's pattern.
+                        ThemeIcon {
+                            id: headerIcon
+                            objectName: "searchSectionHeaderIcon"
+                            anchors.left: parent.left
+                            anchors.leftMargin: Tokens.px(root.islandTokens, "space.sm", 8)
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: parent.parent.rowData.iconName
+                            size: 14
+                            tint: root.primaryColor
+                        }
+
                         Text {
                             id: headerText
                             objectName: "searchSectionHeaderText"
-                            anchors.left: parent.left
+                            anchors.left: headerIcon.right
+                            anchors.leftMargin: Tokens.px(root.islandTokens, "space.xs", 4)
                             anchors.right: parent.right
-                            anchors.leftMargin: Tokens.px(root.islandTokens, "space.sm", 8)
-                            anchors.rightMargin: anchors.leftMargin
+                            anchors.rightMargin: Tokens.px(root.islandTokens, "space.sm", 8)
                             anchors.verticalCenter: parent.verticalCenter
                             text: parent.parent.rowData.text
                             color: root.primaryColor

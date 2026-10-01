@@ -42,9 +42,11 @@ Rectangle {
     implicitHeight: 480
 
     // ── chrome surface the facade writes (the root contract) ────────────────
-    // The chip caption seeds at «Все дни ▾» (the old header button's own
-    // default); every real move lands through the facade's ``windowText``.
-    property string windowText: "Все дни ▾"
+    // The chip caption seeds at «Все дни» (the old header button's own
+    // default); the dropdown caret is the chip's own trailing Lucide chevron
+    // (live fix 2026-09-30 A1), never part of this text. Every real move
+    // lands through the facade's ``windowText``.
+    property string windowText: "Все дни"
     property int selectedId: -1
 
     // Flat-list geometry. Rows are equal-height per kind: one caption line, or
@@ -124,7 +126,7 @@ Rectangle {
         anchors.margins: 4        // the migrated chrome layout margins
         spacing: 4                // …and spacing
 
-        // Header — title, «Выбор даты» chip, «➜ Сейчас» (NRI-0021 task 5.2),
+        // Header — title, «Выбор даты» chip, «Сейчас» (NRI-0021 task 5.2),
         // «+».
         //
         // The band is the shared panel-header one (panelHeader.js, live fix
@@ -154,7 +156,7 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 // Stretches into the free space, shrinks (elides) first —
-                // now behind the «➜ Сейчас» button too (NRI-0021 task 5.2).
+                // now behind the «Сейчас» button too (NRI-0021 task 5.2).
                 width: Math.max(0, Math.min(implicitWidth,
                                             nowButton.x - headerSpacing))
             }
@@ -162,7 +164,7 @@ Rectangle {
             ThemeIconButton {
                 id: addButton
                 objectName: "addButton"
-                text: "+"
+                iconName: "plus"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 Nri.tooltip: "Добавить событие (правый клик — другие сущности)"
@@ -194,10 +196,13 @@ Rectangle {
                 id: windowChip
                 objectName: "windowChip"
                 text: root.windowText
+                // The dropdown caret is the library glyph, not caption text
+                // (live fix 2026-09-30 A1): the chip's trailing chip icon.
+                trailingIconName: "chevron-down"
                 readonly property real minSideFloor: 46
                 // Implicit width; the floor keeps it tappable when the row
-                // squeezes, the contentItem eliding at that point. The «➜
-                // Сейчас» button (its left neighbour since NRI-0021) rides
+                // squeezes, the contentItem eliding at that point. The
+                // «Сейчас» button (its left neighbour since NRI-0021) rides
                 // its own implicit width, so the reservation is exact and
                 // the two width bindings cannot feed each other.
                 width: Math.max(minSideFloor,
@@ -220,8 +225,10 @@ Rectangle {
                 }
             }
 
-            // «➜ Сейчас» (NRI-0021 task 5.2, spec «Кнопка прокрутки „➜
-            // Сейчас“») — right beside the «Выбор даты» chip. The rule is
+            // «Сейчас» with its crosshair glyph (NRI-0021 task 5.2, spec
+            // «Кнопка прокрутки „Сейчас“»; the face gained the Lucide glyph
+            // in the 2026-09-30 icon pass) — right beside the «Выбор даты»
+            // chip. The rule is
             // Python's (TimelineViewModel.requestNowScroll answers with the
             // landing index, the facade reveals it through scrollToIndex);
             // this button only presses the sync slot. Availability is the
@@ -233,7 +240,8 @@ Rectangle {
             ThemeButton {
                 id: nowButton
                 objectName: "nowButton"
-                text: "➜ Сейчас"
+                text: "Сейчас"
+                iconName: "crosshair"
                 enabled: vm.nowScrollEnabled
                 anchors.right: windowChip.left
                 anchors.rightMargin: headerSpacing

@@ -94,6 +94,7 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     CalendarWizardViewModel,
 )
 from app.presentation.views.calendar_grid import GameCalendarGrid
+from app.presentation.views.lucide_icons import lucide_icon
 
 # Spin bounds the screens offer.  The week's 2…168 is fixed by spec («Неделя
 # короче двух»: длина 1 просто «недоступна»); the month bounds are NOT domain
@@ -217,6 +218,12 @@ class CalendarWizardDialog(QDialog):
         self._next_button = QPushButton("Далее")
         self._apply_button = QPushButton("Применить")
         self._cancel_button = QPushButton("Отменить")
+        # QML ThemeButton parity: the compiled sheet paints the ordinary face
+        # on every chrome button; only the wizard's forward actions opt into
+        # the primary face («Далее», «Применить»).  Dismissal («Отменить»,
+        # «Назад») stays plain — one accent per row, not three.
+        set_role(self._next_button, "primary")
+        set_role(self._apply_button, "primary")
         # W4 (spec «Кнопки мастера — одна строка…», the row half this package
         # leaves untouched): one row, the dismissal at the OPPOSITE edge from
         # its content group.  With the old order the cancel sat at the far
@@ -228,6 +235,19 @@ class CalendarWizardDialog(QDialog):
         footer_row.addWidget(self._next_button)
         footer_row.addWidget(self._apply_button)
         left.addWidget(self._footer)
+
+        # Catalog skin: chrome root for the generated sheet's button/field
+        # rules, roles stamped on the individual widgets above.  QA 2026-09-30
+        # F3: the runtime pushes the chrome QSS only in apply(), so a wizard
+        # reopened after a mid-session theme switch stayed on the OS palette;
+        # apply right after attaching, like every other widget window does
+        # (table_host/panel.py:_apply_theme) — apply() is deduplicated, so
+        # repeated openings are cheap.  Attaching here, not at the tail of the
+        # constructor, is what keeps the Д7 geometry below honest: the sheet
+        # moves size hints, and every width sum read further down must already
+        # be measured under the skin the dialog will on-screen with.
+        attach_theme(self, self._theme)
+        self._theme.apply()
 
         # Д7 (spec «Левая колонка мастера широка ровно по содержимому»): the
         # old fixed 3:2 share is gone.  The column is exactly as wide as its
@@ -243,6 +263,12 @@ class CalendarWizardDialog(QDialog):
         # semantics), while a widget's own sizeHint is valid right here.
         self._step_column = QWidget()
         self._step_column.setLayout(left)
+        # The hint reads happen with the column already added to the styled
+        # tree: outside it the dialog's chrome sheet does not reach the
+        # buttons yet and they report their unskinned box metrics (QA
+        # 2026-09-30 F3 follow-up — the same sheet the F3 fix now pushes at
+        # construction moves the footer's hint by a whole button's width).
+        root.addWidget(self._step_column)
         margins = left.contentsMargins()
         column_natural = (
             max(
@@ -256,7 +282,6 @@ class CalendarWizardDialog(QDialog):
         self._step_column.setFixedWidth(
             min(ceil_to_width_step(column_natural), STEP_COLUMN_MAX_WIDTH)
         )
-        root.addWidget(self._step_column)
 
         right.addWidget(title("Предпросмотр"))
         # The live preview: the same grid class the date popups embed, inert
@@ -274,34 +299,12 @@ class CalendarWizardDialog(QDialog):
         # to the right column with a single stretch, not to a 40 % cap.
         root.addLayout(right, 1)
 
-        # The recounted minimum (see the note over the layout build): fixed
-        # column + the preview at its own minimum + the root layout's own
-        # chrome, climbed to the next step of 40.  Composed from the widget
-        # hints explicitly because — as above — the dialog's own
-        # minimumSizeHint() is still empty this early in construction.  The
-        # style metric stands in for the unresolved (-1) layout spacing the
-        # cocoa style reports.
-        style_spacing = self.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
-        spacing = root.spacing() if root.spacing() >= 0 else style_spacing
-        root_margins = root.contentsMargins()
-        chrome = (
-            root_margins.left()
-            + root_margins.right()
-            + spacing
-        )
-        self.setMinimumSize(
-            ceil_to_width_step(
-                self._step_column.maximumWidth()
-                + self._preview.minimumSizeHint().width()
-                + chrome
-            ),
-            WIZARD_MIN_HEIGHT,
-        )
-
-        # Catalog skin: chrome root for the generated sheet's button/field
-        # rules, roles stamped on the individual widgets above.
-        attach_theme(self, self._theme)
-
+        # The recounted minimum (see the note over the layout build) is
+        # composed after the first render below — a fresh preview answers its
+        # FIRST minimumSizeHint cold under the chrome sheet (measured
+        # 2026-10-01: 448 at construction, 458 once the style metrics have
+        # been walked; the retired bold base rule used to warm them earlier),
+        # and the on-screen layout enforces the warmed value.
         self._back_button.clicked.connect(self._vm.go_back)
         self._next_button.clicked.connect(lambda: self._start(self._vm.try_advance()))
         self._apply_button.clicked.connect(lambda: self._start(self._vm.apply()))
@@ -340,6 +343,32 @@ class CalendarWizardDialog(QDialog):
         # placement per opened preview state — later repaints keep whatever
         # page the user navigated to («навигация по месяцам и годам работает»).
         self._place_preview()
+        # The recounted minimum (see the note over the layout build): fixed
+        # column + the preview at its own minimum + the root layout's own
+        # chrome, climbed to the next step of 40.  Composed from the widget
+        # hints explicitly because — as above — the dialog's own
+        # minimumSizeHint() is still empty this early in construction.  The
+        # style metric stands in for the unresolved (-1) layout spacing the
+        # cocoa style reports.  It stands HERE, after the first render, for
+        # the same reason: the render walk warms the chrome sheet's metrics
+        # of the preview's nav widgets, and only the warmed hint is what the
+        # on-screen layout will enforce (2026-10-01: 448 cold vs 458 warm).
+        style_spacing = self.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
+        spacing = root.spacing() if root.spacing() >= 0 else style_spacing
+        root_margins = root.contentsMargins()
+        chrome = (
+            root_margins.left()
+            + root_margins.right()
+            + spacing
+        )
+        self.setMinimumSize(
+            ceil_to_width_step(
+                self._step_column.maximumWidth()
+                + self._preview.minimumSizeHint().width()
+                + chrome
+            ),
+            WIZARD_MIN_HEIGHT,
+        )
 
     # ── async seams (the EventTypesDialog facade convention) ────────────────
 
@@ -432,6 +461,10 @@ class CalendarWizardDialog(QDialog):
         self._rule_month_combo = QComboBox()
         set_role(self._rule_month_combo, "field")
         self._rule_add_button = QPushButton("Добавить")
+        # The compiled sheet paints this button with the ordinary chrome face
+        # (canvas fill, primary ink), so the glyph wears the default caption
+        # ink — an accent-tinted glyph would speak the primary-button ink.
+        self._rule_add_button.setIcon(lucide_icon("plus"))
         add_row.addWidget(self._rule_name_edit, 1)
         add_row.addWidget(self._rule_month_combo)
         add_row.addWidget(self._rule_add_button)
@@ -501,6 +534,9 @@ class CalendarWizardDialog(QDialog):
         buttons = QHBoxLayout()
         self._transfer_apply_button = QPushButton("Перенести и применить")
         self._transfer_cancel_button = QPushButton("Отменить")
+        # Same face split as the footer: the applying action is primary, the
+        # going-back «Отменить» stays plain.
+        set_role(self._transfer_apply_button, "primary")
         buttons.addStretch()
         buttons.addWidget(self._transfer_cancel_button)
         buttons.addWidget(self._transfer_apply_button)
@@ -638,8 +674,18 @@ class CalendarWizardDialog(QDialog):
             caption = QLabel("")
             set_role(caption, "hint")
             remove_button = QPushButton("Удалить")
-            up_button = QPushButton("↑")
-            down_button = QPushButton("↓")
+            # Plain chrome face (canvas fill, primary ink): the glyph shares
+            # the caption's default ink, no accent tint (F2 re-read after the
+            # 2026-10-01 face split).
+            remove_button.setIcon(lucide_icon("trash"))
+            # Icon-only arrows: the Russian accessible names carry the meaning
+            # the glyph cannot speak (the widgets-side a11y rule).
+            up_button = QPushButton()
+            up_button.setIcon(lucide_icon("arrow-up"))
+            up_button.setAccessibleName("Поднять правило")
+            down_button = QPushButton()
+            down_button.setIcon(lucide_icon("arrow-down"))
+            down_button.setAccessibleName("Опустить правило")
             remove_button.clicked.connect(
                 lambda _c=False, i=index: self._vm.remove_intercalary(i)
             )

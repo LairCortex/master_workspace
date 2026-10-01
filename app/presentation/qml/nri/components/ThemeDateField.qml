@@ -33,8 +33,17 @@ Control {
     // decides the field's minimum width.
     property string worstCaseText: ""
     // The same caption measured in this field's font — the host-facing read
-    // of the width floor (pinned by tests, so the floor is never silent).
+    // of the caption part of the width floor (pinned by tests, so the floor
+    // is never silent). The painted floor itself is one glyph wider: the
+    // always-on calendar-days icon below rides in front of the caption.
     readonly property real worstCaseWidth: worstCaseMetrics.width
+
+    // Lucide icon pass 2026-09-30: the field's own calendar-days glyph (the
+    // component owns it, like it owns role/press/width — paint only, the
+    // accessibility contract is untouched). It is a fixed part of the width
+    // floor, so no host's chips can ever be squeezed below caption + glyph.
+    readonly property int iconSize: 16
+    readonly property real iconGap: Tokens.px(islandTokens, "space.xs", 4)
     signal clicked()
 
     // Widest standard-calendar form: «Сентябрь» tops the default month names,
@@ -71,11 +80,13 @@ Control {
     topPadding: Tokens.px(islandTokens, "space.xs", 4)
     bottomPadding: Tokens.px(islandTokens, "space.xs", 4)
 
-    // Never narrower than the worst caption (plus paddings), and never
-    // narrower than the current display when the host passed a too-short
-    // hint — the elide only ever sees deliberately oversized foreign text.
+    // Never narrower than the worst caption plus the glyph that always rides
+    // in front of it (plus paddings), and never narrower than the current
+    // display — the elide only ever sees deliberately oversized foreign text
+    // (icon pass 2026-09-30: the glyph + gap is part of the floor, so a
+    // widened chip never silently eats the icon or the year).
     implicitWidth: Math.max(
-        worstCaseMetrics.width,
+        worstCaseMetrics.width + iconSize + iconGap,
         contentItem ? contentItem.implicitWidth : 0) + leftPadding + rightPadding
     // Layouts default fillWidth items to a minimum of 0 (probed on Qt 6.10),
     // so the floor is stated explicitly; the attached object belongs to this
@@ -83,14 +94,37 @@ Control {
     // usage sites change nothing for the width guarantee).
     Layout.minimumWidth: implicitWidth
 
-    contentItem: Text {
-        text: control.display
-        color: control.foregroundColor
-        font.pixelSize: Tokens.px(control.islandTokens, "font.size.md", 13)
-        verticalAlignment: Text.AlignVCenter
-        // Secondary fallback only (spec «elide остаётся запасным»): with the
-        // minimumWidth floor in place a real caption never reaches it.
-        elide: Text.ElideRight
+    // Glyph + caption as one group (the ThemeButton contentItem pattern):
+    // the icon keeps its fixed square at the left, the caption takes the
+    // rest and is the only eliding party.
+    contentItem: Item {
+        id: dateContent
+
+        implicitWidth: control.iconSize + control.iconGap
+            + (caption ? caption.implicitWidth : 0)
+        implicitHeight: Math.max(caption ? caption.implicitHeight : 0, control.iconSize)
+
+        ThemeIcon {
+            objectName: "themeDateFieldIcon"
+            anchors.verticalCenter: parent.verticalCenter
+            name: "calendar-days"
+            size: control.iconSize
+            tint: control.foregroundColor
+        }
+        Text {
+            id: caption
+            objectName: "themeDateFieldCaption"
+            x: control.iconSize + control.iconGap
+            width: Math.max(0, dateContent.width - x)
+            anchors.verticalCenter: parent.verticalCenter
+            text: control.display
+            color: control.foregroundColor
+            font.pixelSize: Tokens.px(control.islandTokens, "font.size.md", 13)
+            verticalAlignment: Text.AlignVCenter
+            // Secondary fallback only (spec «elide остаётся запасным»): with
+            // the minimumWidth floor in place a real caption never reaches it.
+            elide: Text.ElideRight
+        }
     }
 
     background: control.skinned ? fieldBackground : null

@@ -74,11 +74,16 @@ Rectangle {
             ThemeButton {
                 objectName: "browseButton"
                 text: "Обзор…"
+                // Lucide icon pass 2026-09-30: the folder-with-lens glyph of
+                // a file picker (the plain folder-open stays for pickers
+                // without a «look inside» nuance).
+                iconName: "folder-search"
                 onClicked: xlsxImportVm.requestBrowse()
             }
             ThemeButton {
                 objectName: "downloadButton"
                 text: "Скачать шаблон"
+                iconName: "download"
                 // The save--as flow attaches to this signal in task 5.2 —
                 // the island's side of the seam is done here.
                 onClicked: xlsxImportVm.requestDownloadTemplate()
@@ -310,6 +315,13 @@ Rectangle {
                 text: xlsxImportVm.state === "done" ? "Закрыть"
                     : xlsxImportVm.state === "problems" ? "Импортировать"
                     : "Проверить…"
+                // Lucide icon pass 2026-09-30: one glyph per state of this
+                // tri-state button — check before the analysis, import for
+                // the confirmed write; the done-state «Закрыть» stays bare
+                // (a closing exit is not an action to advertise).
+                iconName: xlsxImportVm.state === "done" ? ""
+                    : xlsxImportVm.state === "problems" ? "import"
+                    : "search-check"
                 accentBackground: true
                 enabled: xlsxImportVm.state === "done" || xlsxImportVm.canImport
                 onClicked: {

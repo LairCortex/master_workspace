@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 from app.domain import entity_registry
+from app.presentation.entity_icons import icon_for
 from app.presentation.utils.date_utils import (
     era_flag,
     event_start_time,
@@ -172,6 +173,7 @@ class SearchViewModel(QObject):
         entity_id: int | None = None,
         date_text: str = "",
         clickable: bool = False,
+        icon_name: str = "",
     ) -> dict[str, Any]:
         return {
             "kind": kind,
@@ -180,6 +182,7 @@ class SearchViewModel(QObject):
             "id": entity_id,
             "dateText": date_text,
             "clickable": clickable,
+            "iconName": icon_name,
         }
 
     def _publish_results(self) -> None:
@@ -197,6 +200,10 @@ class SearchViewModel(QObject):
                 self._row(
                     "sectionHeader",
                     f"— {label} ({len(entities)}) —",
+                    # the section's Lucide glyph from the one type→icon map
+                    # (Lucide pass 2026-09-30); a key outside the registry
+                    # keeps the tolerant no-icon fallback of the caption
+                    icon_name=icon_for(entity_type) if desc else "",
                 )
             )
             for entity in entities:

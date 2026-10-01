@@ -28,9 +28,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QObject, QUrl
+from PySide6.QtCore import QPoint, QPointF, QObject, Qt, QUrl
+from PySide6.QtGui import QColor
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
 from app.application.services.character_sheet_service import CharacterSheetService
 from app.infrastructure.repositories.character_sheet_repository import (
@@ -130,7 +133,8 @@ def test_no_foreign_glyph_knobs_or_glyph_wearing_theme_buttons():
 
 
 def test_sheet_header_close_glyph_is_the_library_icon_button():
-    """✕ transplanted inside the component: ThemeSheetHeader now crowns its
+    """✕ (the Lucide «x» glyph since the 2026-09-30 icon pass) transplanted
+    inside the component: ThemeSheetHeader now crowns its
     sheet with the library square button — role/name/Press stay exactly as
     pinned in test_sheet_header_accessibility, only the gauge is the
     component's own."""
@@ -140,7 +144,7 @@ def test_sheet_header_close_glyph_is_the_library_icon_button():
     closes = [
         (start, end)
         for start, end, _ in _iter_blocks(text, "ThemeIconButton")
-        if "✕" in text[start:end]
+        if 'iconName: "x"' in text[start:end]
     ]
     assert len(closes) == 1
     body = text[closes[0][0]:closes[0][1]]
@@ -202,14 +206,16 @@ def test_sheet_header_close_is_the_library_square(qtbot):
     dialog = EventDialog(None)
     qtbot.addWidget(dialog)
     dialog.quick.grab()
-    _assert_square_glyph(find_item(dialog.quick, "sheetHeaderClose"), "✕")
+    _assert_square_glyph(find_item(dialog.quick, "sheetHeaderClose"),
+                         "sheetHeaderClose")
 
 
 def test_entity_card_music_edit_glyph_is_the_square(qtbot):
     dialog = EntityCardDialog(None, "character")
     qtbot.addWidget(dialog)
     dialog.quick.grab()
-    _assert_square_glyph(find_item(dialog.quick, "entityMusicEditButton"), "✎")
+    _assert_square_glyph(find_item(dialog.quick, "entityMusicEditButton"),
+                         "entityMusicEditButton")
 
 
 def test_timeline_add_glyph_is_the_square(qtbot, qapp, tmp_path):
@@ -227,8 +233,14 @@ def test_timeline_chevron_wears_the_ghost_keeps_the_square(qtbot, qapp, tmp_path
     SAME library square where it is actually rendered — 32×32 on the row —
     but in the ghost (flat) set: ``ghost: true`` at the usage site, and the
     wash pair (``accentBackground: row.selectedRow``) rides the same control.
-    The a11y face (role/name/Press) is pinned in test_timeline_accessibility;
-    the ghost face itself in test_theme_icon_button."""
+    On the SELECTED row this pair wears no face in ANY state (live fix
+    2026-09-30 — the chip the user saw was the hover/pressed derivation of
+    the ghost around the glyph, the 32 px square overhanging the 24 px band):
+    the background stays transparent at rest and under the synthetic press;
+    hover is the same branch one step shallower, source-pinned in
+    test_theme_icon_button. The a11y face (role/name/Press) is pinned in
+    test_timeline_accessibility; the ghost face itself in
+    test_theme_icon_button."""
     events = [
         SimpleNamespace(id=1, name="Поход", start_date=date(1200, 1, 1),
                         end_date=date(1200, 1, 1), description=None,
@@ -250,6 +262,37 @@ def test_timeline_chevron_wears_the_ghost_keeps_the_square(qtbot, qapp, tmp_path
     chevron = chevrons[0]
     _assert_square_glyph(chevron, "chevron")  # the gauge is the component's
     assert chevron.property("ghost") is True
+
+    # The selection write lands on the chevron as the accent pair…
+    widget.rootObject().setProperty("selectedId", 1)
+    qtbot.waitUntil(
+        lambda: chevron.property("accentBackground") is True, timeout=5000
+    )
+
+    def face() -> QColor:
+        return chevron.property("background").property("color")
+
+    # …at rest the glyph stands flat on the wash — the background is nothing.
+    assert face().alpha() == 0
+
+    # …and a synthetic press (the state DOES reach Controls offscreen) adds
+    # no face either: alpha would read 0.7·255 the moment the derivation
+    # chip returns. Released OUTSIDE the square so the click never fires —
+    # the expand channel would rebuild the rows under this very delegate.
+    center = chevron.mapToScene(QPointF(chevron.width() / 2, chevron.height() / 2))
+    QTest.mousePress(widget, Qt.LeftButton, Qt.NoModifier,
+                     QPoint(int(center.x()), int(center.y())))
+    QTest.qWait(10)
+    QApplication.processEvents()
+    assert chevron.property("pressed") is True
+    assert face().alpha() == 0
+    QTest.mouseRelease(widget, Qt.LeftButton, Qt.NoModifier,
+                       QPoint(2, widget.height() - 2))
+    QTest.qWait(10)
+    QApplication.processEvents()
+    assert chevron.property("pressed") is False
+    assert face().alpha() == 0
+    assert widget.errors() == []
 
 
 def test_event_types_arrows_are_the_squares(qtbot, qapp, tmp_path):

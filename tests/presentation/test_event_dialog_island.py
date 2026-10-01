@@ -24,6 +24,59 @@ from tests.presentation.qml_helpers import find_item
 from tests.ui.test_theme_grab import make_runtime
 
 
+def test_save_and_related_section_buttons_carry_their_pass_glyphs(qtbot):
+    """Lucide icon pass 2026-09-30: the dialog save chip and the related
+    section's link/create/unlink trio gain their glyphs; the captions stay.
+    «user-plus» is absent by decision — RelatedSectionState carries no entity
+    type, so the component cannot tell a character section from the rest."""
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    assert find_item(dialog.quick, "eventSaveButton").property("iconName") == "save"
+    for suffix, icon in (
+        ("LinkButton", "link"),
+        ("CreateButton", "plus"),
+        ("UnlinkButton", "unlink"),
+    ):
+        button = find_item(dialog.quick, "charactersRelated" + suffix)
+        assert button.property("iconName") == icon, suffix
+        assert button.property("text") != "", suffix
+
+
+def test_related_tabs_carry_the_one_map_glyphs(qtbot):
+    """Lucide pass 2026-09-30: the four relation tabs gain the registry
+    order's glyphs from the one type→icon map, index-aligned with the literal
+    captions; the sheet (720 px measured) keeps every caption whole with the
+    glyph, so unlike the narrow detail column this consumer wears them."""
+    from app.domain import entity_registry
+    from app.domain.enums.entity_type import EntityType
+    from app.presentation.entity_icons import icon_for
+    from tests.presentation.qml_helpers import walk_items
+
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    expected = [
+        (caption, icon_for(ref.entity_type))
+        for caption, ref in zip(
+            ("Организации", "Персонажи", "Предметы", "Локации"),
+            entity_registry.related_refs(EntityType.EVENT),
+        )
+    ]
+    tabs = sorted(
+        (
+            item
+            for item in walk_items(find_item(dialog.quick, "eventRelatedTabs"))
+            if item.metaObject().className().startswith("ThemeTabButton")
+        ),
+        key=lambda item: item.x(),
+    )
+    assert len(tabs) == 4
+    for tab, (caption, glyph) in zip(tabs, expected):
+        assert tab.property("text") == caption
+        assert tab.property("iconName") == glyph
+        glyph_items = [i for i in walk_items(tab) if i.objectName() == "themeTabIcon"]
+        assert len(glyph_items) == 1 and glyph_items[0].property("visible") is True
+
+
 def test_bc_era_facets_and_the_suffix_reach_the_qml_date_field(qtbot):
     """Task 4.1: the viewmodel exposes ready ``startBc``/``endBc`` facets and
     pre-built display strings — the island's ThemeDateField paints the
@@ -218,7 +271,8 @@ def test_proxy_guard_branches_and_vm_request_slots(qtbot, monkeypatch):
     with qtbot.waitSignal(entity.batch_requested):
         entity.requestGenerate()
     entity.set_wave_running(True)
-    assert entity.text() == "⏹"
+    assert entity.isCancelling is True  # A4: the QML face prints «circle-stop»
+    assert ai.isCancelling is False     # a field proxy never answers the stop face
     with qtbot.waitSignal(entity.batch_cancel_requested):
         entity.click()
 

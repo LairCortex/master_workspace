@@ -214,10 +214,16 @@ class TestWorldSnapshotGaps:
         )
         assert row["fontBold"]
 
-    def test_entity_image_thumbnails_node_icon(self, qtbot, monkeypatch):
+    def test_entity_image_thumbnails_node_icon(self, qtbot, monkeypatch, tmp_path):
+        # Lucide pass 2026-09-30: the row no longer carries a rendered 24px
+        # thumbnail QIcon — it delivers the photo's file URI (iconPath, the
+        # QML Image source) and the section glyph NAME the QML ThemeIcon
+        # paints when no photo exists.
+        photo = tmp_path / "thumb.png"
+        photo.write_bytes(b"\x89PNG\r\n\x1a\n")
         monkeypatch.setattr(
-            "app.presentation.viewmodels.world_snapshot_view_model.load_entity_preview",
-            lambda entity, slot_size: _fake_thumbnail(size=slot_size),
+            "app.presentation.viewmodels.world_snapshot_view_model.resolve_preview_path",
+            lambda entity: photo,
         )
         ch = _mock_entity(1, "Герой")
         ev = _mock_event(characters=[ch])
@@ -228,8 +234,9 @@ class TestWorldSnapshotGaps:
             row for row in self._rows(w)
             if row["rowKind"] == "entityRow" and row["type"] == "character"
         )
-        widths = [size.width() for size in row["icon"].availableSizes()]
-        assert 24 in widths, "thumbnail icon should be the 24px pixmap"
+        assert row["iconPath"] == photo.resolve().as_uri()
+        assert row["iconName"] == "user-round"
+        assert row["iconSize"] == 24
 
 
     def test_description_snippet_in_tooltip(self, qtbot):

@@ -61,16 +61,25 @@ ColumnLayout {
         ThemeButton {
             objectName: control.objectPrefix + "LinkButton"
             text: "Привязать существующего"
+            // Lucide icon pass 2026-09-30: link/create/unlink are the same
+            // gestures as the fill island's bind/unbind pair. «user-plus»
+            // was NOT used for the character sections: the section model
+            // (RelatedSectionState) carries no entity type — the type lives
+            // only in the entity-card's outer row dict, so no one-line
+            // condition inside this component could reach it.
+            iconName: "link"
             onClicked: if (control.section) control.section.requestLink()
         }
         ThemeButton {
             objectName: control.objectPrefix + "CreateButton"
             text: "Создать нового"
+            iconName: "plus"
             onClicked: if (control.section) control.section.requestCreate()
         }
         ThemeButton {
             objectName: control.objectPrefix + "UnlinkButton"
             text: "Отвязать"
+            iconName: "unlink"
             enabled: control.section && control.section.selectedIndex >= 0
             onClicked: if (control.section) control.section.unlinkSelected()
         }

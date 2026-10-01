@@ -21,6 +21,7 @@ from app.domain import entity_registry
 from app.domain.date_era import duration_parts
 from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import GameCoord, InvalidGameDateError
+from app.presentation.entity_icons import icon_for
 from app.presentation.theme.rating import rating_to_color
 from app.presentation.utils.date_utils import (
     AGE_ENTITY_TYPES,
@@ -263,6 +264,9 @@ class DetailPanelViewModel(QObject):
     # accessibility name and tooltip at once — the short-caption TAB_LABELS of
     # the NRI-0015 era retired together with the registry's tab_label field.
     TAB_TITLES = tuple(_ref.label for _ref in _event_refs)
+    # The Lucide glyph of every tab, index-aligned with TAB_TITLES and read
+    # off the one type→icon map (Lucide pass 2026-09-30, one knowledge).
+    TAB_ICONS = tuple(icon_for(_ref.entity_type) for _ref in _event_refs)
     ENTITY_TYPES = tuple(_ref.entity_type.value for _ref in _event_refs)
     EVENT_ATTRS = tuple(_ref.attr for _ref in _event_refs)
 
@@ -336,6 +340,9 @@ class DetailPanelViewModel(QObject):
     )
     tabTitles = Property(
         "QVariant", lambda self: list(self.TAB_TITLES), constant=True
+    )
+    tabIcons = Property(
+        "QVariant", lambda self: list(self.TAB_ICONS), constant=True
     )
     organizations = Property(QObject, lambda self: self.models[0], constant=True)
     characters = Property(QObject, lambda self: self.models[1], constant=True)

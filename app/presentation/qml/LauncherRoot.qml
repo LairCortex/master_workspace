@@ -42,7 +42,15 @@ Rectangle {
     id: root
     objectName: "launcherRoot"
 
-    implicitWidth: 480
+    // F1 (live audit 2026-09-30): the Lucide glyphs widened the bottom action
+    // row (four icon buttons + checkbox, five gaps) so it no longer fit the
+    // old 480 step — live, «Открыть» was cut by the window edge. The ask
+    // climbs to the step that covers the row's own implicit width plus the
+    // two ``space.md`` column insets (offscreen: 530 + 32 = 562 → 600). The
+    // dialog's python floor in game_launcher_dialog.py is the other half of
+    // this same step; the gate lives in
+    // tests/presentation/test_launcher_action_row_width.py.
+    implicitWidth: 600
     implicitHeight: 400
 
     property string currentTheme: "dark"
@@ -143,11 +151,13 @@ Rectangle {
 
             ThemeButton {
                 objectName: "newButton"
+                iconName: "plus"
                 text: "Новая игра"
                 onClicked: vm.createRequested("")
             }
             ThemeButton {
                 objectName: "importButton"
+                iconName: "import"
                 text: "Импорт"
                 onClicked: vm.importRequested("")
             }
@@ -168,6 +178,7 @@ Rectangle {
 
             ThemeButton {
                 objectName: "deleteButton"
+                iconName: "trash"
                 text: "Удалить"
                 // Spec: without a selected row the button is a no-op.
                 onClicked: if (vm.selectedIndex >= 0) vm.deleteRequested(vm.selectedIndex)
@@ -175,6 +186,7 @@ Rectangle {
             ThemeButton {
                 id: openButton
                 objectName: "openButton"
+                iconName: "folder-open"
                 text: "Открыть"
                 accentBackground: true
                 onClicked: root.openGame(vm.selectedPath)

@@ -222,6 +222,15 @@ class TestIslandContract:
         assert "saveButton" not in names
         assert "confirmButton" not in names
 
+    def test_action_row_buttons_carry_their_pass_glyphs(self, qtbot, island_palette):
+        """Lucide icon pass 2026-09-30: the add/remove pair gains its glyphs,
+        the captions stay (the arrows above them were icon buttons already)."""
+        widget = _load_island(qtbot, _island_vm(), island_palette)
+        for name, icon in (("typeAddButton", "plus"), ("typeRemoveButton", "trash")):
+            button = find_item(widget, name)
+            assert button.property("iconName") == icon, name
+            assert button.property("text") != "", name  # caption stays
+
     def test_map_names_surface_through_the_accessibility_interface(
         self, qtbot, island_palette
     ):
@@ -306,6 +315,36 @@ class TestIslandContract:
             origin = button.mapToScene(QPointF(0, 0))
             assert button.width() > 0, name
             assert origin.x() + button.width() <= root.width() + 1, name
+
+    def test_hint_wraps_to_two_lines_instead_of_eliding_its_tail(
+        self, qtbot, island_palette
+    ):
+        """QA 2026-09-30 F-1: the elided tail was the safe-removal explanation.
+
+        At the island's own width the sentence never fit one line, so the
+        library's hard ``ElideRight`` cut «…тип от событий» off the hint. The
+        usage site now turns elision off and word-wrap on, and ``Text`` grows
+        its height from the content — pinned here geometrically at the same
+        settled size the facade opens its window at (``_load_island``; the
+        enum-valued ``elide``/``wrapMode`` are unreadable from Python, the
+        ``QQuickText`` metatypes are not exposed, so the layout numbers are
+        the pin). Before the fix this failed on every check that matters: the
+        hint laid out as ONE elided line inside a one-line-tall box.
+        """
+        widget = _load_island(qtbot, _island_vm(), island_palette)
+        hint = find_item(widget, "typeHint")
+        widget.grab()  # settle the text layout (the row-materialization pass)
+        text = str(hint.property("text")).strip()
+        assert text != ""
+        # The one-line natural width genuinely exceeds the hint's box — this
+        # is what used to fall off the edge as an ellipsis.
+        assert hint.property("implicitWidth") > hint.width()
+        # Wrapped instead of elided: several laid-out lines, the widest of
+        # them inside the box, and the layout gave the taller hint its full
+        # content box, so the tail is neither eaten nor clipped.
+        assert hint.property("lineCount") >= 2
+        assert hint.property("paintedWidth") <= hint.width() + 1
+        assert hint.height() >= hint.property("implicitHeight") - 1
 
     def test_clicks_emit_view_model_requests_only(self, qtbot, island_palette):
         vm = _island_vm()

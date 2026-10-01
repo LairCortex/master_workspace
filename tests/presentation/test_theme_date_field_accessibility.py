@@ -31,7 +31,7 @@ from app.presentation.qml.engine import setup_qml_shell
 from app.presentation.theme.compiler import tokens_file_path
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
-from tests.presentation.qml_helpers import find_item
+from tests.presentation.qml_helpers import find_item, walk_items
 
 # The component's own fallback worst caption is re-stated here on purpose:
 # the pin must fail if the built-in mask is dropped or renamed (a host that
@@ -222,6 +222,31 @@ def test_host_worst_case_text_drives_implicit_width(qtbot, qapp, runtime, tmp_pa
     # The host's longer form really widened the field past the fallback mask.
     fallback = float(find_item(widget, "fallbackDate").property("worstCaseWidth"))
     assert measured > fallback
+
+
+def test_calendar_glyph_rides_inside_the_width_floor(qtbot, qapp, runtime, tmp_path):
+    """Lucide icon pass 2026-09-30: the component paints its calendar-days
+    glyph in front of the caption and the glyph + gap is part of the width
+    floor — a field whose worst caption dominates the floor measures
+    worstCaseWidth + iconSize + iconGap (+ paddings), never less."""
+    widget = load_date_probe(qtbot, qapp, runtime, tmp_path, QmlPalette(runtime))
+    field = find_item(widget, "hostWorstDate")
+
+    glyphs = [i for i in walk_items(field) if i.objectName() == "themeDateFieldIcon"]
+    assert len(glyphs) == 1
+    assert glyphs[0].property("visible") is True
+    assert glyphs[0].property("name") == "calendar-days"
+    captions = [i for i in walk_items(field) if i.objectName() == "themeDateFieldCaption"]
+    assert len(captions) == 1
+    size = float(field.property("iconSize"))
+    gap = float(field.property("iconGap"))
+    # The glyph square sits left of the caption at the shared gap.
+    assert float(captions[0].property("x")) == pytest.approx(size + gap)
+
+    # Worst caption dominates this field's floor (its display is short), so
+    # the implicit width is the text floor widened by exactly the glyph.
+    measured = float(field.property("worstCaseWidth"))
+    assert float(field.implicitWidth()) >= measured + size + gap
 
 
 def test_layout_cannot_shrink_the_caption_below_the_worst_form(

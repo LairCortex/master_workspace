@@ -94,6 +94,14 @@ Rectangle {
             objectName: "typeHint"
             italic: true
             text: "Цвет — готовый образец палитры; удаление лишь отвязывает тип от событий"
+            elide: Text.ElideNone
+            wrapMode: Text.WordWrap
+            // QA 2026-09-30 F-1: at the island's own width the sentence does
+            // not fit one line, so the library's ElideRight ate exactly the
+            // tail explaining safe removal. The usage site opts this hint into
+            // word-wrap without elision (the component stays single-line for
+            // its other islands); Text's height follows the content, so the
+            // fillHeight list row below just absorbs the second line.
             Layout.fillWidth: true
         }
 
@@ -199,12 +207,16 @@ Rectangle {
                         id: addButton
                         objectName: "typeAddButton"
                         text: "Добавить"
+                        // Lucide icon pass 2026-09-30: the row-action pair of
+                        // the list below (add/remove), glyphs beside captions.
+                        iconName: "plus"
                         onClicked: eventTypesVm.requestAdd()
                     }
                     ThemeButton {
                         id: removeButton
                         objectName: "typeRemoveButton"
                         text: "Удалить"
+                        iconName: "trash"
                         enabled: eventTypesVm.canRemove
                         onClicked: eventTypesVm.requestRemove()
                     }
@@ -212,7 +224,7 @@ Rectangle {
                     ThemeIconButton {
                         id: upButton
                         objectName: "typeUpButton"
-                        text: "↑"
+                        iconName: "arrow-up"
                         // nri-0012 task 3.5: glyph-only — named by the action.
                         Accessible.name: "Поднять тип"
                         enabled: eventTypesVm.canMoveUp
@@ -221,7 +233,7 @@ Rectangle {
                     ThemeIconButton {
                         id: downButton
                         objectName: "typeDownButton"
-                        text: "↓"
+                        iconName: "arrow-down"
                         Accessible.name: "Опустить тип"
                         enabled: eventTypesVm.canMoveDown
                         onClicked: eventTypesVm.requestMove(1)

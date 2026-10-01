@@ -52,6 +52,21 @@ def test_root_contract_and_isolated_context(qtbot):
     assert widget._context.contextProperty("snapshotFacade") is None
 
 
+def test_header_buttons_stay_text_only_for_the_obs1_margin(qtbot):
+    """Lucide icon pass 2026-09-30: the offscreen fit probe (capW/right-edge
+    vs the root width at 520/1028) showed the header row carries zero slack
+    for the OBS-1 clipper («Показать всё», docs/qa/2026-09-25-accessibility-
+    audit.md) — pinning that no header button got a glyph."""
+    widget = WorldSnapshotWidget()
+    qtbot.addWidget(widget)
+    for name in (
+        "snapshotShowButton", "snapshotResetButton", "snapshotShowAllButton",
+    ):
+        button = find_item(widget.quick, name)
+        assert button.property("iconName") == "", name
+        assert button.property("text") != "", name
+
+
 def test_bc_era_facet_and_the_suffix_reach_the_qml_date_field(qtbot):
     """Task 4.1: the snapshot viewmodel exposes a ready ``dateBc`` facet and
     the pre-built display string — the island's field shows the «до н.э.»

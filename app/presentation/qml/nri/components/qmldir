@@ -42,3 +42,5 @@ ThemeSheetHeader ThemeSheetHeader.qml
 # NRI-0018 task 1.2: the square small-action glyph button (spec qml-components
 # «Квадратная мелкая кнопка действия библиотеки»).
 ThemeIconButton ThemeIconButton.qml
+# User request 2026-09-30: the Lucide glyph brush (icons.js path data).
+ThemeIcon ThemeIcon.qml

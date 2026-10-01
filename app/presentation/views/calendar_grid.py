@@ -1,9 +1,10 @@
 """The game-calendar day grid shared by the date popups and the wizard (C3b).
 
 Design D1: a composited ``QWidget`` + ``QGridLayout`` of NAMED buttons —
-navigation panel (◀, month combo of the ACTIVE calendar, year spin 1…9999, ▶,
-«до н.э.» check box), a week-name header, day cells and per-host-month rows of
-intercalary chips.  A composited widget was chosen over ``QTableView``+delegate
+navigation panel (chevron-left icon, month combo of the ACTIVE calendar, year
+spin 1…9999, chevron-right icon, «до н.э.» check box), a week-name header, day
+cells and per-host-month rows of intercalary chips.  A composited widget was
+chosen over ``QTableView``+delegate
 (clickable chips and per-class theming are cheaper this way) and over
 sub-classing Qt's own Gregorian calendar widget (which cannot express the week
 length or the month count at all — confirmed by the spike).
@@ -58,6 +59,7 @@ from app.domain.game_calendar import (
     current_calendar,
 )
 from app.presentation.utils.date_utils import STANDARD_WEEK_NAMES
+from app.presentation.views.lucide_icons import lucide_icon
 
 #: The navigation row's single control band (NRI-0018 Д8, spec «Строка
 #: навигации — единая полоса высот»): arrows, month combo, year spin and the
@@ -130,8 +132,9 @@ def _mark_selected(button: QPushButton, selected: bool) -> None:
 class GameCalendarGrid(QWidget):
     """Day grid of the ACTIVE game calendar (designs D1/D2).
 
-    Navigation panel (◀ / month combo / year spin 1…9999 / ▶ + «до н.э.»
-    check box), a header of week-name labels and a ``QGridLayout`` of day
+    Navigation panel (chevron-left / month combo / year spin 1…9999 /
+    chevron-right + «до н.э.» check box), a header of week-name labels and a
+    ``QGridLayout`` of day
     cells; intercalary rules hosted by the shown month follow its weeks as a
     full-width chip row in spec list order.  Public API: :meth:`refresh`
     re-reads the active calendar, :meth:`set_selection` pre-fills a
@@ -178,8 +181,12 @@ class GameCalendarGrid(QWidget):
         nav.setSpacing(2)
         # One 32 px band for the whole row (NRI-0018 Д8): the arrows join the
         # library's square glyph gauge (28→32), the native combo/spinner/
-        # checkbox clamp their height to the same value.
-        self._prev_btn = QPushButton("◀")
+        # checkbox clamp their height to the same value.  The arrows are
+        # text-less Lucide chevrons; the Russian accessible names carry the
+        # meaning the glyph cannot speak.
+        self._prev_btn = QPushButton()
+        self._prev_btn.setIcon(lucide_icon("chevron-left"))
+        self._prev_btn.setAccessibleName("Предыдущий месяц")
         self._prev_btn.setFixedSize(NAV_ROW_HEIGHT, NAV_ROW_HEIGHT)
         self._prev_btn.clicked.connect(partial(self._step_month, -1))
         self._month_combo = QComboBox()
@@ -195,7 +202,9 @@ class GameCalendarGrid(QWidget):
         self._year_spin.setFixedHeight(NAV_ROW_HEIGHT)
         self._year_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._year_spin.valueChanged.connect(self._on_year_changed)
-        self._next_btn = QPushButton("▶")
+        self._next_btn = QPushButton()
+        self._next_btn.setIcon(lucide_icon("chevron-right"))
+        self._next_btn.setAccessibleName("Следующий месяц")
         self._next_btn.setFixedSize(NAV_ROW_HEIGHT, NAV_ROW_HEIGHT)
         self._next_btn.clicked.connect(partial(self._step_month, 1))
         self._bc_check = GameCalendarEraCheck("до н.э.")
@@ -341,8 +350,8 @@ class GameCalendarGrid(QWidget):
         Public because the wizard's preview panel owes the spec a page it can
         only express as navigation: «текущая игровая дата, иначе год 1» — when
         the assembled calendar has no room for the current date, the panel
-        lands on year 1 by navigating there, the same way its own ◀/▶ and
-        month combo would.
+        lands on year 1 by navigating there, the same way its own chevron
+        arrows and month combo would.
         """
         self._goto(year, month)
 

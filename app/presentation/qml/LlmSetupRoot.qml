@@ -130,6 +130,9 @@ Rectangle {
                     Layout.fillWidth: true
                     Layout.minimumHeight: 36
                     text: "Проверить соединение"
+                    // Lucide icon pass 2026-09-30: the plugged live cable —
+                    // the connection probe this button runs.
+                    iconName: "plug-zap"
                     enabled: llmSetupVm.checkEnabled
                     onClicked: llmSetupVm.requestCheck()
                 }
@@ -331,6 +334,9 @@ Rectangle {
                 id: saveButton
                 objectName: "saveButton"
                 text: "Сохранить и закрыть"
+                // Lucide icon pass 2026-09-30: the save chip of the island
+                // family (the caption keeps the «…и закрыть» half alone).
+                iconName: "save"
                 accentBackground: true
                 visible: llmSetupVm.saveVisible
                 enabled: llmSetupVm.saveEnabled

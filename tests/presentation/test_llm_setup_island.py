@@ -36,6 +36,14 @@ def _names(root: QQuickItem) -> set[str]:
     return {root.objectName()} | {i.objectName() for i in walk_items(root)}
 
 
+def test_action_buttons_carry_their_pass_glyphs(dialog):
+    """Lucide icon pass 2026-09-30: the connection probe and the save chip
+    gain their glyphs; the captions (and the save button's page-dependent
+    visibility) stay the VM's business."""
+    assert find_item(dialog.quick, "checkButton").property("iconName") == "plug-zap"
+    assert find_item(dialog.quick, "saveButton").property("iconName") == "save"
+
+
 def test_root_object_names_cover_every_control(dialog):
     root = dialog.quick.rootObject()
     names = _names(root)

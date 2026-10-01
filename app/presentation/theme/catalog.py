@@ -8,7 +8,9 @@ place allowed to stamp those properties:
   (or menu) container, registers it with a `ThemeRuntime` for live swaps and
   re-polishes so the sheet applies immediately;
 * ``set_role(widget, role)`` — tags a widget with a catalog role (``title``,
-  ``hint``, ``field``, ``list``, ``card``, ``status-ok``, ``status-error``);
+  ``hint``, ``field``, ``list``, ``card``, ``status-ok``, ``status-error``;
+  ``primary`` marks the one primary button of a row, mirroring the compiler's
+  ``QPushButton[uiRole="primary"]`` rule);
   modifiers are separate properties (``uiRoleSize``, ``uiRoleItalic``) so QSS
   needs no logic;
 * ``title(...)`` / ``hint(...)`` — factories for the frequent one-liner
@@ -28,10 +30,13 @@ from PySide6.QtWidgets import QLabel, QMenuBar, QWidget
 from app.presentation.theme.runtime import ThemeRuntime
 
 #: Roles accepted by ``set_role`` (mirrors the rules of ``compile_qss``).
+#: ``primary`` is the button-face role: it mirrors the compiler's
+#: ``QPushButton[uiRole="primary"]`` rule (accent fill + accent.fg caption);
+#: every other chrome button keeps the sheet's plain face without a role.
 CATALOG_ROLES: frozenset[str] = frozenset(
     {
         "title", "hint", "field", "list", "card", "splitter",
-        "status-ok", "status-error",
+        "status-ok", "status-error", "primary",
     }
 )
 

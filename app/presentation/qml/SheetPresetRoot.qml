@@ -202,6 +202,7 @@ Rectangle {
                 id: okButton
                 objectName: "okButton"
                 text: "Создать"
+                iconName: "plus"
                 accentBackground: true
                 onClicked: root.createRequested()
             }

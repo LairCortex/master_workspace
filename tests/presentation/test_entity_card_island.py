@@ -22,6 +22,39 @@ from tests.presentation.qml_helpers import find_item, find_items
 from tests.ui.test_theme_grab import make_runtime
 
 
+def test_card_chrome_buttons_carry_their_pass_glyphs(qtbot):
+    """Lucide icon pass 2026-09-30: the picture-row and bottom-row actions
+    keep their captions and gain the library glyph in front (the
+    EDITOR_CHROME_GLYPHS pattern of the sheet islands)."""
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    for name, icon in {
+        "entityImagePickButton": "folder-open",
+        "entityImageClearButton": "eraser",
+        "entityOpenSheetButton": "scroll-text",
+        "entitySaveButton": "save",
+    }.items():
+        button = find_item(dialog.quick, name)
+        assert button.property("iconName") == icon, name
+        assert button.property("text") != "", name  # caption stays
+
+
+def test_related_tabs_carry_the_one_map_glyphs(qtbot):
+    """Lucide pass 2026-09-30: each relation tab's glyph is the section
+    type's entry of the one type→icon map (the relatedSections row carries
+    it); the wide sheet keeps every iconed caption whole (measured 760 px)."""
+    from app.presentation.entity_icons import icon_for
+    from tests.presentation.qml_helpers import walk_items
+
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    for ref in entity_registry.related_refs_for_key("character"):
+        tab = find_item(dialog.quick, "entityRelatedTab_" + ref.attr)
+        assert tab.property("iconName") == icon_for(ref.entity_type), ref.attr
+        glyph_items = [i for i in walk_items(tab) if i.objectName() == "themeTabIcon"]
+        assert len(glyph_items) == 1 and glyph_items[0].property("visible") is True
+
+
 @pytest.mark.parametrize("entity_type", tuple(_FIELD_SPECS))
 def test_one_root_builds_exact_python_configured_composition(qtbot, entity_type):
     dialog = EntityCardDialog(None, entity_type)

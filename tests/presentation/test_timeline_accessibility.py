@@ -42,6 +42,7 @@ from app.domain.game_calendar import (
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.timeline_island import TimelineWidget
 from tests.presentation.qml_helpers import find_item, island_rows, track, walk_items
+from tests.ui.test_theme_grab import make_runtime, token_color
 
 
 @pytest.fixture(autouse=True)
@@ -54,9 +55,11 @@ def _default_months():
 
 
 def _evt(eid: int, start: date, end: date | None = None, name: str | None = None,
-         description=None, parent_id=None):
+         description=None, parent_id=None, color_index=None):
     event = SimpleNamespace(id=eid, name=name or f"event-{eid}", start_date=start,
                             end_date=end, description=description)
+    if color_index is not None:
+        event.event_type = SimpleNamespace(color_index=color_index)
     if parent_id is not None:
         event.parent_id = parent_id
     return event
@@ -79,8 +82,8 @@ class _Service:
         return list(self._events)
 
 
-def _island(qtbot, events):
-    panel = TimelineWidget(_real_vm(events))
+def _island(qtbot, events, runtime=None):
+    panel = TimelineWidget(_real_vm(events), theme=runtime)
     qtbot.addWidget(panel)
     panel.resize(300, 220)
     panel.show()
@@ -202,7 +205,8 @@ def test_chevron_press_opens_the_children_never_the_row_itself(qtbot):
     """The Press is the row's OWN expand channel (design Д8): it neither
     selects nor opens the parent, it re-models the ladder — the child row
     appears under the parent (indented, with its connector painted), and the
-    glyph flips to «Свернуть подсобытия»/«▾» on the delivered open flag. A
+    glyph flips to «Свернуть подсобытия»/Lucide «chevron-down» on the
+    delivered open flag. A
     second Press collapses back and the name flips back with it."""
     panel = _island(qtbot, TREE)
     doubles = track(panel.event_double_clicked)
@@ -234,7 +238,7 @@ def test_chevron_press_opens_the_children_never_the_row_itself(qtbot):
     assert _named_in(parent, "rowConnectorTrunk").property("visible") is False
 
     chevron = _chevron(parent)
-    assert chevron.property("text") == "▾"
+    assert chevron.property("iconName") == "chevron-down"
     assert accessible_of(chevron).text(QAccessible.Name) == "Свернуть подсобытия"
 
     press(chevron)
@@ -243,7 +247,7 @@ def test_chevron_press_opens_the_children_never_the_row_itself(qtbot):
         lambda: len(island_rows(panel.quick, "eventRow")) == 2, timeout=5000
     )
     rows = island_rows(panel.quick, "eventRow")
-    assert _chevron(_row_by_id(rows, 1)).property("text") == "▸"
+    assert _chevron(_row_by_id(rows, 1)).property("iconName") == "chevron-right"
     assert (doubles, selects) == ([], [])
 
 
@@ -400,3 +404,64 @@ def test_child_wash_hangs_on_the_tree_line_parent_stays_full(qtbot):
     )
     # Same row width in the one list — the narrower band is the shift itself.
     assert float(wash_c.property("width")) < float(wash_p.property("width"))
+
+
+# ── the type-mark square (live-audit O4; owner retraction 2026-09-30) ─────────
+
+MARKS = [
+    _evt(1, date(1200, 1, 1), date(1200, 1, 1), name="Слух", color_index=3),
+    _evt(2, date(1200, 1, 2), date(1200, 1, 2), name="Без типа"),
+]
+
+
+def test_type_mark_is_the_chart_token_square(qtbot, tmp_path):
+    """The row's type mark is the bare token SQUARE: ``color.chart.N`` for a
+    typed row, muted ``color.fg.muted`` for an untyped one (spec «Оформление
+    списка из токенов»). History: the 2026-09-30 Lucide pass briefly wore a
+    shared «hash» ThemeIcon here (audit O4); the owner retracted the glyph
+    the same day — the colour is the type's identity, the marker is a square.
+    Geometry: the ``markSize`` cell stands at TEXT_LEFT_PAD (left edge on the
+    cell — no glyph centering any more), riding the caption line — the exact
+    height the elbow↔mark coincidence pins against (tasks 11.1/11.2) read
+    off the same ``captionLineY``. Over the selection wash the typed mark
+    keeps its chart color while the muted untyped fallback flips to
+    ``color.accent.fg`` (spec «Дерево не грязнит акцент на залировке»,
+    audit A5); the raster equality of the fill is pinned pixel-exact in
+    tests/ui/test_e2e_timeline_theme.py."""
+    runtime = make_runtime(tmp_path, "dark")
+    panel = _island(qtbot, MARKS, runtime)
+    typed = _row_by_id(island_rows(panel.quick, "eventRow"), 1)
+    untyped = _row_by_id(island_rows(panel.quick, "eventRow"), 2)
+    typed_mark = _named_in(typed, "eventTypeMark")
+    untyped_mark = _named_in(untyped, "eventTypeMark")
+
+    # The fill IS the token, exact — typed wears its chart color, the
+    # untyped row lands on the muted fallback.
+    assert typed_mark.property("color") == token_color("color.chart.3", "dark")
+    assert untyped_mark.property("color") == token_color("color.fg.muted", "dark")
+
+    # Geometry: the square IS the mark cell — markSize on the side, left
+    # edge on TEXT_LEFT_PAD (+ the child shift), vertically centered on the
+    # caption line (the same coincidence the elbow pins against).
+    for row, mark in ((typed, typed_mark), (untyped, untyped_mark)):
+        side = float(mark.property("height"))
+        assert side == float(row.property("markSize"))
+        assert float(mark.property("width")) == side
+        assert float(mark.property("x")) == float(row.property("textLeftPad")) \
+            + float(row.property("contentShift"))
+        assert abs(float(mark.property("y")) + side / 2
+                   - float(row.property("captionLineY"))) <= 0.5
+
+    # Over the selection wash: the typed mark keeps its chart color (pinned
+    # since the flat list), the muted untyped fallback flips to the contrast
+    # family (A5) — the same switch the trunk and the elbow ride.
+    panel.set_selected(1)
+    qtbot.waitUntil(lambda: typed.property("selectedRow") is True, timeout=5000)
+    assert typed_mark.property("color") == token_color("color.chart.3", "dark")
+
+    panel.set_selected(2)
+    qtbot.waitUntil(lambda: untyped.property("selectedRow") is True, timeout=5000)
+    assert untyped_mark.property("color") == token_color("color.accent.fg", "dark")
+    panel.set_selected(None)
+    qtbot.waitUntil(lambda: untyped.property("selectedRow") is False, timeout=5000)
+    assert untyped_mark.property("color") == token_color("color.fg.muted", "dark")
