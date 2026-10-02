@@ -220,6 +220,17 @@ QWidget[uiRole="chrome"], QMenuBar[uiRole="menu"] {{
     color: {t['color.fg.primary']};
     font-size: {t['font.size.md']};
 }}
+/* A sheet wears the SHEET canvas, not the window canvas (live defect
+   2026-10-02): the widget-side sheet's header row paints no fill of its own,
+   so on the window canvas it showed as a full-width dark strip above the
+   island content — while every QML island sheet (and the launcher) carries
+   color.bg.surface as its own canvas to the window edge. The catalog's
+   ``attach_theme(..., sheet=True)`` is the only stamper of this modifier and
+   this is the only rule reading it; the descendant chrome rules keep matching
+   through the base role, so buttons, fields and scroll viewports are untouched. */
+QWidget[uiRole="chrome"][uiSheet="true"] {{
+    background: {t['color.bg.surface']};
+}}
 QMenuBar[uiRole="menu"]::item {{
     padding: {t['space.xs']} {t['space.sm']};
     background: transparent;

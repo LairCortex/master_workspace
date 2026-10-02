@@ -19,7 +19,7 @@ from app.presentation.views.character_sheet.editor_dialog import (
 )
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
-from app.presentation.views.game_launcher_dialog import GameLauncherDialog
+from app.presentation.views.game_launcher_dialog import GameSwitchSheet
 
 from tests.ui import helpers
 from tests.ui.conftest import query_db
@@ -222,12 +222,14 @@ async def test_switch_game_with_dirty_editor_reject_keeps_game(app, dialog_input
 
     path_b = await make_second_game(tmp_games_dir)
 
+    # NRI-0024 4.1: «Сменить игру…» is the launcher-as-sheet of the stack.
     window.switch_game_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
-    launcher = window.findChildren(GameLauncherDialog)[0]
-    helpers.select_launcher_game(launcher, "beta")
-    helpers.open_launcher_game(launcher)
-    assert launcher.selected_path == path_b
+    await wait_for(lambda: bool(window.findChildren(GameSwitchSheet)))
+    sheet = next(
+        s for s in window.findChildren(GameSwitchSheet) if s.isVisible()
+    )
+    assert helpers.select_launcher_game(sheet.content, "beta") == path_b
+    helpers.open_launcher_game(sheet.content)
 
     await wait_for(lambda: len(calls) >= 1)  # dirty prompt shown and answered No
 
@@ -252,11 +254,14 @@ async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(
 
     await make_second_game(tmp_games_dir)
 
+    # NRI-0024 4.1: «Сменить игру…» is the launcher-as-sheet of the stack.
     window.switch_game_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
-    launcher = window.findChildren(GameLauncherDialog)[0]
-    helpers.select_launcher_game(launcher, "beta")
-    helpers.open_launcher_game(launcher)
+    await wait_for(lambda: bool(window.findChildren(GameSwitchSheet)))
+    sheet = next(
+        s for s in window.findChildren(GameSwitchSheet) if s.isVisible()
+    )
+    helpers.select_launcher_game(sheet.content, "beta")
+    helpers.open_launcher_game(sheet.content)
 
     await wait_for(lambda: application._window is not window and "beta" in application._window.windowTitle())
 
@@ -383,12 +388,14 @@ async def test_games_have_their_own_sheet_lists(
     await wait_for(lambda: application._sheet_editor is None)
 
     path_b = await make_second_game(tmp_games_dir)
+    # NRI-0024 4.1: «Сменить игру…» is the launcher-as-sheet of the stack.
     window.switch_game_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
-    launcher = window.findChildren(GameLauncherDialog)[0]
-    helpers.select_launcher_game(launcher, "beta")
-    helpers.open_launcher_game(launcher)
-    assert launcher.selected_path == path_b
+    await wait_for(lambda: bool(window.findChildren(GameSwitchSheet)))
+    sheet = next(
+        s for s in window.findChildren(GameSwitchSheet) if s.isVisible()
+    )
+    assert helpers.select_launcher_game(sheet.content, "beta") == path_b
+    helpers.open_launcher_game(sheet.content)
 
     await wait_for(
         lambda: application._window is not window
@@ -677,11 +684,14 @@ async def test_switch_game_with_dirty_fill_reject_keeps_game(
     assert fill.view_model.dirty
 
     await make_second_game(tmp_games_dir)
+    # NRI-0024 4.1: «Сменить игру…» is the launcher-as-sheet of the stack.
     window.switch_game_action.trigger()
-    await wait_for(lambda: bool(window.findChildren(GameLauncherDialog)))
-    launcher = window.findChildren(GameLauncherDialog)[0]
-    helpers.select_launcher_game(launcher, "beta")
-    helpers.open_launcher_game(launcher)
+    await wait_for(lambda: bool(window.findChildren(GameSwitchSheet)))
+    sheet = next(
+        s for s in window.findChildren(GameSwitchSheet) if s.isVisible()
+    )
+    helpers.select_launcher_game(sheet.content, "beta")
+    helpers.open_launcher_game(sheet.content)
     await wait_for(lambda: len(calls) >= 1)
 
     assert application._window is window

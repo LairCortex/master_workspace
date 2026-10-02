@@ -222,7 +222,7 @@ class TestOnRethemeIsWired:
 
 class TestDocViewerMonoLive:
     def test_attached_mono_follows_token(self, tmp_path, qtbot):
-        from app.presentation.views.main_window import _DocViewerDialog
+        from app.presentation.views.doc_viewer_dialog import DocViewerDialog
         from tests.presentation.qml_helpers import find_item
 
         runtime = _runtime(
@@ -231,7 +231,7 @@ class TestDocViewerMonoLive:
                 "light": "Monaco, monospace", "dark": "Menlo, monospace",
             }},
         )
-        dlg = _DocViewerDialog("t", tmp_path / "missing.md", theme=runtime)
+        dlg = DocViewerDialog("t", tmp_path / "missing.md", theme=runtime)
         qtbot.addWidget(dlg)
         dlg.show()
         qtbot.waitExposed(dlg)

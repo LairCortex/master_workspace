@@ -284,7 +284,10 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
         super().__init__(parent)
         self._theme = theme if theme is not None else get_default_theme()
         self._plan = None
-        self.setWindowTitle("Импорт из .xlsx")
+        # NRI-0024 task 2.1 (spec qml-shell «текст, соответствующий
+        # windowTitle»): the entry text «Импорт из .xlsx…» is also the sheet's
+        # visible header title — the same phrase the menu item carries.
+        self.setWindowTitle("Импорт из .xlsx…")
         self.setMinimumSize(640, 520)
 
         self.vm = XlsxImportViewModel(build_format_text(), parent=self)
@@ -302,6 +305,10 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
         layout.addWidget(self.quick)
         self._root = self.quick.rootObject()
         fit_dialog_to_island(self, self._root, floor=(640, 520))
+        # NRI-0024 task 2.1 (spec xlsx-import «Лист импорта имеет шапку»):
+        # replay the pre-island title into the scene (the override threads
+        # later writes) — the header ✕ rides the root's cancelRequested below.
+        self.setWindowTitle(self.windowTitle())
         self.vm.browseRequested.connect(self._on_browse)
         self.vm.analyze_requested.connect(self.analyze_requested.emit)
         self.vm.confirm_import.connect(self.confirm_import.emit)
@@ -309,6 +316,14 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
         self._root.cancelRequested.connect(self.reject)
 
     # ── plan ownership (design D2: the analyzed plan is applied as is) ─────
+
+    def setWindowTitle(self, title: str) -> None:  # noqa: N802 — Qt API
+        # NRI-0014 task 4.2 (E1) threading, NRI-0024 task 2.1 consumer: the
+        # header's title is the windowTitle, one threaded value (guarded like
+        # the EventDialog's pre-island writes).
+        super().setWindowTitle(title)
+        if getattr(self, "_root", None) is not None:
+            self._root.setProperty("sheetTitle", title)
 
     def set_plan(self, plan) -> None:
         self._plan = plan

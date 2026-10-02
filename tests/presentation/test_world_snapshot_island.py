@@ -8,7 +8,13 @@ from PySide6.QtQuickWidgets import QQuickWidget
 
 from app.domain.game_calendar import MonthDay
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
-from tests.presentation.qml_helpers import click_item, find_item, island_rows
+from tests.presentation.qml_helpers import (
+    click_item,
+    find_item,
+    find_items,
+    island_rows,
+    walk_items,
+)
 
 
 def _entity(entity_id, name, rating=1):
@@ -40,8 +46,12 @@ def test_root_contract_and_isolated_context(qtbot):
     assert isinstance(widget.quick, QQuickWidget)
     assert widget.quick.status() == QQuickWidget.Status.Ready
     assert widget.quick.rootObject().objectName() == "worldSnapshotRoot"
+    # NRI-0024 (task 2.4, live audit F3): the island carries no «Обзор мира»
+    # title anymore — the SheetFrame header of the sheet is the caption
+    # carrier (spec world-snapshot), so snapshotTitle/snapshotHeaderBand are
+    # deliberately NOT part of the contract (their absence is the next test).
     for name in (
-        "snapshotTitle", "snapshotDateField", "snapshotShowButton",
+        "snapshotDateField", "snapshotShowButton",
         "snapshotResetButton", "snapshotShowAllButton", "snapshotList",
         "snapshotStats",
     ):
@@ -50,6 +60,23 @@ def test_root_contract_and_isolated_context(qtbot):
     assert widget._context.contextProperty("islandPalette") is widget._palette
     assert widget._context.contextProperty("tooltipBridge") is widget._tooltip_bridge
     assert widget._context.contextProperty("snapshotFacade") is None
+
+
+def test_no_duplicate_title_under_the_sheet_header(qtbot):
+    """Live audit F3 (docs/qa/2026-10-01-modal-sheets.md): the sheet header
+    already reads «Обзор мира», so the content must not print the caption a
+    second time — neither the retired band's items nor any «Обзор мира» text
+    may return into the island."""
+    widget = WorldSnapshotWidget()
+    qtbot.addWidget(widget)
+    for name in ("snapshotTitle", "snapshotHeaderBand"):
+        assert find_items(widget.quick, name) == [], name
+    texts = [
+        item.property("text")
+        for item in walk_items(widget.quick.rootObject())
+        if item.property("text") is not None
+    ]
+    assert "Обзор мира" not in texts
 
 
 def test_header_buttons_stay_text_only_for_the_obs1_margin(qtbot):

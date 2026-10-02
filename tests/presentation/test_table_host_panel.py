@@ -4,7 +4,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QCheckBox
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -133,6 +134,70 @@ async def test_player_click_emits_selected(qtbot, async_session: AsyncSession):
     panel.player_list.clearSelection()
     panel.player_list.setCurrentRow(0)
     await panel.kick_selected()
+    await host.stop()  # NRI-0016: cleanup close must not meet a running table
+
+
+def _click_player_row(panel: TableHostPanel, index: int) -> None:
+    """One real mouse click (press + release) on a player row — the route
+    only the mouse has (setCurrentRow never fires itemClicked). The buttons
+    are spelled out explicitly: the suite's recipe against the stale
+    process-global button state the offscreen platform leaves behind."""
+    item = panel.player_list.item(index)
+    viewport = panel.player_list.viewport()
+    pos = panel.player_list.visualItemRect(item).center()
+    global_pos = viewport.mapToGlobal(pos)
+    for kind, buttons in (
+        (QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton),
+        (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton),
+    ):
+        QApplication.sendEvent(viewport, QMouseEvent(
+            kind, QPointF(pos), global_pos,
+            Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier,
+        ))
+        QApplication.processEvents()
+
+
+async def test_player_row_first_click_emits_once_and_reclick_repeats(
+    qtbot, async_session: AsyncSession
+):
+    """NRI-0024 (task 5.3, spec «Повторный клик поднимает живое окно»): the
+    mouse contract on the players list. A click that moves the selection is
+    ONE emission (the click channel recognises the press-side row change and
+    stays silent); a repeat click on the already-current row changes no
+    selection, so the press-side channel must repeat the emission — this is
+    what lets the connector re-enter open_fill and raise the live Fill
+    window instead of leaving the second click inert."""
+    sheet_repo = CharacterSheetRepository(async_session)
+    inst_repo = CharacterSheetInstanceRepository(async_session)
+    sheet_svc = CharacterSheetService(sheet_repo, instance_repo=inst_repo)
+    inst_svc = CharacterSheetInstanceService(inst_repo, sheet_svc)
+    host = TableHostService(inst_svc, sheet_svc)
+    row = await sheet_svc.create("Шаблон")
+    template = await sheet_svc.load(row.id)
+    template.add_field(FieldType.TEXT, (10.0, 10.0))
+    await sheet_svc.update_pages(row.id, template)
+    inst = await inst_svc.create("Лист 1", row.id)
+    host.seat(inst.id)
+    await host.start()
+    await host.join(host.pin, "Вася", inst.id)
+    panel = TableHostPanel(host, list_ipv4=lambda: ["10.0.0.2"])
+    qtbot.addWidget(panel)
+    panel.refresh_players()
+    panel.show()
+    QApplication.processEvents()  # lay the rows out — clicks aim at their rects
+    seen: list[int] = []
+    panel.player_selected.connect(seen.append)
+    _click_player_row(panel, 0)
+    assert seen == [inst.id], "a row-changing click must emit exactly once"
+    _click_player_row(panel, 0)
+    assert seen == [inst.id, inst.id], (
+        "a repeat click on the current row must re-emit for the re-raise"
+    )
+    # A rebuild (occupancy push) drops the rows AND the stale snapshot: the
+    # next click selects a fresh row through the selection channel, once.
+    panel.refresh_players()
+    _click_player_row(panel, 0)
+    assert seen == [inst.id, inst.id, inst.id]
     await host.stop()  # NRI-0016: cleanup close must not meet a running table
 
 

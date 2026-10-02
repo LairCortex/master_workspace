@@ -317,7 +317,8 @@ def test_launcher_import_panel_is_non_native_and_russian(qapp, qtbot, launcher_r
     dialog = GameLauncherDialog(theme=launcher_runtime)
     qtbot.addWidget(dialog)
     seen, result = _probe_static_dialog(
-        qapp, lambda: dialog._on_import_requested("")
+        # NRI-0024 4.1: the controller handlers live in the shared content.
+        qapp, lambda: dialog.content._on_import_requested("")
     )
     assert isinstance(seen.get("widget"), QFileDialog), (
         "no live QFileDialog observed — the import path never reached the panel"

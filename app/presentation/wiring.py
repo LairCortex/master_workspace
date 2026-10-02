@@ -10,6 +10,7 @@ import asyncio
 import logging
 from typing import Any, Coroutine
 
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.current_date_service import CurrentDateService
@@ -18,6 +19,7 @@ from app.application.services.xlsx_import_service import XlsxImportService
 from app.domain import entity_registry
 from app.domain.date_era import era_key
 from app.infrastructure.db.uow import GameSessionUoW
+from app.presentation.bundle_resources import bundle_resource_path
 from app.presentation.dialog_results import (
     EntityCreateResult,
     EntityEditResult,
@@ -27,13 +29,13 @@ from app.presentation.dialog_results import (
 from app.presentation.utils.date_utils import split_date_era
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
+from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.event_types_dialog import EventTypesDialog
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 from app.presentation.views.theme_hour_popup import ThemeHourPopup
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWindow
-from app.presentation.window_registry import WORLD_SNAPSHOT_KEY
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_template_as
 
 # NRI-0014 task 4.3 (CR5), the sheet-stack dim: every sheet opened over a
@@ -47,13 +49,20 @@ from app.presentation.views.xlsx_import_dialog import XlsxImportDialog, save_tem
 SHEET_SCRIM_ALPHA_PER_SHEET = 0.25
 SHEET_SCRIM_ALPHA_MAX = 0.75
 
-
-class ApplicationWiring:
+class ApplicationWiring(QObject):
     """Connects main-window signals to services/viewmodels.
 
     ``app`` is the owning Application (session + service catalog + dialog
     mention/AI helpers); everything else is the window's component set.
     """
+
+    #: NRI-0024 (task 1.1, design Д2): this connector opens every sheet of
+    #: the application, so it owns the open-sheet stack and announces it —
+    #: True the moment the first sheet covers the main window, False when the
+    #: last one leaves. The main window turns this into the menu gate (its
+    #: sheet-opening entries live only while the stack is empty), which is
+    #: why no sheet needs a "single instance" window bookkeeping anymore.
+    sheet_stack_changed = Signal(bool)
 
     def __init__(
         self,
@@ -68,6 +77,7 @@ class ApplicationWiring:
         current_date_service: CurrentDateService | None = None,
         now_date_vm=None,
     ) -> None:
+        super().__init__()
         self._app = app
         self._window = window
         self._timeline_vm = timeline_vm
@@ -121,6 +131,17 @@ class ApplicationWiring:
         # its only reader/writer; entries die with the last sheet that made
         # them, and a game switch rebuilds the connector anyway.
         self._sheet_scrim_units: dict[Any, int] = {}
+        # NRI-0024 (task 1.1, design Д2): the open sheets in opening order —
+        # the stack this connector owns (open_sheet is its one show path) and
+        # announces through sheet_stack_changed: True while the list holds at
+        # least one sheet, False the moment it empties. Entries leave through
+        # the sheet's own ``finished`` (every close route passes it).
+        self._open_sheets: list = []
+        # NRI-0024 (task 1.3, sheet since task 2.4): the live «Обзор мира»
+        # sheet — registry retired, this connector is its only owner because
+        # the flow is session-bound (its date query and row activation run on
+        # THIS game's wiring).
+        self._snapshot_sheet: WorldSnapshotWindow | None = None
         # NRI-0022 (tasks 5.1/5.2, design D2): the (type, id) the preview
         # column shows — the lifecycle's whole state. A game switch rebuilds
         # the connector (shutdown → start), so a restart or another game needs
@@ -256,12 +277,57 @@ class ApplicationWiring:
         self._connect_timeline()
         self._connect_xlsx_import()
         self._connect_event_types()
+        self._connect_docs()
         self._connect_event_dialogs()
         self._connect_entity_cards()
         self._connect_preview()
+        self._connect_image_viewer()
         self._connect_search()
         self._connect_snapshot()
         self._connect_now_date()
+        self._connect_sheet_gate()
+
+    def _connect_docs(self) -> None:
+        """«Документация»/«Changelog» (NRI-0024 task 2.2): the documents are
+        sheets now (spec document-viewer «Документ открывается листом»).
+
+        The two entries stay on the window's «О приложении» menu — and stay
+        in its sheet-opening gate list — but the flow moved here, next to the
+        one sheet show path: every entry builds a FRESH ``DocViewerDialog``
+        (a SheetFrame wearing the document's name in its header) and shows it
+        through :meth:`open_sheet`, so the stack rises with the document (the
+        gate then closes every other sheet entry, which is also what makes a
+        second copy of one document unreachable — Д2, no window bookkeeping
+        left). The docs directory resolves at open time through the shared
+        bundle resolver (dev tree vs the datas layouts the spec bundle ships).
+        """
+        window = self._window
+
+        def open_doc(title: str, file_name: str) -> None:
+            dialog = DocViewerDialog(
+                title,
+                bundle_resource_path("docs") / file_name,
+                parent=window,
+                theme=self._app._theme,
+            )
+            self.open_sheet(dialog)
+
+        window.readme_action.triggered.connect(
+            lambda: open_doc("Документация", "README.md")
+        )
+        window.changelog_action.triggered.connect(
+            lambda: open_doc("Changelog", "CHANGELOG.md")
+        )
+
+    def _connect_sheet_gate(self) -> None:
+        """Sheet-stack menu gate (NRI-0024 task 1.2, design Д2): the main
+        window turns this connector's announcements into the enabled state of
+        its sheet-opening entries — while any sheet covers the main layer the
+        entries that would open another sheet are disabled; the exception
+        entries (char-sheet windows) and the system paths stay alive. The
+        window owns the entry list (its menu), this connector owns the stack.
+        """
+        self.sheet_stack_changed.connect(self._window.on_sheet_stack_changed)
 
     # ── connect() sections (wave B3) ────────────────────────────────────────
     # One private section per wiring area. The section order above is the
@@ -351,7 +417,7 @@ class ApplicationWiring:
             # under the active game calendar at save time, no session involved.
             dlg.download_template.connect(lambda: save_template_as(dlg))
             dlg.finished.connect(lambda _: dlg.deleteLater())
-            dlg.open()
+            self.open_sheet(dlg)
 
         window.import_xlsx_action.triggered.connect(_run_import)
 
@@ -367,7 +433,7 @@ class ApplicationWiring:
             )
 
             dialog.types_changed.connect(lambda: self._spawn(self._reload_timeline()))
-            dialog.open()
+            self.open_sheet(dialog)
 
         self._timeline.event_types_requested.connect(on_event_types)
 
@@ -455,6 +521,9 @@ class ApplicationWiring:
             self._spawn(self._load_parents_into_dialog(dialog))
             self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
             self._app._wire_ai_buttons(dialog)
+            # NRI-0024 task 2.5: the dialog's child sheets (the «Выберите …»
+            # picker) ride this connector's stack over the dialog itself.
+            dialog.sheet_requested.connect(self.open_sheet)
 
             async def on_saved(result: EventDialogResult) -> None:
                 if not await _apply_event_result(result):
@@ -471,7 +540,7 @@ class ApplicationWiring:
             dialog.rejected.connect(
                 lambda: self._spawn(self._cleanup_popup_entities(dialog))
             )
-            dialog.open()
+            self.open_sheet(dialog)
 
         def on_add_event():
             _open_create_dialog()
@@ -534,7 +603,7 @@ class ApplicationWiring:
                     entity_type, parent=window, on_saved=on_entity_saved,
                     load_available=False,
                 )
-                dialog.open()
+                self.open_sheet(dialog)
             except Exception as exc:
                 # The "DIALOG DID NOT OPEN" path (constructor/popover), not a
                 # data-save failure: log only, NO modal — an open failure must
@@ -570,6 +639,9 @@ class ApplicationWiring:
                 await self._load_parents_into_dialog(dialog)
                 self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
                 self._app._wire_ai_buttons(dialog)
+                # NRI-0024 task 2.5: same child-sheet channel as the create
+                # dialog — the picker stacks over this edit dialog.
+                dialog.sheet_requested.connect(self.open_sheet)
 
                 async def on_event_updated(result: EventDialogResult) -> None:
                     if not await _apply_event_result(result):
@@ -592,7 +664,7 @@ class ApplicationWiring:
                 dialog.rejected.connect(
                     lambda: self._spawn(self._cleanup_popup_entities(dialog))
                 )
-                dialog.open()
+                self.open_sheet(dialog)
             except Exception as exc:
                 # Open-failure path (reads only happened): the unit of work
                 # owns every finish, so this is a plain log, no undo here.
@@ -669,6 +741,21 @@ class ApplicationWiring:
         # a pair outside the current lists stays a preview-only navigation
         # (the facade's no-op) and the scale is never touched from here.
         self._window.detail_panel.select_entity(entity_type, entity_id)
+
+    def _connect_image_viewer(self) -> None:
+        """Picture click → viewer SHEET (NRI-0024 task 2.5, design Д6/Д7, spec
+        image-display «Просмотр оригинала полного размера»): the two columns'
+        facades build their viewer — they hold the entity's pixels — and hand
+        it to the connector's one show path. The sheet is WindowModal over the
+        main layer, the original above the sheet's size stays reachable by
+        scroll, and both closes (header «Закрыть», Esc) land back on the
+        column that opened it — on ``open()``, so the qasync loop never
+        nests (spec «Прикладные диалоги не входят во вложенный цикл
+        событий»). The card's viewer travels the same channel, connected on
+        the card factory below.
+        """
+        self._window.detail_panel.sheet_requested.connect(self.open_sheet)
+        self._window.entity_preview.sheet_requested.connect(self.open_sheet)
 
     def _connect_search(self) -> None:
         """Search bar: the query dispatch and the result-open flows."""
@@ -764,63 +851,81 @@ class ApplicationWiring:
         )
 
     def _connect_snapshot(self) -> None:
-        """World-snapshot WINDOW (NRI-0022, spec world-snapshot): the menu
-        entry, the date query and the entity activation.
+        """World-snapshot SHEET (NRI-0022; sheet format since NRI-0024 task
+        2.4, design Д1/Д6): the menu entry, the date query and the entity
+        activation.
 
-        The panel left the main window's splitter columns for a top-level
-        «Обзор мира…»: the action asks the one open-window registry (key
-        ``world_snapshot``), so a repeated entry raises the live window and
-        closing releases the slot. The factory additionally places the fresh
-        window through the geometry memory (role ``world_snapshot`` — saved
-        frame restored clamped, first opening centered at the wrapper's own
-        default 520×760) and shows it itself; the registry's following
-        ``show()`` is then the idempotent no-op on the visible window (the
-        launcher-switch factory precedent). QML content and the panel VM are
-        untouched by the move — the wiring surface (``snapshot_requested``,
-        ``entity_clicked``) is the same object as before, just hosted by the
-        window instead of the splitter.
+        Every entry opens a fresh sheet through the connector's one show path
+        (:meth:`open_sheet`): WindowModal over the main window, the header
+        «Обзор мира», a stack the opening entry is gated in (spec «Повторный
+        вызов недостижим» — the abolished registry's single instance falls out
+        of the gate), and NO placement memory — a sheet reopens at its default
+        520×760, whatever a previous run left in ui.json (spec «Лист не помнит
+        рамку»). QML content and the panel VM are untouched by the container
+        move — the wiring surface (``snapshot_requested``, ``entity_clicked``)
+        is the same object as before. Row activation threads the sheet in as
+        the card's parent, so the entity card lands OVER the snapshot and the
+        scrim cascade dims it one share (spec «Активация строки открывает
+        карточку поверх листа»); the card closing peels the share back and the
+        sheet stays open and live.
         """
         window = self._window
 
-        def open_snapshot_window() -> None:
-            def make() -> WorldSnapshotWindow:
-                snapshot_window = WorldSnapshotWindow(
-                    parent=window,
-                    theme=self._app._theme,
-                    now_date_vm=self._now_date_vm,
+        def open_snapshot_sheet() -> None:
+            snapshot_sheet = WorldSnapshotWindow(
+                parent=window,
+                theme=self._app._theme,
+                now_date_vm=self._now_date_vm,
+            )
+            snapshot_sheet.snapshot.snapshot_requested.connect(
+                lambda target, _w=snapshot_sheet: self._spawn(
+                    self._on_snapshot_requested(_w.snapshot, target)
                 )
-                snapshot_window.snapshot.snapshot_requested.connect(
-                    lambda target, _w=snapshot_window: self._spawn(
-                        self._on_snapshot_requested(_w.snapshot, target)
-                    )
+            )
+            # The sheet is the card's Qt parent: the parent chain IS the
+            # stack (open_sheet dims every ancestor with the scrim duck).
+            snapshot_sheet.snapshot.entity_clicked.connect(
+                lambda t, i, _w=snapshot_sheet: self._spawn(
+                    self._on_entity_click(t, i, parent=_w)
                 )
-                snapshot_window.snapshot.entity_clicked.connect(
-                    lambda t, i: self._spawn(self._on_entity_click(t, i))
-                )
-                # Pre-show / post-show placement halves (B4 rule): restore
-                # and possible shrink happen while hidden, the frame-aware
-                # centering move and the placement tracker right after show.
-                remembered = self._app._geometries.restore(
-                    snapshot_window, WORLD_SNAPSHOT_KEY, center_when_absent=True
-                )
-                snapshot_window.show()
-                self._app._geometries.post_show_place(
-                    snapshot_window, WORLD_SNAPSHOT_KEY, remembered=remembered
-                )
-                return snapshot_window
+            )
+            self.open_sheet(snapshot_sheet)
+            # This connector is the sheet's owner (the registry is gone): the
+            # live one is kept for the game-shutdown teardown, and every close
+            # route passes finished — the stale-guard keeps a late lift from
+            # forgetting a newer sheet an entry opened meanwhile.
+            self._snapshot_sheet = snapshot_sheet
+            snapshot_sheet.finished.connect(
+                lambda _result, _w=snapshot_sheet: self._forget_snapshot_sheet(_w)
+            )
 
-            self._app._window_registry.open(WORLD_SNAPSHOT_KEY, make)
+        window.world_snapshot_requested.connect(open_snapshot_sheet)
 
-        window.world_snapshot_requested.connect(open_snapshot_window)
+    def _forget_snapshot_sheet(self, snapshot_sheet: WorldSnapshotWindow) -> None:
+        """Release the tracked «Обзор мира» slot for the sheet that closed."""
+        if self._snapshot_sheet is snapshot_sheet:
+            self._snapshot_sheet = None
+
+    @property
+    def snapshot_sheet(self) -> WorldSnapshotWindow | None:
+        """The live «Обзор мира» sheet (None when never opened or closed)."""
+        return self._snapshot_sheet
+
+    def close_snapshot_sheet(self) -> None:
+        """Take the session-bound «Обзор мира» sheet down with the game
+        (Application.shutdown; NRI-0024 task 2.4 renamed it with the class)."""
+        if self._snapshot_sheet is not None:
+            self._snapshot_sheet.close()
+            self._snapshot_sheet = None
 
     async def _on_snapshot_requested(self, snapshot, target) -> None:
         """Answer one date query for the open snapshot panel.
 
         The bridge carries a (date, era) pair (task 3.4); the query itself is
         key-based, so era_key translates it here exactly once (a bare legacy
-        date reads as «н.э.»). The panel arrives as an argument because the
-        window is reopened (fresh panel after every close), not a permanent
-        child of the main window anymore.
+        date reads as «н.э.»). The panel arrives as an argument because every
+        opening builds a fresh sheet (a fresh panel per open), not a permanent
+        child of the main window.
         """
         if target is None:
             events = await self._event_service.get_all_events()
@@ -1025,6 +1130,10 @@ class ApplicationWiring:
         self._app._wire_mentions_for_dialog(dialog, self._on_entity_click)
         self._app._wire_ai_buttons(dialog)
         self._wire_image_picked(dialog)
+        # NRI-0024 task 2.5: every card of this factory (create, edit, related
+        # popup) shows its child sheets — the viewer and the «Выберите …»
+        # picker — through the connector's stack, over the card itself.
+        dialog.sheet_requested.connect(self.open_sheet)
         if load_available:
             # Load available related entities for linking (registry, wave 3).
             # Plain awaits: every caller runs inside its own locked task.
@@ -1064,10 +1173,15 @@ class ApplicationWiring:
         )
         await _refresh_button()
 
-    # Entity card double-click
-    async def _on_entity_click(self, entity_type, entity_id):
+    # Entity card double-click. ``parent`` is the sheet the activation came
+    # from when that is not the main layer (nri-0024 task 2.4: a row of the
+    # «Обзор мира» sheet opens its card OVER the sheet — the parent chain is
+    # the stack the scrim cascade walks); every other route (detail panel,
+    # search, mentions) keeps the default main-window parent.
+    async def _on_entity_click(self, entity_type, entity_id, parent=None):
         window = self._window
         detail_vm = self._detail_vm
+        card_parent = window if parent is None else parent
         try:
             entity_service = self._app._get_entity_service(entity_type)
             if not entity_service:
@@ -1112,14 +1226,14 @@ class ApplicationWiring:
                 dialog.finish_saving(True)
 
             dialog = await self._open_entity_card(
-                entity_type, parent=window, entity=entity,
+                entity_type, parent=card_parent, entity=entity,
                 on_saved=on_entity_saved, popup_cleanup=True,
             )
             dialog.create_related_requested.connect(
                 lambda a, t: self._spawn(self._open_related_create_dialog(dialog, a, t))
             )
             await self._wire_open_character_sheet(dialog, entity_type, entity_id)
-            dialog.open()
+            self.open_sheet(dialog)
         except Exception as exc:
             # Open-failure path (reads only happened): the unit of work
             # owns every transaction finish — plain log, no undo here.
@@ -1127,11 +1241,73 @@ class ApplicationWiring:
                 "Не удалось открыть карточку сущности: %s", exc,
             )
 
-    # ── Sheet stack (nri-0014 task 4.3, CR5): the one owner of stack depth ──
-    # This connector opens every dialog of the sheet flows, so it is the only
-    # place that sees when a child sheet goes over a parent sheet and which
-    # sheets are under it. The islands receive the finished alpha, never a
-    # layer count (design D3): the dim is painted by their sheetScrim layer.
+    # ── Sheet show-contract (nri-0024 task 1.1, design Д1/Д2) ──────────────
+    # This connector opens every sheet of the application, so one method is
+    # the show path for all of them — QML-island dialogs and the widget-side
+    # SheetFrame alike. A sheet entering here joins the stack (announced to
+    # the window as the menu gate — Д2: with the opening entries gated, no
+    # sheet needs a "single instance" window bookkeeping anymore), dims the
+    # sheets it was opened over, and releases through the single ``finished``
+    # channel every close route (Esc/«Отмена»/header ✕/accept/window close)
+    # passes through. The sheet itself answers only the scrim duck
+    # (``set_sheet_scrim_alpha``): the connector never asks what class it is.
+
+    def open_sheet(self, sheet) -> None:
+        """Show ``sheet`` (WindowModal over its parent) under the stack.
+
+        NRI-0024 (task 5.1, design Д5) adds the reopen contour: a sheet whose
+        content outlives its close (the table desk — the session rides the
+        service, not the dialog) returns here for a second showing. Such a
+        sheet joins the stack again but keeps the ONE release channel hooked
+        at its first opening: a second lambda on ``finished`` would fire the
+        release twice on the next close and the second ``remove`` would raise.
+        The hook marker rides the dialog's own dynamic property, so it dies
+        with the sheet and can never alias another sheet.
+        """
+        if sheet in self._open_sheets:
+            # Already up: raise the live sheet, never stack it twice.
+            sheet.raise_()
+            sheet.activateWindow()
+            return
+        if not self._open_sheets:
+            self.sheet_stack_changed.emit(True)
+        self._open_sheets.append(sheet)
+        self._dim_sheet_stack(sheet)
+        # Default-arg capture: the release must see THIS sheet even after the
+        # slot's own name is rebound (the CR5 _lift_* binding pattern).
+        if not sheet.property("nriSheetReleaseHooked"):
+            sheet.setProperty("nriSheetReleaseHooked", True)
+            sheet.finished.connect(
+                lambda _result, _sheet=sheet: self._release_sheet(_sheet)
+            )
+        sheet.open()
+
+    def _release_sheet(self, sheet) -> None:
+        """Undo :meth:`open_sheet` for the one sheet that just closed."""
+        self._open_sheets.remove(sheet)
+        self._lift_sheet_stack(sheet)
+        if not self._open_sheets:
+            self.sheet_stack_changed.emit(False)
+
+    def close_all_sheets(self) -> None:
+        """Take the whole sheet stack down at once (NRI-0024 task 4.2, the
+        game-switch confirmation): the switch tears its own sheet — and any
+        sheet stacked over it — off the main layer before the game closes.
+
+        Children first (reverse opening order) is the honest teardown
+        direction, and the release itself stays the sheets' own: every
+        :meth:`QDialog.close` passes ``finished``, so each sheet leaves
+        through the single :meth:`_release_sheet` channel — the scrim walks
+        back, the stack empties, and the menu gate reopens exactly the way
+        an ordinary closing click does."""
+        for sheet in reversed(list(self._open_sheets)):
+            sheet.close()
+
+    # ── Stack depth (nri-0014 task 4.3, CR5): the one owner of the dim ──────
+    # The connector is the only place that sees when a child sheet goes over
+    # a parent sheet and which sheets are under it. The sheets receive the
+    # finished alpha, never a layer count (design D3): the islands paint it
+    # with their sheetScrim layer, the SheetFrame with its own scrim widget.
 
     def _dim_sheet_stack(self, child_sheet) -> None:
         """Add one scrim share to every sheet ``child_sheet`` was opened over.
@@ -1141,9 +1317,11 @@ class ApplicationWiring:
         any future sheet-over-sheet flow pass it), so the walk dims every
         ancestor one share deeper than the sheet under it — the reading rule
         «нижний лист затемнён сильнее верхнего» falls out of the arithmetic.
+        NRI-0024 (task 1.1) generalized the walk from the two island classes
+        to the scrim duck, so widget sheets cascade exactly like islands.
         """
         host = child_sheet.parent()
-        while isinstance(host, (EventDialog, EntityCardDialog)):
+        while hasattr(host, "set_sheet_scrim_alpha"):
             units = self._sheet_scrim_units.get(host, 0) + 1
             self._sheet_scrim_units[host] = units
             host.set_sheet_scrim_alpha(
@@ -1156,11 +1334,11 @@ class ApplicationWiring:
 
         Every way a QDialog leaves the screen (reject via Esc/«Отмена»/header
         ✕, accept after a save, the window-manager close through done) emits
-        ``finished`` — the single release channel hooked at the opening site
-        below, so a scrim can never outlive the sheet that caused it.
+        ``finished`` — the single release channel hooked by :meth:`open_sheet`,
+        so a scrim can never outlive the sheet that caused it.
         """
         host = child_sheet.parent()
-        while isinstance(host, (EventDialog, EntityCardDialog)):
+        while hasattr(host, "set_sheet_scrim_alpha"):
             units = self._sheet_scrim_units.get(host, 1) - 1
             if units > 0:
                 self._sheet_scrim_units[host] = units
@@ -1218,14 +1396,11 @@ class ApplicationWiring:
         sub_dialog = await self._open_entity_card(
             entity_type, parent=parent_dialog, on_saved=on_sub_saved,
         )
-        # NRI-0014 task 4.3 (CR5): the child sheet darkens the sheets under it
-        # for exactly as long as it is open — finished is the one channel every
-        # close route (reject/accept/window close) passes through.
-        self._dim_sheet_stack(sub_dialog)
-        sub_dialog.finished.connect(
-            lambda _r, _c=sub_dialog: self._lift_sheet_stack(_c)
-        )
-        sub_dialog.open()
+        # NRI-0014 task 4.3 (CR5) + NRI-0024 task 1.1: the show contract does
+        # what the manual dim/finished pair did before it was generalized —
+        # the child sheet darkens the sheets under it for exactly as long as
+        # it is open, and it rides the stack the same way its parent does.
+        self.open_sheet(sub_dialog)
 
     async def _cleanup_popup_entities(self, parent_dialog) -> None:
         """Delete popup-created rows when the parent dialog is rejected.

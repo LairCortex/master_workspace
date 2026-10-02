@@ -8,7 +8,6 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -82,17 +81,15 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     CalendarWizardViewModel,
 )
 from app.presentation.views.calendar_wizard import CalendarWizardDialog
-from app.presentation.views.game_launcher_dialog import GameLauncherDialog
+from app.presentation.views.game_launcher_dialog import (
+    GameLauncherDialog,
+    GameSwitchSheet,
+)
 from app.presentation.theme import ThemeRuntime, get_default_theme
 from app.presentation.qml import setup_qml_shell
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
 from app.presentation.sheet_windows import SheetWindowsManager
-from app.presentation.window_registry import (
-    LAUNCHER_SWITCH_KEY,
-    LLM_SETUP_KEY,
-    WORLD_SNAPSHOT_KEY,
-    MenuWindowRegistry,
-)
+from app.presentation.views.table_host.cluster import TableCluster
 from app.presentation.views.table_host.panel import TableHostPanel
 from app.infrastructure.table_host.http import TableHostHttp, create_table_host_app
 from app.infrastructure.repositories.character_sheet_repository import (
@@ -158,9 +155,10 @@ class Application:
         # switch can never carry the previous game's value over.
         self._current_date_service: CurrentDateService | None = None
         # Calendar wizard (C4, task 7.1): the one dialog at a time. Since
-        # NRI-0015 (task 2.4) the first-entry wizard lives here too — it is
-        # opened through the very menu path, deferred after start() instead of
-        # an exec() nested inside it (W3/FI-6); its close step is the finish
+        # NRI-0024 (task 3.1) it is a sheet of the connector's stack, opened
+        # through the very menu path; the first-entry one (NRI-0015 task 2.4)
+        # rides the same builder, deferred after start() instead of an
+        # exec() nested inside it (W3/FI-6); its close step is the finish
         # task below.
         self._calendar_wizard: CalendarWizardDialog | None = None
         self._first_run_finish: asyncio.Future | None = None
@@ -174,15 +172,15 @@ class Application:
         self._sheets: SheetWindowsManager | None = None
         self._table_host: TableHostService | None = None
         self._table_host_panel: TableHostPanel | None = None
-        # NRI-0014 (design D1): the one registry of single-instance menu
-        # windows, built once and surviving game switches; start() hands it
-        # to MainWindow, so the docs entries and the launcher switch entry
-        # share the mechanism instead of re-inventing dedup per usage site.
-        self._window_registry = MenuWindowRegistry()
+        # NRI-0024 (task 5.2, design Д3): the live table cluster over the
+        # search row — a parentless Tool band shadowing THIS game's window.
+        self._table_cluster: TableCluster | None = None
         # NRI-0015 (design T3): the geometry memory of the named windows
-        # (main, sheet list/editor/fill, table host) rides the one ui.json
-        # manager the theme already owns; the memory lives for the process,
-        # so a reopened role returns to its remembered placement.
+        # (main, sheet list/editor/fill) rides the one ui.json manager the
+        # theme already owns; the memory lives for the process, so a
+        # reopened role returns to its remembered placement. Retired roles
+        # (NRI-0024 task 6.1) are never attached; stale keys they left in
+        # ui.json are silently ignored.
         self._geometries = WindowGeometryMemory(self._theme.prefs)
 
     # The three window refs stay readable/writable under their historical
@@ -221,12 +219,25 @@ class Application:
         return self._qml_engine
 
     async def start(self, db_path: str) -> MainWindow:
-        """Initialize DB, create all layers, show main window.
+        """Open ``db_path`` and show its main window (the process startup and
+        every game opening run through here; the switch confirmation calls
+        the same builder under its own name, task 4.2)."""
+        return await self._build_main_window(db_path)
+
+    async def _build_main_window(self, db_path: str) -> MainWindow:
+        """Build the whole per-game composition and show its main window.
 
         Startup order (design D1/D7/D8): migrate a legacy flat ``.db`` into
         its catalog directory first (game name = directory name from then
         on) → schema + legacy-image migration → restore the storage
         invariant (``startup_gc``) → build layers → show the window.
+
+        NRI-0024 (task 4.2, design Д4): this is the one factory of the
+        composition — extracted verbatim out of ``start`` so the game-switch
+        flow rebuilds the NEXT game through the very same chain (same
+        factories, same order, role "main" placement memory) after the old
+        window's ``shutdown()`` and :meth:`shutdown` ran. No process restart:
+        the window object is replaced inside the live loop.
         """
         self._close_sheet_windows()
         # QML shell (design D2): the single process-wide engine, up before
@@ -363,9 +374,6 @@ class Application:
             llm_vm=self._llm_vm,
             game_name=game_name,
             theme=self._theme,
-            # NRI-0014 1.2: the window's docs entries and this application's
-            # launcher entry share ONE open-window registry (design D1).
-            window_registry=self._window_registry,
             now_date_vm=now_date_vm,
         )
 
@@ -385,8 +393,9 @@ class Application:
         )
         self._wiring.connect()
 
-        # Switch game menu
-        window.switch_game_requested.connect(lambda: asyncio.ensure_future(self._on_switch_game()))
+        # Switch game menu (NRI-0024 task 4.1: the entry opens a sheet, a
+        # synchronous show path — no task until a game is actually chosen).
+        window.switch_game_requested.connect(self._on_switch_game)
 
         # Export game menu
         window.export_requested.connect(self._on_export_game)
@@ -444,6 +453,23 @@ class Application:
         )
         window.char_sheets_requested.connect(self._on_char_sheets)
         window.table_host_requested.connect(self._on_table_host)
+        # NRI-0024 (task 5.2, design Д3, spec «Управление столом живо в шапке
+        # главного окна»): the live cluster above the search row's right edge.
+        # It is a parentless Qt.Tool band — a child of this window would sit
+        # inside the sheets' WindowModal layer and freeze under the first
+        # sheet; outside it, its two controls stay clickable over any scrim.
+        # The desk caption re-enters the same «Стол…» path (the connector's
+        # open_sheet raises the live desk over the active sheet), the stop
+        # button rides the very stop the desk button uses. The cluster hides
+        # itself on every occupancy push (start alone never pushes — the
+        # sync below covers that transition) and dies with this window.
+        self._table_cluster = TableCluster(
+            self._table_host, window.search_bar, theme=self._theme,
+        )
+        self._table_cluster.desk_requested.connect(self._on_table_host)
+        self._table_cluster.stop_requested.connect(
+            lambda: self._wiring.run_locked(self._stop_table())
+        )
 
         # Calendar wizard (C4, task 7.1): the «Настройки → Календарь…» menu
         # entry, built over the live session by _wire_calendar_menu below.
@@ -477,8 +503,8 @@ class Application:
         window.show()
         if first_run_wizard:
             # Deferred right after the window is on screen (task 2.4): the
-            # next loop pass builds the wizard as its own application-modal
-            # top-level — no nested event loop ever wraps start().
+            # next loop pass raises the wizard as a SHEET over the shown
+            # window (task 3.2) — no nested event loop ever wraps start().
             asyncio.get_running_loop().call_soon(self._open_calendar_wizard, True)
         return window
 
@@ -517,44 +543,50 @@ class Application:
         except Exception as e:
             QMessageBox.critical(self._window, "Ошибка экспорта", str(e))
 
-    async def _on_switch_game(self) -> None:
-        """Show the launcher as a non-modal window, switch to the selected game.
+    def _on_switch_game(self) -> None:
+        """«Сменить игру…» — the launcher as a SHEET of the connector's
+        stack (NRI-0024 task 4.1, design Д1/Д2/Д4; spec game-launcher «Смена
+        игры открывается лаунчером-листом»).
 
-        NRI-0014 3.1 (A1/A2, spec game-launcher «Формат лаунчера зависит от
-        точки входа»): from «Сменить игру…» the launcher opens as a REAL
-        non-modal window — titled, closable, the rest of the menu stays
-        alive. (``QDialog.open()`` under a parent is a WindowModal sheet:
-        no title bar, the menu silently greyed out — it contradicted this
-        method's old "non-modal" comment, defect A1.) The first-run chooser
-        in ``main()`` is untouched and stays modal. Presentation goes
-        through the registry (key ``launcher_switch``, AB4): a repeated
-        entry raises the live window instead of stacking, closing releases
-        the key and returns to the same game. The switch mechanics are
-        unchanged: the accepted dialog emits ``game_selected`` and the
-        shutdown→start flow runs as before.
+        The same launcher content the first screen shows (game list, «Новая
+        игра», import, theme switches), wrapped in the sheet contract:
+        header «Сменить игру…» with the cancel-equal «Закрыть» — closing
+        without a choice lands back in the very same game, nothing touched.
+        The show goes through the connector's one ``open_sheet`` path
+        (WindowModal over the main window, stack-owned, released on
+        ``finished``), so the stack gate keeps a second copy unreachable —
+        the property the abolished registry and the old fresh-window factory
+        each provided in their turn (Д2). The first-run chooser in ``main()``
+        is untouched and stays modal («Первый экран остаётся модальным»).
+        The chosen game re-enters the application through the same
+        ``game_selected`` contract the first screen carries; :meth:`_on_game_selected`
+        owns the guard + rebuild (task 4.2).
         """
-        def make_launcher() -> GameLauncherDialog:
-            dialog = GameLauncherDialog(parent=self._window, theme=self._theme)
-            dialog.game_selected.connect(
-                lambda p: asyncio.ensure_future(self._on_game_selected(p))
-            )
-            # Parent stays (taskbar/cohesion) but NOT window-modal: the
-            # sheet format was the defect. show()+raise_() foreground the
-            # fresh window on first open (the registry raises on reuse;
-            # its own show() here is then a no-op).
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
-            dialog.show()
-            dialog.raise_()
-            return dialog
-
-        self._window_registry.open(LAUNCHER_SWITCH_KEY, make_launcher)
+        sheet = GameSwitchSheet(parent=self._window, theme=self._theme)
+        sheet.game_selected.connect(
+            lambda p: asyncio.ensure_future(self._on_game_selected(p))
+        )
+        self._wiring.open_sheet(sheet)
 
     async def _on_game_selected(self, path: str) -> None:
-        """Game switch with the character-sheet windows (D6).
+        """Confirm the chosen game (NRI-0024 task 4.2, design Д4): switch the
+        application over to ``path`` WITHOUT a process restart, in the order
+        the contract names:
 
-        A dirty editor is closed only after an explicit confirm, and then
-        without ``update_pages``; the list closes unconditionally. Declining
-        the prompt aborts the switch (the launcher stays open).
+        1. the unchanged unsaved-changes guard (a dirty character-sheet
+           editor/fill asks through ``confirm_discard``; declining aborts —
+           the sheet stays open and the game is untouched);
+        2. the whole sheet stack comes down (``close_all_sheets`` — the
+           switch sheet itself and any sheet that could sit over it);
+        3. the table stops and the character-sheet windows close silently
+           (the existing programmatic-close policy, NRI-0016 TB1);
+        4. the old ``MainWindow`` runs its штатный ``shutdown()`` (islands
+           released, theme subscription dropped by handle) and closes;
+        5. :meth:`shutdown` closes the session/engine of the old game;
+        6. ``_build_main_window`` — the same factories as the startup —
+           builds the new ``MainWindow`` over the chosen base, role "main"
+           (the remembered placement returns the replacement to the frame
+           the user left).
         """
         if self._sheet_editor is not None and self._sheet_editor.view_model.dirty:
             if not confirm_discard(
@@ -570,11 +602,37 @@ class Application:
                 "закрыть лист без сохранения?",
             ):
                 return
-        if self._table_host is not None and self._table_host.is_running:
-            await self._table_host.stop()
-        self._close_sheet_windows()
-        await self.shutdown()
-        await self.start(path)
+        # Stack down first (task 4.2): the switch sheet was confirmed, so its
+        # close is a result, not a cancel — and it leaves through the sheet's
+        # own ``finished`` channel like any user close.
+        # The switch is the one flow that intentionally empties the screen:
+        # the stack comes down and the old window closes BEFORE the
+        # replacement shows. Qt's quit-on-last-window-closed rule reads the
+        # live window count when the hide lands, so on the running qasync
+        # loop it fired ``lastWindowClosed`` → ``quit()`` → ``run_forever()``
+        # returned mid-rebuild (the switch task never resumed: no new
+        # window, no wizard — the 2026-10-02 hang of the sheet switch).
+        # The rule is suspended for the windowless stretch and restored the
+        # moment the replacement is on screen; every other exit path keeps
+        # the normal rule (closing the main window still quits the app).
+        self._qapp.setQuitOnLastWindowClosed(False)
+        try:
+            if self._wiring is not None:
+                self._wiring.close_all_sheets()
+            if self._table_host is not None and self._table_host.is_running:
+                await self._table_host.stop()
+            self._close_sheet_windows()
+            # The old window's штатный teardown runs while its game is still
+            # alive: islands unbind and the theme subscription leaves by handle
+            # before the session under them closes (the leak the two-switch test
+            # pins — the runtime outlives every window of every game).
+            if self._window is not None:
+                self._window.shutdown()
+                self._window.close()
+            await self.shutdown()
+            await self._build_main_window(path)
+        finally:
+            self._qapp.setQuitOnLastWindowClosed(True)
 
     # ── Calendar wizard (C4, tasks 7.1–7.3) ──────────────────────────────────
 
@@ -591,7 +649,7 @@ class Application:
 
     def _open_calendar_wizard(self, first_entry: bool = False) -> None:
         """Open THE wizard (menu entry and the deferred first-run opening are
-        one builder — W3, task 2.4), one application-modal top-level at a time.
+        one builder — W3, task 2.4) as a sheet of the connector's stack.
 
         The view model preselects the kind of the current calendar key
         (spec «Вход из меню доступен всегда»); with ``first_entry`` a freshly
@@ -599,16 +657,20 @@ class Application:
         close step (:meth:`_wizard_finished`). The flow keeps its draft
         through the dialog by contract of the spec «Черновик мастера», so
         closing needs no extra handling.
+
+        NRI-0024 (tasks 3.1/3.2, design Д6/Д7): the wizard lives on the
+        application's sheet contract now — WindowModal over the main window
+        through the connector's one ``open_sheet`` path, the same way as the
+        event dialogs and every translated sheet. Neither the menu entry nor
+        the deferred first-run opening ever enters a nested event loop, and
+        the stack gate (task 1.2) makes a second copy unreachable — the
+        old raise-the-live-wizard branch retired together with that gate.
         """
         if (
             self._calendar_service is None
             or self._session is None
             or self._wiring is None
         ):
-            return
-        if self._calendar_wizard is not None:
-            self._calendar_wizard.raise_()
-            self._calendar_wizard.activateWindow()
             return
         wizard_vm = CalendarWizardViewModel(
             self._uow, self._calendar_service, first_entry=first_entry,
@@ -630,17 +692,14 @@ class Application:
             lambda _r, _d=dialog, _f=first_entry: self._wizard_finished(_d, _f)
         )
         self._calendar_wizard = dialog
-        # NRI-0014 D5/D6 (live audit D6): an own application-modal top-level,
-        # not the parent-attached sheet `open()` gave (WindowModal; macOS drew
-        # it sheet-style over the window, and the wizard being wider than the
-        # window moved the main window on open). The parent stays for the
-        # task bar; no nested event loop is entered here.
-        dialog.setWindowModality(Qt.ApplicationModal)
-        dialog.show()
+        # NRI-0024 task 3.1: the one sheet show path (open(), stack-owned,
+        # released on ``finished``) — no nested event loop, no application-
+        # modal top-level; the stack dim and the menu gate come with it.
+        self._wiring.open_sheet(dialog)
         # Draft continuation (spec «Черновик мастера») reads the session —
         # a locked spawn; its state_changed repaints the already-visible
         # dialog onto the saved stage. On the first run this is the moment
-        # the wizard opens over the ALREADY SHOWN window.
+        # the wizard sheet rises over the ALREADY SHOWN window (task 3.2).
         self._wiring.run_locked(dialog.begin())
 
     def _wizard_finished(self, dialog: CalendarWizardDialog, first_entry: bool) -> None:
@@ -697,13 +756,15 @@ class Application:
     # wiring and the suite's e2e observers.
 
     def _close_sheet_windows(self) -> None:
-        """Close the sheet windows and the table-host panel, without prompts."""
+        """Close the sheet windows and the table-host desk, without prompts."""
         if self._sheets is not None:
             self._sheets.close_windows()
         if self._table_host_panel is not None:
-            # NRI-0016 (TB1): programmatic close (game switch / shutdown) must
-            # never ask «Остановить стол?» — only the user's X does.
-            self._table_host_panel.force_close()
+            # NRI-0024 (task 5.1, spec «Крест при работающем столе»): closing
+            # the desk never asked since the sheet contract — the table stops
+            # unconditionally on this path (the caller stops the service), and
+            # the close here only hides the panel with the game.
+            self._table_host_panel.close()
             self._table_host_panel = None
 
     def _on_char_sheets(self) -> None:
@@ -712,7 +773,24 @@ class Application:
             self._sheets.on_char_sheets()
 
     def _on_table_host(self) -> None:
-        if self._table_host is None or self._window is None:
+        """«Стол…» — the desk as a sheet of the connector's stack (NRI-0024
+        task 5.1, design Д5/Д6; spec character-sheet-host «пульт стола SHALL
+        жить листом внутри главного окна с шапкой «Стол»»).
+
+        The table session belongs to the service, not to the dialog: closing
+        the sheet hides the desk and stops nothing, so the panel instance
+        lives for the game — it is also the single subscriber of the
+        service's occupancy pushes. A re-entry re-opens the very same desk
+        through ``open_sheet`` (the reopen contour of the connector) and the
+        refresh below paints the LIVE requisites: port, PIN, URLs, players.
+        Sheets keep no placement, so the old ``table_host`` geometry role is
+        not attached any more.
+        """
+        if (
+            self._table_host is None
+            or self._window is None
+            or self._wiring is None
+        ):
             return
         if self._table_host_panel is None:
             panel = TableHostPanel(
@@ -725,13 +803,8 @@ class Application:
                 lambda: self._wiring.run_locked(self._stop_table())
             )
             panel.player_selected.connect(self._on_host_player_selected)
-            # NRI-0015 (1.3): role "table_host" — the table window returns to
-            # its remembered spot, clamped back into the connected screens.
-            self._geometries.attach(panel, "table_host")
             self._table_host_panel = panel
-        self._table_host_panel.show()
-        self._table_host_panel.raise_()
-        self._table_host_panel.activateWindow()
+        self._wiring.open_sheet(self._table_host_panel)
         self._wiring.run_locked(self._refresh_table_host_panel())
 
     async def _refresh_table_host_panel(self) -> None:
@@ -769,6 +842,10 @@ class Application:
             return
         panel.sync_running()
         self._sync_list_seated()
+        if self._table_cluster is not None:
+            # The one start-side sync: start() clears the occupancy without a
+            # push, so the cluster raises from this explicit call (task 5.2).
+            self._table_cluster.sync_running()
         if self._sheet_fill is not None:
             self._sheet_fill.set_read_only(True)
 
@@ -906,16 +983,17 @@ class Application:
         self._ai_controller.wire(dialog)
 
     def _on_llm_setup(self, window) -> None:
-        """Show the LLM setup as a non-modal, single-instance window.
+        """Open the LLM setup as a sheet (NRI-0024 task 2.3, design Д1/Д2).
 
-        NRI-0014 (spec qml-shell «Формат диалогов задан точкой входа», design
-        D1): «Настройка LLM…» is one of the contract's non-modal windows —
-        its windowTitle becomes a visible title bar, the native close
-        button stays available and the rest of the menu stays alive while
-        the config is read or edited (the old ``open()`` under the parent
-        drew a sheet and greyed the menu — the AB3-class pattern). The
-        registry holds the single instance (key ``llm_setup``): a repeated
-        entry raises the open window instead of stacking a second one (AB4).
+        The three-class contract moves «Настройка LLM…» from the non-modal
+        window family into the sheet one: the dialog is a SheetFrame sheet
+        shown through the connector's one ``open_sheet`` path — WindowModal
+        over the main window, owned by the sheet stack, released on
+        ``finished``. While the stack is up this entry itself is gated, so a
+        second copy is unreachable by construction — the property the
+        abolished registry used to provide (Д2). The wizard content, its
+        footer «Закрыть», the «N из M» counter and the running-save close
+        guard are untouched by the container move.
         """
         llm_vm = self._llm_vm
 
@@ -954,13 +1032,9 @@ class Application:
             # task — a raw ensure_future here raced that session with
             # concurrent dialog flows (audit Q14 scenario 6).
             dialog.saved.connect(lambda c, wp, fp: self._wiring.run_locked(_on_saved(c, wp, fp)))
-            # Explicit NonModal pins the contract (the registry shows with
-            # show(); open()-under-parent WindowModal was the defect); the
-            # titled window carries the entry text «Настройка LLM…» (4.2).
-            dialog.setWindowModality(Qt.WindowModality.NonModal)
             return dialog
 
-        self._window_registry.open(LLM_SETUP_KEY, make_setup)
+        self._wiring.open_sheet(make_setup())
 
     async def _load_llm_settings(self) -> None:
         # Per-game prompts read through the infrastructure repository
@@ -996,15 +1070,16 @@ class Application:
         if self._table_host is not None and self._table_host.is_running:
             await self._table_host.stop()
         self._close_sheet_windows()
-        # NRI-0022 (task 2.1): the «Обзор мира» window is session-bound (its
-        # date query and entity activation run on THIS game's wiring), so it
-        # leaves with the game exactly the way the retired panel used to
-        # leave with the old main window. Closing fires the wrapper's
-        # done(): the registry slot releases, the island unbinds one turn
-        # later — a stale window can never be raised over the next game.
-        snapshot_window = self._window_registry.get(WORLD_SNAPSHOT_KEY)
-        if snapshot_window is not None:
-            snapshot_window.close()
+        # NRI-0022 (task 2.1) + NRI-0024 (tasks 1.3, 2.4): the «Обзор мира»
+        # sheet is session-bound (its date query and entity activation run on
+        # THIS game's wiring), so it leaves with the game exactly the way the
+        # retired panel used to leave with the old main window. Since the
+        # open-window registry was abolished the connector owns the live
+        # sheet; closing it fires the wrapper's done(): the island unbinds
+        # one turn later — a stale sheet can never be raised over the next
+        # game.
+        if self._wiring is not None:
+            self._wiring.close_snapshot_sheet()
         # A wizard left open on a closing game must not outlive its session:
         # its view model is bound to exactly this AsyncSession.  Closing it
         # here fires the first-run close step (task 2.4) — the future it

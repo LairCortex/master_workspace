@@ -29,6 +29,14 @@ Rectangle {
     id: root
     objectName: "eventTypesRoot"
 
+    // NRI-0024 task 2.1 (spec event-types «Лист типов событий имеет шапку»):
+    // the sheet names itself in the library header, the dialog threads its
+    // windowTitle in (the setWindowTitle feed in event_types_dialog.py is the
+    // only writer). The header's ✕ re-emits headerCloseRequested — the facade
+    // runs the very Esc outcome on it, there is no second close path.
+    signal headerCloseRequested()
+    property string sheetTitle: ""
+
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
     readonly property color surfaceColor: Tokens.token(root.islandTokens, "color.bg.surface", "white")
@@ -53,7 +61,9 @@ Rectangle {
     readonly property real contentWidth:
         actionRowWidth + innerSpacing + 1 + 2 * horizontalMargin
     implicitWidth: Math.max(460, contentWidth)
-    implicitHeight: 320
+    // NRI-0024 task 2.1: the 320 stays the CONTENT share (the wireframe),
+    // the header row is its own strip on top (the EventDialogRoot precedent).
+    implicitHeight: 320 + typesSheetHeader.implicitHeight
 
     // The name field and the swatch row are written IMPERATIVELY from the VM
     // (not bound): the user's own typing and the library swatch's checked
@@ -85,8 +95,21 @@ Rectangle {
         root.syncSwatches()
     }
 
+    ThemeSheetHeader {
+        id: typesSheetHeader
+        objectName: "typesSheetHeader"
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        title: root.sheetTitle
+        onCloseRequested: root.headerCloseRequested()
+    }
+
     ColumnLayout {
-        anchors.fill: parent
+        anchors.top: typesSheetHeader.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
         anchors.margins: root.horizontalMargin
         spacing: root.innerSpacing
 

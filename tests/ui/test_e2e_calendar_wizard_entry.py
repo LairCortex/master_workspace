@@ -19,8 +19,8 @@ Spec calendar-wizard «Точки входа мастера» / «Первый �
   restart, and the range popup's grids re-read it at their next opening.
 
 The boot fixtures never see a wizard ``exec`` — the first-entry wizard is a
-deferred top-level (task 2.4); the shared ``app`` fixture dismisses it after
-boot, the 7.2 tests drive the live dialog instance itself.
+deferred sheet (tasks 2.4, then 3.2): the shared ``app`` fixture dismisses it
+after boot, the 7.2 tests drive the live dialog instance itself.
 """
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ async def _make_old_custom_game(db_path: Path) -> None:
 
 
 async def test_menu_entry_preselects_preset_and_leaves_seen_flag(app, wait_for):
-    """Preset game: the wizard opens modally over the window, preselecting
+    """Preset game: the wizard opens as a sheet over the window, preselecting
     the standard kind; neither the flag nor the calendar change from here."""
     application, window = app
     db_path = Path(application._db_path)
@@ -149,16 +149,19 @@ async def test_menu_entry_preselects_preset_and_leaves_seen_flag(app, wait_for):
     assert state.step == STEP_CHOICE
     assert wizard._standard_radio.isChecked()
 
-    # A second trigger reuses the wizard that is already open (no second
-    # modal is stacked over the same game).
+    # A second trigger while the sheet is up is gated off (nri-0024 task 1.2:
+    # the stack deactivates the sheet-opening entries), so no second copy can
+    # stack over the same game — the property the abolished registry gave.
     window.calendar_wizard_action.trigger()
     assert len(window.findChildren(CalendarWizardDialog)) == 1
     assert _visible_wizard(window) is wizard
+    assert not window.calendar_wizard_action.isEnabled()
 
     # Spec «Флаг просмотра мастера календаря»: the menu entry is not a first
     # entry — it neither reads nor writes the flag, before or after closing.
     wizard.reject()
     await wait_for(lambda: application._calendar_wizard is None)
+    assert window.calendar_wizard_action.isEnabled()  # the gate releases
     assert _settings_rows(db_path)[CALENDAR_WIZARD_SEEN_KEY] == "1"
     assert CALENDAR_DRAFT_KEY not in _settings_rows(db_path)
 
@@ -208,19 +211,19 @@ async def test_menu_entry_preselects_custom_and_old_game_stays_old(
     assert CALENDAR_WIZARD_SEEN_KEY not in _settings_rows(db_path)
 
 
-# ── NRI-0014 5.2: the menu wizard's window format (D6) ───────────────────────
+# ── NRI-0024 3.1/3.2: the menu wizard's sheet format (spec «Точки входа
+# мастера»: лист внутри главного окна) ───────────────────────────────────────
 
 
-async def test_menu_wizard_is_application_modal_without_parent_geometry_jump(
+async def test_menu_wizard_is_a_window_modal_sheet_without_geometry_jump(
     app, wait_for
 ):
-    """The «Календарь…» wizard is its own application-modal top-level, not a
-    parent-attached sheet (spec qml-shell «Формат диалогов задан точкой
-    входа»: the entry is modal; design D5/D6): ``open()`` under the parent set
-    WindowModal and macOS drew it as a title-less sheet attached to the main
-    window — wider than the window, moving it on open and back on close (D6).
-    The format check: ``windowModality()`` is ApplicationModal, and the main
-    window's geometry does not budge while the wider wizard is open."""
+    """The «Календарь…» wizard is a sheet of the connector's stack now
+    (nri-0024 tasks 3.1/3.2, design Д6/Д7): WindowModal over the main window
+    through ``open_sheet`` — the application-modal top-level of NRI-0014 D5
+    retired with the three-class contract. The window never moves: the sheet
+    rides its parent instead of being wider than it, and the D6 half of the
+    promise — opening the wizard must not shove the parent around — stands."""
     application, window = app
     window.setGeometry(140, 120, 1100, 700)
     await helpers.wait_until_settled()
@@ -231,16 +234,107 @@ async def test_menu_wizard_is_application_modal_without_parent_geometry_jump(
     wizard = _visible_wizard(window)
     await helpers.wait_until_settled()
 
-    assert wizard.windowModality() == Qt.WindowModality.ApplicationModal
+    assert wizard.windowModality() == Qt.WindowModality.WindowModal
     assert wizard.isModal()
-    # An own window, not an attached sheet: the wizard itself is its window.
-    assert wizard.window() is wizard
-    # D6: opening something wider than the parent must not shove the parent.
+    # A sheet of this window: the parent chain IS the stack.
+    assert wizard.parent() is window
+    # D6: opening over the parent must not shove the parent.
     assert window.geometry() == geometry_before
+
+    # Task 3.1 width law: «на всю ширину главного окна» — and, as the task
+    # pins, never a pixel WIDER than the parent window, through resizes too.
+    assert wizard.width() == window.width()
+    window.resize(1024, 700)
+    assert wizard.width() == window.width()  # the growth filter followed
+    assert wizard.width() <= window.width()  # the pinned invariant itself
 
     wizard.reject()
     await wait_for(lambda: application._calendar_wizard is None)
-    assert window.geometry() == geometry_before
+    assert window.geometry().topLeft() == geometry_before.topLeft()
+
+
+async def test_wizard_sheet_scrolls_the_body_a_short_window_cannot_show(
+    app, wait_for
+):
+    """Task 3.1 «не влезшее — прокруткой»: the wizard body sits in a vertical
+    scroll area inside the sheet. At a whole window the body stands without
+    any scroll reach; when the host window becomes too short for the body
+    floor, the sheet shrinks with the window (never growing past it) and the
+    body scroll takes the difference — the «минимальная высота тела» stays
+    the floor the scroll answers from (design Д6 risk clause)."""
+    application, window = app
+    window.calendar_wizard_action.trigger()
+    await wait_for(lambda: _visible_wizard(window) is not None)
+    wizard = _visible_wizard(window)
+    await helpers.wait_until_settled()
+
+    # At the default window the whole body fits: nothing to scroll.
+    assert wizard._body_scroll.verticalScrollBar().maximum() == 0
+
+    # A window at its system floor (1024×680) can no longer show the sheet's
+    # content-fit default — the height rule caps the sheet at the window and
+    # the vertical scroll answers the difference.
+    window.resize(1024, 680)
+    body_floor = wizard._body.minimumHeight()
+    assert wizard.height() < body_floor + wizard.header.height()
+    assert wizard.width() == window.width()  # the width law holds here too
+    assert wizard._body_scroll.verticalScrollBar().maximum() > 0
+    # the body itself is never squeezed below its content floor
+    assert wizard._body.height() >= body_floor
+
+    wizard.reject()
+    await wait_for(lambda: application._calendar_wizard is None)
+
+
+async def test_wizard_apply_from_the_sheet_repaints_the_feed_without_restart(
+    app, wait_for
+):
+    """Task 3.1 «„Применить“ обновляет ленту без перезапуска»: the design-D11
+    propagation rides the new container unchanged — applying a renamed month
+    from the sheet re-speaks the feed on the spot (the chip/detail/popup
+    whole-surface pin is test_applied_calendar_repaints_feed_chip_detail_and_popup).
+    """
+    application, window = app
+    await helpers.create_event_via_ui(
+        window, wait_for, "Присяга", start_date=date(1200, 6, 1)
+    )
+
+    def _caption() -> str:
+        return next(
+            row.caption for row in timeline_probe.rows(window)
+            if "Присяга" in row.caption
+        )
+
+    window.calendar_wizard_action.trigger()
+    await wait_for(lambda: _visible_wizard(window) is not None)
+    wizard = _visible_wizard(window)
+    await helpers.wait_until_settled()
+    assert "Июнь" in _caption()
+
+    # The wizard walked like a user; on the custom prefill (the current
+    # Gregorian months) only the sixth month is renamed — a rename shifts
+    # no coordinate, so the empty report never spawns its screen (spec
+    # «Пустой отчёт не плодит экран») and «Применить» closes the sheet.
+    wizard._custom_radio.click()
+    wizard._next_button.click()
+    await wizard.wait_idle()  # → «Неделя» on the valid defaults
+    wizard._next_button.click()
+    await wizard.wait_idle()  # → «Месяцы»
+    name_edit, _length = wizard._month_rows[5]
+    name_edit.setText("Пробный")
+    wizard._next_button.click()
+    await wizard.wait_idle()  # → «Вставные дни»
+    wizard._next_button.click()
+    await wizard.wait_idle()  # → «Сутки»
+    wizard._next_button.click()
+    await wizard.wait_idle()  # → «Предпросмотр»
+    wizard._apply_button.click()
+    await wizard.wait_idle()
+    await wait_for(lambda: application._calendar_wizard is None)
+    await helpers.wait_until_settled()  # the D11 reload task finished
+
+    # Same window, same process, new calendar: the feed re-spoke it whole.
+    await wait_for(lambda: "Пробный" in _caption())
 
 
 # ── 7.2: first entry of a newly created game ────────────────────────────────
@@ -478,6 +572,12 @@ async def test_applied_calendar_repaints_feed_chip_detail_and_popup(
     # отчёт не плодит экран» — instant close on «Применить»).
     window.table_host_action.trigger()
     assert application._table_host_panel is not None
+    # NRI-0024 task 5.1: the desk is a sheet now, and while it is up the
+    # stack gate keeps every sheet-opening entry inactive — including the
+    # wizard below. Its close is a hide that KEEPS the panel object (the
+    # session-detached desk), so the reload chain still finds and repaints
+    # it — the very same D11 target as before the desk became a sheet.
+    application._table_host_panel.close()
 
     window.calendar_wizard_action.trigger()
     await wait_for(lambda: _visible_wizard(window) is not None)

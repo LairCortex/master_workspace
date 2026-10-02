@@ -1,32 +1,35 @@
-"""The «Обзор мира…» menu window end to end (NRI-0022, group 2).
+"""The «Обзор мира…» menu sheet end to end (NRI-0022 group 2; sheet since NRI-0024 task 2.4).
 
-Spec world-snapshot «Обзор мира открывается отдельным окном из строки
-меню» on the real Application contour: the bar action opens one non-modal
-titled window over the still-working main window; the entry goes through
-MenuWindowRegistry (key ``world_snapshot``), so a repeated call raises the
-live window instead of stacking copies, and closing releases the slot for a
-fresh next opening. Placement (role ``world_snapshot``): the first opening
-is the 520×760 default centered, a moved frame is remembered and restored,
-an off-screen saved placement returns clamped. The relocated content keeps
-its wiring: entity activation from the window opens the editable card
-(spec «Активация строки открывает карточку и из окна»).
+Spec world-snapshot «Обзор мира открывается листом из строки меню» on the
+real Application contour: the «Файл» entry opens the snapshot as a SHEET —
+header «Обзор мира», WindowModal over the main window, the 520×760 default at
+the default window size. The repeated call is unreachable while the sheet is
+up (the entry is gated — «Повторный вызов недостижим»), and the sheet never
+remembers a placement («Лист не помнит рамку»): a frame left under the old
+window role is silently ignored, close→reopen returns the default. The
+relocated content keeps its wiring: entity activation from the sheet opens
+the editable card OVER the sheet, the scrim cascade dims the covered sheet,
+and closing the card leaves the sheet alive (spec «Активация строки открывает
+карточку поверх листа»).
 """
 from __future__ import annotations
 
-import asyncio
-
+import pytest
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWindow
-from app.presentation.window_registry import WORLD_SNAPSHOT_KEY
+from app.presentation.wiring import SHEET_SCRIM_ALPHA_PER_SHEET
 
 from tests.ui import helpers
 
+#: The ui.json key of the retired «Обзор мира» window role (NRI-0024 task
+#: 6.1 deleted the role; the ignore-pin below deliberately writes this key).
+LEGACY_SNAPSHOT_ROLE = "world_snapshot"
 
-def _live_snapshot_windows() -> list[WorldSnapshotWindow]:
+
+def _live_snapshot_sheets() -> list[WorldSnapshotWindow]:
     return [
         w
         for w in QApplication.topLevelWidgets()
@@ -34,18 +37,22 @@ def _live_snapshot_windows() -> list[WorldSnapshotWindow]:
     ]
 
 
-async def test_menu_action_opens_one_live_non_modal_window(app, wait_for):
+async def test_menu_action_opens_a_gated_sheet_at_the_default_size(app, wait_for):
     application, window = app
+    assert window.world_snapshot_action.isEnabled()
 
     window.world_snapshot_action.trigger()
-    snapshot_window = application._window_registry.get(WORLD_SNAPSHOT_KEY)
-    assert snapshot_window is not None
-    assert snapshot_window.isVisible()
-    assert snapshot_window.windowTitle() == "Обзор мира"
-    assert snapshot_window.windowModality() == Qt.WindowModality.NonModal
-    assert not snapshot_window.isModal()
-    # The main window stays working while the snapshot is open.
-    assert window.isEnabled()
+    sheet = application._wiring.snapshot_sheet
+    assert sheet is not None
+    assert sheet.isVisible()
+    # Sheet chrome (spec «лист с шапкой»): one windowTitle-threaded caption.
+    assert sheet.windowTitle() == "Обзор мира"
+    assert sheet.findChild(QLabel, "sheetFrameTitle").text() == "Обзор мира"
+    # Sheet class, not the retired window: open() — WindowModal over the main
+    # layer (spec modal-sheets «Контент открывается листом»).
+    assert sheet.windowModality() == Qt.WindowModality.WindowModal
+    # Default size (design Д6) at the default main window height.
+    assert sheet.size() == QSize(520, 760)
     # The entry is reachable through the «Файл» submenu — a bare bar-level
     # QAction never survives the macOS cocoa bridge (live audit 2026-09-27,
     # FU-1), so it sits beside «Сменить игру…» / «Экспорт игры…».
@@ -57,83 +64,63 @@ async def test_menu_action_opens_one_live_non_modal_window(app, wait_for):
     )
     assert window.world_snapshot_action in file_menu.actions()
     # The wiring surface moved with the panel — same signals, now hosted
-    # by the window instead of the splitter.
-    assert hasattr(snapshot_window.snapshot, "snapshot_requested")
-    assert callable(snapshot_window.snapshot.populate)
+    # by the sheet instead of a window of its own.
+    assert hasattr(sheet.snapshot, "snapshot_requested")
+    assert callable(sheet.snapshot.populate)
 
-    # Repeated call: the live window is raised, no second copy is built.
+    # «Повторный вызов недостижим»: with the stack up the entry is gated
+    # (task 1.2's gate), so a second copy of the sheet cannot form.
+    assert not window.world_snapshot_action.isEnabled()
+    assert _live_snapshot_sheets() == [sheet]
+
+    sheet.close()
+    assert application._wiring.snapshot_sheet is None
+    assert window.world_snapshot_action.isEnabled()
+
+    # The next entry opens a FRESH sheet — the closed one is never revived.
     window.world_snapshot_action.trigger()
-    await asyncio.sleep(0)
-    assert application._window_registry.get(WORLD_SNAPSHOT_KEY) is snapshot_window
-    assert _live_snapshot_windows() == [snapshot_window]
-
-    # Closing releases the slot …
-    snapshot_window.close()
-    assert application._window_registry.get(WORLD_SNAPSHOT_KEY) is None
-
-    # … and the next call opens a fresh window (not the closed one).
-    window.world_snapshot_action.trigger()
-    fresh = application._window_registry.get(WORLD_SNAPSHOT_KEY)
-    assert fresh is not None and fresh is not snapshot_window
-    assert _live_snapshot_windows() == [fresh]
+    fresh = application._wiring.snapshot_sheet
+    assert fresh is not None and fresh is not sheet
+    assert fresh.isVisible()
     fresh.close()
     await helpers.wait_until_settled()
 
 
-async def test_snapshot_window_placement_round_trips_and_clamps(app):
+async def test_the_sheet_never_remembers_a_placement(app, wait_for):
+    """Spec «Лист не помнит рамку» incl. the migration clause: a frame an
+    older window-era run saved under role ``world_snapshot`` is silently
+    ignored — the sheet opens at its default; a resized, closed and reopened
+    sheet returns the default too, not the stretched size."""
     application, window = app
-    available = QGuiApplication.primaryScreen().availableGeometry()
-
-    # First opening without a saved frame: 520×760, centered (design D5).
-    window.world_snapshot_action.trigger()
-    snapshot_window = application._window_registry.get(WORLD_SNAPSHOT_KEY)
-    assert snapshot_window.size() == QSize(520, 760)
-    placement = snapshot_window.frameGeometry()
-    assert available.intersects(placement)
-    assert abs(placement.center().x() - available.center().x()) <= 8
-    assert abs(placement.center().y() - available.center().y()) <= 8
-
-    # A moved frame is saved on close and restored on the next opening —
-    # the frame fits the offscreen screen whole (the exact-frame assert
-    # below; a bigger one legitimately comes back shrunk by the clamp).
-    snapshot_window.move(120, 100)
-    snapshot_window.resize(400, 500)
-    saved = snapshot_window.frameGeometry().getRect()
-    snapshot_window.close()
-
-    window.world_snapshot_action.trigger()
-    reopened = application._window_registry.get(WORLD_SNAPSHOT_KEY)
-    assert reopened is not None and reopened is not snapshot_window
-    # The pre-show restore sizes the HIDDEN window (its scene must not
-    # relayout), so the saved frame returns whole up to the platform's
-    # decoration stub — the same ±8 slack test_geometry_memory._fits pins
-    # for every geometry-memory round trip; the position is exact.
-    restored = reopened.frameGeometry()
-    assert (restored.x(), restored.y()) == (saved[0], saved[1])
-    assert abs(restored.width() - saved[2]) <= 8
-    assert abs(restored.height() - saved[3]) <= 8
-    reopened.close()
-
-    # A placement that fell off the connected displays comes back clamped
-    # inside a screen (spec main-window «Размещение окон помнится …»).
-    application._geometries._roles[WORLD_SNAPSHOT_KEY] = [
+    application._geometries._roles[LEGACY_SNAPSHOT_ROLE] = [
         99999, 99999, 480, 700,
     ]
+
     window.world_snapshot_action.trigger()
-    clamped = application._window_registry.get(WORLD_SNAPSHOT_KEY)
-    assert clamped is not None
-    assert available.intersects(clamped.frameGeometry())
-    # Left open on purpose: shutdown must take the session-bound window
-    # with the game (the fixture's application.shutdown exercises the path).
+    sheet = application._wiring.snapshot_sheet
+    assert sheet.size() == QSize(520, 760)  # the saved 480×700 never lands
+
+    sheet.resize(400, 500)  # «растянут до предела» of this test's making
+    sheet.close()
+
+    window.world_snapshot_action.trigger()
+    reopened = application._wiring.snapshot_sheet
+    assert reopened is not None and reopened is not sheet
+    assert reopened.size() == QSize(520, 760)  # the default, never the stretched
+    reopened.close()
+    await helpers.wait_until_settled()
 
 
-async def test_entity_activation_in_the_snapshot_window_opens_the_card(
+async def test_entity_activation_in_the_sheet_opens_the_card_over_it(
     app, wait_for, menu_qmenu
 ):
-    """Spec scenario «Активация строки открывает карточку и из окна».
+    """Spec scenario «Активация строки открывает карточку поверх листа».
 
-    The relocation changed the host, not the wiring: the panel's
-    ``entity_clicked`` still runs through the connector's entity-card path.
+    The relocation changed the container, not the wiring: the panel's
+    ``entity_clicked`` still runs the connector's entity-card path — but now
+    the sheet is the card's Qt parent, so the two layers stack and the scrim
+    cascade is distinguishable; the card's close peels the share back and
+    the snapshot sheet stays open and live under it.
     """
     application, window = app
     await helpers.create_entity_via_context_menu(
@@ -141,11 +128,35 @@ async def test_entity_activation_in_the_snapshot_window_opens_the_card(
     )
     await helpers.wait_until_settled()
 
-    snapshot = helpers.open_world_snapshot(application, window)
-    snapshot.entity_clicked.emit("character", 1)
+    helpers.open_world_snapshot(application, window)
+    sheet = application._wiring.snapshot_sheet
+    sheet.snapshot.entity_clicked.emit("character", 1)
     await wait_for(
         lambda: any(
             card.isVisible() and card._entity_type == "character"
             for card in window.findChildren(EntityCardDialog)
         )
     )
+    card = next(
+        card
+        for card in window.findChildren(EntityCardDialog)
+        if card.isVisible() and card._entity_type == "character"
+    )
+
+    # The stack: the card was born on the sheet, its modal parent —
+    assert card.parent() is sheet
+    # and the cascade is distinguishable: the covered sheet sits one share
+    # under color.scrim while the top card stays clean.
+    assert sheet.sheet_scrim_alpha == pytest.approx(SHEET_SCRIM_ALPHA_PER_SHEET)
+    # (the island publishes its dim through the scene property, the widget
+    # frame through the alpha duck — the same zero, two faces)
+    assert float(card._root.property("sheetScrimAlpha")) == pytest.approx(0.0)
+
+    # Closing the card returns exactly to the previous layer: the snapshot
+    # sheet is open, undimmed and still the tracked one.
+    card.reject()
+    await wait_for(lambda: sheet.sheet_scrim_alpha == pytest.approx(0.0))
+    assert sheet.isVisible()
+    assert application._wiring.snapshot_sheet is sheet
+    sheet.close()
+    await helpers.wait_until_settled()

@@ -236,6 +236,70 @@ def test_the_outline_flips_to_the_contrast_family_when_selected(qtbot):
     _retire(panel, qtbot)
 
 
+TREE_NOW = [
+    _evt(1, date(1200, 1, 5), date(1200, 1, 5), "Родитель"),
+    _evt(2, date(1200, 1, 5), None, "Дитя"),
+]
+TREE_NOW[1].parent_id = 1
+
+
+def test_selected_today_parent_keeps_a_full_contrast_perimeter(qtbot):
+    """User fix 2026-10-02 (spec scenario «Обводка видна на выбранной
+    строке», эталон 2026-09-30-lucide-pass): a selected expanded today-row
+    wears its outline as ONE unbroken accent.fg ring — top, right, bottom
+    AND the left edge below the caption line, the stretch where the parent
+    branch segment used to ride the very same street and cut the frame.
+    The tree line moved onto the child-indent column; the border's street
+    belongs to the frame alone."""
+    now_vm = NowDateViewModel(NOW)
+    panel, vm = _island(qtbot, TREE_NOW, now_vm=now_vm)
+    vm.toggle_expand(1)
+    qtbot.waitUntil(lambda: len(island_rows(panel.quick, "eventRow")) == 2,
+                    timeout=5000)
+    panel.set_selected(1)
+    QTest.qWait(50)
+    QApplication.processEvents()
+
+    row = next(r for r in island_rows(panel.quick, "eventRow")
+               if r.property("eventId") == 1)
+    assert row.property("selectedRow") is True
+    height = float(row.height())
+    width = float(row.width())
+    tokens = panel._palette.tokens
+    accent_fg = QColor(tokens["color.accent.fg"])
+    # fy 0.6 of the 24-px single-line row is below captionLineY (12) and
+    # inside the radius-6 straight of the border; fx mirrors per edge.
+    fy_left = 0.6
+    fy_line = 0.5 / height
+    for tag, fx, fy in (
+        ("left", 0.5 / width, fy_left),
+        ("right", (width - 0.5) / width, fy_left),
+        ("top", 0.5, fy_line),
+        ("bottom", 0.5, (height - 0.5) / height),
+    ):
+        edge = _pixel(panel, row, fx, fy)
+        for chan in ("red", "green", "blue"):
+            assert abs(getattr(edge, chan)() - getattr(accent_fg, chan)()) \
+                <= 2, (tag, edge.name())
+
+    # Fix 2026-10-02 (docs/qa/2026-10-02-timeline-tree-trunk.md): the branch
+    # no longer pierces the card — inside the card the retired segment's
+    # street answers the selection FILL verbatim (below the glyphs' baseline,
+    # above the bottom border), not an accent.fg stripe and not the muted
+    # service rank. The trunk starts strictly below the card, on the first
+    # child's row.
+    accent = QColor(tokens["color.accent"])
+    muted = QColor(tokens["color.fg.muted"])
+    interior = _pixel(panel, row,
+                      (float(row.property("childIndent")) + 0.5) / width,
+                      (height - 2.0) / height)
+    for chan in ("red", "green", "blue"):
+        assert abs(getattr(interior, chan)() - getattr(accent, chan)()) \
+            <= 2, interior.name()
+    assert interior != accent_fg and interior != muted
+    _retire(panel, qtbot)
+
+
 def test_now_edit_moves_the_outline_without_scrolling(qtbot):
     """Spec «Смена „сейчас“ SHALL не прокручивать список сама»: the flag
     re-delivery is a scoped repaint (no model reset, no scroll request), and

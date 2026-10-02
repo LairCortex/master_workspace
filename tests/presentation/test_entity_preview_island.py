@@ -439,13 +439,14 @@ def test_long_text_stays_scrollable(qtbot):
 
 
 class _ViewerRecorder:
+    """Stand-in viewer: the constructor records the (original, preview,
+    parent, theme) package; the sheet show is the panel's ``sheet_requested``
+    emission (NRI-0024 task 2.5 — the viewer left exec())."""
+
     calls: list = []
 
     def __init__(self, original, preview, parent=None, theme=None):
         type(self).calls.append((original, preview, parent, theme))
-
-    def exec(self):
-        type(self).calls.append("exec")
 
 
 @pytest.fixture()
@@ -489,8 +490,11 @@ def test_image_slot_paints_and_click_opens_the_card_viewer(
         is False
     )
 
+    requested: list = []
+    widget.sheet_requested.connect(requested.append)
     _click(widget, find_item(widget.quick, "previewImageMouseArea"))
-    assert viewer_recorder[-1] == "exec"
+    assert len(requested) == 1
+    assert isinstance(requested[0], _ViewerRecorder)
     original, preview, parent, _theme = viewer_recorder[0]
     assert original == "original"
     # The 4096 slot the card's viewer uses (the picture's click rides the
@@ -513,8 +517,11 @@ def test_image_press_action_opens_the_same_viewer(
     assert iface.role() == QAccessible.Role.Button
     assert iface.text(QAccessible.Description) == "Открыть изображение"
 
+    requested: list = []
+    widget.sheet_requested.connect(requested.append)
     _press(image)
-    assert viewer_recorder[-1] == "exec"
+    assert len(requested) == 1
+    assert isinstance(requested[0], _ViewerRecorder)
 
 
 def test_missing_link_shows_the_no_image_placeholder(qtbot):
@@ -552,8 +559,11 @@ def test_unavailable_file_degrades_to_the_placeholder_and_the_viewer_survives(
     monkeypatch.setattr(
         preview_module, "load_entity_preview", lambda e, slot_size: QPixmap()
     )
+    requested: list = []
+    widget.sheet_requested.connect(requested.append)
     widget.vm.requestImage()
-    assert viewer_recorder[-1] == "exec"
+    assert len(requested) == 1
+    assert isinstance(requested[0], _ViewerRecorder)
     original, preview, _, _ = viewer_recorder[0]
     assert original.isNull() and preview.isNull()
 

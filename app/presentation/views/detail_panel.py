@@ -31,6 +31,11 @@ class DetailPanel(IslandDialogMixin, QWidget):
     # NRI-0022 (task 3.1): the single-click selection relay for the wiring —
     # the preview target, next to the double-click ``entity_clicked`` card.
     entity_selected = Signal(str, int)
+    #: NRI-0024 (task 2.5, design Д7): child-sheet show channel — the panel
+    #: builds the sheet whose content it owns (the viewer, fed by this row's
+    #: entity) and the connector shows it through the one ``open_sheet`` path,
+    #: so the picture opens as a sheet in the stack, not on a nested loop.
+    sheet_requested = Signal(object)
 
     def __init__(
         self,
@@ -111,10 +116,15 @@ class DetailPanel(IslandDialogMixin, QWidget):
         self.vm.select(entity_type, entity_id)
 
     def _open_image_viewer(self, entity: Any) -> None:
+        # Task 2.5: the viewer left exec() — it is a sheet now, built here
+        # (this widget holds the entity's pixels) and shown by the connector
+        # through the stack (parent chain: the panel never dims, the main
+        # layer is simply covered by the WindowModal sheet).
         original = load_entity_original(entity)
         preview = load_entity_preview(entity, slot_size=4096)
-        ImageViewerDialog(
+        viewer = ImageViewerDialog(
             original, preview, parent=self, theme=self._theme
-        ).exec()
+        )
+        self.sheet_requested.emit(viewer)
 
     # Island lifecycle (context, deferred closeEvent release) — IslandDialogMixin.

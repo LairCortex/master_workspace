@@ -56,6 +56,13 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     await wait_for(lambda: len(llm_client.requests) == 0)
     assert dialog.name_input.text() == ""
 
+    # NRI-0024 (spec modal-sheets «Открытый лист блокирует главное окно, но не
+    # окна-исключения»): the open event sheet deactivates the entries that
+    # would open more content — the wizard is reached with the stack closed,
+    # so the sheet first leaves through its own cancel (Esc outcome).
+    dialog.reject()
+    await wait_for(lambda: not dialog.isVisible())
+
     # ── Wizard: menu → configure connection → check connection (canned 200)
     # The wizard is a QML island: the e2e types into the island's fields and
     # clicks its buttons by objectName.
@@ -84,7 +91,15 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert config_raw["base_url"] == ENDPOINT and config_raw["model"] == MODEL
     assert llm_vm.has_world_prompt
 
-    # ── AI generation of a field through the (now active) assist button
+    # ── AI generation of a field through the (now active) assist button —
+    # on a freshly opened event dialog (the rejected one kept its cancelled
+    # edits as its own outcome; the configured VM powers the new island).
+    timeline_probe.click_object(window, "addButton")
+    await wait_for(
+        lambda: any(d.isVisible() for d in window.findChildren(EventDialog))
+    )
+    dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
+    name_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "name")
     assert ai_state_is(name_btn, AI_STATE_ACTIVE)
     name_btn.click()
     await wait_for(lambda: dialog.name_input.text() == CANNED_LLM_CONTENT)
@@ -870,42 +885,45 @@ async def test_nested_card_cancel_only_stops_nested_generation(
     assert not any(kind in ("warning", "critical") for kind, _t, _x in message_boxes)
 
 
-async def test_llm_setup_entry_is_a_visible_non_modal_titled_window(app, wait_for):
-    """NRI-0014 (spec qml-shell «Формат диалогов задан точкой входа»):
-    «Настройка LLM…» from the menu is a REAL non-modal window.
+async def test_llm_setup_entry_opens_a_sheet_with_a_header(app, wait_for):
+    """NRI-0024 (task 2.3, spec llm-configuration «Настройка открывается
+    листом»): «Настройка LLM…» from the menu is a SHEET over the main window.
 
-    The old ``open()`` under the parent drew a sheet that greyed the rest of
-    the menu; the contract format is a titled, closable window whose
-    modality is NonModal with the main window staying enabled. Closing it
-    releases the registry key.
+    The SheetFrame header names the sheet with the entry text (one value with
+    windowTitle), the sheet is WindowModal over the main layer, and while the
+    stack is up the entries that would open another sheet — this one included
+    — are gated; closing returns the work layer (spec «главный слой под
+    затемнением недоступен до закрытия»).
     """
     from PySide6.QtCore import Qt
-
-    from app.presentation.window_registry import LLM_SETUP_KEY
+    from PySide6.QtWidgets import QLabel
 
     application, window = app
     window.llm_setup_action.trigger()
     await wait_for(lambda: bool(window.findChildren(LlmSetupDialog)))
     wizard = window.findChildren(LlmSetupDialog)[0]
-    assert wizard.windowModality() == Qt.WindowModality.NonModal
-    assert not wizard.isModal()
+    assert wizard.windowModality() == Qt.WindowModality.WindowModal
     assert wizard.isVisible()
-    # NRI-0016 4.2: the visible title is the entry text (format defined by the
-    # point of entry, spec qml-shell «Формат диалогов задан точкой входа»).
+    # The header caption and windowTitle carry the same entry text (4.2).
     assert wizard.windowTitle() == "Настройка LLM…"
-    assert window.isEnabled()  # the rest of the app stays alive
+    assert wizard.findChild(QLabel, "sheetFrameTitle").text() == "Настройка LLM…"
+    # The sheet-stack gate holds while the wizard covers the main layer.
+    assert not window.llm_setup_action.isEnabled()
+    assert not window.readme_action.isEnabled()
 
-    assert application._window_registry.get(LLM_SETUP_KEY) is wizard
     wizard.close()
+    await wait_for(lambda: not wizard.isVisible())
+    assert window.llm_setup_action.isEnabled()
 
 
-async def test_llm_setup_second_entry_reuses_the_single_window(app, wait_for, monkeypatch):
-    """NRI-0014 (AB4, design D1, key ``llm_setup``): a repeated «Настройка
-    LLM…» raises the open wizard instead of stacking a second one; closing
-    releases the key and the next entry opens a fresh window."""
+async def test_llm_setup_second_entry_gated_then_a_fresh_sheet(
+    app, wait_for, monkeypatch,
+):
+    """NRI-0024 (task 2.3, design Д2): single-instance is a native sheet
+    property now — while the wizard sheet is up its entry is gated, so a
+    second trigger creates nothing; after the close the next entry builds a
+    FRESH sheet (the closed one is never revived)."""
     import app.main as main_mod
-
-    from app.presentation.window_registry import LLM_SETUP_KEY
 
     application, window = app
     created: list[LlmSetupDialog] = []
@@ -921,19 +939,22 @@ async def test_llm_setup_second_entry_reuses_the_single_window(app, wait_for, mo
     await wait_for(lambda: bool(created))
     wizard = created[0]
 
-    # Repeated entry while the wizard is open: the handler is synchronous,
-    # one loop turn is plenty — no second dialog may have been built.
+    # Repeated entry while the wizard sheet is up: the entry is disabled and
+    # a disabled QAction.trigger is inert — no second sheet, no revival.
+    assert not window.llm_setup_action.isEnabled()
     window.llm_setup_action.trigger()
-    await asyncio.sleep(0)
+    await asyncio.sleep(0)  # the handler is synchronous; one turn drains it
     assert len(created) == 1
-    assert application._window_registry.get(LLM_SETUP_KEY) is wizard
+    assert wizard.isVisible()
 
+    # After the close the gate lifts and the entry opens a fresh sheet.
     wizard.close()
-    assert application._window_registry.get(LLM_SETUP_KEY) is None
-
+    await wait_for(lambda: window.llm_setup_action.isEnabled())
     window.llm_setup_action.trigger()
     await wait_for(lambda: len(created) == 2)
     assert created[1] is not wizard
+    assert created[1].isVisible()
+
     created[1].close()
 
 
@@ -942,11 +963,10 @@ async def test_close_button_discards_edit_without_confirmation_or_write(
 ):
     """NRI-0016 4.2 (spec llm-configuration, scenario «Закрыть не трогает
     сохранённое»): an edited endpoint plus the footer «Закрыть» on the FIRST
-    page — the window rejects with no confirmation dialog, the registry key
-    releases, and the connection file is byte-identical with the same mtime
+    page — the window rejects with no confirmation dialog, and the
+    connection file is byte-identical with the same mtime
     (navigation and closing never write; saving stays an explicit action)."""
     from app.infrastructure.llm.config import LlmConfigManager
-    from app.presentation.window_registry import LLM_SETUP_KEY
 
     application, window = app
     LlmConfigManager(tmp_llm_config).save(LlmConfig(base_url=ENDPOINT, model=MODEL))
@@ -964,7 +984,6 @@ async def test_close_button_discards_edit_without_confirmation_or_write(
     await wait_for(lambda: not wizard.isVisible())
 
     assert wizard.result() == QDialog.DialogCode.Rejected
-    assert application._window_registry.get(LLM_SETUP_KEY) is None
     # No confirmation box stood before the exit…
     assert not message_boxes
     # …the saved connection survived byte-for-byte, file untouched…

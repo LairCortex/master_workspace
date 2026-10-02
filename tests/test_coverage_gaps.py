@@ -127,26 +127,27 @@ def test_search_bar_hides_empty_short_query(qapp):
     assert vm.listVisible is False
 
 
-# ── main window path helpers: dev + frozen ────────────────────────────────
+# ── docs bundle resolver: dev + frozen ────────────────────────────────────
 
-def test_main_window_path_helpers(tmp_path, monkeypatch):
-    import app.presentation.views.main_window as mw
+def test_docs_bundle_resource_path_helpers(tmp_path, monkeypatch):
+    from app.presentation.bundle_resources import bundle_resource_path
 
-    # Dev mode (NRI-0016 removed the log's _app_root(): only the docs
-    # resolver is left to distinguish dev from a frozen bundle).
-    assert mw._docs_dir().is_dir()
+    # Dev mode (NRI-0024 2.2 moved the last caller — the docs sheet flow —
+    # into the connector; the wrapper main_window._docs_dir retired into the
+    # one shared resolver, so this is where the dev-vs-frozen halves live).
+    assert bundle_resource_path("docs").is_dir()
 
     # Frozen: executable inside a bundle that ships docs
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     exe = tmp_path / "app" / "nri"
     monkeypatch.setattr(sys, "executable", str(exe), raising=False)
     (tmp_path / "app" / "_internal" / "docs").mkdir(parents=True)
-    assert mw._docs_dir() == tmp_path / "app" / "_internal" / "docs"
+    assert bundle_resource_path("docs") == tmp_path / "app" / "_internal" / "docs"
 
     # Frozen fallback: no docs anywhere near a lonely executable
     exe2 = tmp_path / "lonely" / "deeper" / "nri"
     monkeypatch.setattr(sys, "executable", str(exe2), raising=False)
-    assert mw._docs_dir() == tmp_path / "lonely" / "deeper" / "_internal" / "docs"
+    assert bundle_resource_path("docs") == tmp_path / "lonely" / "deeper" / "_internal" / "docs"
 
 
 # ── schema migration edge branches ────────────────────────────────────────

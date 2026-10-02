@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QStyle,
     QStyleOptionButton,
+    QWidget,
 )
 from sqlalchemy import select
 
@@ -1113,11 +1114,14 @@ class TestLeftColumnSizedByContent:
         dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
         # A fixed content column: the width the audit screen added belongs to
         # the preview panel, not to a share-proportional growth of the steps.
-        assert dlg._step_column.width() < dlg.width() // 2
+        # Since nri-0024 task 3.1 the content lives in the sheet's scrolling
+        # body, so the sums read the BODY — the sheet's own chrome (header
+        # row, scroll frame) stands above it, «на всю ширину главного окна».
+        assert dlg._step_column.width() < dlg._body.width() // 2
         leftover_bound = (
-            dlg.width()
+            dlg._body.width()
             - dlg._step_column.width()
-            - 2 * dlg.layout().contentsMargins().right()
+            - 2 * dlg._body.layout().contentsMargins().right()
             - WIDTH_STEP
         )
         assert dlg._preview.width() > leftover_bound
@@ -1125,22 +1129,27 @@ class TestLeftColumnSizedByContent:
 
 class TestPreviewFitsAtTheWindowMinimum:
     """NRI-0018 Д7 (spec scenario «Предпросмотр не сжат»): at the RECOUNTED
-    window minimum the step column has not eaten the preview's own needed
-    width — the whole grid, day-name header to the last numeric column,
-    stands inside the panel (the 3:2 share used to leave it a clipped 40 %)."""
+    minimum the step column has not eaten the preview's own needed width —
+    the whole grid, day-name header to the last numeric column, stands inside
+    the panel (the 3:2 share used to leave it a clipped 40 %).  Since
+    nri-0024 task 3.1 the floor belongs to the sheet's scrolling BODY: the
+    sheet itself may shrink with the window (the scroll takes the rest), but
+    the body is never squeezed below the compact floor, and at that floor
+    the grid still stands whole."""
 
     async def test_the_minimum_covers_the_new_column_sum(self, async_session, qtbot):
         dlg = _dialog(qtbot, _vm(async_session))
+        body = dlg._body
         content = (
             dlg._step_column.minimumWidth()
             + dlg._preview.minimumSizeHint().width()
         )
-        assert dlg.minimumWidth() >= content  # «минимум покрывает колонку+сетку»
-        assert dlg.minimumWidth() % WIDTH_STEP == 0  # never leaves the scale
+        assert body.minimumWidth() >= content  # «минимум покрывает колонку+сетку»
+        assert body.minimumWidth() % WIDTH_STEP == 0  # never leaves the scale
         # ...and the climb stops at the ceiling of that sum with the window's
         # own chrome — one step taller than the honest sum would already be
         # «больше прежнего без необходимости».
-        root = dlg.layout()
+        root = body.layout()
         style_spacing = dlg.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
         spacing = root.spacing() if root.spacing() >= 0 else style_spacing
         chrome = (
@@ -1148,13 +1157,21 @@ class TestPreviewFitsAtTheWindowMinimum:
             + root.contentsMargins().right()
             + spacing
         )
-        assert content + chrome <= dlg.minimumWidth() < content + chrome + WIDTH_STEP
+        assert content + chrome <= body.minimumWidth() < content + chrome + WIDTH_STEP
+        # the height of the body minimum is not part of the width scale
+        assert body.minimumHeight() == 620
+        # task 3.1: the SHEET no longer carries that floor — it may shrink
+        # with the window, and the body scroll answers what stops fitting.
+        assert dlg.minimumHeight() < body.minimumHeight()
 
     async def test_the_grid_fits_whole_at_the_minimum(self, async_session, qtbot):
         dlg = _dialog(qtbot, _vm(async_session))
         await dlg.begin()
         dlg.show()
-        dlg.resize(dlg.minimumWidth(), dlg.minimumHeight())
+        # The body floor plus the sheet header — the sheet's own default:
+        # the viewport fits the body exactly, so no scroll bar eats the
+        # width either way.
+        dlg.resize(dlg._body.minimumWidth(), dlg._default_sheet_height())
         QApplication.processEvents()
 
         grid = dlg._preview
@@ -1165,6 +1182,60 @@ class TestPreviewFitsAtTheWindowMinimum:
             cell.mapTo(grid, QPoint(cell.width(), 0)).x() for cell in cells
         )
         assert rightmost <= grid.width()  # nothing clipped away from the panel
+
+
+class TestSheetHeightIsCappedByTheContent:
+    """Live audit F4 (docs/qa/2026-10-01-modal-sheets.md): on a tall host
+    window the wizard body sat at the top while the footer rode the bottom,
+    leaving a ~330 pt empty band between them.  The growth rule answers F4
+    (task 3.1): the sheet's height is the window-following value CAPPED at
+    the body's own content fit — a taller window buys no empty band, a
+    shorter one shrinks the sheet to the window (min-height floor included),
+    and only below the content floor does the body scroll take over."""
+
+    def _on_host(self, qtbot, async_session, host_size):
+        host = QWidget()
+        qtbot.addWidget(host)
+        host.resize(*host_size)
+        dlg = CalendarWizardDialog(_vm(async_session), parent=host)
+        qtbot.addWidget(dlg)
+        return host, dlg
+
+    async def test_a_tall_window_never_stretches_the_sheet_past_the_content(
+        self, async_session, qtbot
+    ):
+        host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
+        await dlg.begin()
+        # The cap itself: the sheet opened at the content fit, not at the
+        # window — the F4 band had nowhere to appear…
+        assert dlg.height() == dlg._default_sheet_height()
+        assert dlg.height() < host.height()
+        # …and nothing to scroll at that size (the sheet never outgrows
+        # what the body can show).
+        dlg.show()
+        QApplication.processEvents()
+        assert dlg._body_scroll.verticalScrollBar().maximum() == 0
+        dlg.close()
+
+    async def test_a_short_window_shrinks_the_sheet_floor_and_all(
+        self, async_session, qtbot
+    ):
+        host, dlg = self._on_host(qtbot, async_session, (1200, 420))
+        await dlg.begin()
+        # Window − inset while that stays above the usability floor…
+        assert dlg.height() == 420 - CalendarWizardDialog.HEIGHT_INSET
+        # …the filter keeps tracking the host live (both widgets shown —
+        # a hidden one gets no Resize events to filter)…
+        host.show()
+        dlg.show()
+        QApplication.processEvents()
+        assert dlg.height() == 420 - CalendarWizardDialog.HEIGHT_INSET
+        host.resize(1200, 300)
+        QApplication.processEvents()
+        # …down to the floor, the sheet never shrinking below it.
+        assert dlg.height() == CalendarWizardDialog.MIN_SHEET_HEIGHT
+        # done() on the way out uninstalls the growth filter again.
+        dlg.close()
 
 
 class TestRadioChoiceThroughAccessibility:

@@ -13,10 +13,7 @@ from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -48,9 +45,11 @@ from app.presentation.views.event_dialog import (
     _ClickProxy,
     _FieldProxy,
     _ListProxy,
+    build_related_picker,
 )
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from app.presentation.views.ai_capable_dialog import AiCapableDialogBase
+from app.presentation.views.sheet_frame import SheetFrame
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EntityCardRoot.qml")
@@ -260,6 +259,12 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     mention_clicked = Signal(str, int)
     image_picked = Signal(bytes)
     open_character_sheet_requested = Signal()
+    #: NRI-0024 (task 2.5, design Д7): child-sheet show channel — the viewer
+    #: and the related picker build over this card (their content is the
+    #: card's own pixels and sections) and the connector shows them through
+    #: the one ``open_sheet`` path, so the card dims one share under the
+    #: stack and closing returns exactly here.
+    sheet_requested = Signal(object)
 
     def __init__(
         self,
@@ -511,12 +516,17 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     def _open_image_viewer(self) -> None:
         if not self._has_image_field:
             return
-        ImageViewerDialog(
+        # Task 2.5: the viewer is a sheet over this card now (was exec()) —
+        # the parent chain is the stack, so the card darkens one share while
+        # the original is on screen and the close returns to the card (spec
+        # image-display «Закрытие окна просмотра»).
+        viewer = ImageViewerDialog(
             self._viewer_original,
             self._viewer_preview,
             parent=self,
             theme=self._theme,
-        ).exec()
+        )
+        self.sheet_requested.emit(viewer)
 
     def _display_pixmap(self, pixmap: QPixmap) -> None:
         if not self._has_image_field:
@@ -725,29 +735,13 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         candidates = state.candidates()
         if not candidates:
             return
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Выберите {label.lower()}")
-        dialog.setMinimumSize(300, 400)
-        layout = QVBoxLayout(dialog)
-        items = QListWidget(dialog)
-        items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        for entity in candidates:
-            item = QListWidgetItem(getattr(entity, "name", str(entity)))
-            item.setData(256, getattr(entity, "id", None))
-            items.addItem(item)
-        layout.addWidget(items)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-            parent=dialog,
+        # Task 2.5: the card's picker is the event dialog's sheet builder now
+        # (the two exec'd bodies were the same lines) — shown over the card
+        # through the connector's stack, close returns to the card.
+        picker = build_related_picker(
+            self, self._theme, f"Выберите {label.lower()}", state, candidates
         )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            selected_ids = {item.data(256) for item in items.selectedItems()}
-            for entity in candidates:
-                if getattr(entity, "id", None) in selected_ids:
-                    state.add_entity(entity)
+        self.sheet_requested.emit(picker)
 
     def _release_island(self) -> None:
         # NRI-0021 task 4.3: the «now» subscription leaves with the card

@@ -1,15 +1,21 @@
 """Geometry memory of the named windows (NRI-0015 task 1.3, design T3).
 
 The app's named windows (``main``, ``sheet_list``, ``sheet_editor``,
-``sheet_fill``, ``table_host``) remember their placement between runs: the
-placements live in ``UiPrefs.windows`` (ui.json, role -> ``[x, y, w, h]`` of
-the window's *frame* — the rectangle the user actually drags — the one 0600
-file shared with the theme). A restored placement is clamped inside a
-connected screen — a window can never come back unreachable (spec
-main-window «Размещение окон помнится и возвращается в экраны»), and a
-window opened for the first time without a remembered role is placed at the
-center of its screen, never outside it (defect B4, «редактор не рождается за
-экраном»).
+``sheet_fill``) remember their placement between runs: the placements live
+in ``UiPrefs.windows`` (ui.json, role -> ``[x, y, w, h]`` of the window's
+*frame* — the rectangle the user actually drags — the one 0600 file shared
+with the theme). A restored placement is clamped inside a connected screen —
+a window can never come back unreachable (spec main-window «Память
+размещений ограничена окнами»), and a window opened for the first time
+without a remembered role is placed at the center of its screen, never
+outside it (defect B4, «редактор не рождается за экраном»).
+
+The role list is code, not data (NRI-0024 task 6.1): memory only serves the
+roles a caller actually attaches. Placements an older run left under retired
+roles (``world_snapshot``, ``table_host`` — their content lives in sheets
+now, and sheets never remember a placement) are never looked up and never
+stripped from the file: stale keys are silently ignored (spec main-window
+«Сохранённая роль упразднённого окна не мешает»).
 
 Save policy (T3): a move/resize burst writes the file once the window has
 been quiet for ``DEBOUNCE_MS``, and closing the window saves its placement
@@ -28,11 +34,13 @@ exact (the live first-open centering proves the shown ``move`` lands the
 frame), so every open→close→open cycle converges back to the saved frame
 instead of accumulating the decoration cost.
 
-The main-role width floor (NRI-0018 design D5): ``restore``/``attach`` take a
-``min_width`` provider — role "main" hands the detail panel's all-tabs-whole
-threshold to it, so a restored narrower frame comes back widened to exactly
-that width while its position and height stay where the user left them
-(spec main-window «Узкая сохранённая рамка не режет вкладки»).
+The ``min_width`` provider is a generic affordance of ``restore``/``attach``
+(the NRI-0018 design D5 floor): no production role passes one any more — the
+main role's all-tabs-whole provider retired in NRI-0019, and the re-issued
+main-window norm (nri-0024, spec «Память размещений ограничена окнами»,
+scenario «Узкая сохранённая рамка возвращается как сохранена») requires role
+"main" to return the saved frame width unchanged: the detail tab strip
+shortens its captions with the column instead.
 """
 from __future__ import annotations
 

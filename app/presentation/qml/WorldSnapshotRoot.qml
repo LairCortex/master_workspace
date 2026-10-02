@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import nri.components
 import "nri/components/tokens.js" as Tokens
-import "nri/components/panelHeader.js" as PanelHeader
 
 Rectangle {
     id: root
@@ -30,28 +29,14 @@ Rectangle {
         anchors.margins: Tokens.px(root.islandTokens, "space.xs", 4)
         spacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
-        // The title rides the shared panel-header band (panelHeader.js, live
-        // fix 2026-09-26): the same 32 px band and the same 4 px top margin
-        // as the timeline header and the detail tab strip, with the caption
-        // seated on the band's vertical center — before this the bare text
-        // line hugged the top margin and read 7 px above the timeline title.
-        // Anchors, not a nested layout, so a long caption elides at the
-        // panel edge exactly like the timeline title does.
-        Item {
-            objectName: "snapshotHeaderBand"
-            Layout.fillWidth: true
-            Layout.minimumWidth: 0
-            implicitHeight: PanelHeader.band()
-            Layout.preferredHeight: implicitHeight
-
-            TitleText {
-                objectName: "snapshotTitle"
-                text: "Обзор мира"
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-                width: parent.width
-            }
-        }
+        // NRI-0024 audit F3 (live finding, docs/qa/2026-10-01-modal-sheets.md):
+        // the snapshot's own title band left the content. It was the header of
+        // the days when the panel was a main-window COLUMN (panelHeader.js,
+        // live fix 2026-09-26); as the window it duplicated the OS caption,
+        // and as a sheet (task 2.4) it printed «Обзор мира» a SECOND time
+        // under the sheet header — and the world-snapshot spec names the sheet
+        // header as the caption carrier, the content enumeration carries no
+        // title. The band retired; the date row is the content's first line.
 
         RowLayout {
             Layout.fillWidth: true

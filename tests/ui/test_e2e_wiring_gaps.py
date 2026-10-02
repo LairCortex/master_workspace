@@ -386,7 +386,7 @@ async def test_create_related_entity_from_card(app, wait_for, menu_qmenu, modal_
 
     # The popup's related sections are populated: link the existing location.
     await helpers.link_existing_entity_in_tab(
-        modal_qdialog, sub._related_sections["locations"], "Цех"
+        window, wait_for, sub._related_sections["locations"], "Цех"
     )
     await wait_for(lambda: any(
         "Цех" in sub._related_sections["locations"].list_widget.item(i).text()
@@ -543,7 +543,7 @@ async def test_popup_create_failure_rolls_back_and_notifies(
     dialog.characteristics_input.setContent("Текст")
 
     sub = await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character",
+        window, wait_for, dialog, "characters", "character",
         "Не сохранится", expect_success=False,
     )
     # Save failure preserves the popup data and unlocks retry.
@@ -580,7 +580,7 @@ async def test_popup_cleanup_after_external_rollback(app, wait_for, modal_qdialo
 
     # Popup-created entity: flushed (pending) and tracked for cleanup.
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Фантом"
+        window, wait_for, dialog, "characters", "character", "Фантом"
     )
     await helpers.wait_until_settled()
     assert len(application._wiring._popup_created[dialog]) == 1
@@ -621,7 +621,7 @@ async def test_popup_entity_committed_by_foreign_task_does_not_survive_cancel(
     dialog.characteristics_input.setContent("Текст")
 
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Фантом"
+        window, wait_for, dialog, "characters", "character", "Фантом"
     )
     await helpers.wait_until_settled()
 

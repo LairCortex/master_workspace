@@ -16,7 +16,11 @@ from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
-from app.presentation.views.game_launcher_dialog import GameLauncherDialog
+from app.presentation.views.game_launcher_dialog import (
+    LAUNCHER_MIN_SIZE,
+    GameLauncherDialog,
+    GameSwitchSheet,
+)
 from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from tests.presentation.qml_helpers import find_item
@@ -371,154 +375,66 @@ class TestMainWindow:
         assert "R59-" in live
         assert "R00-" not in live
 
-    # -- docs dialogs ---------------------------------------------------------
-
-    def test_show_readme_and_changelog_open_doc_viewers(self, qtbot, mocker, tmp_path):
-        from app.presentation.views import main_window as mw
-
-        (tmp_path / "README.md").write_text("DOC CONTENT", encoding="utf-8")
-        (tmp_path / "CHANGELOG.md").write_text("CH TEXT", encoding="utf-8")
-        mocker.patch.object(mw, "_docs_dir", return_value=tmp_path)
-        captured = []
-
-        class Spy(mw._DocViewerDialog):
-            def __init__(self, title, file_path, parent=None, theme=None):
-                super().__init__(title, file_path, parent, theme=theme)
-                captured.append((title, self.vm.text))
-
-            def show(self):
-                # NRI-0014: entry windows go through the registry, which
-                # shows them non-modally; offscreen the presentation stays
-                # hidden, only the content path is pinned here.
-                return None
-
-        mocker.patch.object(mw, "_DocViewerDialog", Spy)
-        w = MainWindow(
-            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
-        )
-        qtbot.addWidget(w)
-        w._show_readme()
-        w._show_changelog()
-        assert captured == [("Документация", "DOC CONTENT"), ("Changelog", "CH TEXT")]
-
-    def test_docs_entries_use_registry_second_click_single_instance(
-        self, qtbot, mocker, tmp_path,
-    ):
-        """NRI-0014 1.2: the docs entries route through MenuWindowRegistry.
-
-        Second click of the same entry → one window, different entries →
-        two windows (each its own key), close → the key is released and the
-        next open recreates the window.
-        """
-        from app.presentation.views import main_window as mw
-        from app.presentation.window_registry import (
-            DOCS_CHANGELOG_KEY,
-            DOCS_README_KEY,
-            MenuWindowRegistry,
-        )
-
-        (tmp_path / "README.md").write_text("DOC", encoding="utf-8")
-        (tmp_path / "CHANGELOG.md").write_text("CH", encoding="utf-8")
-        mocker.patch.object(mw, "_docs_dir", return_value=tmp_path)
-        created: list[QDialog] = []
-
-        class Spy(QDialog):  # bare dialog: only the entry wiring is pinned
-            def __init__(self, title, file_path, parent=None, theme=None):
-                super().__init__(parent)
-                created.append(self)
-
-        mocker.patch.object(mw, "_DocViewerDialog", Spy)
-        registry = MenuWindowRegistry()
-        w = MainWindow(
-            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
-            window_registry=registry,
-        )
-        qtbot.addWidget(w)
-        assert w._window_registry is registry
-
-        w._show_readme()
-        w._show_readme()  # second click of the same entry
-        assert len(created) == 1
-        readme = created[0]
-        assert registry.get(DOCS_README_KEY) is readme
-
-        w._show_changelog()
-        assert len(created) == 2
-        assert created[1] is not readme
-        assert registry.get(DOCS_CHANGELOG_KEY) is created[1]
-
-        created[0].close()  # closing releases the key …
-        assert registry.get(DOCS_README_KEY) is None
-        w._show_readme()  # … and the next open builds a fresh window
-        assert len(created) == 3
-        assert registry.get(DOCS_README_KEY) is created[2]
-
-    def test_doc_entries_open_titled_non_modal_distinct_windows(
-        self, qtbot, mocker, tmp_path,
-    ):
-        """NRI-0014 2.2 format check (spec document-viewer «Не-модальное окно в
-        единственном экземпляре», qml-shell «Формат диалогов задан точкой
-        входа»): each docs entry shows a REAL titled non-modal window through
-        the registry — no ``dlg.open()`` sheet: ``windowModality()`` is
-        NonModal and the doc never blocks the main window; ``windowTitle``
-        matches the menu entry; a repeated entry raises the live window
-        instead of building a second one; README and Changelog are two
-        distinct windows."""
-        from app.presentation.views import main_window as mw
-        from app.presentation.window_registry import (
-            DOCS_CHANGELOG_KEY,
-            DOCS_README_KEY,
-        )
-
-        (tmp_path / "README.md").write_text("DOC", encoding="utf-8")
-        (tmp_path / "CHANGELOG.md").write_text("CH", encoding="utf-8")
-        mocker.patch.object(mw, "_docs_dir", return_value=tmp_path)
-
-        built: list[QDialog] = []
-        real_cls = mw._DocViewerDialog
-
-        class Counting(real_cls):  # real windows, just counted at creation
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                built.append(self)
-
-        mocker.patch.object(mw, "_DocViewerDialog", Counting)
-
-        w = MainWindow(
-            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
-        )
-        qtbot.addWidget(w)
-        w.show()
-        qtbot.waitExposed(w)
-
-        w._show_readme()
-        readme = w._window_registry.get(DOCS_README_KEY)
-        assert readme.windowTitle() == "Документация"
-        # Not a sheet: a real non-modal window (open() with a parent would be
-        # WindowModal), visible and never disabling the main window.
-        assert readme.windowModality() == Qt.WindowModality.NonModal
-        assert not readme.isModal()
-        assert readme.isVisible()
-        assert w.isEnabled()
-
-        w._show_readme()  # repeated entry → the same live window, no second one
-        assert w._window_registry.get(DOCS_README_KEY) is readme
-        assert len(built) == 1
-
-        w._show_changelog()
-        changelog = w._window_registry.get(DOCS_CHANGELOG_KEY)
-        assert changelog.windowTitle() == "Changelog"
-        assert changelog.windowModality() == Qt.WindowModality.NonModal
-        assert changelog.isVisible()
-        assert changelog is not readme
-        assert len(built) == 2
+    # -- docs viewer ----------------------------------------------------------
+    # The «Документация»/«Changelog» entries carry no window-side handler
+    # anymore (NRI-0024 task 2.2): the whole sheet flow lives in the connector
+    # and is pinned in tests/presentation/test_doc_viewer_sheet.py. What stays
+    # here is the viewer's own content contract off the menu path.
 
     def test_doc_viewer_missing_file_placeholder(self, qtbot, tmp_path):
-        from app.presentation.views.main_window import _DocViewerDialog
+        from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 
-        dlg = _DocViewerDialog("T", tmp_path / "missing.md")
+        dlg = DocViewerDialog("T", tmp_path / "missing.md")
         qtbot.addWidget(dlg)
         assert "Файл не найден" in dlg.vm.text
+
+
+class TestSheetStackMenuGate:
+    """NRI-0024 task 1.2 (design Д2, spec modal-sheets «Открытый лист блокирует
+    главное окно, но не окна-исключения»): the connector's ``sheet_stack_changed``
+    lands in :meth:`MainWindow.on_sheet_stack_changed` (the binding itself is
+    pinned in ``test_sheet_stack_contract``) and the window flips the enabled
+    state of exactly its sheet-opening entries. The composition of that entry
+    list is pinned verbatim: renumbering it must be a deliberate choice —
+    «Чар-листы…» (the window-class exception, reachable from under any sheet)
+    and the system paths (export file dialog, theme/log checks) never join."""
+
+    def _window(self, qtbot) -> MainWindow:
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        return w
+
+    def test_active_stack_deactivates_exactly_the_sheet_entries(self, qtbot):
+        w = self._window(qtbot)
+        gated = (
+            w.switch_game_action,
+            w.world_snapshot_action,
+            w.table_host_action,
+            w.calendar_wizard_action,
+            w.import_xlsx_action,
+            w.llm_setup_action,
+            w.readme_action,
+            w.changelog_action,
+        )
+        assert w._sheet_opening_actions == gated  # the composition itself
+
+        w.on_sheet_stack_changed(True)
+        assert all(not action.isEnabled() for action in gated)
+        # The exceptions stay alive while a sheet covers the main layer:
+        assert w.char_sheets_action.isEnabled()  # window-class exception
+        assert w.export_action.isEnabled()  # system file-dialog path
+        assert w.theme_toggle_action.isEnabled()
+        assert w.log_action.isEnabled()
+        # The version line never carries a route at all (NRI-0016 AB7).
+        assert not w.version_action.isEnabled()
+
+    def test_empty_stack_returns_every_sheet_entry(self, qtbot):
+        w = self._window(qtbot)
+        w.on_sheet_stack_changed(True)
+        w.on_sheet_stack_changed(False)
+        assert all(action.isEnabled() for action in w._sheet_opening_actions)
 
 
 class TestMainWindowLogToggleCleanup:
@@ -594,7 +510,7 @@ class TestGameLauncherDialog:
         return str(arc)
 
     def _listed_names(self, w) -> list:
-        return [game["name"] for game in w.vm.games]
+        return [game["name"] for game in w.content.vm.games]
 
     # -- frame / contract ------------------------------------------------------
 
@@ -609,8 +525,8 @@ class TestGameLauncherDialog:
 
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        assert isinstance(w.quick, QQuickWidget)
-        assert w.quick.status() == QQuickWidget.Status.Ready
+        assert isinstance(w.content.quick, QQuickWidget)
+        assert w.content.quick.status() == QQuickWidget.Status.Ready
         # The widgets content is gone (no QListWidget/QPushButton anywhere).
         assert not hasattr(w, "list_widget")
         assert not hasattr(w, "open_button")
@@ -619,7 +535,7 @@ class TestGameLauncherDialog:
     def test_shows_empty_list(self, qtbot, runtime):
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        assert w.vm.games == []
+        assert w.content.vm.games == []
 
     def test_shows_existing_games(self, qtbot, runtime):
         self._tmp.mkdir(parents=True)
@@ -627,7 +543,7 @@ class TestGameLauncherDialog:
         (self._tmp / "Test.db").touch()
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        assert len(w.vm.games) == 2
+        assert len(w.content.vm.games) == 2
 
     def test_selected_path_none_by_default(self, qtbot, runtime):
         w = GameLauncherDialog(theme=runtime)
@@ -651,10 +567,10 @@ class TestGameLauncherDialog:
         (self._tmp / "Campaign.db").touch()
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.set_selected(0)
-        path = w.vm.selected_path
+        w.content.vm.set_selected(0)
+        path = w.content.vm.selected_path
         with qtbot.waitSignal(w.game_selected, timeout=1000):
-            w.vm.openRequested.emit(path)  # what «Открыть» / Enter drives
+            w.content.vm.openRequested.emit(path)  # what «Открыть» / Enter drives
         assert w.selected_path == path
         assert "Campaign" in w.selected_path
         assert w.result() == GameLauncherDialog.DialogCode.Accepted
@@ -664,7 +580,7 @@ class TestGameLauncherDialog:
         # default action via root.defaultButton.
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        assert w._root.property("defaultButton").objectName() == "openButton"
+        assert w.content._root.property("defaultButton").objectName() == "openButton"
 
     def test_real_island_click_open_survives_and_releases_island(self, qtbot, runtime):
         """Acceptance Q1 regression: a *physical* click on «Открыть» must not
@@ -684,11 +600,11 @@ class TestGameLauncherDialog:
         qtbot.addWidget(w)
         w.show()
         assert w.isVisible()
-        w.vm.set_selected(0)
+        w.content.vm.set_selected(0)
 
-        button = find_item(w.quick, "openButton")
+        button = find_item(w.content.quick, "openButton")
         center = button.mapToScene(QPointF(button.width() / 2, button.height() / 2))
-        QTest.mouseClick(w.quick, Qt.LeftButton, Qt.NoModifier,
+        QTest.mouseClick(w.content.quick, Qt.LeftButton, Qt.NoModifier,
                          QPoint(int(center.x()), int(center.y())))
 
         assert "Campaign" in w.selected_path
@@ -696,23 +612,23 @@ class TestGameLauncherDialog:
         # The island is released on the NEXT loop turn (js stack unwound):
         # qtbot.waitUntil pumps — before the fix this line was unreachable
         # because the process died inside the click above.
-        qtbot.waitUntil(lambda: w.quick.source().isEmpty())
+        qtbot.waitUntil(lambda: w.content.quick.source().isEmpty())
 
 
-    def _press_enter(self, w):
+    def _press_enter(self, screen):
         from PySide6.QtCore import QEvent, Qt as _Qt
         from PySide6.QtGui import QKeyEvent
 
-        w.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_Return, _Qt.NoModifier))
+        screen.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_Return, _Qt.NoModifier))
 
     def test_enter_opens_the_selected_game(self, qtbot, runtime):
         self._tmp.mkdir(parents=True)
         (self._tmp / "Campaign.db").touch()
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.set_selected(0)
+        w.content.vm.set_selected(0)
         with qtbot.waitSignal(w.game_selected, timeout=1000):
-            self._press_enter(w)
+            self._press_enter(w.content)
         assert w.selected_path is not None
 
     def test_enter_without_selection_is_noop(self, qtbot, runtime):
@@ -722,7 +638,7 @@ class TestGameLauncherDialog:
         qtbot.addWidget(w)
         emitted = []
         w.game_selected.connect(emitted.append)
-        self._press_enter(w)  # nothing selected → no-op
+        self._press_enter(w.content)  # nothing selected → no-op
         assert emitted == []
         assert w.selected_path is None
 
@@ -734,8 +650,9 @@ class TestGameLauncherDialog:
         qtbot.addWidget(w)
         emitted = []
         w.game_selected.connect(emitted.append)
-        # A key other than Enter is delegated to QDialog (no crash, no emit).
-        w.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_A, _Qt.NoModifier))
+        # A key other than Enter is delegated to the base widget (no crash,
+        # no emit) — the Enter handler above is the content's only key take.
+        w.content.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_A, _Qt.NoModifier))
         assert emitted == []
 
 
@@ -749,7 +666,7 @@ class TestGameLauncherDialog:
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
         with qtbot.waitSignal(w.game_selected, timeout=1000):
-            w.vm.createRequested.emit("")  # what «Новая игра» drives
+            w.content.vm.createRequested.emit("")  # what «Новая игра» drives
         assert w.selected_path is not None
         assert w.selected_path.endswith("game.db")
         assert "Fresh" in w.selected_path
@@ -763,7 +680,7 @@ class TestGameLauncherDialog:
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
         with qtbot.waitSignal(w.game_selected, timeout=1000):
-            w.vm.createRequested.emit("")
+            w.content.vm.createRequested.emit("")
         assert self._listed_names(w) == ["Погоня"]
 
     def test_on_new_duplicate_shows_warning(self, qtbot, mocker, runtime):
@@ -776,7 +693,7 @@ class TestGameLauncherDialog:
         warn = mocker.patch.object(QMessageBox, "warning")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.createRequested.emit("")
+        w.content.vm.createRequested.emit("")
         warn.assert_called_once()
         assert w.selected_path is None
         assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
@@ -789,10 +706,10 @@ class TestGameLauncherDialog:
         warn = mocker.patch.object(QMessageBox, "warning")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.createRequested.emit("")
+        w.content.vm.createRequested.emit("")
         warn.assert_not_called()
         assert w.selected_path is None
-        assert w.vm.games == []
+        assert w.content.vm.games == []
 
     def test_on_new_dialog_cancelled_is_noop(self, qtbot, mocker, runtime):
         mocker.patch(
@@ -801,7 +718,7 @@ class TestGameLauncherDialog:
         )
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.createRequested.emit("")
+        w.content.vm.createRequested.emit("")
         assert w.selected_path is None
 
     # -- delete game -----------------------------------------------------------
@@ -811,14 +728,14 @@ class TestGameLauncherDialog:
         (self._tmp / "G.db").touch()
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.set_selected(0)
+        w.content.vm.set_selected(0)
         ask = mocker.patch.object(
             QMessageBox, "question",
             return_value=QMessageBox.StandardButton.Yes,
         )
-        w.vm.deleteRequested.emit(0)
+        w.content.vm.deleteRequested.emit(0)
         ask.assert_called_once()
-        assert w.vm.games == []
+        assert w.content.vm.games == []
         assert not (self._tmp / "G.db").exists()
         assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
 
@@ -827,7 +744,7 @@ class TestGameLauncherDialog:
         (self._tmp / "G.db").touch()
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.set_selected(0)
+        w.content.vm.set_selected(0)
 
         captured = {}
 
@@ -836,7 +753,7 @@ class TestGameLauncherDialog:
             return QMessageBox.StandardButton.No
 
         mocker.patch.object(QMessageBox, "question", side_effect=spy)
-        w.vm.deleteRequested.emit(0)
+        w.content.vm.deleteRequested.emit(0)
         assert captured["defaultButton"] == QMessageBox.StandardButton.No
         assert (self._tmp / "G.db").exists()  # default «Нет» → the game lives
 
@@ -845,13 +762,13 @@ class TestGameLauncherDialog:
         (self._tmp / "G.db").touch()
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.set_selected(0)
+        w.content.vm.set_selected(0)
         mocker.patch.object(
             QMessageBox, "question",
             return_value=QMessageBox.StandardButton.No,
         )
-        w.vm.deleteRequested.emit(0)
-        assert len(w.vm.games) == 1
+        w.content.vm.deleteRequested.emit(0)
+        assert len(w.content.vm.games) == 1
         assert (self._tmp / "G.db").exists()
 
     # -- import game -----------------------------------------------------------
@@ -869,7 +786,7 @@ class TestGameLauncherDialog:
         info = mocker.patch.object(QMessageBox, "information")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         ask.assert_called_once()
         info.assert_called_once()
         assert self._listed_names(w) == ["Imported"]
@@ -891,11 +808,11 @@ class TestGameLauncherDialog:
         mocker.patch.object(QMessageBox, "question", side_effect=spy)
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         # The confirmation carries the archive's metadata and defaults to «Да».
         assert captured["defaultButton"] == QMessageBox.StandardButton.Yes
         assert "Imported" in captured["text"] and "0.6" in captured["text"]
-        assert w.vm.games == []  # declined → nothing written
+        assert w.content.vm.games == []  # declined → nothing written
 
     def test_on_import_declined_by_user(self, qtbot, mocker, runtime):
         arc = self._make_archive("Imported")
@@ -910,9 +827,9 @@ class TestGameLauncherDialog:
         info = mocker.patch.object(QMessageBox, "information")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         info.assert_not_called()
-        assert w.vm.games == []
+        assert w.content.vm.games == []
 
     def test_on_import_dialog_canceled(self, qtbot, mocker, runtime):
         mocker.patch(
@@ -925,7 +842,7 @@ class TestGameLauncherDialog:
         ask = mocker.patch.object(QMessageBox, "question")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         read_meta.assert_not_called()
         ask.assert_not_called()
 
@@ -944,7 +861,7 @@ class TestGameLauncherDialog:
         warn = mocker.patch.object(QMessageBox, "warning")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         warn.assert_called_once()
         assert w.result() != GameLauncherDialog.DialogCode.Accepted  # stays open
 
@@ -960,7 +877,7 @@ class TestGameLauncherDialog:
         warn = mocker.patch.object(QMessageBox, "warning")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         warn.assert_called_once()
 
     def test_on_import_unreadable_file_shows_critical(self, qtbot, mocker, runtime):
@@ -974,7 +891,7 @@ class TestGameLauncherDialog:
         crit = mocker.patch.object(QMessageBox, "critical")
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
-        w.vm.importRequested.emit("")
+        w.content.vm.importRequested.emit("")
         crit.assert_called_once()
 
     # -- theme toggle (checkbox: fixed caption, tick = state) -------------------
@@ -988,17 +905,17 @@ class TestGameLauncherDialog:
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
         # App default is dark → unchecked tick, seeded from the runtime.
-        assert w._root.property("currentTheme") == "dark"
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
-        assert island_toggle_checked(w.quick) is False
+        assert w.content._root.property("currentTheme") == "dark"
+        assert island_toggle_text(w.content.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_checked(w.content.quick) is False
 
         # Someone else (e.g. the main window) changes the theme → the wrapper
         # re-syncs the checkbox tick through the runtime listener; the caption
         # (D2) never depends on the theme.
         assert runtime.toggle() is True  # dark → light
-        assert w._root.property("currentTheme") == "light"
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
-        assert island_toggle_checked(w.quick) is True
+        assert w.content._root.property("currentTheme") == "light"
+        assert island_toggle_text(w.content.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_checked(w.content.quick) is True
 
     def test_island_toggle_click_switches_theme(self, qtbot, runtime):
         from tests.presentation.qml_helpers import (
@@ -1012,13 +929,13 @@ class TestGameLauncherDialog:
         w.show()
         # A genuine press on the checkbox (not a signal emit): the island's
         # click handler drives the same set_theme contour.
-        click_item(w.quick, find_item(w.quick, "themeToggleButton"))
+        click_item(w.content.quick, find_item(w.content.quick, "themeToggleButton"))
         assert runtime.theme == "light"
         assert runtime.prefs.config_file.exists()   # ui.json written as before
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_text(w.content.quick) == ISLAND_TOGGLE_CAPTION
         # The tick follows the state AFTER the user action — the checked
         # binding survives the click (Qt ≥6.3 restore), text never flipped.
-        assert island_toggle_checked(w.quick) is True
+        assert island_toggle_checked(w.content.quick) is True
 
     def test_theme_toggle_is_noop_with_broken_tokens(self, qtbot, broken_runtime):
         from tests.presentation.qml_helpers import (
@@ -1028,12 +945,12 @@ class TestGameLauncherDialog:
 
         w = GameLauncherDialog(theme=broken_runtime)
         qtbot.addWidget(w)
-        w._root.themeToggleRequested.emit()
+        w.content._root.themeToggleRequested.emit()
         assert broken_runtime.theme == "dark"
         assert not broken_runtime.prefs.config_file.exists()
         # Off-skin: palette empty, but the checkbox contract is intact.
-        assert island_toggle_text(w.quick) == ISLAND_TOGGLE_CAPTION
-        assert island_toggle_checked(w.quick) is False
+        assert island_toggle_text(w.content.quick) == ISLAND_TOGGLE_CAPTION
+        assert island_toggle_checked(w.content.quick) is False
 
     # -- one engine for all islands --------------------------------------------
 
@@ -1048,10 +965,181 @@ class TestGameLauncherDialog:
         second = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(second)
 
-        assert first._engine is second._engine
-        assert first.quick.engine() is second.quick.engine()
+        assert first.content._engine is second.content._engine
+        assert first.content.quick.engine() is second.content.quick.engine()
         engines = qapp.findChildren(QQmlEngine)
-        assert len(engines) == 1 and engines[0] is first._engine
+        assert len(engines) == 1 and engines[0] is first.content._engine
+
+
+class TestGameSwitchSheet:
+    """«Сменить игру…» in SHEET form (NRI-0024 task 4.1): the same launcher
+    list operations, driven through the GameSwitchSheet's content — closing
+    without a choice is the sheet's own cancel, a confirmed one only emits
+    ``game_selected`` (the composition root owns the rebuild, task 4.2)."""
+
+    @pytest.fixture(autouse=True)
+    def _games_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "app.infrastructure.db.game_manager._resolve_games_dir",
+            lambda: tmp_path / "games",
+        )
+        self._tmp = tmp_path / "games"
+        self._scratch = tmp_path  # outside the games dir: never listed
+
+    @pytest.fixture
+    def runtime(self, tmp_path):
+        from app.infrastructure.ui_prefs.config import UiPrefsManager
+        from app.presentation.theme.compiler import tokens_file_path
+        from app.presentation.theme.runtime import ThemeRuntime
+
+        return ThemeRuntime(
+            prefs=UiPrefsManager(tmp_path / "ui.json"),
+            tokens_path=tokens_file_path(),
+        )
+
+    def _make_archive(self, game_name: str) -> str:
+        self._scratch.mkdir(parents=True, exist_ok=True)
+        db = self._scratch / "src.db"
+        db.write_bytes(b"db-bytes")
+        arc = self._scratch / f"{game_name}.nri"
+        with zipfile.ZipFile(arc, "w") as zf:
+            zf.write(db, "game.db")
+            zf.writestr(
+                "meta.json",
+                json.dumps({"game_name": game_name, "version": "0.6", "exported_at": "2026-01-01"}),
+            )
+        return str(arc)
+
+    def _listed_names(self, sheet) -> list:
+        return [game["name"] for game in sheet.content.vm.games]
+
+    # -- the sheet's own contract ---------------------------------------------
+
+    def test_sheet_header_names_the_switch_entry(self, qtbot, runtime):
+        from PySide6.QtWidgets import QPushButton
+
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        # One threaded caption: header label == windowTitle (spec modal-sheets).
+        assert s.windowTitle() == "Сменить игру…"
+        assert s._title_label.text() == "Сменить игру…"
+        close = s.findChild(QPushButton, "sheetFrameCloseButton")
+        assert close is not None and close.text() == "Закрыть"
+        # Д6 «смена игры — размер лаунчера»: the launcher's own 600×400.
+        assert s.minimumSize() == LAUNCHER_MIN_SIZE
+        assert s.size() == LAUNCHER_MIN_SIZE
+
+    def test_close_without_choice_emits_nothing(self, qtbot, runtime):
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        emitted = []
+        s.game_selected.connect(emitted.append)
+        s.reject()  # Esc / the header «Закрыть» — the cancel path
+        assert emitted == []
+
+    def test_confirmation_emits_and_stays_open_for_the_host(self, qtbot, runtime):
+        """The sheet itself NEVER closes on a choice: the composition root
+        takes the whole stack down in the rebuild (task 4.2, design Д4)."""
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "Campaign.db").touch()
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.show()
+        s.content.vm.set_selected(0)
+        path = s.content.vm.selected_path
+        with qtbot.waitSignal(s.game_selected, timeout=1000) as blocker:
+            s.content.vm.openRequested.emit(path)
+        assert blocker.args == [path]
+        assert s.isVisible()  # the host owns the close (stack teardown)
+
+    def test_close_drops_the_theme_listener_and_releases_island(self, qtbot, runtime):
+        import shiboken6
+
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.show()
+        before = len(runtime.subscribers)
+        s.reject()
+        assert len(runtime.subscribers) == before - 1  # the content unsubscribed
+        qtbot.waitUntil(lambda: not shiboken6.isValid(s.content._root))
+        # The island release is the deferred one (never inside a QML handler).
+        assert s.content.quick.source().isEmpty()
+
+    # -- the list operations, sheet form ----------------------------------------
+
+    def test_enter_on_a_row_opens_the_game(self, qtbot, runtime):
+        from PySide6.QtCore import QEvent, Qt as _Qt
+        from PySide6.QtGui import QKeyEvent
+
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "Campaign.db").touch()
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.content.vm.set_selected(0)
+        with qtbot.waitSignal(s.game_selected, timeout=1000):
+            s.content.keyPressEvent(
+                QKeyEvent(QEvent.Type.KeyPress, _Qt.Key_Return, _Qt.NoModifier)
+            )
+
+    def test_new_game_creates_and_confirms_in_sheet_form(self, qtbot, mocker, runtime):
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("Fresh", True),
+        )
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.show()
+        with qtbot.waitSignal(s.game_selected, timeout=1000):
+            s.content.vm.createRequested.emit("")  # what «Новая игра» drives
+        assert self._listed_names(s) == ["Fresh"]  # the sheet's list refreshed
+        assert s.isVisible()
+
+    def test_delete_yes_removes_the_row_in_sheet_form(self, qtbot, mocker, runtime):
+        self._tmp.mkdir(parents=True)
+        (self._tmp / "G.db").touch()
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.show()
+        s.content.vm.set_selected(0)
+        mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        )
+        s.content.vm.deleteRequested.emit(0)
+        assert s.content.vm.games == []
+        assert not (self._tmp / "G.db").exists()
+        assert s.isVisible()  # delete never leaves the launcher
+
+    def test_import_adds_the_row_in_sheet_form(self, qtbot, mocker, runtime):
+        arc = self._make_archive("Imported")
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QFileDialog.getOpenFileName",
+            return_value=(arc, ""),
+        )
+        mocker.patch.object(
+            QMessageBox, "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        )
+        mocker.patch.object(QMessageBox, "information")
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.show()
+        s.content.vm.importRequested.emit("")
+        assert self._listed_names(s) == ["Imported"]
+        assert s.isVisible()
+
+    def test_island_theme_toggle_switches_the_runtime(self, qtbot, runtime):
+        from tests.presentation.qml_helpers import click_item
+
+        s = GameSwitchSheet(theme=runtime)
+        qtbot.addWidget(s)
+        s.show()
+        # A genuine island press inside the sheet drives the same runtime.
+        click_item(
+            s.content.quick, find_item(s.content.quick, "themeToggleButton")
+        )
+        assert runtime.theme == "light"
+        assert runtime.prefs.config_file.exists()
 
 
 class TestMainWindowExportAction:

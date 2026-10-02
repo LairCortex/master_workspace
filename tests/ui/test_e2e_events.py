@@ -53,7 +53,9 @@ async def test_event_creation_and_detail_panel_editing(app, wait_for, modal_qdia
     await wait_for(lambda: len(loaded) == 4)
     dialog.name_input.setText("Битва у моста")
     dialog.characteristics_input.setContent("Решающее сражение")
-    await helpers.link_existing_entity_in_tab(modal_qdialog, dialog.char_tab, "Генерал Вард")
+    await helpers.link_existing_entity_in_tab(
+        window, wait_for, dialog.char_tab, "Генерал Вард"
+    )
     await wait_for(lambda: any(
         "Генерал Вард" in dialog.char_tab.list_widget.item(i).text()
         for i in range(dialog.char_tab.list_widget.count())
@@ -140,7 +142,7 @@ async def test_create_character_from_event_dialog(app, wait_for, modal_qdialog):
     dialog.characteristics_input.setContent("Создаём персонажа в поппапе")
 
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Рыцарь",
+        window, wait_for, dialog, "characters", "character", "Рыцарь",
     )
     await helpers.wait_until_settled()
     assert _name_in_list(dialog.char_tab, "Рыцарь")  # entity appears in the parent section
@@ -175,7 +177,7 @@ async def test_link_location_in_character_popup(app, wait_for, modal_qdialog):
     dialog.characteristics_input.setContent("Персонаж привязан к локации из поппапа")
 
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Местный",
+        window, wait_for, dialog, "characters", "character", "Местный",
         links=[("locations", "Деревня")],
     )
     await helpers.wait_until_settled()
@@ -219,7 +221,7 @@ async def test_cancel_parent_dialog_after_popup_create(app, wait_for, modal_qdia
     dialog.characteristics_input.setContent("Будет отменено")
 
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Фантом",
+        window, wait_for, dialog, "characters", "character", "Фантом",
         links=[("locations", "Деревня")],
     )
     await helpers.wait_until_settled()
@@ -256,7 +258,7 @@ async def test_unlink_popup_entity_keeps_entity(app, wait_for, modal_qdialog):
     dialog.characteristics_input.setContent("Сущность отвязана до сохранения")
 
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, dialog, "characters", "character", "Странник",
+        window, wait_for, dialog, "characters", "character", "Странник",
     )
     await helpers.wait_until_settled()
     assert _name_in_list(dialog.char_tab, "Странник")
@@ -301,7 +303,9 @@ async def test_edit_event_mixed_section_composition(app, wait_for, modal_qdialog
     await helpers.create_event_via_ui(window, wait_for, "Смешанное", characteristics="Состав")
     setup = await _open_event_edit_dialog(window, wait_for, "Смешанное")
 
-    await helpers.link_existing_entity_in_tab(modal_qdialog, setup.char_tab, "Знакомец")
+    await helpers.link_existing_entity_in_tab(
+        window, wait_for, setup.char_tab, "Знакомец"
+    )
     await wait_for(lambda: _name_in_list(setup.char_tab, "Знакомец"))
     setup.save_button.click()
     await helpers.wait_until_settled()
@@ -316,7 +320,7 @@ async def test_edit_event_mixed_section_composition(app, wait_for, modal_qdialog
 
     # Add a new character via the popup, then unlink the previously linked one.
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, edit, "characters", "character", "Новичок",
+        window, wait_for, edit, "characters", "character", "Новичок",
     )
     await helpers.wait_until_settled()
     assert _name_in_list(edit.char_tab, "Новичок")

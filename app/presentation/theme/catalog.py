@@ -6,7 +6,9 @@ place allowed to stamp those properties:
 
 * ``attach_theme(root)`` — one call per screen: marks the root as the chrome
   (or menu) container, registers it with a `ThemeRuntime` for live swaps and
-  re-polishes so the sheet applies immediately;
+  re-polishes so the sheet applies immediately; ``sheet=True`` additionally
+  stamps the sheet-canvas modifier a sheet root carries (the compiler owns
+  the one rule reading it);
 * ``set_role(widget, role)`` — tags a widget with a catalog role (``title``,
   ``hint``, ``field``, ``list``, ``card``, ``status-ok``, ``status-error``;
   ``primary`` marks the one primary button of a row, mirroring the compiler's
@@ -57,6 +59,7 @@ def attach_theme(
     runtime: ThemeRuntime | None = None,
     *,
     on_retheme: Callable[[], None] | None = None,
+    sheet: bool = False,
 ) -> QWidget:
     """Connect a screen root to the theme; returns ``widget`` for chaining.
 
@@ -72,12 +75,21 @@ def attach_theme(
     ``ThemeRuntime.add_listener``, which is what a content widget that is not a
     chrome root calls directly. Held weakly by the
     runtime, so a closed dialog never keeps the subscription.
+
+    ``sheet=True`` marks the root as a sheet: it then wears the SHEET canvas
+    (``color.bg.surface`` — the background every island sheet carries to its
+    own window edge) instead of the window canvas, so the widget-side sheet
+    cannot show a strip of chrome above its content. The modifier follows the
+    catalog's convention (its own property, stamped only here); the compiler
+    holds the single rule reading it.
     """
     from app.presentation.theme import get_default_theme
 
     runtime = runtime if runtime is not None else get_default_theme()
     role = "menu" if isinstance(widget, QMenuBar) else "chrome"
     widget.setProperty("uiRole", role)
+    if sheet:
+        widget.setProperty("uiSheet", "true")
     # A plain QWidget only paints its QSS background when styled-background
     # is on; harmless on every other container.
     widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)

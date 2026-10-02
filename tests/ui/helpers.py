@@ -13,13 +13,20 @@ from typing import Any, Callable
 
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMenu, QListWidget, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QMenu,
+    QListWidget,
+    QWidget,
+)
 
 from PySide6.QtCore import Qt
 
 from app.domain.game_calendar import GameCoord
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
+from app.presentation.views.sheet_frame import SheetFrame
 from tests.presentation import qml_helpers as qml_h
 from tests.ui import timeline_probe
 
@@ -76,16 +83,15 @@ def open_world_snapshot(application, window):
     """Open the world-snapshot panel through the «Обзор мира…» menu action.
 
     NRI-0022 (group 2): the panel left the main window's columns for its own
-    MenuWindowRegistry window (key ``world_snapshot``); this presses the real
-    action and reads the panel back off the live registry slot — the same
-    way the user reaches it.
+    home; NRI-0024 (task 1.3) abolished the open-window registry and task 2.4
+    moved the content into the sheet family, so the live sheet belongs to the
+    connector. This presses the real action and reads the panel back off the
+    connector's slot — the same way the user reaches it.
     """
-    from app.presentation.window_registry import WORLD_SNAPSHOT_KEY
-
     window.world_snapshot_action.trigger()
-    snapshot_window = application._window_registry.get(WORLD_SNAPSHOT_KEY)
-    assert snapshot_window is not None, "«Обзор мира…» не открыло окно"
-    return snapshot_window.snapshot
+    snapshot_sheet = application._wiring.snapshot_sheet
+    assert snapshot_sheet is not None, "«Обзор мира…» не открыло лист"
+    return snapshot_sheet.snapshot
 
 
 def find_event_id(window, name: str) -> int:
@@ -425,20 +431,34 @@ async def create_entity_via_context_menu(
 
 
 async def link_existing_entity_in_tab(
-    modal_qdialog,
+    window: QWidget,
+    wait_for: Callable,
     tab,
     name: str,
 ) -> None:
-    """Pre-select ``name`` in the next 'Привязать существующего' picker and accept it."""
+    """Link ``name`` through the «Привязать существующего» picker sheet.
 
-    def preselect(dlg) -> None:
-        for lst in dlg.findChildren(QListWidget):
-            for i in range(lst.count()):
-                if name in lst.item(i).text():
-                    lst.item(i).setSelected(True)
+    NRI-0024 task 2.5: the picker is a SheetFrame sheet shown over the dialog
+    on the shared loop (it left QDialog.exec, so no ModalControl hook fires) —
+    click the link button, wait for the sheet, select the row, press ОК; the
+    accept path adds the entity to the section right on the loop.
+    """
 
-    modal_qdialog.on_exec(preselect)
+    def _picker() -> SheetFrame | None:
+        for sheet in window.findChildren(SheetFrame):
+            if sheet.isVisible() and sheet.windowTitle().startswith("Выберите"):
+                return sheet
+        return None
+
     tab.link_button.click()
+    await wait_for(lambda: _picker() is not None)
+    picker = _picker()
+    for lst in picker.findChildren(QListWidget):
+        for i in range(lst.count()):
+            if name in lst.item(i).text():
+                lst.item(i).setSelected(True)
+    buttons = picker.findChild(QDialogButtonBox)
+    buttons.button(QDialogButtonBox.StandardButton.Ok).click()
 
 
 _EVENT_TAB_ATTR = {
@@ -458,9 +478,8 @@ def _parent_section(parent_dialog, attr: str):
 
 
 async def create_related_via_popup(
-    window,
+    window: QWidget,
     wait_for: Callable,
-    modal_qdialog,
     parent_dialog,
     attr: str,
     entity_type: str,
@@ -488,7 +507,7 @@ async def create_related_via_popup(
     )
     for rel_attr, link_name in links:
         await link_existing_entity_in_tab(
-            modal_qdialog, sub._related_sections[rel_attr], link_name
+            window, wait_for, sub._related_sections[rel_attr], link_name
         )
         section = sub._related_sections[rel_attr]
         await wait_for(

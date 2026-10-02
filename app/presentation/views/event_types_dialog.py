@@ -129,6 +129,14 @@ class EventTypesDialog(IslandDialogMixin, QDialog):
         # the right edge, where Qt neither paints nor delivers clicks.
         fit_dialog_to_island(self, self._root, floor=(420, 320))
 
+        # NRI-0024 task 2.1 (spec event-types «Лист типов событий имеет шапку
+        # с заголовком и закрытием»): the scene exists from here, so replay the
+        # windowTitle once (the setWindowTitle override threads later renames)
+        # and take the header ✕ to the Esc outcome — reject, no confirmation,
+        # the write-through edits stay applied (spec scenario).
+        self.setWindowTitle(self.windowTitle())
+        self._root.headerCloseRequested.connect(self.reject)
+
         self.vm.addRequested.connect(self._on_add)
         self.vm.renameRequested.connect(self._on_rename)
         self.vm.recolorRequested.connect(self._on_recolor)
@@ -139,6 +147,14 @@ class EventTypesDialog(IslandDialogMixin, QDialog):
         self._task = self._run(self._reload())
 
     # ── state helpers ──────────────────────────────────────────────────────
+
+    def setWindowTitle(self, title: str) -> None:  # noqa: N802 — Qt API
+        # NRI-0014 task 4.2 (E1) threading, NRI-0024 task 2.1 consumer: the
+        # header's title is the windowTitle, one threaded value, painted under
+        # the same guard the EventDialog uses for its pre-island title.
+        super().setWindowTitle(title)
+        if getattr(self, "_root", None) is not None:
+            self._root.setProperty("sheetTitle", title)
 
     def _type_by_id(self, type_id: int) -> Any | None:
         return next((t for t in self._types if t.id == type_id), None)

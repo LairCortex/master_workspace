@@ -11,8 +11,9 @@ but a console traceback (FI-6). The target contour pinned here:
 
 * ``Application.start()`` completes without ever running the wizard through
   ``exec()`` (the suite's ModalControl sees no wizard exec at all);
-* the main window is the first thing on screen; the very wizard the menu entry
-  builds (an own ApplicationModal top-level) then opens over it;
+* the main window is the first thing on screen; the very wizard the menu
+  entry builds (a WindowModal sheet of the connector's stack since NRI-0024
+  task 3.2) then opens over it through the same deferred channel;
 * cancel returns to that shown window, and the close-as-preset finish writes
   the «показан» flag exactly as the old boot close did;
 * a failed application on the first run shows the same visible reason window
@@ -92,10 +93,12 @@ async def test_first_run_wizard_opens_after_start_and_cancel_returns(
             wizard = application._calendar_wizard
             assert isinstance(wizard, CalendarWizardDialog)
             assert wizard.isVisible()
-            # NRI-0014 D5/D6 shape carried over untouched (task 2.4): an own
-            # application-modal top-level, parented to the window only.
-            assert wizard.window() is wizard
-            assert wizard.windowModality() == Qt.WindowModality.ApplicationModal
+            # NRI-0024 task 3.2: the very same sheet the menu raises — a
+            # WindowModal sheet of the connector's stack over the SHOWN
+            # window, through the same call_soon channel, no nested loop
+            # (the deferred-top-level shape of NRI-0015 task 2.4 became a
+            # sheet with the three-class contract, tasks 3.1/3.2).
+            assert wizard.windowModality() == Qt.WindowModality.WindowModal
             assert wizard.parent() is window
             await helpers.wait_until_settled()
             assert wizard._stack.currentWidget() is wizard._pages["choice"]

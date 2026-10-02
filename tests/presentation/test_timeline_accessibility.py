@@ -21,8 +21,9 @@ the mouse single/double click channels are owned by the existing timeline
 suites (test_timeline_island / test_timeline_rows), this one only adds the
 accessibility plane. NRI-0023 tasks 11.1/11.3 join it at the geometry edge:
 the branch line's «└» angle on the group's last child, the expanded parent's
-own segment, and the child band that starts at the trunk column are read off
-the live delegate objects here (their pixels are pinned in
+clean card (fix 2026-10-02: no connector pixel inside the parent row), and
+the child band that starts at the trunk column are read off the live
+delegate objects here (their pixels are pinned in
 ``tests/ui/test_e2e_timeline_theme.py``).
 """
 from __future__ import annotations
@@ -346,45 +347,56 @@ def test_last_child_closes_the_branch_middle_children_run_full(qtbot):
     assert abs(elbow_center - line_l) <= 0.5
 
 
-def test_expanded_parent_draws_the_branch_segment(qtbot):
-    """Task 11.1 (design Д11, A4, spec «от левого края родителя до локтя
-    первого ребёнка линия SHALL быть непрерывна»; live fix 2026-09-30 moved
-    the trunk off the parent's type mark onto the row's left edge): the
-    expanded parent paints the branch's first segment INSIDE its own row —
-    from its caption line to the row's bottom edge, at x = 0, continuing the
-    parent card's left border — while a collapsed parent shows no segment at
-    all (its children are hidden anyway)."""
+def test_expanded_parent_paints_no_connector_inside_its_row(qtbot):
+    """Live-audit fix 2026-10-02 (report «docs/qa/2026-10-02-timeline-tree-trunk.md»,
+    эталон 2026-09-30-lucide-pass): the expanded parent paints NOT A SINGLE
+    connector pixel inside its own row — the parent's card is a clean canvas
+    in every state (the selected/today pixel halves are pinned in
+    «tests/presentation/test_timeline_now_surfaces.py» and both themes in
+    «tests/ui/test_e2e_timeline_theme.py»). The branch begins strictly BELOW
+    the parent's card: the first child's trunk starts at its own row's top
+    edge on the child-indent street (``trunkX`` = ``childWashX``) and runs
+    to its elbow; the retired parent segment pierced the card's bottom edge
+    and crossed its «today»/selection frame."""
     panel, _vm = _expanded_island(qtbot, GROUP)
     parent = _row_by_id(island_rows(panel.quick, "eventRow"), 1)
-    segment = _named_in(parent, "rowParentSegment")
 
-    assert segment.property("visible") is True
-    # The trunk column is the row's left edge itself (user fix: the line
-    # continues the parent card's border, not the square of its type mark).
-    assert float(parent.property("trunkX")) == 0.0
-    assert float(segment.property("x")) == float(parent.property("trunkX")) == 0.0
-    assert float(segment.property("y")) == float(parent.property("captionLineY"))
-    # …and the segment reaches the delegate's bottom edge: contiguous rows make
-    # the parent segment + first child trunk ONE line from label to elbow.
-    assert float(segment.property("y")) + float(segment.property("height")) \
-        == float(parent.property("height"))
+    # The parent carries no connector node at all — neither the retired
+    # in-row segment (gone from the delegate entirely) nor the child's pair.
+    assert parent.property("parentBranchRow") is None
+    assert [i for i in walk_items(parent)
+            if i.objectName() == "rowParentSegment"] == []
+    assert _named_in(parent, "rowConnectorTrunk").property("visible") is False
+    assert _named_in(parent, "rowConnectorElbow").property("visible") is False
 
-    # Collapsed: the segment is painted away with the children themselves.
+    # The street itself is unchanged for the children (user fix 2026-10-02):
+    # the branch starts at the first child's top edge — the seam right under
+    # the parent card — and turns into the child's own elbow.
+    kid = _row_by_id(island_rows(panel.quick, "eventRow"), 2)
+    assert float(kid.property("trunkX")) == float(kid.property("childIndent"))
+    trunk = _named_in(kid, "rowConnectorTrunk")
+    assert trunk.property("visible") is True
+    assert float(trunk.property("x")) == float(kid.property("trunkX"))
+    assert float(trunk.property("y")) == 0.0
+    assert _named_in(kid, "rowConnectorElbow").property("visible") is True
+
+    # Collapsed stays the same answer: a parent never painted a connector.
     _vm.toggle_expand(1)
     qtbot.waitUntil(
         lambda: len(island_rows(panel.quick, "eventRow")) == 1, timeout=5000
     )
     parent = _row_by_id(island_rows(panel.quick, "eventRow"), 1)
-    assert _named_in(parent, "rowParentSegment").property("visible") is False
+    assert [i for i in walk_items(parent)
+            if i.objectName() == "rowParentSegment"] == []
 
 
 def test_child_wash_hangs_on_the_tree_line_parent_stays_full(qtbot):
     """Task 11.3 (design Д13, spec scenario «Выделение подсобытия не захватывает
-    гуттер дерева»; live fix 2026-09-30): the tree line stands on the row's
-    left edge (trunkX == 0), so the CHILD row's selection/hover band hangs on
-    the child's indent column (``childWashX``) instead — the gutter between
-    the line and the band stays the canvas' business — and the band is
-    measurably narrower than the parent's, which keeps the full-width band
+    гуттер дерева»; user fix 2026-10-02): the tree line and the CHILD row's
+    selection/hover band share the child-indent column (``trunkX ==
+    childWashX``) — the gutter from the row's left edge to that street stays
+    the canvas' business for every child — and the band is measurably
+    narrower than the parent's, which keeps the full-width band
     (band width is the level's sign)."""
     panel, _vm = _expanded_island(qtbot, GROUP)
     parent = _row_by_id(island_rows(panel.quick, "eventRow"), 1)
@@ -392,9 +404,9 @@ def test_child_wash_hangs_on_the_tree_line_parent_stays_full(qtbot):
     wash_p = _named_in(parent, "rowWash")
     wash_c = _named_in(child, "rowWash")
 
-    # The line is the parent row's left edge; the band keeps its level step
-    # one child-indent in, so line and band never fuse into one strip.
-    assert float(child.property("trunkX")) == 0.0
+    # The line and the band stand on the one indent column; the gutter left
+    # of it belongs to nobody, so the card border's street stays free.
+    assert float(child.property("trunkX")) == float(child.property("childWashX"))
     assert float(child.property("childWashX")) == float(child.property("childIndent"))
     assert float(wash_p.property("x")) == 0  # top level: full-width band as ever
     assert float(wash_p.property("width")) == float(parent.property("width"))
@@ -404,6 +416,39 @@ def test_child_wash_hangs_on_the_tree_line_parent_stays_full(qtbot):
     )
     # Same row width in the one list — the narrower band is the shift itself.
     assert float(wash_c.property("width")) < float(wash_p.property("width"))
+
+
+def test_connector_street_stands_on_the_child_indent_not_the_row_edge(qtbot):
+    """User fix 2026-10-02 (эталон 2026-09-30-lucide-pass): the tree line
+    stands on the CHILD-INDENT column (``childWashX``), never on the row's
+    left edge — the gutter from the edge to the street stays empty canvas
+    for every child INCLUDING the first, and the parent card's outline
+    border keeps its whole perimeter to itself. The elbow turns from this
+    street into the child's own mark square."""
+    panel, _vm = _expanded_island(qtbot, GROUP)
+    kid = _row_by_id(island_rows(panel.quick, "eventRow"), 2)  # FIRST child
+    street = float(kid.property("childIndent"))
+    assert street > 0
+    assert float(kid.property("trunkX")) == street
+    assert float(kid.property("trunkX")) == float(kid.property("childWashX"))
+
+    trunk = _named_in(kid, "rowConnectorTrunk")
+    elbow = _named_in(kid, "rowConnectorElbow")
+    mark = _named_in(kid, "eventTypeMark")
+    assert float(trunk.property("x")) == street
+    assert float(elbow.property("x")) == street
+    # The elbow still reaches the mark square it turns into.
+    assert float(elbow.property("x")) + float(elbow.property("width")) \
+        >= float(mark.property("x"))
+    # The parent contributes NOTHING to that street (fix 2026-10-02): it
+    # paints no connector inside its own row, so the line begins only at the
+    # first child's top edge, strictly below the parent card.
+    parent = _row_by_id(island_rows(panel.quick, "eventRow"), 1)
+    assert [i for i in walk_items(parent)
+            if i.objectName() == "rowParentSegment"] == []
+    assert _named_in(parent, "rowConnectorTrunk").property("visible") is False
+    # And nothing tree-painted stands on the outline border's street either.
+    assert float(trunk.property("x")) > 0.0
 
 
 # ── the type-mark square (live-audit O4; owner retraction 2026-09-30) ─────────

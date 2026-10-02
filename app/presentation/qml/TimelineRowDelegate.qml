@@ -16,19 +16,23 @@
 // lines the glimpse takes (two, then elided) and how the tree reads:
 //
 //   * a depth-1 child rides the row's own ``childIndent`` further right, with
-//     a trunk line running along the parent row's left edge — x = 0, the same
-//     street the parent's own wash/outline starts on (live fix 2026-09-30:
-//     the line continues the parent card's left border, it no longer hides
-//     under the parent's type mark) — and an elbow tick into its own mark
+//     a trunk line running along the child-indent column — x = ``childWashX``
+//     (user fix 2026-10-02, эталон 2026-09-30: the line no longer rides the
+//     row's left edge, where it ate the parent card's outline border and
+//     pinned the branch against the row's edge; the gutter from the edge to
+//     the street is empty canvas for EVERY child, the first included) — and
+//     an elbow tick into its own mark
 //     (the spec «связными линиями, соединяющими их со строкой родителя»); the
 //     trunk runs to the bottom of the row only while another child follows —
 //     on the group's LAST child (``isLastSibling``) it stops at the elbow
-//     line, the «└» angle (task 11.1, design Д11), and an EXPANDED parent
-//     draws the segment of the same line inside itself, from its own caption
-//     line to the row's bottom edge, so the branch starts at the parent row's
-//     left edge instead of out of the seam between rows (spec «Дерево
-//     событий»: «от левого края родителя до локтя первого ребёнка линия
-//     непрерывна»); a stub paints neither the trunk nor the type mark
+//     line, the «└» angle (task 11.1, design Д11). An EXPANDED parent paints
+//     NO connector of its own: the branch begins strictly BELOW the parent's
+//     card — at the first child's top edge, on the child-indent street — and
+//     runs from there to its elbow (live-audit fix 2026-10-02, report
+//     «docs/qa/2026-10-02-timeline-tree-trunk.md»: the retired parent segment
+//     pierced the parent's card and crossed its «today»/selection frame; the
+//     эталон 2026-09-30 keeps the parent's card a clean canvas in EVERY
+//     state); a stub paints neither the trunk nor the type mark
 //     and — its delivered flags already say ``selectable == false`` — takes no
 //     selection or press at all («выбор и редактирование через неё
 //     недоступны»);
@@ -129,14 +133,6 @@ Item {
     // a stub never discloses («шеврон неактивен»), a childless parent has
     // nothing to open (spec «Пустой родитель без шеврона»).
     readonly property bool chevronRow: !stubRow && hasChildren
-    // NRI-0023 task 11.1 (design Д11, spec «Дерево событий»: «от левого края
-    // родителя до локтя первого ребёнка линия непрерывна»): the EXPANDED
-    // parent carries the branch's first segment inside its own row, from the
-    // height of its label to the row's bottom edge — the line starts at the
-    // parent row's left edge instead of out of the seam between rows. A
-    // collapsed parent shows no children, so it paints no segment either.
-    readonly property bool parentBranchRow: !stubRow && depth === 0
-                                            && hasChildren && expanded
     // The caption line's vertical center in row coordinates — the one height
     // the mark, the elbow, the chevron glyph and both connector ends share
     // (the live audit pinned the elbow↔mark coincidence; tasks 11.1/11.2).
@@ -192,18 +188,22 @@ Item {
     readonly property int lineGap: 1
     readonly property int childIndent: 20
     readonly property int contentShift: depth * childIndent
-    // The connector trunk runs along the row's left edge (live fix
-    // 2026-09-30): x = 0 is the exact street of the parent's own wash and
-    // outline, so the vertical line reads as the continuation of the parent
-    // card's left border — NOT a hairline under the parent's type mark — and
-    // turns into the child's own mark at the elbow.
-    readonly property int trunkX: 0
-    // The child's selection/hover band keeps the level step (task 11.3,
-    // design Д13): with the tree line at the row's left edge there is no
-    // room left of it, so the band hangs on the child's indent column — the
-    // gutter between the line and the band stays canvas (spec «Выделение
-    // подсобытия не захватывает гуттер дерева»).
+    // The child's selection/hover band hangs on the child's indent column
+    // (task 11.3, design Д13): the gutter left of it stays canvas (spec
+    // «Выделение подсобытия не захватывает гуттер дерева»).
     readonly property int childWashX: childIndent
+    // The connector trunk rides the SAME child-indent street (user fix
+    // 2026-10-02, эталон 2026-09-30-lucide-pass): x = childWashX, NOT the
+    // row's left edge — at x = 0 the tree line shared the street with the
+    // parent card's own wash/outline and painted over its left border (the
+    // selected now-row's frame came out broken), while the branch stood
+    // flush against the row's edge. On the indent street the gutter stays
+    // empty canvas for every child including the first, the card border
+    // keeps its perimeter to itself, and the branch stands where the эталон
+    // puts it: strictly below the parent's card, beginning at the first
+    // child's top edge (the same 2026-10-02 live fix retired the in-parent
+    // segment that ran the line up through the card).
+    readonly property int trunkX: childWashX
 
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
@@ -243,14 +243,14 @@ Item {
     // rounded item inside the field.
     //
     // NRI-0023 task 11.3 (design Д13, spec «Дерево событий» / scenario
-    // «Выделение подсобытия не захватывает гуттер дерева»; live fix
-    // 2026-09-30 moved the trunk to the row's left edge): the CHILD row's
+    // «Выделение подсобытия не захватывает гуттер дерева»; user fix
+    // 2026-10-02 moved the tree line onto the indent street): the CHILD row's
     // band hangs on the child's indent — its left edge stands at
-    // ``childWashX``, the gutter between the tree line at x = 0 and the band
-    // stays canvas and the band's width itself reads as the row's level (only
-    // the parent keeps the full band). The rounding opens the corner where the
-    // band starts, far from the trunk (the audit's A6 «зазубренный ритм» is
-    // gone with it).
+    // ``childWashX``, the same column the tree line owns now, and the gutter
+    // from the row's edge to that street stays canvas; the band's width
+    // itself reads as the row's level (only the parent keeps the full band).
+    // The rounding opens the corner where the band starts, far from the
+    // outline border (the audit's A6 «зазубренный ритм» is gone with it).
     Rectangle {
         objectName: "rowWash"
         x: row.childRow ? row.childWashX : 0
@@ -293,11 +293,11 @@ Item {
     }
 
     // NRI-0023 task 5.3 (spec «Подсобытия под родителем с отступом»): the
-    // child's connector. The trunk runs along the parent row's left edge
-    // (live fix 2026-09-30: the line continues the parent card's border
-    // instead of hiding under its type mark), the elbow tick turns from it
-    // into the child's own mark at the caption line. Painted on child rows
-    // only — a stub and a top-level row carry no connector paint. NRI-0023
+    // child's connector. The trunk runs along the child-indent street
+    // (user fix 2026-10-02: the gutter to the row's left edge stays empty
+    // canvas and the parent card's border is left alone), the elbow tick
+    // turns from it into the child's own mark at the caption line. Painted
+    // on child rows only — a stub and a top-level row carry no connector paint. NRI-0023
     // task 11.1 (design Д11, spec
     // scenario «Последний ребёнок завершает ветку»): the trunk runs to the
     // row's bottom edge ONLY while another child follows («├»); on the
@@ -328,20 +328,15 @@ Item {
         anchors.verticalCenter: rowText.verticalCenter
         color: row.selectedRow ? row.accentFgColor : row.mutedColor
     }
-    // The branch's first segment (task 11.1, design Д11, A4): drawn inside
-    // the EXPANDED parent's own row, from its caption line down to the row's
-    // bottom edge — the seam between delegates then carries a line that
-    // began at the parent row's left edge, not «из пустоты». Same trunk
-    // column, same service rank and its flip.
-    Rectangle {
-        objectName: "rowParentSegment"
-        visible: row.parentBranchRow
-        x: row.trunkX
-        y: row.captionLineY
-        width: 1
-        height: row.height - row.captionLineY
-        color: row.selectedRow ? row.accentFgColor : row.mutedColor
-    }
+    // The branch's first segment lives on the FIRST CHILD's row, not inside
+    // the parent: the expanded parent paints NO connector of its own (the
+    // live-audit fix 2026-10-02, report
+    // «docs/qa/2026-10-02-timeline-tree-trunk.md», retired the in-parent
+    // segment that pierced the parent's card and crossed its «today»/selection
+    // frame). The trunk street (``trunkX`` = ``childWashX``, the user fix
+    // 2026-10-02 that moved the line off the card border's left edge) begins
+    // at the child row's top edge — the seam directly under the parent card —
+    // and the first child's elbow already carries the branch from there.
 
     // The type mark: the bare ``color.chart.N`` token square (untyped rows
     // land on the muted fallback). No outline over the wash. It rides the

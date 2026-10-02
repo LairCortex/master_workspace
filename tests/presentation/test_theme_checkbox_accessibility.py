@@ -164,9 +164,11 @@ def test_launcher_checkbox_press_switches_the_theme(qtbot, tmp_path):
     assert runtime.theme == "dark"
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
+    # NRI-0024 4.1: the island moved into the shared launcher content.
+    quick = dlg.content.quick
 
-    toggles = track(dlg.quick.rootObject().themeToggleRequested)
-    chk = find_item(dlg.quick, "themeToggleButton")
+    toggles = track(quick.rootObject().themeToggleRequested)
+    chk = find_item(quick, "themeToggleButton")
     assert bool(chk.property("checked")) is False
 
     press(chk)
@@ -177,7 +179,7 @@ def test_launcher_checkbox_press_switches_the_theme(qtbot, tmp_path):
     )
     assert runtime.theme == "light", "the AX press did not reach ThemeRuntime"
     assert bool(chk.property("checked")) is True, "the tick does not ride the runtime"
-    assert dlg.quick.rootObject().property("currentTheme") == "light"
+    assert quick.rootObject().property("currentTheme") == "light"
 
     # And back — the press is no one-shot (mouse parity both directions).
     press(chk)

@@ -73,9 +73,6 @@ def image_monkey(monkeypatch, tmp_path):
         def __init__(self, original, preview, parent=None, theme=None):
             opened.append((original, preview, parent, theme))
 
-        def exec(self):
-            opened.append("exec")
-
     image_path = tmp_path / "preview.png"
     image = QImage(20, 20, QImage.Format.Format_RGB32)
     image.fill(Qt.GlobalColor.red)
@@ -168,14 +165,19 @@ def test_enter_on_focused_row_opens_the_editable_card(qtbot):
 def test_picture_is_image_button_pressing_it_opens_the_viewer(qtbot, image_monkey):
     panel = _panel(qtbot)
     image = find_item(panel.quick, "detailEntityImage")
-
     iface = accessible_of(image)
     assert iface.role() == QAccessible.Role.Button
     assert iface.text(QAccessible.Name) == "Орден"
     assert iface.text(QAccessible.Description) == "Открыть изображение"
 
+    # Task 2.5: the press hands the viewer sheet to the connector's channel
+    # (exec() is gone from this path).
+    requested: list = []
+    panel.sheet_requested.connect(requested.append)
+
     press(image)
-    assert image_monkey[-1] == "exec"
+    assert len(requested) == 1
+    assert len(image_monkey) == 1
 
 
 def test_picture_without_entity_name_falls_back_to_image(qtbot, image_monkey):

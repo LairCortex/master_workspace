@@ -1,10 +1,11 @@
 """Widget-layer coverage: remaining interactive branches of the main views.
 
 Targets the gaps left by the happy-path tests: validation branches, image
-picking (file dialogs stubbed), related-entity linking/removal (modal
-picker auto-accepted), music-URL edit toggle, special date/summary branches,
-world-snapshot edge cases. (The timeline «+» context menu moved with the
-island facade — covered in ``test_timeline_island.py``, task 3.3.)
+picking (file dialogs stubbed), related-entity linking/removal (the sheet
+picker driven through its show channel), music-URL edit toggle, special
+date/summary branches, world-snapshot edge cases. (The timeline «+» context
+menu moved with the island facade — covered in ``test_timeline_island.py``,
+task 3.3.)
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QFileDialog, QListWidget, QMessageBox
 
 import app.presentation.views.detail_panel as _detail_panel_mod
 from app.domain.game_calendar import MonthDay
@@ -355,19 +356,24 @@ class TestEntityCardDialogGaps:
         import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
 
         opened: list = []
+        requested: list = []
         monkeypatch.setattr(
             entity_card_dialog_mod, "ImageViewerDialog",
-            lambda original, preview, parent=None, theme=None: SimpleNamespace(
-                exec=lambda: opened.append((original, preview))
+            lambda original, preview, parent=None, theme=None: (
+                opened.append((original, preview)) or MagicMock()
             ),
         )
         d = EntityCardDialog(None, entity_type="character")
         qtbot.addWidget(d)
+        d.sheet_requested.connect(requested.append)
         path = _temp_png(tmp_path)
         with patch.object(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: (path, ""))):
             d._on_pick_image()
         d._open_image_viewer()
+        # Task 2.5: the card hands the built viewer to the connector's sheet
+        # channel instead of exec()-ing it in place.
         assert len(opened) == 1
+        assert len(requested) == 1
 
     def test_open_image_viewer_noop_without_image_field(self, qtbot, monkeypatch):
         import app.presentation.views.entity_card_dialog as entity_card_dialog_mod
@@ -419,7 +425,7 @@ class TestEntityCardDialogGaps:
 
     # ── RelatedSection: link existing / remove ───────────────────────────
 
-    def test_related_link_existing_picker(self, qtbot, monkeypatch):
+    def test_related_link_existing_picker(self, qtbot):
         d = EntityCardDialog(None, entity_type="organization")
         qtbot.addWidget(d)
         section = d._related_sections["characters"]
@@ -427,18 +433,17 @@ class TestEntityCardDialogGaps:
         hero2 = _mock_entity(2, "Герой 2")  # second candidate stays unselected
         section.set_available([hero1, hero2])
 
-        # Auto-accept the picker with the first item preselected
-        def fake_exec(self, *a, **k):
-            from PySide6.QtWidgets import QListWidget
-
-            for lst in self.findChildren(QListWidget):
-                if lst.count():
-                    lst.item(0).setSelected(True)
-                    break
-            return QDialog.DialogCode.Accepted
-
-        monkeypatch.setattr(QDialog, "exec", fake_exec)
+        # Task 2.5: the picker is a sheet over the card now — take it from
+        # the show channel, select the first candidate and accept it (ОК).
+        requested: list = []
+        d.sheet_requested.connect(requested.append)
         section._on_link_existing()
+
+        assert len(requested) == 1
+        picker = requested[0]
+        items = picker.findChild(QListWidget)
+        items.item(0).setSelected(True)
+        picker.accept()
 
         assert section.get_current_ids() == [1]
         assert section.list_widget.count() == 1

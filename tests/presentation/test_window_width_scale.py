@@ -169,7 +169,8 @@ def test_launcher_pair_on_the_step(qtbot):
     qtbot.addWidget(dlg)
 
     assert dlg.minimumWidth() == TARGETS["launcher"]
-    assert _imp_width(dlg) == TARGETS["launcher"]
+    # NRI-0024 4.1: the island (and its implicit width) lives in the content.
+    assert _imp_width(dlg.content) == TARGETS["launcher"]
 
 
 def test_preset_pair_on_the_step(qtbot, service):
@@ -337,7 +338,10 @@ async def test_calendar_wizard_minimum_stays_on_the_scale_after_the_recount(
     # the 40 step, capped) plus the preview grid at its own minimum.  The
     # scale half of the promise: the floor is that sum climbed to the next
     # step of 40 («ширина поднимается к ближайшей ступени вверх»), so the
-    # window still never opens off the scale.
+    # content never opens off the scale.  Since nri-0024 task 3.1 the floor
+    # belongs to the scrolling BODY of the sheet — the sheet itself takes the
+    # window's width and the scroll answers what stops fitting.
+    body = dlg._body
     column = dlg._step_column.minimumWidth()
     col_margins = dlg._step_column.layout().contentsMargins()
     natural = (
@@ -348,12 +352,16 @@ async def test_calendar_wizard_minimum_stays_on_the_scale_after_the_recount(
     assert column == min(-(-natural // STEP) * STEP, STEP_COLUMN_MAX_WIDTH)
     assert (
         dlg._step_column.minimumWidth() + dlg._preview.minimumSizeHint().width()
-        <= dlg.minimumWidth()
+        <= body.minimumWidth()
     )
-    assert dlg.minimumWidth() % STEP == 0
-    assert dlg.minimumWidth() - dlg.minimumSizeHint().width() < STEP
-    # the height of the wizard minimum is not part of the width scale
-    assert dlg.minimumHeight() == 620
+    assert body.minimumWidth() % STEP == 0
+    assert body.minimumWidth() - body.minimumSizeHint().width() < STEP
+    # the height of the body minimum is not part of the width scale
+    assert body.minimumHeight() == 620
+    # the sheet sheds the top-level floor with the format move: window-sized
+    # by contract, never wider than its host (pinned E2E in
+    # tests/ui/test_e2e_calendar_wizard_entry.py)
+    assert dlg.minimumWidth() < column
 
 
 def _wizard_vm(session):
@@ -455,7 +463,8 @@ def test_launcher_uses_the_same_token_as_the_reformed_exceptions(qtbot):
     for _ in range(4):
         qtbot.wait(5)
 
-    button = find_item(dlg.quick, "newButton")
+    # NRI-0024 4.1: the launcher island lives in the shared content.
+    button = find_item(dlg.content.quick, "newButton")
     origin = button.mapToScene(QPointF(0, 0))
 
     assert origin.x() == SHEET_MARGIN_PX

@@ -53,11 +53,13 @@ def test_launcher_has_no_theme_chrome_and_no_qss(qtbot, runtime):
     # island painted by the palette; it attaches NO chrome and carries NO QSS.
     from PySide6.QtQuickWidgets import QQuickWidget
 
+    # NRI-0024 (task 4.1): the island and the controller moved to the shared
+    # launcher content; the first-run frame only wraps it.
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     assert dlg.findChild(QWidget, "themeChrome") is None
     assert dlg.styleSheet() == ""
-    assert isinstance(dlg.quick, QQuickWidget)
+    assert isinstance(dlg.content.quick, QQuickWidget)
     # The compiled chrome QSS must not have leaked anywhere into the dialog.
     canvas = runtime.tokens["color.bg.canvas"]["dark"]
     assert canvas not in dlg.styleSheet()
@@ -147,23 +149,24 @@ def test_launcher_toggle_writes_pref_and_switches_palette(qtbot, runtime):
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     dlg.show()
+    content = dlg.content  # NRI-0024 4.1: the island and controller live there
     dark_surface = QColor(runtime.tokens["color.bg.surface"]["dark"])
     # Island painted from the dark palette before any toggle.
-    qtbot.waitUntil(lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == dark_surface)
+    qtbot.waitUntil(lambda: content.quick.grab().toImage().pixelColor(3, 3) == dark_surface)
 
-    dlg._root.themeToggleRequested.emit()  # the island's own toggle drives this
+    content._root.themeToggleRequested.emit()  # the island's own toggle drives this
 
     assert runtime.theme == "light"
     assert runtime.prefs.config_file.exists()
     # The island re-syncs from the palette signal — no re-creation, no QSS.
     # D2 (NRI-0016): the re-sync moves the tick, the caption stays put.
-    assert dlg._root.property("currentTheme") == "light"
-    assert island_toggle_text(dlg.quick) == "Светлая тема"
-    assert island_toggle_checked(dlg.quick) is True
+    assert content._root.property("currentTheme") == "light"
+    assert island_toggle_text(content.quick) == "Светлая тема"
+    assert island_toggle_checked(content.quick) is True
     light_surface = QColor(runtime.tokens["color.bg.surface"]["light"])
     assert light_surface != dark_surface
     qtbot.waitUntil(
-        lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == light_surface
+        lambda: content.quick.grab().toImage().pixelColor(3, 3) == light_surface
     )
 
 
@@ -199,17 +202,18 @@ def test_launcher_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
     dlg = GameLauncherDialog(theme=broken_runtime)
     qtbot.addWidget(dlg)
     # Off-skin (D7): the island still loads, controls basic, nothing throws.
-    assert dlg.quick.status() == QQuickWidget.Status.Ready
-    assert dlg.quick.errors() == []
-    dlg._root.themeToggleRequested.emit()
+    # NRI-0024 4.1: the island + controller now live in dlg.content.
+    assert dlg.content.quick.status() == QQuickWidget.Status.Ready
+    assert dlg.content.quick.errors() == []
+    dlg.content._root.themeToggleRequested.emit()
     assert broken_runtime.theme == "dark"
     assert not broken_runtime.prefs.config_file.exists()
     # No QSS anywhere (the launcher never attached the chrome).
     assert dlg.styleSheet() == ""
     # Off-skin the checkbox contract is intact too: fixed caption, the tick
     # still tracks (still-dark) theme — nothing flipped, so nothing is ticked.
-    assert island_toggle_text(dlg.quick) == "Светлая тема"
-    assert island_toggle_checked(dlg.quick) is False
+    assert island_toggle_text(dlg.content.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.content.quick) is False
 
 
 def test_main_window_toggle_is_noop_with_broken_tokens(qtbot, broken_runtime):
@@ -237,9 +241,12 @@ def test_runtime_starts_dark_when_preference_file_is_not_utf8(qtbot, tmp_path):
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     dlg.show()
-    assert dlg.quick.status() == QQuickWidget.Status.Ready
+    # NRI-0024 4.1: the island moved to the shared launcher content.
+    assert dlg.content.quick.status() == QQuickWidget.Status.Ready
     dark_surface = QColor(runtime.tokens["color.bg.surface"]["dark"])
-    qtbot.waitUntil(lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == dark_surface)
+    qtbot.waitUntil(
+        lambda: dlg.content.quick.grab().toImage().pixelColor(3, 3) == dark_surface
+    )
 
 
 # ── the preference is read once and kept in memory (no disk per repaint) ────
@@ -361,7 +368,7 @@ def test_launcher_toggle_updates_main_window_check_item(qtbot, runtime):
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     assert window.theme_toggle_action.isChecked() is False
-    dlg._root.themeToggleRequested.emit()
+    dlg.content._root.themeToggleRequested.emit()  # content holds the island
     assert window.theme_toggle_action.isChecked() is True
 
 
@@ -378,17 +385,18 @@ def test_main_window_toggle_updates_launcher_island_state(qtbot, runtime):
     qtbot.addWidget(window)
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
-    assert island_toggle_text(dlg.quick) == "Светлая тема"
-    assert island_toggle_checked(dlg.quick) is False
+    # NRI-0024 4.1: the launcher island + controller live in the content.
+    assert island_toggle_text(dlg.content.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.content.quick) is False
     assert window.theme_toggle_action.text() == "Светлая тема"
 
     window.theme_toggle_action.trigger()  # switch to light from the menu
 
     # Light is active: in BOTH places the caption is the same and the switch
     # is marked as on; the launcher repaints via the palette signal.
-    assert dlg._root.property("currentTheme") == "light"
-    assert island_toggle_text(dlg.quick) == "Светлая тема"
-    assert island_toggle_checked(dlg.quick) is True
+    assert dlg.content._root.property("currentTheme") == "light"
+    assert island_toggle_text(dlg.content.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.content.quick) is True
     assert window.theme_toggle_action.text() == "Светлая тема"
     assert window.theme_toggle_action.isChecked() is True
 
@@ -403,17 +411,20 @@ def test_main_window_toggle_repaints_open_launcher(qtbot, runtime):
     dlg = GameLauncherDialog(theme=runtime)
     qtbot.addWidget(dlg)
     dlg.show()
+    # NRI-0024 4.1: the island lives in the shared launcher content.
     dark = QColor(runtime.tokens["color.bg.surface"]["dark"])
-    qtbot.waitUntil(lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == dark)
-    root_before = dlg.quick.rootObject()
+    qtbot.waitUntil(
+        lambda: dlg.content.quick.grab().toImage().pixelColor(3, 3) == dark
+    )
+    root_before = dlg.content.quick.rootObject()
 
     window.theme_toggle_action.trigger()  # switched from the main window
 
     light = QColor(runtime.tokens["color.bg.surface"]["light"])
     qtbot.waitUntil(
-        lambda: dlg.quick.grab().toImage().pixelColor(3, 3) == light
+        lambda: dlg.content.quick.grab().toImage().pixelColor(3, 3) == light
     )
-    assert dlg.quick.rootObject() is root_before  # same island, no re-creation
+    assert dlg.content.quick.rootObject() is root_before  # same island, no re-creation
 
 
 def test_broken_tokens_leave_both_switches_untouched(qtbot, broken_runtime):
@@ -426,13 +437,14 @@ def test_broken_tokens_leave_both_switches_untouched(qtbot, broken_runtime):
     qtbot.addWidget(window)
     dlg = GameLauncherDialog(theme=broken_runtime)
     qtbot.addWidget(dlg)
-    dlg._root.themeToggleRequested.emit()
+    # NRI-0024 4.1: the launcher island + controller live in the content.
+    dlg.content._root.themeToggleRequested.emit()
     window.theme_toggle_action.trigger()
     assert window.theme_toggle_action.isChecked() is False
     assert window.theme_toggle_action.text() == "Светлая тема"
     # Off-skin the checkbox keeps the same contract: fixed caption, no tick.
-    assert island_toggle_text(dlg.quick) == "Светлая тема"
-    assert island_toggle_checked(dlg.quick) is False
+    assert island_toggle_text(dlg.content.quick) == "Светлая тема"
+    assert island_toggle_checked(dlg.content.quick) is False
 
 
 
@@ -659,7 +671,8 @@ def test_closed_launcher_is_silent_on_theme_change(qtbot, runtime, caplog):
     # exactly the crash window of the old bug (setProperty on the dead root
     # raised RuntimeError, which the runtime swallowed into the log).
     qtbot.wait(50)
-    assert not shiboken6.isValid(dlg._root)
+    # NRI-0024 4.1: the released island belongs to the dialog's content.
+    assert not shiboken6.isValid(dlg.content._root)
 
     caplog.clear()
     caplog.set_level(logging.DEBUG)

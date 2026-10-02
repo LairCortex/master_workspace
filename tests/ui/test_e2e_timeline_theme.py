@@ -532,14 +532,15 @@ def test_child_selection_leaves_the_gutter_canvas_and_flips_the_service_rank(
 ):
     """Pixel acceptance of the tree over the wash (task 11.3, design Д13,
     spec «Выделение подсобытия не захватывает гуттер дерева» / «Дерево не
-    грязнит акцент на залировке»; live fix 2026-09-30 moved the trunk to the
-    row's left edge), both themes: with a child selected the gutter BETWEEN
-    the tree line at the row's left edge and the band answers the plain field
-    canvas (the audit's P3 «заливка поверх гуттера» is gone); inside the band
-    it is the accent itself; and the connector / elbow / muted untyped mark —
-    the service rank — read ``color.accent.fg`` over the wash (A5: grey never
-    dirtying the accent). The parent, selected, keeps the full-width band:
-    the child band is measurably narrower (width is the level's sign)."""
+    грязнит акцент на залировке»; user fix 2026-10-02 moved the trunk onto
+    the child-indent street), both themes: with a child selected the gutter
+    between the row's edge and the tree line answers the plain field
+    canvas (the audit's P3 «заливка поверх гуттера» is gone); inside the
+    band it is the accent itself; and the connector / elbow / muted untyped
+    mark — the service rank — read ``color.accent.fg`` over the wash (A5:
+    grey never dirtying the accent). The parent, selected, keeps the
+    full-width band: the child band is measurably narrower (width is the
+    level's sign)."""
     runtime = make_runtime(tmp_path, theme)
     surface = _field_color(theme)
     accent = token_color("color.accent", theme)
@@ -557,16 +558,16 @@ def test_child_selection_leaves_the_gutter_canvas_and_flips_the_service_rank(
     child = _delegate(widget, child_mid)
     trunk_x = float(child.property("trunkX"))
     wash_x = float(child.property("childWashX"))
-    # Live fix 2026-09-30: the tree line stands on the row's left edge (the
-    # parent card's own border street), the band hangs on the child indent.
-    assert trunk_x == 0.0, theme
+    # User fix 2026-10-02: the tree line stands on the child-indent street —
+    # the same column the band hangs on — leaving the row's edge gutter free.
+    assert trunk_x == wash_x, theme
     assert wash_x == float(child.property("childIndent")), theme
 
-    # gutter between the line and the band: the canvas, not the accent — the
-    # band starts AT the child's indent column (the geometry pinned offscreen
-    # in test_timeline_accessibility; here the raster proof of the same fact).
-    # Sampled below the caption line — the elbow spans the whole gutter there.
-    gutter = _pixel(widget, child, fx=((trunk_x + wash_x) / 2) / child.width(),
+    # gutter between the row's edge and the line: the canvas, not the accent
+    # — the band starts AT the child's indent column (the geometry pinned
+    # offscreen in test_timeline_accessibility; here the raster proof of the
+    # same fact). Sampled below the caption line, in the empty gutter.
+    gutter = _pixel(widget, child, fx=(trunk_x / 2) / child.width(),
                     fy=0.83)
     assert gutter == surface, (theme, gutter.name())
     # inside the band: the accent itself
@@ -607,6 +608,56 @@ def test_child_selection_leaves_the_gutter_canvas_and_flips_the_service_rank(
     assert float(wash_c.property("width")) < float(wash_p.property("width"))
     assert float(wash_p.property("x")) == 0.0
     assert float(wash_c.property("x")) == wash_x
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_expanded_parent_row_paints_no_tree_pixels(qtbot, tmp_path, theme):
+    """Pixel acceptance of the live-audit fix 2026-10-02 (report
+    ``docs/qa/2026-10-02-timeline-tree-trunk.md``, эталон 2026-09-30), both
+    themes: the expanded parent paints NO connector pixel inside its own
+    card — on the plain parent the retired segment's street answers the
+    field canvas, on the SELECTED parent it answers the accent fill verbatim
+    (the retired parent segment printed a muted/accent.fg stripe through the
+    card and crossed its bottom edge). The branch between children is
+    untouched: the middle child keeps the muted trunk pixel on the same
+    street while no row of the group is selected."""
+    runtime = make_runtime(tmp_path, theme)
+    surface = _field_color(theme)
+    accent = token_color("color.accent", theme)
+    accent_fg = token_color("color.accent.fg", theme)
+    muted = token_color("color.fg.muted", theme)
+    widget, vm = _island(qtbot, runtime, _tree_events())
+    _expand(widget, vm)
+    parent_row, child_mid = vm.index_for_event(1), vm.index_for_event(2)
+    _reveal(widget, child_mid)
+
+    # the delegate carries no connector node for the parent anymore
+    parent = _delegate(widget, parent_row)
+    assert [i for i in parent.childItems()
+            if i.objectName() == "rowParentSegment"] == [], theme
+
+    # below the glyphs' baseline, above the row bottom: the retired segment's
+    # own street column, sampled inside the parent's card
+    street_fx = (float(parent.property("childIndent")) + 0.5) / parent.width()
+    fy = (parent.height() - 2.0) / parent.height()
+
+    plain = _pixel(widget, parent, fx=street_fx, fy=fy)
+    assert plain == surface, (theme, plain.name())  # a plain card: no stripe
+
+    widget.set_selected(1)
+    QTest.qWait(10)
+    QApplication.processEvents()
+    washed = _pixel(widget, parent, fx=street_fx, fy=fy)
+    assert washed == accent, (theme, washed.name())  # the fill, not the stripe
+    assert washed != accent_fg and washed != muted, theme
+
+    # continuity between children stays painted on the same street (the
+    # middle child connects down to the next row — «├»)
+    mid = _delegate(widget, child_mid)
+    trunk_px = _pixel(widget, mid,
+                      fx=(float(mid.property("trunkX")) + 0.5) / mid.width(),
+                      fy=fy)
+    assert trunk_px == muted, (theme, trunk_px.name())
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])

@@ -1,11 +1,22 @@
-"""LLM setup wizard — QML island (R3 pack 2) in the old QDialog facade.
+"""LLM setup wizard — the QML island on a SheetFrame sheet (NRI-0024 task 2.3).
 
-The dialog keeps its public contract (``saved``, ``get_connection``,
-``get_world_prompt``, ``get_field_prompts``, ``page_count``,
-``finish_saving``) and stays the effect boundary: the island only shows the
-view model and emits synchronous requests (design D2/D4). The connection
-check itself is directed by the LLM view model through its injected provider
-factory (nri-0011, design D2) — the facade only displays the outcome.
+The three-class contract moves «Настройка LLM…» from the non-modal window
+family into the sheet one (design Д1): the content stays the wizard island,
+the widget-side ``SheetFrame`` carries the shared sheet chrome — the header
+row «Настройка LLM… + Закрыть» (one windowTitle-threaded caption, the frame's
+button a plain reject) and the stack scrim the connector dims through. The
+show contract (WindowModal over the parent, the connector's sheet stack, the
+single release on ``finished``) is ``ApplicationWiring.open_sheet`` like
+every other sheet, and the gated entry makes a second copy unreachable (Д2).
+
+The wizard half is untouched by the container move. The dialog keeps its
+public contract (``saved``, ``get_connection``, ``get_world_prompt``,
+``get_field_prompts``, ``page_count``, ``finish_saving``) and stays the
+effect boundary: the island only shows the view model and emits synchronous
+requests (design D2/D4), its footer keeps the persistent «Закрыть» and the
+«N из M» counter on every page (spec llm-configuration — «без изменений»),
+and the running-save guard blocks every exit route alike: the footer, Esc,
+the native close and the sheet header's «Закрыть» all pass the same gate.
 """
 from __future__ import annotations
 
@@ -13,7 +24,7 @@ import asyncio
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from app.infrastructure.llm.config import LlmConfig
 from app.presentation.qml import setup_qml_shell
@@ -22,11 +33,12 @@ from app.presentation.qml.island import IslandDialogMixin
 from app.presentation.theme import get_default_theme
 from app.presentation.viewmodels.llm_setup_view_model import LlmSetupViewModel
 from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
+from app.presentation.views.sheet_frame import SheetFrame
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "LlmSetupRoot.qml")
 
 
-class LlmSetupDialog(IslandDialogMixin, QDialog):
+class LlmSetupDialog(IslandDialogMixin, SheetFrame):
     island_context_names = {"llmSetupVm": "vm"}
 
     def island_source(self) -> str:
@@ -43,13 +55,20 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
         parent: QWidget | None = None,
         theme=None,
     ) -> None:
-        super().__init__(parent)
-        # NRI-0016 4.2 (spec llm-configuration, design D1 of nri-0014): the
-        # title is the entry text «Настройка LLM…» — the same phrase the menu
-        # item and the error boxes use, so the window is unambiguous.
-        self.setWindowTitle("Настройка LLM…")
+        # NRI-0016 4.2 (spec llm-configuration): the sheet is named by the
+        # entry text «Настройка LLM…» — the same phrase the menu item and the
+        # error boxes use. SheetFrame threads this one value into windowTitle
+        # AND the header caption (spec «текст, соответствующий windowTitle»).
+        super().__init__(
+            "Настройка LLM…",
+            parent,
+            theme if theme is not None else get_default_theme(),
+        )
+        # NRI-0024 (design Д6): the LLM sheet defaults to 640×560 and never
+        # remembers its placement; the old minimum keeps the island usable
+        # when the main window is small.
         self.setMinimumSize(640, 480)
-        self._theme = theme if theme is not None else get_default_theme()
+        self.resize(640, 560)
         self._llm_vm = llm_vm
         self._saving = False
 
@@ -63,24 +82,23 @@ class LlmSetupDialog(IslandDialogMixin, QDialog):
             parent=self,
         )
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
         self._engine = setup_qml_shell(QApplication.instance(), self._theme)
         # Context lives on the dialog, not on the view (IslandDialogMixin):
         # during teardown the QML root must die with ``quick`` before its
         # context is invalidated.
         self.setup_island()
-        layout.addWidget(self.quick)
+        self.add_content(self.quick)
 
         self.vm.checkRequested.connect(lambda: asyncio.ensure_future(self._on_check()))
         self.vm.saveRequested.connect(self._on_save)
         # NRI-0016 LS2: the persistent footer «Закрыть» — a plain reject, no
         # confirmation and no write; the only guard is the running-save one
-        # below, the same gate Esc and the native close already meet.
+        # below, the same gate Esc, the native close and the sheet header's
+        # «Закрыть» (SheetFrame wires it to this very reject) already meet.
         self.vm.closeRequested.connect(self.reject)
 
-    # ---- closing is blocked while the async save runs (spec D4) ----
+    # ---- closing is blocked while the async save runs (spec D4): the one
+    # gate every exit route passes — footer, Esc, native close, sheet header ----
 
     def reject(self) -> None:
         if self._saving:

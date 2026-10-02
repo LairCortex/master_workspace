@@ -36,6 +36,7 @@ from app.presentation.viewmodels.event_dialog_island_view_model import (
 )
 from app.presentation.views.event_types_dialog import type_dot_icon
 from app.presentation.views.ai_capable_dialog import AiCapableDialogBase
+from app.presentation.views.sheet_frame import SheetFrame
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EventDialogRoot.qml")
@@ -227,6 +228,55 @@ class _TabsProxy:
         return False
 
 
+def build_related_picker(
+    parent: QWidget,
+    theme,
+    title: str,
+    state: RelatedSectionState,
+    candidates: list,
+) -> SheetFrame:
+    """The «Выберите <тип>» sheet (nri-0024 task 2.5, design Д6/Д7) — one
+    widget for the event dialog and the entity card (they shared the old
+    exec'd dialog body line for line, they share this one).
+
+    A SheetFrame named by the target caption (spec modal-sheets «текст,
+    соответствующий windowTitle»), its content the multi-selection list of
+    the still-unlinked candidates with the ОК/Отмена pair. The opening sheet
+    shows it through the connector's stack with ``open()`` — no nested event
+    loop (spec «Прикладные диалоги не входят во вложенный цикл событий»);
+    ОК commits the choice into ``state`` (the RelatedSectionState duck) on
+    ``accepted``, while Отмена, Esc and the header «Закрыть» cancel and hand
+    the opener layer back untouched. Enter keeps the ОК outcome the exec'd
+    dialog had — the frame's «Закрыть» is the Esc twin, never the default.
+    """
+    picker = SheetFrame(title, parent, theme)
+    picker.setMinimumSize(300, 400)  # the floor the old dialog carried
+    items = QListWidget(picker)
+    items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+    for entity in candidates:
+        item = QListWidgetItem(getattr(entity, "name", str(entity)))
+        item.setData(256, getattr(entity, "id", None))
+        items.addItem(item)
+    picker.content_layout.addWidget(items)
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        parent=picker,
+    )
+    buttons.accepted.connect(picker.accept)
+    buttons.rejected.connect(picker.reject)
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setDefault(True)
+    picker.content_layout.addWidget(buttons)
+
+    def apply_selection() -> None:
+        selected_ids = {item.data(256) for item in items.selectedItems()}
+        for entity in candidates:
+            if getattr(entity, "id", None) in selected_ids:
+                state.add_entity(entity)
+
+    picker.accepted.connect(apply_selection)
+    return picker
+
+
 class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     island_context_names = {"eventDialogVm": "vm"}
 
@@ -236,6 +286,11 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     saved = Signal(object)  # EventCreateResult | EventEditResult (dialog_results)
     create_related_requested = Signal(str, str)
     mention_clicked = Signal(str, int)
+    #: NRI-0024 (task 2.5, design Д7): child-sheet show channel — the related
+    #: picker is built here (its list is this dialog's section state) and the
+    #: connector shows it through the one ``open_sheet`` path, so it stacks
+    #: over this dialog, dims it one share, and its close returns here.
+    sheet_requested = Signal(object)
 
     def __init__(
         self,
@@ -564,29 +619,14 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         candidates = section.candidates()
         if not candidates:
             return
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"Выберите {label.lower()}")
-        dialog.setMinimumSize(300, 400)
-        layout = QVBoxLayout(dialog)
-        items = QListWidget(dialog)
-        items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        for entity in candidates:
-            item = QListWidgetItem(getattr(entity, "name", str(entity)))
-            item.setData(256, getattr(entity, "id", None))
-            items.addItem(item)
-        layout.addWidget(items)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-            parent=dialog,
+        # Task 2.5: the exec'd picker dialog is gone — the same choice is the
+        # shared SheetFrame sheet now, handed to the connector's stack over
+        # this dialog (spec modal-sheets «Цепочка … закрытие верхнего
+        # возвращает к нижнему»).
+        picker = build_related_picker(
+            self, self._theme, f"Выберите {label.lower()}", section, candidates
         )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            selected_ids = {item.data(256) for item in items.selectedItems()}
-            for entity in candidates:
-                if getattr(entity, "id", None) in selected_ids:
-                    section.add_entity(entity)
+        self.sheet_requested.emit(picker)
 
     def _update_validity(self) -> None:
         self.vm.stateChanged.emit()

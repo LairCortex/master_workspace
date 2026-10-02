@@ -12,9 +12,15 @@ below the same 4 px top margin in all three roots, every header caption
 seated on the band's vertical center (the timeline's pre-existing look), the
 empty event-meta rows leaving the layout so the strip is not pushed down.
 
+The family roster followed the columns (NRI-0022 task 4.1 seated the preview
+island in the third column; NRI-0024 task 2.4 moved the world snapshot out of
+the columns into its sheet, whose SheetFrame header now carries the caption —
+live audit F3 retired the island's own «Обзор мира» title band, so the band
+family is today's three columns: timeline, detail, preview).
+
 Pins (measured on the production roots, no stubs):
-* the three caption centers — the timeline title, the snapshot title and a
-  detail tab caption — coincide within 1 px and lie on the band's axis;
+* the three caption centers — the timeline title, a detail tab caption and
+  the preview band caption — coincide within 1 px and lie on the band's axis;
 * each island lays its header on the shared band: the band item is 32 px
   tall below the 4 px margin, the tab strip fills its band whole, and the
   empty event-meta rows are invisible (they must not push the strip down);
@@ -38,7 +44,6 @@ from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.entity_preview import EntityPreviewWidget
 from app.presentation.views.timeline_island import TimelineWidget
-from app.presentation.views.world_snapshot_widget import WorldSnapshotWidget
 from tests.presentation.qml_helpers import find_item, walk_items
 
 #: The shared header band of panelHeader.js (its Python mirror for the pins).
@@ -127,12 +132,15 @@ def _event():
 def test_the_three_header_captions_share_the_band_axis(qtbot):
     timeline = _shown(_timeline(), qtbot)
     detail = _shown(DetailPanel(SimpleNamespace()), qtbot)
-    snapshot = _shown(WorldSnapshotWidget(), qtbot)
+    preview = _shown(EntityPreviewWidget(), qtbot)
 
     centers = {
         "timeline": _center_y(find_item(timeline.quick, "timelineTitle")),
         "detail": _tab_caption_center_y(detail),
-        "snapshot": _center_y(find_item(snapshot.quick, "snapshotTitle")),
+        # NRI-0024: the world snapshot left the columns for its sheet, whose
+        # SheetFrame header carries the caption (audit F3) — the preview
+        # island is the third column since NRI-0022 (task 4.1).
+        "preview": _center_y(find_item(preview.quick, "previewBandTitle")),
     }
     # Every caption sits on the band's axis (±1 px of text-line rounding)…
     for name, center in centers.items():
@@ -156,14 +164,13 @@ def test_the_preview_column_header_sits_on_the_same_axis(qtbot):
 def test_each_island_lays_its_header_on_the_shared_band(qtbot):
     timeline = _shown(_timeline(), qtbot)
     detail = _shown(DetailPanel(SimpleNamespace()), qtbot)
-    snapshot = _shown(WorldSnapshotWidget(), qtbot)
     preview = _shown(EntityPreviewWidget(), qtbot)
 
     for island, name in (
         (timeline, "timelineHeaderBand"),
         (detail, "detailTabBand"),
-        (snapshot, "snapshotHeaderBand"),
-        # NRI-0022 (task 4.1): the preview column reads the same band home.
+        # NRI-0022 (task 4.1): the preview column reads the same band home
+        # (the world snapshot left the columns for its sheet, NRI-0024).
         (preview, "previewHeaderBand"),
     ):
         band = find_item(island.quick, name)
@@ -233,8 +240,10 @@ def test_the_band_constant_lives_in_one_home():
     for name in (
         "TimelineRoot.qml",
         "DetailPanelRoot.qml",
-        "WorldSnapshotRoot.qml",
-        # NRI-0022 (task 4.1): the preview column reads the shared constant too.
+        # NRI-0022 (task 4.1): the preview column reads the shared constant
+        # too.  NRI-0024 (task 2.4, audit F3): WorldSnapshotRoot.qml left the
+        # family — as a sheet its caption lives in the SheetFrame header, the
+        # island content carries no title band anymore.
         "EntityPreviewRoot.qml",
     ):
         qml = _qml_text(name)

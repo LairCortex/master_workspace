@@ -1,27 +1,29 @@
-"""«Стол» panel lifecycle (NRI-0016 groups 1–3: TB1–TB7).
+"""«Стол» desk-sheet lifecycle (NRI-0016 groups 1–3 + NRI-0024 task 5.1).
 
-Close-while-running confirmation rides the existing ``stop_requested``
-contour (fake host here, the real wiring in the last test); the address
-requisites appear only for a running table; Enter in the panel never
-starts anything; the seating rows are real QCheckBox widgets (3.1) and
-«Выгнать» gates on a selected player (3.2); the small panel
-captions/flags are pinned pointwise.
+NRI-0024 (design Д5): the desk is a sheet whose close is a plain hide — no
+question, no stop; the explicit «Остановить стол» button and the
+game-switch/shutdown contours are the only stops (the NRI-0016 TB1 close
+confirmation is abolished, spec «Крест при работающем столе»). The rest is
+the NRI-0016 contour kept intact: the address requisites appear only for a
+running table; Enter in the panel never starts or stops anything; the seating
+rows are real QCheckBox widgets (3.1) and «Выгнать» gates on a selected
+player (3.2); the small panel captions/flags are pinned pointwise.
 """
 from __future__ import annotations
 
 import re
+import socket
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QMessageBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QMessageBox, QPushButton
 
 from app.application.services.table_host_service import _new_pin
 from app.infrastructure.table_host.http import DEFAULT_PORT
 from app.presentation.views.table_host import panel as panel_module
 from app.presentation.views.table_host.panel import TableHostPanel
-from tests.ui.test_char_sheets_wiring import question_no, question_yes
 
 _WEB_DIR = Path(panel_module.__file__).resolve().parent / "web"
 
@@ -105,71 +107,72 @@ def _no_question(monkeypatch) -> list:
     return asked
 
 
-# ── 1.1 closeEvent (TB1) ─────────────────────────────────────────────────────
+# ── NRI-0024 task 5.1: the desk is a sheet; closing it stops nothing ────────
+# The NRI-0016 (TB1) «Остановить стол?» closeEvent is abolished: the session
+# rides the service, the sheet close is a plain hide, and the explicit
+# «Остановить стол» button is the only stop inside the desk.
 
-def test_close_while_running_asks_then_stops_and_closes(qtbot, fake_host, monkeypatch):
+def test_close_while_running_never_asks_and_never_stops(qtbot, fake_host, monkeypatch):
     fake_host.start_fake(7846)
+    asked = _no_question(monkeypatch)
     panel = _panel(qtbot, fake_host)
-    calls = question_yes(monkeypatch)
     stops: list[int] = []
     panel.stop_requested.connect(lambda: stops.append(1))
 
     panel.close()
 
-    assert calls == [["Стол", "Остановить стол?"]]
-    assert stops == [1]
-    # the panel waits for the stop signal — it went nowhere yet
-    assert panel.isVisible()
-
-    # the main contour answers the stop with the existing state sync
-    fake_host.stop_fake()
-    panel.sync_running()
-
+    assert asked == []  # spec «Крест при работающем столе»: подтверждения нет
     assert panel.isVisible() is False
-    assert len(calls) == 1  # the closing pass asks nobody twice
-
-
-def test_close_declined_keeps_table_and_panel(qtbot, fake_host, monkeypatch):
-    fake_host.start_fake(7846)
-    panel = _panel(qtbot, fake_host)
-    calls = question_no(monkeypatch)
-    stops: list[int] = []
-    panel.stop_requested.connect(lambda: stops.append(1))
-
-    panel.close()
-
-    assert calls == [["Стол", "Остановить стол?"]]
-    assert stops == []
-    assert panel.isVisible()
+    assert stops == []  # closing the sheet hides the desk, nothing else
     assert fake_host.running is True
-    assert fake_host.calls == []  # nothing was touched
-    # leave the fixture the way a user would: a running table stays, so the
-    # qtbot cleanup close would otherwise sit in the confirmation modal
-    fake_host.stop_fake()
-    panel.sync_running()
 
 
-def test_close_without_table_never_asks(qtbot, fake_host, monkeypatch):
+def test_close_button_in_the_header_is_the_same_quiet_hide(qtbot, fake_host, monkeypatch):
+    # Sheet contract (modal-sheets): the header names the sheet «Стол» and
+    # its «Закрыть» performs the Esc-equal cancel — here also without a
+    # question and without touching the running table.
+    fake_host.start_fake(7846)
     asked = _no_question(monkeypatch)
     panel = _panel(qtbot, fake_host)
+    assert panel.findChild(QLabel, "sheetFrameTitle").text() == "Стол"
+    close = panel.findChild(QPushButton, "sheetFrameCloseButton")
 
-    panel.close()
+    close.click()
 
     assert asked == []
     assert panel.isVisible() is False
+    assert fake_host.running is True
 
 
-def test_force_close_skips_the_prompt(qtbot, fake_host, monkeypatch):
-    # programmatic close (game switch / shutdown) never confirms
+def test_stop_button_is_explicit_named_and_leaves_the_desk_open(qtbot, fake_host):
     fake_host.start_fake()
-    asked = _no_question(monkeypatch)
     panel = _panel(qtbot, fake_host)
+    assert panel.stop_button.text() == "Остановить стол"
+    stops: list[int] = []
+    panel.stop_requested.connect(lambda: stops.append(1))
 
-    panel.force_close()
+    panel.stop_button.click()
 
-    assert asked == []
+    assert stops == [1]
+    assert panel.isVisible()  # the desk is not a stop confirmation dialog
+
+
+def test_reopening_a_closed_desk_shows_the_live_requisites(qtbot, fake_host):
+    # Д5: the desk container is replaceable, the service is the truth — the
+    # sheet that comes back paints the CURRENT state (here: sync after a
+    # stop happened while the desk was hidden, as main.py refresh does).
+    panel = _panel(qtbot, fake_host)
+    panel.close()
     assert panel.isVisible() is False
-    assert fake_host.running is True  # the host itself is left to main.py
+
+    fake_host.start_fake(7846)
+    panel.sync_running()  # the re-entry refresh main.py performs on open
+    panel.show()
+
+    assert panel.isVisible()
+    assert panel.pin_label.text() == "PIN: " + fake_host.pin_value
+    assert f":{fake_host.port_value}/" in panel.urls_label.text()
+    assert panel.stop_button.isEnabled()
     fake_host.stop_fake()
 
 
@@ -218,11 +221,17 @@ def test_enter_in_the_panel_starts_nothing(qtbot, fake_host):
     for button in (panel.start_button, panel.stop_button, panel.kick_button):
         assert button.autoDefault() is False
         assert button.isDefault() is False
+    # NRI-0024 task 5.1: the sheet's «Закрыть» is no default either — Enter in
+    # a field must not act as an exit from the desk.
+    close = panel.findChild(QPushButton, "sheetFrameCloseButton")
+    assert close.autoDefault() is False
+    assert close.isDefault() is False
 
     panel.port_spin.setFocus()
     QTest.keyClick(panel.port_spin, Qt.Key.Key_Return)
 
     assert starts == []
+    assert panel.isVisible()
 
 
 # ── 1.3 подписи, плейсхолдер, выделяемость, QR-хост (TB7) ───────────────────
@@ -415,23 +424,92 @@ async def test_kick_button_click_kicks_exactly_once(qtbot, fake_host):
     fake_host.stop_fake()
 
 
-# ── 1.1 the same close through the real main.py wiring ───────────────────────
+# ── NRI-0024 task 5.1 the same close through the real main.py wiring ────────
 
-async def test_x_on_running_panel_stops_the_table_through_wiring(
+def _free_port() -> int:
+    """A port just released by the kernel — bound a moment later by the table."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _port_listening(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+async def test_desk_sheet_close_keeps_the_port_listening(
     app, wait_for, monkeypatch
 ):
-    application, window = app
-    application._table_host.set_http(None)
+    """Spec «Крест при работающем столе»: closing the sheet leaves the clients
+    and the port alone (verified on the real socket through the real wiring),
+    the re-entry «Стол…» raises the desk with the CURRENT requisites, and the
+    explicit «Остановить стол» inside it is what finally frees the port."""
+    application, window = app  # the app fixture's real TableHostHttp binds
+    asked = _no_question(monkeypatch)
+    port = _free_port()
     window.table_host_action.trigger()
     await wait_for(lambda: application._table_host_panel is not None)
     panel = application._table_host_panel
-    application._table_host.set_seating([1])
-    await application._table_host.start(7899)
-    panel.sync_running()
-    calls = question_yes(monkeypatch)
+    # The desk is the sheet family now: header «Стол», opened over the window.
+    assert panel.findChild(QLabel, "sheetFrameTitle").text() == "Стол"
+    panel.set_instances([(1, "Лист")])
+    panel.seat_list.itemWidget(
+        panel.seat_list.item(0)
+    ).findChild(QCheckBox).setChecked(True)
+    panel.port_spin.setValue(port)
+
+    await application._start_table()
+    assert application._table_host.is_running
+    pin = application._table_host.pin
 
     panel.close()
 
-    assert calls == [["Стол", "Остановить стол?"]]
-    await wait_for(lambda: application._table_host.is_running is False)
-    await wait_for(lambda: panel.isVisible() is False)
+    assert asked == []
+    assert panel.isVisible() is False
+    assert application._table_host.is_running
+    assert _port_listening(port)  # the session outlived the container
+
+    # re-entry «Стол…»: same desk, live requisites off the service
+    window.table_host_action.trigger()
+    await wait_for(lambda: application._table_host_panel.isVisible())
+    assert application._table_host_panel is panel
+    assert application._table_host.pin in panel.pin_label.text()
+    assert panel.pin_label.text() == "PIN: " + pin
+    assert f":{port}/" in panel.urls_label.text()
+    assert panel.stop_button.isEnabled()
+    assert panel.start_button.isEnabled() is False
+
+    # the explicit stop in the desk is the only desk-side exit of the session
+    panel.stop_button.click()
+    # the port release lands after is_running flips (the service stops the
+    # runner after marking itself down), so the socket is the honest wait
+    await wait_for(lambda: _port_listening(port) is False)
+    assert application._table_host.is_running is False
+    assert panel.isVisible()  # stopping keeps the desk open (its own state)
+
+
+async def test_reopening_the_desk_never_double_releases_the_stack(
+    app, wait_for
+):
+    """The connector's reopen contour, on the real stack: each close releases
+    exactly once — the menu gate toggles True/False per cycle, never raising
+    the second ``remove`` a stacked lambda would cause."""
+    application, window = app
+    application._table_host.set_http(None)
+    window.table_host_action.trigger()
+    await wait_for(lambda: application._table_host_panel.isVisible())
+    panel = application._table_host_panel
+    assert window.table_host_action.isEnabled() is False  # sheet-stack gate
+
+    panel.close()
+    assert window.table_host_action.isEnabled() is True
+
+    window.table_host_action.trigger()
+    await wait_for(lambda: application._table_host_panel.isVisible())
+    assert window.table_host_action.isEnabled() is False
+    panel.close()
+    assert window.table_host_action.isEnabled() is True

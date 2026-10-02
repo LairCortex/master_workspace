@@ -1,6 +1,6 @@
 """Хранители границ архитектуры (изменение nri-0005, design D7; R5/R6 — nri-0011, design D5).
 
-Шесть AST-проверок, механика — прецедент ``tests/test_no_qt_date_carriers.py``:
+Семь AST-проверок, механика — прецедент ``tests/test_no_qt_date_carriers.py``:
 скан дерева импортов/вызовов, а не текстовый grep (докстринги и комментарии
 не являются AST-узлами и остаются легальны). Каждое нарушение сообщает файл
 и строку; сбой нельзя «починить» переименованием в подстроку или переносом
@@ -33,6 +33,12 @@
    строковые литералы значений ``LlmStatus`` запрещены в Python-коде ``app/``
    вне модуля-источника ``app/application/services/llm_status.py`` (QML/QJS
    не сканируются; метки ``active``/``disabled`` не затрагиваются).
+7. (nri-0024, task 1.3) Упразднённый реестр окон меню ``MenuWindowRegistry``:
+   модуль ``app/presentation/window_registry.py`` отсутствует, а импорт
+   ``window_registry`` запрещён под ``app/`` и ``tests/`` — трёхклассовый
+   контракт снял механизм «живое окно вместо второго»; однократность листов
+   даёт гейт открывающих пунктов по стеку (design Д2), упоминания имени в
+   прозе легальны — тот же закон AST, что у R5/R6.
 """
 from __future__ import annotations
 
@@ -55,6 +61,12 @@ REGISTRY_GUARD_DIRS = (APP_ROOT / "application", APP_ROOT / "domain")
 PROVIDER_GUARD_DIRS = (APP_ROOT / "presentation",)
 #: где запрещены литералы статусов LLM вне источника (R6)
 LITERAL_GUARD_DIRS = (APP_ROOT,)
+#: корень тестов — второй корень скана R7 (nri-0024 task 1.3)
+TESTS_ROOT = REPO_ROOT / "tests"
+#: упразднённый модуль реестра окон меню — файла нет, импорт запрещён везде (R7)
+RETIRED_REGISTRY_FILE = APP_ROOT / "presentation" / "window_registry.py"
+#: листовое имя упразднённого модуля — маркер импорта (R7)
+RETIRED_REGISTRY_LEAF = "window_registry"
 
 #: строковые значения EntityType — ключи-маркеры параллельных словарей (A4)
 ENTITY_TYPE_VALUES = frozenset(member.value for member in EntityType)
@@ -154,11 +166,24 @@ def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
+def _imports_retired_registry(module: str | None, alias_name: str) -> bool:
+    """Любая форма импорта упразднённого модуля (R7): ``import app.presentation
+    .window_registry [as x]``, ``from app.presentation.window_registry import …``,
+    ``from app.presentation import window_registry`` и относительные заходы по
+    имени или модулю. Псевдоним исходное имя не меняет; строки и проза — не
+    узлы импорта (прецедент R5/R6)."""
+    return (
+        RETIRED_REGISTRY_LEAF in (module or "").split(".")
+        or alias_name == RETIRED_REGISTRY_LEAF
+    )
+
+
 def _violations_in_tree(
     tree: ast.AST, path: Path, *,
     check_layers: bool = False, check_db: bool = False,
     check_private: bool = False, check_dicts: bool = False,
     check_provider: bool = False, check_status: bool = False,
+    check_retired_registry: bool = False,
 ) -> list[tuple[Path, int, str]]:
     violations: list[tuple[Path, int, str]] = []
     own_parts = _package_parts(path)
@@ -229,6 +254,18 @@ def _violations_in_tree(
                         f"(модуль «{module or alias.name}») — единственная фабрика "
                         "собирается в точке сборки main.py, представление "
                         "не импортирует его (nri-0011, design D5)",
+                    ))
+                # R7: упразднённый реестр окон меню недоступен импорту (nri-0024 1.3)
+                if check_retired_registry and _imports_retired_registry(
+                    module, alias.name
+                ):
+                    violations.append((
+                        path, node.lineno,
+                        f"импорт упразднённого модуля «{RETIRED_REGISTRY_LEAF}» "
+                        f"(реестр окон меню MenuWindowRegistry, «{module or alias.name}») "
+                        "запрещён — механизм «живое окно вместо второго» снят "
+                        "трёхклассовым контрактом, однократность листов даёт "
+                        "гейт открывающих пунктов по стеку (nri-0024, task 1.3)",
                     ))
         elif check_db and isinstance(node, ast.Call):
             func = node.func
@@ -423,6 +460,22 @@ def test_repo_tree_has_llm_status_literals_only_in_source():
     ), "правило R6 потеряло зубы"
 
 
+def test_repo_tree_has_no_retired_menu_window_registry():
+    """R7: упразднённый модуль реестра исчез с диска, и его имя никому
+    не доступно как импорт — ни под app/, ни под tests/ (nri-0024, task 1.3)."""
+    assert not RETIRED_REGISTRY_FILE.exists(), (
+        "файл «app/presentation/window_registry.py» вернулся: MenuWindowRegistry "
+        "упразднён трёхклассовым контрактом (nri-0024, task 1.3)"
+    )
+    violations = _scan_tree(
+        (APP_ROOT, TESTS_ROOT), check_retired_registry=True
+    )
+    assert not violations, (
+        "импорт упразднённого реестра окон меню вернулся в дерево:\n"
+        + _format_violations(violations)
+    )
+
+
 # --------------------------------------------------------------------------
 # Нарушения падают с файлом и строкой
 # --------------------------------------------------------------------------
@@ -440,6 +493,35 @@ def test_layer_violation_reports_file_and_line():
     path, lineno, text = violations[0]
     assert path == Path("app/application/services/x.py") and lineno == 3
     assert "app.presentation" in text and "app.application" in text
+
+
+def test_retired_registry_import_forms_report_file_and_line():
+    """R7 на snippets: все формы импорта упразднённого модуля ловятся, а
+    легальные имена со схожей подстрокой и проза — нет."""
+    cases = {
+        "import app.presentation.window_registry\n": True,
+        "import app.presentation.window_registry as wr\n": True,
+        "from app.presentation.window_registry import MenuWindowRegistry\n": True,
+        "from app.presentation.window_registry import WORLD_SNAPSHOT_KEY\n": True,
+        "from app.presentation import window_registry\n": True,
+        "from . import window_registry\n": True,
+        "from .window_registry import MenuWindowRegistry\n": True,
+        # легальные похожие имена — не импорты модуля window_registry
+        "from app.presentation.registry import Thing\n": False,
+        "from app.presentation import view_registry\n": False,
+        "registry = 'window_registry'\n": False,
+    }
+    for source, should_hit in cases.items():
+        violations = _scan_source(
+            source, Path("app/presentation/x.py"), check_retired_registry=True
+        )
+        if should_hit:
+            assert len(violations) == 1, source
+            path, lineno, text = violations[0]
+            assert path == Path("app/presentation/x.py") and lineno == 1, source
+            assert "MenuWindowRegistry" in text, source
+        else:
+            assert not violations, source
 
 
 def test_db_violations_report_file_and_line():

@@ -9,7 +9,8 @@ from datetime import datetime
 
 import pytest
 from openpyxl import Workbook, load_workbook
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtGui import QAccessible
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 from app.application.services import xlsx_schema
 from app.application.services.xlsx_import_service import (
@@ -41,7 +42,12 @@ from app.presentation.views.xlsx_import_dialog import (
     date_formats_hint,
     save_template_as,
 )
-from tests.presentation.qml_helpers import find_item, island_row_texts, walk_items
+from tests.presentation.qml_helpers import (
+    click_item,
+    find_item,
+    island_row_texts,
+    walk_items,
+)
 
 
 def _cell_table(wb: Workbook, title: str) -> list[list[object]]:
@@ -217,7 +223,9 @@ class TestHintDateBlockIsCalendarAware:
 
 class TestConstruction:
     def test_title_and_initial_state(self, dlg):
-        assert dlg.windowTitle() == "Импорт из .xlsx"
+        # NRI-0024 task 2.1: the windowTitle carries the entry text with the
+        # ellipsis — the header's visible title is this very value.
+        assert dlg.windowTitle() == "Импорт из .xlsx…"
         assert dlg.get_path() == ""
         assert dlg.path_edit.text() == ""
         assert dlg.progress_bar.value() == 0
@@ -237,6 +245,62 @@ class TestConstruction:
             assert name in names
         assert not hasattr(dlg, "entity_type")
         assert root.property("defaultButton").objectName() == "importButton"
+
+
+class TestSheetHeader:
+    """NRI-0024 task 2.1 (spec xlsx-import «Лист импорта имеет шапку с
+    заголовком и закрытием», scenario «Выход из шапки»).
+
+    The header row is the library component (its role/name/Press are pinned
+    in ``test_sheet_header_dialogs``); the usage site owns three facts:
+    the visible title is the entry text «Импорт из .xlsx…» threaded in as the
+    windowTitle; the ✕ runs the very cancel route the body «Отмена» button
+    and Esc take (``reject`` — nothing is written, the state machine never
+    left idle); and the dialog's overridden ``setWindowTitle`` is the
+    sheetTitle's only writer, so any later rename reaches the header."""
+
+    def test_header_shows_the_entry_title(self, dlg):
+        assert find_item(dlg.quick, "xlsxSheetHeader") is not None
+        assert dlg._root.property("sheetTitle") == "Импорт из .xlsx…"
+        assert find_item(dlg.quick, "sheetHeaderTitle").property("text") == (
+            "Импорт из .xlsx…"
+        )
+
+    def test_set_window_title_owns_the_header_title(self, dlg):
+        # The pre-island title was replayed into the scene (the QML side
+        # exists only after ``setup_island``); later writes ride the same wire.
+        dlg.setWindowTitle("Импорт из другого файла…")
+        assert dlg.windowTitle() == "Импорт из другого файла…"
+        assert dlg._root.property("sheetTitle") == "Импорт из другого файла…"
+        assert find_item(dlg.quick, "sheetHeaderTitle").property("text") == (
+            "Импорт из другого файла…"
+        )
+
+    def test_header_close_press_rejects_like_cancel(self, dlg, qtbot):
+        # The same close-path addressing the header tests of the event
+        # dialog use: one accessibility Press on the component's ✕.
+        dlg.show()
+        iface = QAccessible.queryAccessibleInterface(
+            find_item(dlg.quick, "sheetHeaderClose"))
+        assert iface is not None, "no accessibility interface on the sheet header close"
+        assert iface.role() == QAccessible.Role.Button
+        assert iface.text(QAccessible.Name) == "Закрыть"
+        iface.actionInterface().doAction("Press")
+
+        assert not dlg.isVisible()
+        assert dlg.result() == QDialog.DialogCode.Rejected
+        # «закрытие без импорта ничего не записывает»: the machine stayed idle,
+        # neither analyze nor confirm was ever requested.
+        assert dlg.vm.state == "idle"
+        assert dlg.plan is None
+
+    def test_body_cancel_button_shares_the_header_outcome(self, dlg, qtbot):
+        # ✕ and «Отмена» are one route (the root's cancelRequested → reject):
+        # the body button answers the identical Esc outcome.
+        dlg.show()
+        click_item(dlg.quick, find_item(dlg.quick, "cancelButton"))
+        assert not dlg.isVisible()
+        assert dlg.result() == QDialog.DialogCode.Rejected
 
 
 class TestBrowseFilter:

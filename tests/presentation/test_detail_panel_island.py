@@ -112,13 +112,11 @@ def test_detail_rows_activate_and_image_click_reach_facade(
     qtbot, monkeypatch, tmp_path
 ):
     opened = []
+    requested: list = []
 
     class Viewer:
         def __init__(self, original, preview, parent=None, theme=None):
             opened.append((original, preview, parent, theme))
-
-        def exec(self):
-            opened.append("exec")
 
     monkeypatch.setattr(detail_module, "ImageViewerDialog", Viewer)
     monkeypatch.setattr(detail_module, "load_entity_original", lambda entity: "original")
@@ -140,6 +138,9 @@ def test_detail_rows_activate_and_image_click_reach_facade(
     panel.resize(500, 500)
     panel.show()
     qtbot.wait(20)
+    # Task 2.5: the viewer is not exec'd anymore — the panel builds it and
+    # hands the sheet to the connector's show channel.
+    panel.sheet_requested.connect(requested.append)
 
     with qtbot.waitSignal(panel.entity_clicked) as selected:
         row = _item(panel.quick.rootObject(), "detailEntityRow")
@@ -160,7 +161,8 @@ def test_detail_rows_activate_and_image_click_reach_facade(
         Qt.MouseButton.LeftButton,
         pos=QPoint(round(scene.x()), round(scene.y())),
     )
-    assert opened[-1] == "exec"
+    assert len(requested) == 1
+    assert isinstance(requested[0], Viewer)
     assert opened[0][:2] == ("original", "preview")
 
 
@@ -244,13 +246,11 @@ def test_second_click_moves_the_wash_to_the_clicked_row(qtbot):
 
 def test_picture_click_opens_viewer_without_selecting(qtbot, monkeypatch, tmp_path):
     opened = []
+    requested: list = []
 
     class Viewer:
         def __init__(self, original, preview, parent=None, theme=None):
             opened.append((original, preview, parent, theme))
-
-        def exec(self):
-            opened.append("exec")
 
     monkeypatch.setattr(detail_module, "ImageViewerDialog", Viewer)
     monkeypatch.setattr(detail_module, "load_entity_original", lambda entity: "original")
@@ -274,13 +274,16 @@ def test_picture_click_opens_viewer_without_selecting(qtbot, monkeypatch, tmp_pa
 
     selected = []
     panel.entity_selected.connect(lambda *args: selected.append(args))
+    panel.sheet_requested.connect(requested.append)
 
     # The picture keeps its own gesture (task 3.1, design D3 risk row): its
     # MouseArea accepts the press above the row's, so the viewer opens and
     # the row is NOT selected.
     _click(panel, _item(panel.quick.rootObject(), "detailImageMouseArea"))
 
-    assert opened[-1] == "exec"
+    assert len(requested) == 1
+    assert isinstance(requested[0], Viewer)
+    assert opened[-1][0] == "original"
     assert selected == []
     assert _visible_flags(panel, "detailRowWash") == [False]
 

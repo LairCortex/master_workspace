@@ -29,14 +29,34 @@ Rectangle {
 
     color: surfaceColor
     implicitWidth: 640
-    implicitHeight: 560
+    // NRI-0024 task 2.1 (spec xlsx-import «Лист импорта имеет шапку»): the
+    // 560 stays the CONTENT share, the header row is its own strip on top
+    // (the EventDialogRoot precedent). The header ✕ rides the very
+    // cancelRequested the «Отмена» button uses — one cancel path, the Esc
+    // outcome (NRI-0014 D5: hidden blocks take no room, the header always does).
+    implicitHeight: 560 + xlsxSheetHeader.implicitHeight
+
+    property string sheetTitle: ""
 
     function issuesShown() {
         return xlsxImportVm.state !== "done" && xlsxImportVm.analysisIssues.length > 0
     }
 
+    ThemeSheetHeader {
+        id: xlsxSheetHeader
+        objectName: "xlsxSheetHeader"
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        title: root.sheetTitle
+        onCloseRequested: root.cancelRequested()
+    }
+
     ColumnLayout {
-        anchors.fill: parent
+        anchors.top: xlsxSheetHeader.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
         anchors.margins: Tokens.px(root.islandTokens, "space.md", 16)
         spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 

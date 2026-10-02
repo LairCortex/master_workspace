@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent
-from PySide6.QtWidgets import QDialog, QListWidget, QMessageBox
+from PySide6.QtWidgets import QListWidget, QMessageBox
 
 from app.domain.game_calendar import (
     CalendarSpec,
@@ -204,26 +204,33 @@ def test_saving_blocks_escape_close_and_cancel(qtbot):
     assert dialog.isVisible()
 
 
-def test_related_picker_is_native_multiselect_and_empty_is_noop(qtbot, monkeypatch):
+def test_related_picker_is_native_multiselect_and_empty_is_noop(qtbot):
+    """NRI-0024 task 2.5: the picker left ``exec()`` — the dialog builds the
+    «Выберите <тип>» SheetFrame and hands it to the connector's one sheet
+    channel (``sheet_requested``). The list keeps the stock multi-selection,
+    ОК's accept path commits the choice into the section, and a section
+    without candidates emits no sheet at all."""
     dialog = EventDialog(None)
     qtbot.addWidget(dialog)
     first = SimpleNamespace(id=1, name="One")
     second = SimpleNamespace(id=2, name="Two")
     dialog.set_available_entities("characters", [first, second])
-    calls = []
+    emitted: list = []
+    dialog.sheet_requested.connect(emitted.append)
 
-    def accept_all(picker):
-        calls.append(picker)
-        items = picker.findChild(QListWidget)
-        assert items.selectionMode() == QListWidget.SelectionMode.MultiSelection
-        items.selectAll()
-        return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(QDialog, "exec", accept_all)
     dialog._open_related_picker("characters", "Персонажи")
+    assert len(emitted) == 1
+    picker = emitted[0]
+    assert picker.windowTitle() == "Выберите персонажи"
+    items = picker.findChild(QListWidget)
+    assert items.selectionMode() == QListWidget.SelectionMode.MultiSelection
+    items.selectAll()
+    picker.accept()  # ОК lands on accepted → the choice reaches the section
     assert dialog.vm.characters.get_current_ids() == [1, 2]
+
+    # Everything linkable is already linked — no candidates, no new sheet.
     dialog._open_related_picker("characters", "Персонажи")
-    assert len(calls) == 1
+    assert len(emitted) == 1
 
 
 def test_live_retheme_keeps_input_and_selected_type(qtbot, tmp_path):

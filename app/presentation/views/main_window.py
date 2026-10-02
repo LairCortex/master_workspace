@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
@@ -13,18 +12,11 @@ from PySide6.QtWidgets import (
 
 from app import __version__
 from app.infrastructure.paths import NRI_MANAGER_DIR
-from app.presentation.bundle_resources import bundle_resource_path
 from app.presentation.theme.catalog import attach_theme, set_role
 from app.presentation.views.detail_panel import DetailPanel
-from app.presentation.views.doc_viewer_dialog import DocViewerDialog as _DocViewerDialog
 from app.presentation.views.entity_preview import EntityPreviewWidget
 from app.presentation.views.search_bar import SearchBar
 from app.presentation.views.timeline_island import TimelineWidget
-from app.presentation.window_registry import (
-    DOCS_CHANGELOG_KEY,
-    DOCS_README_KEY,
-    MenuWindowRegistry,
-)
 
 log = logging.getLogger(__name__)
 
@@ -42,13 +34,6 @@ _LOG_MAX_BYTES = 2_000_000
 _LOG_BACKUP_COUNT = 3
 
 
-def _docs_dir() -> Path:
-    """Return path to docs/ directory (works in dev and frozen builds)."""
-    # Shared resolver (also used by the import template, rework task 5.2):
-    # dev tree vs the datas layouts nri_manager.spec ships the bundle with.
-    return bundle_resource_path("docs")
-
-
 class MainWindow(QMainWindow):
     switch_game_requested = Signal()
     export_requested = Signal()
@@ -57,8 +42,10 @@ class MainWindow(QMainWindow):
     table_host_requested = Signal()
     calendar_wizard_requested = Signal()
     # NRI-0022 (task 2.2, spec world-snapshot): «Обзор мира…» — the entry of
-    # the snapshot's own window; the connector answers with the registry
-    # presentation (ApplicationWiring._connect_snapshot).
+    # the snapshot's home (sheet since NRI-0024 task 2.4); the connector
+    # answers with a fresh sheet (ApplicationWiring._connect_snapshot;
+    # NRI-0024 task 1.3 retired the open-window registry, task 2.4 moved the
+    # content into the sheet family).
     world_snapshot_requested = Signal()
 
     def __init__(
@@ -70,18 +57,12 @@ class MainWindow(QMainWindow):
         game_name: str = "",
         parent: QWidget | None = None,
         theme=None,
-        window_registry: MenuWindowRegistry | None = None,
         now_date_vm=None,
     ) -> None:
         super().__init__(parent)
         self._base_title = "Master Workspace"
         self.llm_vm = llm_vm
         self._theme = theme
-        # NRI-0014 (design D1): single-instance menu windows live in one
-        # registry; the composition root shares the application-wide one
-        # (the launcher entry uses the SAME instance), a bare MainWindow
-        # falls back to its own.
-        self._window_registry = window_registry or MenuWindowRegistry()
         self.set_game_name(game_name)
         self.setMinimumSize(1024, 680)  # hard system floor (stays NRI-0015's)
         # NRI-0018 (design Д5, spec «Первый запуск шире прежнего минимума»):
@@ -104,15 +85,16 @@ class MainWindow(QMainWindow):
         self.export_action.triggered.connect(self.export_requested.emit)
         file_menu.addAction(self.export_action)
 
-        # NRI-0022 (task 2.2, spec world-snapshot «Обзор мира открывается
-        # отдельным окном из строки меню»), live-audit fix 2026-09-27 (FU-1):
-        # the entry rides the working «Файл» submenu, not the bar itself —
-        # the macOS cocoa bridge drops a top-level QAction that carries no
-        # submenu (reproduced with a minimal PySide6 probe: the bare item
-        # never reaches the NSMenu model, so the window was unreachable
-        # from UI on the target platform). The action text and the
-        # world_snapshot_requested contract are unchanged; every other
-        # entry of this menu bar reaches the user through a submenu too.
+        # NRI-0022 (task 2.2), live-audit fix 2026-09-27 (FU-1): the entry
+        # rides the working «Файл» submenu, not the bar itself — the macOS
+        # cocoa bridge drops a top-level QAction that carries no submenu
+        # (reproduced with a minimal PySide6 probe: the bare item never
+        # reaches the NSMenu model, so the snapshot was unreachable from UI
+        # on the target platform). Since NRI-0024 task 2.4 the spec calls the
+        # entry «Обзор мира открывается листом из строки меню» and the entry
+        # sits on the sheet-opening gate; the action text and the
+        # world_snapshot_requested contract are unchanged; every other entry
+        # of this menu bar reaches the user through a submenu too.
         self.world_snapshot_action = QAction("Обзор мира…", self)
         self.world_snapshot_action.triggered.connect(
             self.world_snapshot_requested.emit
@@ -129,8 +111,9 @@ class MainWindow(QMainWindow):
         char_sheets_menu.addAction(self.table_host_action)
 
         # Настройки — from piece C4 on this carries the calendar wizard:
-        # «Календарь…» is its single manual entry (the wiring in
-        # ``Application`` builds the modal over the live game session).
+        # «Календарь…» is its single manual entry (since NRI-0024 task 3.1
+        # the wiring in ``Application`` opens it as a sheet over the live
+        # game session).
         settings_menu = menu_bar.addMenu("Настройки")
 
         # Theme toggle (design D5): checkable state mirrors the current theme;
@@ -162,14 +145,15 @@ class MainWindow(QMainWindow):
         self.llm_setup_action.triggered.connect(self.llm_setup_requested.emit)
         llm_menu.addAction(self.llm_setup_action)
 
-        # О приложении
+        # О приложении — the two doc entries carry no handler here: like
+        # «Импорт из .xlsx…» their flow is the connector's sheet show path
+        # (ApplicationWiring._connect_docs, NRI-0024 task 2.2), so the sheets
+        # ride the stack and the gate below covers them.
         about_menu = menu_bar.addMenu("О приложении")
         self.readme_action = QAction("Документация", self)
-        self.readme_action.triggered.connect(self._show_readme)
         about_menu.addAction(self.readme_action)
 
         self.changelog_action = QAction("Changelog", self)
-        self.changelog_action.triggered.connect(self._show_changelog)
         about_menu.addAction(self.changelog_action)
 
         about_menu.addSeparator()
@@ -186,6 +170,27 @@ class MainWindow(QMainWindow):
         self.version_action = QAction(f"Версия {__version__}", self)
         self.version_action.setEnabled(False)
         about_menu.addAction(self.version_action)
+
+        # NRI-0024 (task 1.2, design Д2, spec modal-sheets «Открытый лист
+        # блокирует главное окно, но не окна-исключения»): the entries whose
+        # content lives (or is moving, slice by slice) in a sheet. While the
+        # connector's sheet stack is up they are deactivated — a sheet under
+        # a sheet is unreachable by design, and this gate is also what keeps
+        # sheets single-instance in place of the abolished window registry
+        # (Д2). Not in the list on purpose: «Чар-листы…» (a window-class
+        # exception, openable from under any sheet), «Экспорт игры…» (a
+        # system-path file dialog), the theme/log checks and the version
+        # display — none of them opens a sheet.
+        self._sheet_opening_actions = (
+            self.switch_game_action,
+            self.world_snapshot_action,
+            self.table_host_action,
+            self.calendar_wizard_action,
+            self.import_xlsx_action,
+            self.llm_setup_action,
+            self.readme_action,
+            self.changelog_action,
+        )
 
         self._file_handler: logging.handlers.RotatingFileHandler | None = None
         # D1 (NRI-0016): the runtime listener's handle, dropped in closeEvent
@@ -291,21 +296,37 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(self._base_title)
 
-    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
-        # D1 (NRI-0016): a game switch closes and replaces this window while
-        # the runtime outlives it — the theme subscription is released here
-        # by handle instead of leaning on the collector (spec app-logging
-        # «Слушатели состояния не переживают окно»).
+    def on_sheet_stack_changed(self, active: bool) -> None:
+        """Sheet-stack menu gate (NRI-0024 task 1.2, design Д2): the slot the
+        connector's ``sheet_stack_changed`` feeds. With a sheet up, every
+        entry that would open another sheet goes inactive and the main layer
+        stays single-sheet; when the stack empties, the entries come back.
+        The window owns the entry list (its menu), the connector owns the
+        stack — bound once in ApplicationWiring.connect().
+        """
+        for action in self._sheet_opening_actions:
+            action.setEnabled(not active)
+
+    def shutdown(self) -> None:
+        """The window's штатный teardown (D1, NRI-0016; idempotent) — the
+        game-switch slice (NRI-0024 task 4.2) names it explicitly: the old
+        main window releases its islands and subscriptions before its game
+        (and the replacement window) is built.
+
+        D1: a game switch closes and replaces this window while the runtime
+        outlives it — the theme subscription is released here by handle
+        instead of leaning on the collector (spec app-logging «Слушатели
+        состояния не переживают окно»). The island panels are child widgets,
+        so no closeEvent of their own ever reaches them — the window releases
+        them: each island unbinds its scene and drops its theme
+        subscriptions (palette, panel view models) synchronously, before
+        their C++ sides leave with this window. The world snapshot is not in
+        this list anymore (NRI-0022 task 2.4): its sheet releases its own
+        island when the connector takes it down.
+        """
         if self._theme is not None:
             self._theme.remove_listener(self._theme_listener)
         self._theme_listener = None
-        # DEFECT-1 (NRI-0016): the island panels are child widgets, so no
-        # closeEvent of their own ever reaches them — release them from the
-        # window: each island unbinds its scene and drops its theme
-        # subscriptions (palette, panel view models) synchronously, before
-        # their C++ sides leave with this window (idempotent on re-close).
-        # The world snapshot is not in this list anymore (NRI-0022 task 2.4):
-        # its home window releases its own island on close.
         for island in (
             self.search_bar,
             self.timeline_widget,
@@ -313,6 +334,12 @@ class MainWindow(QMainWindow):
             self.entity_preview,
         ):
             island.release_island()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
+        # The ordinary leaving route runs the very same teardown (the game
+        # switch may also call shutdown() explicitly earlier — idempotent on
+        # re-close, islands unbind once and the None handle is a no-op).
+        self.shutdown()
         super().closeEvent(event)
 
     # ------ О приложении ------
@@ -357,23 +384,3 @@ class MainWindow(QMainWindow):
         self.theme_toggle_action.blockSignals(True)
         self.theme_toggle_action.setChecked(light)
         self.theme_toggle_action.blockSignals(False)
-
-    def _show_readme(self) -> None:
-        # NRI-0014 1.2: registry presentation — a repeated entry raises the
-        # open document window instead of stacking a second one (AB4).
-        self._window_registry.open(
-            DOCS_README_KEY,
-            lambda: _DocViewerDialog(
-                "Документация", _docs_dir() / "README.md", parent=self,
-                theme=self._theme,
-            ),
-        )
-
-    def _show_changelog(self) -> None:
-        self._window_registry.open(
-            DOCS_CHANGELOG_KEY,
-            lambda: _DocViewerDialog(
-                "Changelog", _docs_dir() / "CHANGELOG.md", parent=self,
-                theme=self._theme,
-            ),
-        )

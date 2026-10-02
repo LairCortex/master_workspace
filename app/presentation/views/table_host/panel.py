@@ -1,4 +1,16 @@
-"""Master «Стол» panel: URLs, QR, PIN, players (design D4)."""
+"""Master «Стол» desk sheet: URLs, QR, PIN, players (design D4).
+
+NRI-0024 (task 5.1, design Д5): the desk lives on the application's sheet
+contract — a ``SheetFrame`` named «Стол» shown through the connector's one
+``open_sheet`` path. The table session belongs to the service, never to the
+container: closing the sheet HIDES the desk only — it stops nothing and asks
+nothing (the old «Остановить стол?» closeEvent is abolished, spec
+character-sheet-host «Крест при работающем столе»); the explicit
+«Остановить стол» button in this desk is the only stop inside the sheet, and
+a game switch or exit stops the table unconditionally (main.py). A re-entry
+«Стол…» therefore raises the desk over the live service with the current
+requisites.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +19,10 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 import segno
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -24,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.presentation.theme.catalog import attach_theme, set_role
+from app.presentation.theme.catalog import set_role
 from app.application.services.table_host_service import (
     EmptySeatingError,
     PortBusyError,
@@ -36,6 +47,7 @@ from app.presentation.views.lucide_icons import (
     ACCENT_INK_TOKEN_KEY,
     lucide_icon,
 )
+from app.presentation.views.sheet_frame import SheetFrame
 
 
 def qr_pixmap(url: str, scale: int = 4) -> QPixmap:
@@ -53,8 +65,8 @@ def host_urls(port: int, ipv4: Sequence[str]) -> list[str]:
     return urls
 
 
-class TableHostPanel(QDialog):
-    """Non-modal table-host controls."""
+class TableHostPanel(SheetFrame):
+    """The table-host desk — a sheet whose close hides it only (Д5)."""
 
     start_requested = Signal()
     stop_requested = Signal()
@@ -68,19 +80,17 @@ class TableHostPanel(QDialog):
         list_ipv4: Callable[[], list[str]] | None = None,
         theme=None,
     ) -> None:
-        super().__init__(parent)
+        # The frame owns the sheet chrome: header «Стол», the Esc-equal
+        # «Закрыть», the stack scrim, the catalog skin (Д1). The desk adds no
+        # close behaviour of its own — the prompt of NRI-0016 (TB1) is
+        # abolished (NRI-0024 spec «Крест при работающем столе»).
+        super().__init__("Стол", parent, theme)
         self._host = host
-        self._theme = theme
         self._list_ipv4 = list_ipv4 or local_ipv4_addresses
-        # NRI-0016 (TB1): close-while-running flow. ``_stopping`` — the user
-        # confirmed «Остановить стол?» and the panel waits for the stop signal
-        # to finish closing; ``_force_closing`` — programmatic close (game
-        # switch / shutdown), which never asks.
-        self._stopping = False
-        self._force_closing = False
         # The URL the shown QR encodes (test/observer surface, TB2/TB7).
         self.qr_url: str | None = None
-        self.setWindowTitle("Стол")
+        # NRI-0024 (design Д6): the desk sheet opens at the old panel's size;
+        # like every sheet it keeps no placement of its own.
         self.resize(440, 560)
 
         self.port_label = QLabel("Порт:", self)
@@ -117,7 +127,7 @@ class TableHostPanel(QDialog):
         self.start_button.setIcon(
             lucide_icon("play", ink_token=ACCENT_INK_TOKEN_KEY)
         )
-        self.stop_button = QPushButton("Остановить", self)
+        self.stop_button = QPushButton("Остановить стол", self)
         self.stop_button.setIcon(lucide_icon("circle-stop"))
         self.kick_button = QPushButton("Выгнать", self)
         self.kick_button.setIcon(lucide_icon("user-minus"))
@@ -127,14 +137,11 @@ class TableHostPanel(QDialog):
             button.setDefault(False)
             button.setAutoDefault(False)
 
-        outer = QVBoxLayout(self)
-        # The chrome reaches the dialog edges so no OS-palette band frames it.
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.chrome = QWidget()
-        self.chrome.setObjectName("tableHostChrome")  # identifier, not style
-        outer.addWidget(self.chrome)
-        layout = QVBoxLayout(self.chrome)
+        # The desk body is the sheet's content slot: the frame's own layout
+        # is zero-margined (header above, content below), the body keeps the
+        # insets the retired chrome container carried.
+        body = QWidget(self)
+        layout = QVBoxLayout(body)
         port_row = QHBoxLayout()
         port_row.addWidget(self.port_label)
         port_row.addWidget(self.port_spin)
@@ -166,36 +173,56 @@ class TableHostPanel(QDialog):
         buttons.addWidget(self.stop_button)
         buttons.addWidget(self.kick_button)
         layout.addLayout(buttons)
+        self.add_content(body, 1)
 
         self.start_button.clicked.connect(self.start_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
         self.kick_button.clicked.connect(lambda: asyncio.ensure_future(self.kick_selected()))
         self.player_list.itemSelectionChanged.connect(self._on_player_click)
+        # NRI-0024 (task 5.3, spec character-sheet-host «Повторный клик
+        # поднимает живое окно»): a click on the row that is ALREADY current
+        # changes no selection, so the selection channel stays silent and the
+        # repeat never reaches open_fill. itemClicked is the mouse-only signal
+        # that ALWAYS fires; the viewport press filter runs before the list
+        # view processes the press (Qt changes the selection first, so the
+        # itemPressed/selChanged ordering is unusable), which makes it the one
+        # seat that still sees the row current from BEFORE this press. A click
+        # whose row already was the pre-press current row is the repeat the
+        # spec names — it re-emits so the connector re-opens the SAME instance
+        # and the connector's reopen contour raises the live Fill window.
+        self.player_list.itemClicked.connect(self._on_player_reclick)
         # TB4 (NRI-0016): the «Выгнать» gate follows the selection here and
         # the running state through sync_running/refresh_players below.
         self.player_list.itemSelectionChanged.connect(self._sync_kick_gate)
+        # The pre-press snapshot for the repeat-click recognition above.
+        self.player_list.viewport().installEventFilter(self)
         # TB2 (NRI-0016): editing the port before start drops whatever address
         # was shown, so stale requisites of an unstarted table never linger.
         self.port_spin.valueChanged.connect(self._on_port_changed)
         host.subscribe_occupancy(self.refresh_players)
         self._seats_loading = False
+        # NRI-0024 (task 5.3): the row current at the last player-list press —
+        # the click-side snapshot that recognises the repeat click.
+        self._player_row_before_press: QListWidgetItem | None = None
         self.sync_running()
-        self._apply_theme()
-
-    def _apply_theme(self) -> None:
-        """One attach point: the chrome container carries the whole sheet (D1)."""
-        if self._theme is not None:
-            attach_theme(self.chrome, self._theme)
-            self._theme.apply()
 
     def selected_port(self) -> int:
         return int(self.port_spin.value())
 
     def set_instances(self, rows: Sequence[tuple[int, str]]) -> None:
         # TB3-ремонт (NRI-0016): a real QCheckBox in a row widget replaces the
-        # ItemIsUserCheckable hint — an accessibility tool can press an actual
-        # checkbox, not an item decoration. The name stays a plain QLabel, so
-        # a click on it keeps reaching the viewport and selecting the row.
+        # ItemIsUserCheckable hint — the checkbox's OWN QAccessible interface
+        # carries role CheckBox + Press and reaches the seat slot (pinned in
+        # tests/ui/test_table_host_seats_accessibility.py). KNOWN LIMIT, live
+        # audit 2026-10-01 (docs/qa/2026-10-01-modal-sheets.md F1/A2): the row
+        # is a cell WIDGET, and the item view's accessibility enumeration
+        # publishes only its virtual cells — the checkbox never reaches the
+        # live tree (0 AXCheckBox nodes) and keyboard Tab skips it. Making the
+        # seating rows structurally tree-addressable (plain-widget rows outside
+        # the item view) is the filed follow-up; until then do NOT re-state the
+        # original «the tree can press it» promise about this row. The name
+        # stays a plain QLabel, so a click on it keeps reaching the viewport
+        # and selecting the row.
         self._seats_loading = True
         self.seat_list.clear()
         seated = self._host.seated_ids
@@ -257,6 +284,9 @@ class TableHostPanel(QDialog):
 
     def refresh_players(self) -> None:
         self.player_list.clear()
+        # The rows are being replaced; a pre-press snapshot of a dead row
+        # must never meet the next click (NRI-0024 task 5.3).
+        self._player_row_before_press = None
         for instance_id, name in self._host.players():
             item = QListWidgetItem(name, self.player_list)
             item.setData(Qt.ItemDataRole.UserRole, instance_id)
@@ -275,11 +305,6 @@ class TableHostPanel(QDialog):
         self._set_requisites_visible(running)
         self.refresh_urls()
         self.refresh_players()
-        if self._stopping and not running:
-            # TB1: the confirmed stop finished (this sync is the stop signal),
-            # so the pending close proceeds without asking a second time.
-            self._stopping = False
-            self.close()
 
     def _on_player_click(self) -> None:
         item = self.player_list.currentItem()
@@ -288,6 +313,30 @@ class TableHostPanel(QDialog):
         instance_id = item.data(Qt.ItemDataRole.UserRole)
         if instance_id is not None:
             self.player_selected.emit(int(instance_id))
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 — Qt API
+        # NRI-0024 (task 5.3): the player viewport sees this press BEFORE the
+        # view moves the selection (and before itemPressed), so it is the only
+        # seat that records the row the click is about to land on top of. The
+        # filter watches, never consumes — every other mouse route is Qt's.
+        if (
+            obj is self.player_list.viewport()
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            self._player_row_before_press = self.player_list.currentItem()
+        return super().eventFilter(obj, event)
+
+    def _on_player_reclick(self, item: QListWidgetItem) -> None:
+        # The repeat itself (spec «Повторный клик поднимает живое окно»): the
+        # click hit the row that was already current at press, so the
+        # selection channel stayed silent and this is the single emission.
+        # It rides the same connector route as any click — open_fill sees the
+        # same instance and raises the live Fill window, no second one. A
+        # click that DID move the selection was already emitted by the
+        # selection slot; the snapshot tells it apart from the repeat.
+        if item is self._player_row_before_press:
+            self._player_row_before_press = None
+            self._on_player_click()
 
     def _on_seat_toggled(self, instance_id: int, checked: bool) -> None:
         # The old itemChanged contract, guard included: reloading the list or
@@ -333,33 +382,3 @@ class TableHostPanel(QDialog):
             QMessageBox.warning(self, "Стол", str(exc))
         else:
             QMessageBox.critical(self, "Стол", str(exc))
-
-    def force_close(self) -> None:
-        """Close without the running-table prompt (shutdown / game switch)."""
-        self._force_closing = True
-        try:
-            self.close()
-        finally:
-            self._force_closing = False
-
-    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
-        # TB1 (NRI-0016): an X on a running table stops it first, through the
-        # existing stop_requested contour (the panel never touches the
-        # service); the deferred close lands in sync_running when the stop
-        # signal arrives. Declining leaves both the table and the panel alone.
-        if self._stopping or self._force_closing or not self._host.is_running:
-            super().closeEvent(event)
-            return
-        answer = QMessageBox.question(
-            self,
-            "Стол",
-            "Остановить стол?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,  # default «Нет» (spec)
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            event.ignore()
-            return
-        event.ignore()
-        self._stopping = True
-        self.stop_requested.emit()

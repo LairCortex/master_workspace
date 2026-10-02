@@ -61,7 +61,7 @@ async def test_entity_crud_via_timeline_context_menu(app, wait_for, menu_qmenu, 
     await wait_for(lambda: _event_dialogs(window))
     edit_dialog = _event_dialogs(window)[0]
     tab = getattr(edit_dialog, _TAB_ATTR[entity_type])
-    await helpers.link_existing_entity_in_tab(modal_qdialog, tab, name)
+    await helpers.link_existing_entity_in_tab(window, wait_for, tab, name)
     await wait_for(lambda: any(name in tab.list_widget.item(i).text() for i in range(tab.list_widget.count())))
     edit_dialog.save_button.click()
     await wait_for(lambda: len(query_db(db_path, f"SELECT 1 FROM {rel_table} WHERE {rel_col} = ?", (entity_id,))) == 1)

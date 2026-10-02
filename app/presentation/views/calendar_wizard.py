@@ -1,4 +1,5 @@
-"""The calendar wizard modal (roadmap piece C4, task group 6, designs D5/D6).
+"""The calendar wizard sheet (roadmap piece C4, task group 6; sheet format
+since nri-0024 task 3.1, design Д6).
 
 A thin widgets view over :class:`~app.presentation.viewmodels.calendar_wizard_viewmodel.CalendarWizardViewModel`:
 it renders the frozen :class:`~app.presentation.viewmodels.calendar_wizard_viewmodel.CalendarWizardState`
@@ -12,6 +13,16 @@ the date popups use, in its inert look (``interactive=False``,
 ``show_era=False``) — no clickable cells, no era switch, month/year navigation
 alive (spec «Живой предпросмотр сеткой»).
 
+The container (task 3.1): a :class:`~app.presentation.views.sheet_frame.SheetFrame`
+sheet — header «Настройка календаря» + «Закрыть» (one cancel path with Esc),
+shown by ``ApplicationWiring.open_sheet`` WindowModal over the main window.
+The wizard content is the frame's scrolling body: the sheet tracks the host
+window's full width (spec «широкий контент — на всю ширину главного окна»),
+its height grows with the window up to the content's own limit, and whatever
+the window cannot show is reached by the body's vertical scroll («не влезшее
+— прокруткой»).  The flow, the validations and the apply points are untouched
+by the container move.
+
 The preview opens on the CURRENT game date: «today» projected into game
 coordinates through ``as_game_coord`` (the same «сегодня, н.э.» reading the
 world-snapshot view model uses, the app stores no other now); when the
@@ -22,27 +33,27 @@ fallback (no page jump, no crash).  After that opening placement the preview
 only repaints pages on valid form edits, so the user's own month/year
 navigation is never yanked back.
 
-Skinning (task 6.4) is the widget catalog's, not bespoke QSS: the dialog root
-is attached through ``attach_theme`` (becoming a ``[uiRole="chrome"]``
-container whose push buttons, spin boxes and combo popups the generated sheet
-skins), labels come from the catalog's ``title``/``hint`` factories, every
-input carries the ``field`` role, the report table the ``list`` role and the
-problems readout ``status-error``.  The only style-FACING class names the
-wizard itself puts on screen are the grid's quartet — ``GameCalendarGrid``,
-``GameCalendarCell``, ``GameCalendarIntercalaryChip`` and
-``GameCalendarDayName`` — skinned by the application-wide popup sheet
-(``compile_popup_qss``, design D4); they are owned by
-:mod:`app.presentation.views.calendar_grid` and rename only together with that
-sheet.  Invalid tokens (theme off) leave everything on the OS palette while the
-flow stays alive (design D7).
+Skinning (task 6.4) is the catalog's, not bespoke QSS: the SheetFrame root is
+attached by the frame itself (becoming a ``[uiRole="chrome"]`` container whose
+push buttons, spin boxes and combo popups the generated sheet skins — it also
+applies immediately, the QA 2026-09-30 F3 rule), labels come from the
+catalog's ``title``/``hint`` factories, every input carries the ``field``
+role, the report table the ``list`` role and the problems readout
+``status-error``.  The only style-FACING class names the wizard itself puts on
+screen are the grid's quartet — ``GameCalendarGrid``, ``GameCalendarCell``,
+``GameCalendarIntercalaryChip`` and ``GameCalendarDayName`` — skinned by the
+application-wide popup sheet (``compile_popup_qss``, design D4); they are
+owned by :mod:`app.presentation.views.calendar_grid` and rename only together
+with that sheet.  Invalid tokens (theme off) leave everything on the OS
+palette while the flow stays alive (design D7).
 
 Async convention copies the :class:`~app.presentation.views.event_types_dialog.EventTypesDialog`
 facade: coroutines are fired through an injected ``run`` (``ensure_future`` by
 default, so tests drive a bare loop) and :meth:`wait_idle` is the await seam.
-Group 7 owns the entry points (menu item, first-entry modal) and constructs
+Group 7 owns the entry points (menu item, first-entry sheet) and constructs
 the view model; this dialog loads the draft when told to (:meth:`begin`) and
-closes itself on a successful application (``accept``), so the ``exec()``
-caller learns the outcome from the dialog result.
+closes itself on a successful application (``accept``), so the ``finished``
+listeners learn the outcome from the dialog result.
 """
 from __future__ import annotations
 
@@ -50,10 +61,11 @@ import asyncio
 from datetime import date
 from typing import Callable
 
+from PySide6.QtCore import QEvent, QSize
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -79,7 +91,7 @@ from app.domain.game_calendar import (
 )
 from app.presentation.layout_grid import ceil_to_width_step
 from app.presentation.theme import get_default_theme
-from app.presentation.theme.catalog import attach_theme, hint, set_role, title
+from app.presentation.theme.catalog import hint, set_role, title
 from app.presentation.viewmodels.calendar_wizard_viewmodel import (
     KIND_CUSTOM,
     KIND_STANDARD,
@@ -95,6 +107,7 @@ from app.presentation.viewmodels.calendar_wizard_viewmodel import (
 )
 from app.presentation.views.calendar_grid import GameCalendarGrid
 from app.presentation.views.lucide_icons import lucide_icon
+from app.presentation.views.sheet_frame import SheetFrame
 
 # Spin bounds the screens offer.  The week's 2…168 is fixed by spec («Неделя
 # короче двух»: длина 1 просто «недоступна»); the month bounds are NOT domain
@@ -153,14 +166,28 @@ def _set_text(edit: QLineEdit, value: str) -> None:
         edit.setText(value)
 
 
-class CalendarWizardDialog(QDialog):
+class CalendarWizardDialog(SheetFrame):
     """Widgets shell of the calendar wizard: state out, intents in.
 
     The view model arrives ready-made (group 7 builds it over the game's
     session, service and ``first_entry`` flag); the dialog shows, asks and
     closes.  ``theme`` injects a :class:`ThemeRuntime` (default: the process
     one), ``run`` the coroutine launcher.
+
+    Since nri-0024 task 3.1 the shell is a :class:`SheetFrame` sheet: the
+    frame owns the header («Настройка календаря» + «Закрыть» — one cancel path
+    with Esc), the stack scrim and the chrome skin, while the wizard screens
+    live in the frame's scrolling body — the sheet takes the host window's
+    full width and grows with it up to the body's own limit; what the window
+    cannot show the vertical scroll answers (spec «не влезшее — прокруткой»).
     """
+
+    #: Usability floor of the sheet itself (the WorldSnapshotWindow rule): a
+    #: shorter host window still gets this much wizard; below the body's own
+    #: floor it is the vertical scroll that answers, not a taller sheet.
+    MIN_SHEET_HEIGHT = 320
+    #: The growth rule's breathing room under the host window's height.
+    HEIGHT_INSET = 40
 
     def __init__(
         self,
@@ -169,24 +196,35 @@ class CalendarWizardDialog(QDialog):
         theme=None,
         run: Callable | None = None,
     ) -> None:
-        super().__init__(parent)
         self._vm = vm
-        self._theme = theme if theme is not None else get_default_theme()
         self._run = run if run is not None else asyncio.ensure_future
         self._task: asyncio.Future | None = None
         # The calendar currently painted into the preview panel; repaints are
         # skipped while the preview calendar object has not changed.
         self._preview_shown: object | None = None
 
-        self.setWindowTitle(WIZARD_TITLE)
+        # One windowTitle-threaded value: SheetFrame puts «Настройка
+        # календаря» into the header caption and the title slot at once, and
+        # attaches AND applies the chrome catalog right here — the frame's
+        # skin already reaches the widgets built below (the QA 2026-09-30 F3
+        # rule the old constructor hand-rolled mid-build).
+        super().__init__(
+            WIZARD_TITLE,
+            parent,
+            theme if theme is not None else get_default_theme(),
+        )
+
+        body = QWidget()
         # NRI-0018 Д7 retired the static 880 floor group 5 pinned (its own
-        # comment reserved the recount for Д7): the window minimum is now
-        # the sum of the NEW columns — the content-sized step column plus
-        # the live preview at its own minimum — climbed to the nearest step
-        # of 40 upwards, so the opened width never leaves the scale and the
-        # preview grid fits whole at the minimum (spec «Предпросмотр не
-        # сжат»).  See the two setMinimumSize inputs below the layout build.
-        root = QHBoxLayout(self)
+        # comment reserved the recount for Д7): the width floor is now the
+        # sum of the NEW columns — the content-sized step column plus the
+        # live preview at its own minimum — climbed to the nearest step of 40
+        # upwards, so the width never leaves the scale and the preview grid
+        # fits whole at the minimum (spec «Предпросмотр не сжат»).  Since
+        # task 3.1 the floor belongs to the scrolling BODY, not to the sheet:
+        # the sheet tracks the host window and lets the scroll take the rest.
+        # See the setMinimumSize call at the tail of the layout build.
+        root = QHBoxLayout(body)
         left = QVBoxLayout()
         right = QVBoxLayout()
 
@@ -236,18 +274,26 @@ class CalendarWizardDialog(QDialog):
         footer_row.addWidget(self._apply_button)
         left.addWidget(self._footer)
 
-        # Catalog skin: chrome root for the generated sheet's button/field
-        # rules, roles stamped on the individual widgets above.  QA 2026-09-30
-        # F3: the runtime pushes the chrome QSS only in apply(), so a wizard
-        # reopened after a mid-session theme switch stayed on the OS palette;
-        # apply right after attaching, like every other widget window does
-        # (table_host/panel.py:_apply_theme) — apply() is deduplicated, so
-        # repeated openings are cheap.  Attaching here, not at the tail of the
-        # constructor, is what keeps the Д7 geometry below honest: the sheet
-        # moves size hints, and every width sum read further down must already
-        # be measured under the skin the dialog will on-screen with.
-        attach_theme(self, self._theme)
-        self._theme.apply()
+        # Catalog skin: the SheetFrame attached and applied the chrome sheet
+        # on its root in super().__init__ — the generated rules reach the
+        # widgets below through the widget-parent chain (QA 2026-09-30 F3:
+        # the runtime pushes the chrome QSS in apply() only; doing it before
+        # any hint read is what keeps the Д7 geometry below honest).
+
+        # The sheet's body (task 3.1, spec «не влезшее — прокруткой»): the
+        # whole wizard layout in one vertically scrolling area under the
+        # header.  NoFrame: like the QML island sheets the body wears the
+        # sheet canvas, not a sunken panel.  Seating the body into the styled
+        # tree happens with setWidget below, BEFORE the Д7 hint reads, for
+        # the same reason the old build attached the skin first: outside the
+        # chrome sheet the buttons report their unskinned box metrics.
+        self._body = body
+        self._body_scroll = QScrollArea(self)
+        self._body_scroll.setObjectName("calendarWizardBody")
+        self._body_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._body_scroll.setWidgetResizable(True)
+        self.add_content(self._body_scroll, stretch=1)
+        self._body_scroll.setWidget(body)
 
         # Д7 (spec «Левая колонка мастера широка ровно по содержимому»): the
         # old fixed 3:2 share is gone.  The column is exactly as wide as its
@@ -345,14 +391,19 @@ class CalendarWizardDialog(QDialog):
         self._place_preview()
         # The recounted minimum (see the note over the layout build): fixed
         # column + the preview at its own minimum + the root layout's own
-        # chrome, climbed to the next step of 40.  Composed from the widget
-        # hints explicitly because — as above — the dialog's own
-        # minimumSizeHint() is still empty this early in construction.  The
-        # style metric stands in for the unresolved (-1) layout spacing the
-        # cocoa style reports.  It stands HERE, after the first render, for
-        # the same reason: the render walk warms the chrome sheet's metrics
-        # of the preview's nav widgets, and only the warmed hint is what the
-        # on-screen layout will enforce (2026-10-01: 448 cold vs 458 warm).
+        # chrome, climbed to the next step of 40.  Since task 3.1 this floor
+        # belongs to the scrolling BODY: the sheet itself shrinks with the
+        # host window and the vertical scroll takes what does not fit, while
+        # the body is never squeezed below the compact floor («минимальная
+        # высота тела из контента widest-шага» — design Д6 risk).  Composed
+        # from the widget hints explicitly because — as above — the body's
+        # own minimumSizeHint() is still empty this early in construction.
+        # The style metric stands in for the unresolved (-1) layout spacing
+        # the cocoa style reports.  It stands HERE, after the first render,
+        # for the same reason: the render walk warms the chrome sheet's
+        # metrics of the preview's nav widgets, and only the warmed hint is
+        # what the on-screen layout will enforce (2026-10-01: 448 cold vs
+        # 458 warm).
         style_spacing = self.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
         spacing = root.spacing() if root.spacing() >= 0 else style_spacing
         root_margins = root.contentsMargins()
@@ -361,7 +412,7 @@ class CalendarWizardDialog(QDialog):
             + root_margins.right()
             + spacing
         )
-        self.setMinimumSize(
+        body.setMinimumSize(
             ceil_to_width_step(
                 self._step_column.maximumWidth()
                 + self._preview.minimumSizeHint().width()
@@ -369,6 +420,64 @@ class CalendarWizardDialog(QDialog):
             ),
             WIZARD_MIN_HEIGHT,
         )
+
+        # Sheet geometry (task 3.1, spec «широкий контент — на всю ширину
+        # главного окна»): width rides the host window, height grows with it
+        # up to the body's content limit (the WorldSnapshotWindow contract).
+        # The growth filter dies with the sheet in done() below.
+        if parent is not None:
+            parent.installEventFilter(self)
+            self.resize(self._sheet_size_for(parent))
+        else:
+            # A parent-less offscreen probe opens content-sized — the shape
+            # the old top-level took at its own minimum.
+            self.resize(self._body.minimumWidth(), self._default_sheet_height())
+
+    # ── sheet geometry (task 3.1: full host width, body vertical scroll) ────
+
+    def _default_sheet_height(self) -> int:
+        """The sheet's content-fit default: the body floor plus the header."""
+        return (
+            max(self._body.sizeHint().height(), self._body.minimumHeight())
+            + self.header.sizeHint().height()
+        )
+
+    def _sheet_size_for(self, host: QWidget) -> QSize:
+        """The growth rule at this host size: «на всю ширину» plus the
+        window-following height between the floor and the content cap."""
+        return QSize(
+            host.width(),
+            min(
+                self._default_sheet_height(),
+                max(self.MIN_SHEET_HEIGHT, host.height() - self.HEIGHT_INSET),
+            ),
+        )
+
+    def _fit_to_parent(self) -> None:
+        """Track the host window while the sheet is open; a parent-less
+        sheet (the offscreen probes) keeps the size it opened at."""
+        host = self.parentWidget()
+        if host is None:
+            return
+        self.resize(self._sheet_size_for(host))
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt API
+        super().showEvent(event)
+        self._fit_to_parent()
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self._fit_to_parent()
+        return super().eventFilter(watched, event)
+
+    def done(self, result: int) -> None:  # noqa: N802 — Qt API name
+        # Every way this sheet leaves the screen passes done(); the growth
+        # filter leaves with it — a closed layer has no business chasing
+        # window resizes anymore (the WorldSnapshotWindow rule).
+        host = self.parentWidget()
+        if host is not None:
+            host.removeEventFilter(self)
+        super().done(result)
 
     # ── async seams (the EventTypesDialog facade convention) ────────────────
 

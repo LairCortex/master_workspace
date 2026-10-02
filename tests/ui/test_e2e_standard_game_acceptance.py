@@ -148,12 +148,12 @@ async def test_standard_game_behaves_and_captions_as_before_c3a(
 
     # (Edit-dialog opens after the previous flows have already pumped the
     # available-entity loads of this dialog class — same driver sequence as
-    # test_e2e_crud, where the picker is populated by exec time.)
+    # test_e2e_crud, where the picker sheet is populated by open time.)
     helpers.double_click_timeline_event(window, "Долгая зима")
     await wait_for(lambda: [d for d in window.findChildren(EventDialog) if d.isVisible()])
     link_dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     await helpers.link_existing_entity_in_tab(
-        modal_qdialog, link_dialog.char_tab, "Генерал Вард",
+        window, wait_for, link_dialog.char_tab, "Генерал Вард",
     )
     await wait_for(lambda: any(
         "Генерал Вард" in link_dialog.char_tab.list_widget.item(i).text()

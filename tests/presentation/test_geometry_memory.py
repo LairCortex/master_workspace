@@ -1,6 +1,6 @@
 """Window geometry memory (NRI-0015 task 1.3, design T3).
 
-Spec main-window «Размещение окон помнится и возвращается в экраны»:
+Spec main-window «Память размещений ограничена окнами»:
 
 * round-trip — a placement saved by one manager (remember on move quiescence
   / on close) comes back through a freshly loaded one, byte-for-byte equal in
@@ -10,7 +10,9 @@ Spec main-window «Размещение окон помнится и возвр�
 * B4 — a first-opening window without a remembered role (the editor/Fill
   rule, ``center_when_absent``) is placed entirely in its screen;
 * the theme switch and the geometry save are symmetric — neither owner of
-  the one ui.json ever wipes the other's field.
+  the one ui.json ever wipes the other's field;
+* retired roles (NRI-0024 task 6.1) — keys an older run left under the
+  abolished ``world_snapshot``/``table_host`` roles are silently ignored.
 """
 from __future__ import annotations
 
@@ -69,7 +71,7 @@ def test_saved_placement_round_trips_through_the_prefs_file(tmp_path, qtbot):
     assert reopened.restore(other, "sheet_editor") is True
     assert other.frameGeometry().getRect() == saved
     # A role nobody ever saved is reported as absent.
-    assert reopened.restore(other, "table_host") is False
+    assert reopened.restore(other, "sheet_fill") is False
 
 
 def test_close_saves_the_placement_guaranteed_not_only_debounced(tmp_path, qtbot):
@@ -212,18 +214,18 @@ def test_reopen_cycle_does_not_accumulate_the_decoration_drift(tmp_path, qtbot):
     """
     prefs = UiPrefsManager(tmp_path / "ui.json")
     saved = [40, 50, 300, 200]  # fits the offscreen screen whole — no clamping
-    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"world_snapshot": list(saved)}))
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"sheet_list": list(saved)}))
 
     for cycle in range(3):
         memory = WindowGeometryMemory(prefs)  # a fresh "run" per cycle
         window = QWidget()
         qtbot.addWidget(window)
-        assert memory.attach(window, "world_snapshot") is True
+        assert memory.attach(window, "sheet_list") is True
         window.show()
         qtbot.wait(100)  # the singleShot-deferred re-place lands here
         assert window.frameGeometry().getRect() == tuple(saved), cycle
         window.close()  # guaranteed save — no debounce wait
-        assert prefs.load().windows["world_snapshot"] == saved, cycle
+        assert prefs.load().windows["sheet_list"] == saved, cycle
 
 
 def test_post_show_replacement_is_idempotent(tmp_path, qtbot):
@@ -248,14 +250,15 @@ def test_post_show_replacement_is_idempotent(tmp_path, qtbot):
 
 
 def test_post_show_route_cycle_repairs_the_hidden_restore_drift(tmp_path, qtbot):
-    """The exact production open order of the snapshot/editor/fill routes
-    (``wiring._connect_snapshot``, ``sheet_windows``): restore while HIDDEN —
-    the lie lands the shown frame +stub-border bigger — then show, then the
-    synchronous re-place from ``post_show_place`` repairs it back onto the
-    saved rect before the close save writes anything. Three cycles converge;
-    the tracker created after show never sees the Show event, so without
-    this half of the fix the drift would feed straight back into the file
-    exactly as the live cocoa audit saw (+28 pt title bar per cycle)."""
+    """The exact production open order of the editor/Fill routes
+    (``sheet_windows.place_first_open`` → show → ``place_after_show``):
+    restore while HIDDEN — the lie lands the shown frame +stub-border bigger
+    — then show, then the synchronous re-place from ``post_show_place``
+    repairs it back onto the saved rect before the close save writes
+    anything. Three cycles converge; the tracker created after show never
+    sees the Show event, so without this half of the fix the drift would
+    feed straight back into the file exactly as the live cocoa audit saw
+    (+28 pt title bar per cycle)."""
     prefs = UiPrefsManager(tmp_path / "ui.json")
     saved = [40, 50, 300, 200]
     prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={"sheet_fill": list(saved)}))
@@ -289,8 +292,41 @@ def test_theme_switch_preserves_roles_and_remember_preserves_theme(tmp_path, qtb
     assert runtime.set_theme("light") is True
     assert prefs.load().windows.get("main") is not None  # theme kept windows
 
-    memory.remember("table_host", window)
+    memory.remember("sheet_fill", window)
     assert prefs.load().theme == "light"  # windows kept the theme
+
+
+# ── NRI-0024 (task 6.1): retired roles are silently ignored ──────────────────
+
+
+def test_retired_role_keys_are_ignored_and_left_in_place(tmp_path, qtbot):
+    """Spec main-window «Сохранённая роль упразднённого окна не мешает»
+    (memory half): keys an older run left under the abolished ``world_
+    snapshot``/``table_host`` roles are read into the map but never looked
+    up — memory serves only the roles a caller attaches. Every save writes
+    the map back whole, so the file is never aggressively repaired: the
+    stale keys ride through untouched while the live roles keep round-tripping."""
+    prefs = UiPrefsManager(tmp_path / "ui.json")
+    stale = {
+        "world_snapshot": [99999, 99999, 480, 700],
+        "table_host": [40, 40, 640, 480],
+    }
+    prefs.save(UiPrefs(theme=DEFAULT_THEME, windows={**stale, "main": [10, 20, 500, 400]}))
+    memory = WindowGeometryMemory(prefs)
+
+    window = _shown(qtbot, size=(300, 200))
+    assert memory.attach(window, "main") is True
+    assert window.frameGeometry().getRect() == (10, 20, 500, 400)
+
+    window.move(60, 70)
+    window.close()  # guaranteed save of the live role
+
+    windows = prefs.load().windows
+    assert windows["main"][:2] == [60, 70]
+    # the stale keys survive the save verbatim — nobody strips them…
+    assert windows["world_snapshot"] == stale["world_snapshot"]
+    assert windows["table_host"] == stale["table_host"]
+    # …and they never reached this window (it stands on the main-role frame).
 
 
 # ── the serialized shape is defensive (garbage entries never poison the rest) ──

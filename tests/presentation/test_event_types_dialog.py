@@ -589,6 +589,68 @@ class TestWriteThroughClose:
         assert [t.name for t in await service.get_event_types()] == DEFAULT_NAMES
 
 
+# ── NRI-0024 task 2.1: the sheet header (spec event-types «Лист типов
+#    событий имеет шапку с заголовком и закрытием») ─────────────────────────
+
+def _press_sheet_header_close(dialog) -> None:
+    """One accessibility Press on the header's ✕ (the same route the event
+    dialog and the entity card pin in ``test_sheet_header_dialogs``: the
+    component owns role/name/Press, the usage site answers the signal)."""
+    iface = QAccessible.queryAccessibleInterface(
+        find_item(dialog.quick, "sheetHeaderClose"))
+    assert iface is not None, "no accessibility interface on the sheet header close"
+    assert iface.role() == QAccessible.Role.Button
+    assert iface.text(QAccessible.Name) == "Закрыть"
+    iface.actionInterface().doAction("Press")
+
+
+class TestSheetHeader:
+    async def test_header_shows_the_window_title_and_later_renames(
+        self, async_session, qtbot
+    ):
+        """The header names the sheet with the dialog's windowTitle; the
+        overridden ``setWindowTitle`` is the sheetTitle's only writer, so a
+        later rename rides the same wire (the EventDialogRoot precedent)."""
+        service = await _make_service(async_session)
+        dialog = await _open_dialog(service, qtbot)
+
+        assert find_item(dialog.quick, "typesSheetHeader") is not None
+        assert dialog.windowTitle() == "Типы событий"
+        assert dialog._root.property("sheetTitle") == "Типы событий"
+        assert find_item(dialog.quick, "sheetHeaderTitle").property("text") == (
+            "Типы событий"
+        )
+
+        dialog.setWindowTitle("Типы мира")
+        assert dialog._root.property("sheetTitle") == "Типы мира"
+        assert find_item(dialog.quick, "sheetHeaderTitle").property("text") == (
+            "Типы мира"
+        )
+
+    async def test_header_close_rejects_like_escape_and_keeps_the_edits(
+        self, async_session, qtbot
+    ):
+        """Spec scenario «Закрытие через шапку сохраняет применённое»: the ✕
+        ends the dialog with the very Esc outcome (``reject`` — compare the
+        test above), no confirmation runs, and the write-through rename is
+        not rolled back."""
+        service = await _make_service(async_session)
+        await _seed_defaults(service)
+        dialog = await _open_dialog(service, qtbot)
+        dialog.show()
+        _select(dialog, "Слух")
+        _type_name(dialog, "Примета")
+        _finish_name_edit(dialog)
+        await dialog.wait_idle()
+
+        _press_sheet_header_close(dialog)
+
+        assert not dialog.isVisible()
+        assert dialog.result() == QDialog.DialogCode.Rejected
+        # Nothing rolled back: the applied rename is still the game's state.
+        assert "Примета" in [t.name for t in await service.get_event_types()]
+
+
 # ── write guards (line-coverage gate of the facade) ─────────────────────────
 
 class TestWriteGuards:

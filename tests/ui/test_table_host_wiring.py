@@ -1,7 +1,7 @@
 """Application wiring for the table host (tasks 5.3 / 5.4)."""
 from __future__ import annotations
 
-from PySide6.QtWidgets import QApplication, QCheckBox
+from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox
 
 from app.domain.enums.field_type import FieldType
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog
@@ -188,9 +188,17 @@ async def test_switch_game_stops_table(
     host = application._table_host
     assert host.is_running
     path_b = await make_second_game(tmp_games_dir)
-    question_yes(monkeypatch)
+    # NRI-0024 task 5.1: the switch takes the WHOLE stack down, the open desk
+    # sheet among them — the stop is unconditional, nobody is asked.
+    asked = []
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.Yes),
+    )
     await application._on_game_selected(path_b)
     assert not host.is_running
+    assert panel.isVisible() is False
+    assert asked == []
 
 
 async def test_player_click_switches_preview(

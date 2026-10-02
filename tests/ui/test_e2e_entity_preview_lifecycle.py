@@ -123,7 +123,7 @@ async def _create_linked_event(
     dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
     for attr, name in links:
         tab = getattr(dialog, _EVENT_TAB[attr])
-        await helpers.link_existing_entity_in_tab(modal_qdialog, tab, name)
+        await helpers.link_existing_entity_in_tab(window, wait_for, tab, name)
         await wait_for(
             lambda t=tab, n=name: any(
                 n in t.list_widget.item(i).text()
@@ -225,7 +225,9 @@ async def test_event_selection_and_deselect_leave_the_preview_untouched(
     helpers.double_click_timeline_event(window, "Осень")
     await wait_for(lambda: any(d.isVisible() for d in window.findChildren(EventDialog)))
     dialog = next(d for d in window.findChildren(EventDialog) if d.isVisible())
-    await helpers.link_existing_entity_in_tab(modal_qdialog, dialog.char_tab, "Банн")
+    await helpers.link_existing_entity_in_tab(
+        window, wait_for, dialog.char_tab, "Банн"
+    )
     dialog.save_button.click()
     await wait_for(
         lambda: len(query_db(db_path, "SELECT 1 FROM event_character")) == 1
@@ -275,7 +277,7 @@ async def test_deleting_the_shown_entity_and_a_restart_clear_the_preview(
     # its self-explaining empty state (spec «Удаление показанной сущности»).
     card = await _open_card(window, wait_for, "character", ban_id)
     await helpers.create_related_via_popup(
-        window, wait_for, modal_qdialog, card, "locations", "location", "Пещера"
+        window, wait_for, card, "locations", "location", "Пещера"
     )
     peshchera_id = _entity_id(db_path, "location", "Пещера")
     window.entity_preview.entity_requested.emit("location", peshchera_id)

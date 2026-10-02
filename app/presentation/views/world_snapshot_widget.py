@@ -4,9 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
-from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
@@ -15,6 +15,7 @@ from app.presentation.theme import get_default_theme
 from app.presentation.viewmodels.world_snapshot_view_model import (
     WorldSnapshotViewModel,
 )
+from app.presentation.views.sheet_frame import SheetFrame
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 
@@ -128,23 +129,34 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
     # Island lifecycle (context, deferred closeEvent release) — IslandDialogMixin.
 
 
-class WorldSnapshotWindow(QDialog):
-    """The «Обзор мира» top-level: the panel's home since NRI-0022 (task 2.1).
+class WorldSnapshotWindow(SheetFrame):
+    """The «Обзор мира» sheet: the panel's home (NRI-0022 task 2.1; the
+    sheet format since NRI-0024 task 2.4, design Д1/Д6).
 
-    spec world-snapshot «Обзор мира открывается отдельным окном из строки
-    меню»: the snapshot left the main window's third splitter column and
-    lives in its own non-modal window — title bar, native close, the main
-    window working while it is open. The panel itself (island, VM, signals)
-    is untouched; the wrapper only hosts it and releases its island on the
-    window's way out. Presentation (single-instance slot, geometry role
-    ``world_snapshot``) belongs to the menu entry — see
-    ``ApplicationWiring._connect_snapshot``.
+    spec world-snapshot «Обзор мира открывается листом из строки меню»: the
+    content that used to live in a non-modal window of its own now rides the
+    application's sheet contract — ``SheetFrame`` carries the header
+    «Обзор мира + Закрыть» (one windowTitle-threaded caption, the frame's
+    button the plain Esc cancel) and the stack scrim the connector dims
+    through, and ``ApplicationWiring.open_sheet`` owns the show
+    (WindowModal over the main window, the single ``finished`` release). The
+    panel itself (island, VM, signals, the ListView scroll machinery) is
+    untouched; the wrapper hosts it in the frame's content slot, releases
+    the island on the way out, and never remembers a placement — a sheet
+    always opens at its default (spec «Лист не помнит рамку»).
     """
 
-    #: First opening without a remembered placement (design D5): 520×760.
+    #: Sheet default (design Д6): 520×760 — the value at the default main
+    #: window (1280×800, NRI-0018 Д5) under the growth rule below.
     DEFAULT_SIZE = QSize(520, 760)
     #: One shared usability floor, the value the retired splitter pane kept.
     MIN_SIZE = QSize(220, 300)
+    #: The growth rule's breathing room (spec modal-sheets «Окно растёт —
+    #: лист догоняет до предела»): the sheet's height tracks its parent
+    #: window's minus this inset, floored at MIN_SIZE and capped at the
+    #: default — the default IS the rule's value at the default 800 px
+    #: window, so a sheet opened over a default-sized window never moves.
+    HEIGHT_INSET = 40
 
     def __init__(
         self,
@@ -152,30 +164,62 @@ class WorldSnapshotWindow(QDialog):
         theme=None,
         now_date_vm=None,
     ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Обзор мира")
-        # Explicit NonModal pins the window-format contract (NRI-0014 AB3:
-        # the registry presents with show(); a WindowModal sheet would grey
-        # the menu out instead of leaving the main window working).
-        self.setWindowModality(Qt.WindowModality.NonModal)
+        # One windowTitle-threaded value: SheetFrame puts the same caption
+        # into the header label and the title slot.
+        super().__init__("Обзор мира", parent, theme)
         self.setMinimumSize(self.MIN_SIZE)
         self.resize(self.DEFAULT_SIZE)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
         self.snapshot = WorldSnapshotWidget(
             theme=theme, now_date_vm=now_date_vm
         )
-        layout.addWidget(self.snapshot)
+        self.add_content(self.snapshot)
+
+        if parent is not None:
+            # The growth half of the contract: the sheet follows its host
+            # window's resizes while it is open (the filter object dies with
+            # the sheet, so it can never outlive this wrapper).
+            parent.installEventFilter(self)
+
+    # ── рост с окном-родителем (spec modal-sheets «Листы не помнят
+    # размещение»: fixed default, growth to the content's limit, scroll) ────
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt API
+        super().showEvent(event)
+        self._fit_height_to_parent()
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802 — Qt API
+        if watched is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self._fit_height_to_parent()
+        return super().eventFilter(watched, event)
+
+    def _fit_height_to_parent(self) -> None:
+        """Track the host window's height: shrink with a smaller window,
+        grow back to the default with a bigger one; never below the
+        usability floor. Width is the sheet's own 520 default (the main
+        window's 1024 floor never squeezes it)."""
+        host = self.parentWidget()
+        if host is None:  # a parent-less sheet (offscreen probes) keeps its size
+            return
+        height = min(
+            self.DEFAULT_SIZE.height(),
+            max(self.MIN_SIZE.height(), host.height() - self.HEIGHT_INSET),
+        )
+        if height != self.height():
+            self.resize(self.width(), height)
 
     def done(self, result: int) -> None:  # noqa: N802 — Qt API name
-        # Every way this dialog leaves the screen (title-bar ✕ through the
-        # default closeEvent, Esc through reject, a programmatic close())
-        # passes through done(). The panel is a child widget: closing the
-        # window never reaches its closeEvent, so the home releases its
-        # island here — one loop turn deferred, exactly the contract
-        # IslandDialogMixin pins for an owned island (the release must not
-        # run inside a QML handler), and idempotent on a dead island.
+        # Every way this dialog leaves the screen (the header's «Закрыть» or
+        # Esc through reject, a programmatic close()) passes through done().
+        # The growth filter leaves with the sheet — a closed layer has no
+        # business tracking window resizes anymore. The panel is a child
+        # widget: closing the sheet never reaches its closeEvent, so the
+        # home releases its island here — one loop turn deferred, exactly
+        # the contract IslandDialogMixin pins for an owned island (the
+        # release must not run inside a QML handler), and idempotent on a
+        # dead island.
+        host = self.parentWidget()
+        if host is not None:
+            host.removeEventFilter(self)
         QTimer.singleShot(0, self.snapshot, self.snapshot.release_island)
         super().done(result)
