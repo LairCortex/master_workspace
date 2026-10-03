@@ -29,9 +29,11 @@ from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.models import GameSettingsModel
 from app.infrastructure.repositories.game_settings_repository import (
     CURRENT_DATE_KEY,
+    PREVIEW_PINS_KEY,
     CurrentDateRepository,
     CurrentDateValue,
     GameSettingsRepository,
+    PreviewPinsRepository,
 )
 from app.infrastructure.repositories.llm_settings_repository import (
     FIELD_PROMPTS_KEY,
@@ -345,3 +347,124 @@ class TestCurrentDateRepository:
         finally:
             for engine in engines:
                 await engine.dispose()
+
+
+# ── NRI-0025 task 1.1: typed preview-pins storage over the same trio ────────
+
+
+class TestPreviewPinsRepository:
+    async def _stored_text(self, session: AsyncSession) -> str | None:
+        return (
+            await session.execute(
+                select(GameSettingsModel.value).where(
+                    GameSettingsModel.key == PREVIEW_PINS_KEY
+                )
+            )
+        ).scalars().first()
+
+    async def test_absent_key_reads_empty_list_silently(
+        self, async_session, caplog
+    ):
+        with caplog.at_level(logging.WARNING):
+            assert await PreviewPinsRepository(async_session).load() == []
+        assert not caplog.records  # absence is the normal state, not corruption
+
+    async def test_roundtrip_preserves_order_and_duplicates(self, async_session):
+        pins = [("character", 3), ("item", 1), ("character", 3)]
+        repo = PreviewPinsRepository(async_session)
+        await repo.save(pins)
+        # design Д3 wire format pinned verbatim: the array order IS the pin
+        # order, the «t»/«i» keys carry the pair
+        assert await self._stored_text(async_session) == (
+            '[{"t": "character", "i": 3}, {"t": "item", "i": 1}, '
+            '{"t": "character", "i": 3}]'
+        )
+        assert await repo.load() == pins
+
+    async def test_empty_list_writes_empty_array_and_reads_empty(
+        self, async_session
+    ):
+        # «last pin unpinned» stays an explicit clean write, not a key delete
+        repo = PreviewPinsRepository(async_session)
+        await repo.save([])
+        assert await self._stored_text(async_session) == "[]"
+        assert await repo.load() == []
+
+    async def test_save_overwrites_in_one_row(self, async_session):
+        repo = PreviewPinsRepository(async_session)
+        await repo.save([("character", 1)])
+        await repo.save([("item", 2), ("location", 3)])
+        rows = (
+            await async_session.execute(
+                select(GameSettingsModel).where(
+                    GameSettingsModel.key == PREVIEW_PINS_KEY
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert await repo.load() == [("item", 2), ("location", 3)]
+
+    async def test_unknown_type_text_reads_back_untouched(
+        self, async_session, caplog
+    ):
+        # The codec is structural only: an off-registry type is NOT its
+        # corruption class — dropping unresolvable pairs is the connector's
+        # restore rule (design Д3), so this row reads back silently.
+        raw = '[{"t": "bogus", "i": 1}]'
+        async_session.add(GameSettingsModel(key=PREVIEW_PINS_KEY, value=raw))
+        await async_session.commit()
+        with caplog.at_level(logging.WARNING):
+            assert await PreviewPinsRepository(async_session).load() == [
+                ("bogus", 1)
+            ]
+        assert not caplog.records
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "not json at all",              # unparseable JSON
+            "5",                            # JSON, but not an array
+            "{}",                           # object, not array
+            '{"t": "character", "i": 1}',   # a lone object, not a list of them
+            "[1, 2]",                       # entry is not an object
+            '[["character", 1]]',           # entry is an array, not an object
+            '[{"i": 1}]',                   # type missing
+            '[{"t": 5, "i": 1}]',           # type is not text
+            '[{"t": null, "i": 1}]',        # neither is null
+            '[{"t": "character"}]',         # id missing
+            '[{"t": "character", "i": "3"}]',    # id is not an integer
+            '[{"t": "character", "i": true}]',   # bool is never the id
+            '[{"t": "character", "i": 1.5}]',    # neither is a float
+            '[{"t": "character", "i": 1}, {}]',  # a broken later entry spoils all
+        ],
+    )
+    async def test_corrupted_value_reads_empty_list_with_a_warning(
+        self, async_session, caplog, raw
+    ):
+        async_session.add(GameSettingsModel(key=PREVIEW_PINS_KEY, value=raw))
+        await async_session.commit()
+        with caplog.at_level(logging.WARNING):
+            assert await PreviewPinsRepository(async_session).load() == []
+        warnings = [
+            r for r in caplog.records if PREVIEW_PINS_KEY in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+        # the damaged row is neither rewritten nor deleted (design Д3: the
+        # next explicit pin/unpin is the one that cleans it)
+        assert await self._stored_text(async_session) == raw
+
+    async def test_repository_never_commits_rollback_drops_the_write(
+        self, async_session, uow
+    ):
+        # «репозиторий сам не коммитит»: the wrapper writes through the
+        # uncommitted trio, so an aborted transaction leaves no key behind.
+        async def _write_then_fail() -> None:
+            async with uow.transaction():
+                await PreviewPinsRepository(uow.session).save([("character", 3)])
+                raise _Boom
+
+        with pytest.raises(_Boom):
+            await _write_then_fail()
+        assert await PreviewPinsRepository(async_session).load() == []
+        assert await self._stored_text(async_session) is None

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.current_date_service import CurrentDateService
 from app.application.services.event_service import EventService
+from app.application.services.preview_pins_service import PreviewPinsService
 from app.application.services.xlsx_import_service import XlsxImportService
 from app.domain import entity_registry
 from app.domain.date_era import era_key
@@ -28,6 +29,7 @@ from app.presentation.dialog_results import (
 )
 from app.presentation.utils.date_utils import split_date_era
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
+from app.presentation.viewmodels.entity_preview_view_model import MAX_PINNED_CARDS
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
@@ -76,6 +78,7 @@ class ApplicationWiring(QObject):
         uow: GameSessionUoW,
         current_date_service: CurrentDateService | None = None,
         now_date_vm=None,
+        preview_pins_service: PreviewPinsService | None = None,
     ) -> None:
         super().__init__()
         self._app = app
@@ -97,6 +100,11 @@ class ApplicationWiring(QObject):
         # widget area is connected.
         self._now_date_vm = now_date_vm
         self._now_date_popup: ThemeDatePopup | None = None
+        # NRI-0025 (task 1.2, design Д3): the thin settings face for the
+        # column's pin list; defaulted like the «now» pair above because the
+        # unit-built connectors of the sheet tests need nothing of it — with
+        # no service the pin model still works, only its persistence is off.
+        self._preview_pins_service = preview_pins_service
         # Task 12.6 (A1 host half, design Д14.1): the hour list's bridge window
         # — the search island clips the component pop-up to its own fixed
         # height, so the «now» selector opens this top level instead (the same
@@ -142,13 +150,19 @@ class ApplicationWiring(QObject):
         # the flow is session-bound (its date query and row activation run on
         # THIS game's wiring).
         self._snapshot_sheet: WorldSnapshotWindow | None = None
-        # NRI-0022 (tasks 5.1/5.2, design D2): the (type, id) the preview
-        # column shows — the lifecycle's whole state. A game switch rebuilds
-        # the connector (shutdown → start), so a restart or another game needs
-        # no clearing code: the fresh preview simply starts empty. The two
-        # signals that DO move this state are the shown entity's deletion
-        # (popup cleanup) and its own card save (refresh in place).
-        self._preview_shown: tuple[str, int] | None = None
+        # NRI-0022 (tasks 5.1/5.2, design D2) → NRI-0025 (task 5.1, design
+        # Д1/Д4): the preview column is slot-owned — pinned pairs in pin
+        # order (the single limit transition, MAX_PINNED_CARDS, is enforced
+        # HERE, the number itself stays owned by the VM) plus the live pair
+        # under them. A game switch rebuilds the connector (shutdown →
+        # start), so the fresh column simply restores from storage (task
+        # 5.2). The rows cache holds the loaded entity behind every shown
+        # pair (pins ∪ live): frames are assembled from it so a pinned card
+        # is never re-loaded behind the user's back — only pin, restore,
+        # delete and the pair's own card save touch these entries.
+        self._preview_pins: list[tuple[str, int]] = []
+        self._preview_live: tuple[str, int] | None = None
+        self._preview_rows: dict[tuple[str, int], Any] = {}
         # Unified five-sheet import (rework 4.3): writes through the session/
         # ORM in apply_plan, only the image ingest pipeline is a dependency.
         self._xlsx_import = XlsxImportService(image_store=app._image_store)
@@ -692,37 +706,120 @@ class ApplicationWiring(QObject):
         )
 
     def _connect_preview(self) -> None:
-        """Entity preview (NRI-0022 tasks 5.1/5.2, design D2/D4): the one
-        selection bus between the middle column and the read-only right
-        column. The preview never loads anything itself — both directions
-        ride here as (type, id) pairs, the entity service answers with the
-        row (its relations come from ``get_entity``), and only then does the
-        right column repaint. The timeline is deliberately absent from this
-        section: selecting or deselecting an event on the scale leaves the
-        shown entity in place (spec «Смена события предпросмотр не трогает»).
-        """
+        """Entity preview (NRI-0022 tasks 5.1/5.2, design D2/D4; slots and
+        the pin channel since NRI-0025 tasks 5.1–5.3, design Д1/Д3/Д4): the
+        one selection bus between the middle column and the read-only right
+        column plus the pin channel. The preview never loads anything itself
+        — every direction rides here as (type, id) pairs, the entity service
+        answers with the row (its relations come from ``get_entity``), and
+        only then does the connector push the full slot frame. The timeline
+        is deliberately absent from this section: selecting or deselecting an
+        event on the scale leaves every card in place (spec preview-pins
+        «Смена события колонку не трогает»)."""
         # Single-click / Press selection in the middle column (task 3.1's
-        # relay): the panel already painted the row wash, the connector feeds
-        # the preview with the freshly loaded entity.
+        # relay): the panel already painted the row wash, the connector
+        # shows the freshly loaded entity in the live area.
         self._window.detail_panel.entity_selected.connect(
             lambda t, i: self._spawn(self._show_in_preview(t, i))
         )
-        # Relation-row / mention-link activation inside the preview: the same
-        # bus in the opposite direction, plus the middle-column sync attempt.
+        # Relation-row / mention-link activation inside ANY pane: the same
+        # bus in the opposite direction, plus the middle-column sync attempt
+        # (task 5.3: the source pane never matters — the target always goes
+        # to the live area, pinned cards stay as they were).
         self._window.entity_preview.entity_requested.connect(
             lambda t, i: self._spawn(self._on_preview_entity_requested(t, i))
         )
+        # The pin channel (NRI-0025 design Д3): the pair plus the card's
+        # current pinned state; the connector owns the transition limit and
+        # the storage, then answers with the next frame.
+        self._window.entity_preview.pin_toggle_requested.connect(
+            lambda t, i, p: self._spawn(self._on_preview_pin_toggled(t, i, p))
+        )
+
+    async def restore_preview_pins(self) -> None:
+        """Read the saved pins at game open (NRI-0025 task 5.2, design Д3;
+        the composition root calls this right after the connector connected,
+        while no user signal can race it). A pair that no longer resolves —
+        unknown type, deleted row — is silently dropped from the RESTORED
+        list and storage is NOT rewritten (the next pin/unpin persists the
+        clean list; no background repair writes)."""
+        if self._preview_pins_service is None:
+            return
+        for entity_type, entity_id in await self._preview_pins_service.get_pins():
+            entity_service = self._app._get_entity_service(entity_type)
+            if entity_service is None:
+                continue
+            entity = await entity_service.get_entity(entity_id)
+            if entity is None:
+                continue
+            self._preview_pins.append((entity_type, entity_id))
+            self._preview_rows[(entity_type, entity_id)] = entity
+        self._push_preview_frame()
+
+    def _push_preview_frame(self) -> None:
+        """The facade's single write channel (design Д1): the full frame
+        derived from the slot state — pinned pairs in pin order with their
+        cached rows, the live pair last. Every caller has just established
+        the cache entries this reads."""
+        pins = [(t, self._preview_rows[(t, i)]) for t, i in self._preview_pins]
+        live = (
+            None
+            if self._preview_live is None
+            else (self._preview_live[0], self._preview_rows[self._preview_live])
+        )
+        self._window.entity_preview.show_slots(pins, live)
+
+    async def _save_preview_pins(self) -> None:
+        """Persist the current pin list (design Д3: one save per pin/unpin);
+        a connector built without the storage face just keeps the model."""
+        if self._preview_pins_service is None:
+            return
+        await self._preview_pins_service.save_pins(self._preview_pins)
+
+    async def _on_preview_pin_toggled(
+        self, entity_type: str, entity_id: int, pinned: bool
+    ) -> None:
+        """The pin channel's rule set (NRI-0025 task 5.1, design Д3/Д4).
+        Pinning seats the LIVE pair (a press on any other pair is stale and
+        silently rejected), adds it at the end of the order, clears the live
+        area — the card visually stays put because the very next frame shows
+        it as a pin above the now-empty live slot — and refuses the fourth
+        pin in the model exactly as the island refuses it on screen. A pin
+        already in the list is never seated a second time (storage would
+        hold one dead slot the UI cannot even reach). Unpinning removes the
+        pair from the list only — the live area is never touched (spec
+        «Открепление убирает карточку» / «Открепление не съедает живую
+        копию»). Both accepted moves persist and push one fresh frame."""
+        pair = (entity_type, entity_id)
+        if pinned:
+            if pair not in self._preview_pins:
+                return
+            self._preview_pins.remove(pair)
+            if self._preview_live != pair:
+                self._preview_rows.pop(pair, None)
+        else:
+            if pair != self._preview_live:
+                return
+            if pair in self._preview_pins or len(self._preview_pins) >= MAX_PINNED_CARDS:
+                return
+            self._preview_pins.append(pair)
+            self._preview_live = None
+        await self._save_preview_pins()
+        self._push_preview_frame()
 
     async def _show_in_preview(self, entity_type: str, entity_id: int) -> bool:
-        """Load one entity through its entity service and feed the preview
-        column (design D2: the presentation never sees the session). True
-        when the preview shows that pair afterwards. The pair already shown
-        reloads nothing — the spec changes the content only when the
-        selection changes, which also swallows the ``entitySelected`` echo of
-        :meth:`DetailPanel.select_entity` below (no second load, no loop).
-        A dead type key or a vanished row keeps the shown entity in place:
-        the broken-mention posture of task 4.5 survives into the wiring."""
-        if self._preview_shown == (entity_type, entity_id):
+        """Show one entity in the column's LIVE area (NRI-0025 design Д4:
+        the old single-card «shown» channel became the live pointer). Load
+        through its entity service, seat the pair as live, push the frame.
+        True when the live area shows that pair afterwards. The pair already
+        live reloads NOTHING and pushes no frame (spec «Повторный выбор
+        ничего не делает», which also swallows the ``entitySelected`` echo
+        of :meth:`DetailPanel.select_entity` below). Matching a PIN is
+        deliberately not checked — re-selecting a pinned entity is the
+        user's conscious duplicate (spec «Дубль закреплённой сущности»).
+        A dead type key or a vanished row keeps the live pair in place: the
+        broken-mention posture of task 4.5 survives into the wiring."""
+        if self._preview_live == (entity_type, entity_id):
             return True
         entity_service = self._app._get_entity_service(entity_type)
         if not entity_service:
@@ -730,8 +827,14 @@ class ApplicationWiring(QObject):
         entity = await entity_service.get_entity(entity_id)
         if entity is None:
             return False
-        self._preview_shown = (entity_type, entity_id)
-        self._window.entity_preview.show_entity(entity_type, entity)
+        previous = self._preview_live
+        self._preview_live = (entity_type, entity_id)
+        self._preview_rows[(entity_type, entity_id)] = entity
+        # The replaced live row leaves the cache unless a pinned copy still
+        # paints that pair (the shared duplicate row).
+        if previous is not None and previous not in self._preview_pins:
+            self._preview_rows.pop(previous, None)
+        self._push_preview_frame()
         return True
 
     async def _on_preview_entity_requested(self, entity_type: str, entity_id: int) -> None:
@@ -780,9 +883,10 @@ class ApplicationWiring(QObject):
             lambda q: self._spawn(on_search(q))
         )
 
-        # Search result gestures (NRI-0022 task 6.2, spec «Клик по результату
-        # ведёт к цели и закрывает список»): the two channels the island
-        # separates — single click routes, double click edits.
+        # Search result gestures (NRI-0022 task 6.2; spec rewritten by
+        # NRI-0025 task 6.1, design Д7 — «Клик по результату: событие ведёт
+        # к цели, сущность — только в предпросмотр»): the two channels the
+        # island separates — single click routes, double click edits.
         async def on_search_result(entity_type, entity_id):
             if entity_type == "event":
                 # Select by id and show details (plain await: the task of
@@ -805,31 +909,15 @@ class ApplicationWiring(QObject):
                     self._timeline_set_selected(entity_id)
                     self._timeline.scroll_to_event(entity_id)
             else:
-                # Full path to the hit (design D7): the target is the entity's
-                # latest-by-start event (era-chronological, smaller id on a
-                # tie). When the scale holds it, the event is selected first —
-                # with the window reset ``select_event_by_id`` performs from
-                # inside — so the detail panel re-models over the very event
-                # the entity belongs to; only then do the middle-column tab
-                # switch, the row wash and the preview run, over the loaded
-                # lists (the task 5.1 bus: show, then try to highlight).
-                # Without any event — and with an event the timeline never
-                # held — the scale and the panel stay exactly as they were
-                # and only the preview shows the entity (spec «Сущность без
-                # событий»).
-                target = await self._event_service.get_last_event_for_entity(
-                    entity_type, entity_id
-                )
-                if target is not None and any(
-                    ev.id == target.id for ev in timeline_vm.all_events
-                ):
-                    await self._on_event_selected(target.id)
-                    self._timeline_update_events()
-                    self._timeline_set_selected(target.id)
-                    self._timeline.scroll_to_event(target.id)
-                    await self._on_preview_entity_requested(entity_type, entity_id)
-                else:
-                    await self._show_in_preview(entity_type, entity_id)
+                # A single click on an entity result shows it in the live
+                # preview area and NOTHING else (NRI-0025 task 6.1, design
+                # Д7 — the full path of the retired requirement is abolished:
+                # no event selection, no window reset, no tab switch, no row
+                # wash; the scale and the detail panel stay exactly as they
+                # were, pinned cards stay as they were). The live pointer's
+                # own rules apply unchanged: a re-click on the pair already
+                # live reloads nothing (the task 5.1 bus semantics).
+                await self._show_in_preview(entity_type, entity_id)
 
         window.search_bar.result_selected.connect(
             lambda t, i: self._spawn(on_search_result(t, i))
@@ -1213,16 +1301,19 @@ class ApplicationWiring(QObject):
                 if detail_vm.event:
                     await detail_vm.load_details(detail_vm.event.id)
                     window.detail_panel.show_event(detail_vm.event)
-                # NRI-0022 (task 5.2, spec «Сохранение карточки обновляет
-                # предпросмотр»): the shown entity repaints from a fresh read
-                # of the just-saved row; a save of any other entity never
-                # reaches the right column (its pair simply differs).
-                if self._preview_shown == (entity_type, entity_id):
+                # NRI-0022 (task 5.2) retargeted by NRI-0025 (task 5.2, spec
+                # «Сохранение карточки перекрашивает все копии»): a save of
+                # a pair shown anywhere in the column — a pin, the live card
+                # or both copies of a duplicate — repaints EVERY copy from a
+                # fresh read of the just-saved row; a save of any other
+                # entity never reaches the right column (its pair simply
+                # differs from both slot faces).
+                pair = (entity_type, entity_id)
+                if pair in self._preview_pins or pair == self._preview_live:
                     refreshed = await entity_service.get_entity(entity_id)
                     if refreshed is not None:
-                        self._window.entity_preview.show_entity(
-                            entity_type, refreshed,
-                        )
+                        self._preview_rows[pair] = refreshed
+                        self._push_preview_frame()
                 dialog.finish_saving(True)
 
             dialog = await self._open_entity_card(
@@ -1420,12 +1511,29 @@ class ApplicationWiring(QObject):
             for entity_type, entity_id, description_id in pending:
                 service = self._app._get_entity_service(entity_type)
                 await service.delete_entity_and_description(entity_id, description_id)
-        # NRI-0022 (task 5.2): this is the entity-delete channel the connector
-        # owns (spec entity-preview «Удаление показанной сущности очищает
-        # предпросмотр») — when the preview's shown entity was among the
-        # deleted, the right column returns to its self-explaining empty
-        # state. ``_preview_shown`` is None-safe here: the pair never equals
-        # None, so a preview that shows nothing stays untouched.
-        if any((t, i) == self._preview_shown for t, i, _d in pending):
-            self._preview_shown = None
-            self._window.entity_preview.clear()
+        # NRI-0022 (task 5.2) rewritten by NRI-0025 (task 5.2, design Д4):
+        # this is still the connector's entity-delete channel, now retargeted
+        # onto the slots — deleting a PINNED entity lifts its pin in the
+        # column and in storage (spec «Удаление снимает закрепление»),
+        # deleting the LIVE one clears the live area only (spec preview-pins
+        # «Удаление показанной в живой области сущности очистит живую
+        # область»). A delete touching neither face leaves the column alone;
+        # None-safe: a pair never equals the empty live pointer.
+        deleted = {(entity_type, entity_id) for entity_type, entity_id, _d in pending}
+        changed = False
+        if any(pair in deleted for pair in self._preview_pins):
+            self._preview_pins = [
+                pair for pair in self._preview_pins if pair not in deleted
+            ]
+            changed = True
+            await self._save_preview_pins()
+        if self._preview_live in deleted:
+            self._preview_live = None
+            changed = True
+        if changed:
+            self._preview_rows = {
+                pair: row
+                for pair, row in self._preview_rows.items()
+                if pair not in deleted
+            }
+            self._push_preview_frame()

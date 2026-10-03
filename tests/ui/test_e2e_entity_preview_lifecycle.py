@@ -90,8 +90,20 @@ def _tab_of(window, entity_type: str) -> int:
     return window.detail_panel.vm.ENTITY_TYPES.index(entity_type)
 
 
+def _live_pane(window):
+    """The live pane's dict or ``None`` while the live area is empty. The VM
+    is the list face since NRI-0025 task 2.1 and the connector frames are its
+    slot frames since task 5.1; frames are built live-last, so the trailing
+    unpinned pane IS the live area."""
+    panes = window.entity_preview.vm.panes
+    if panes and not panes[-1]["pinned"]:
+        return panes[-1]
+    return None
+
+
 def _shown_name(window) -> str:
-    return getattr(window.entity_preview.vm.shown_entity, "name", "")
+    pane = _live_pane(window)
+    return pane["nameText"] if pane is not None else ""
 
 
 async def _open_card(window, wait_for, entity_type: str, entity_id: int) -> EntityCardDialog:
@@ -179,7 +191,7 @@ async def test_selection_bus_round_trips_middle_to_preview_and_back(
     # wiring loads through the entity service and shows the read-only card.
     window.detail_panel.vm.select("character", ban_id)
     await wait_for(lambda: _shown_name(window) == "Банн")
-    assert window.entity_preview.vm.title == "Карточка: Персонаж"
+    assert _live_pane(window)["title"] == "Карточка: Персонаж · Банн"
     assert _washed_ids(window.detail_panel.vm.characters) == [ban_id]
     assert canvas.selected_id == event_id  # the scale was not touched
     # The selection opened no card: selection and activation stay separate.
@@ -284,22 +296,24 @@ async def test_deleting_the_shown_entity_and_a_restart_clear_the_preview(
     await wait_for(lambda: _shown_name(window) == "Пещера")
 
     card.reject()
-    await wait_for(lambda: window.entity_preview.vm.shown_entity is None)
-    assert window.entity_preview.vm.title == "Карточка"
+    await wait_for(lambda: _live_pane(window) is None)
+    # The zero-pane column is the empty state; its «Карточка» caption is the
+    # painting-side literal pinned offscreen in test_entity_preview_island.py.
+    assert window.entity_preview.vm.panes == []
     # The delete really happened (the cleanup ran, this is not a stale view).
     assert query_db(db_path, "SELECT 1 FROM locations WHERE name = ?", ("Пещера",)) == []
 
     # Restart = the game shutdown → start flow the game switch also runs
     # (_on_game_selected does exactly these two calls): the rebuilt connector
-    # never restores anything, the fresh preview starts empty.
+    # restores the saved pins — nothing was ever pinned here, so the fresh
+    # preview starts empty.
     window.close()
     await helpers.wait_until_settled()
     await application.shutdown()
     window2 = await application.start(str(db_path))
     try:
         await helpers.wait_until_settled()
-        assert window2.entity_preview.vm.shown_entity is None
-        assert window2.entity_preview.vm.title == "Карточка"
+        assert window2.entity_preview.vm.panes == []
     finally:
         window2.close()
         await helpers.wait_until_settled()
@@ -339,19 +353,19 @@ async def test_card_save_refreshes_only_the_shown_entity(
     )
     await helpers.wait_until_settled()
     assert _shown_name(window) == "Банн"
-    assert window.entity_preview.vm.shown_entity.id == ban_id
+    assert _live_pane(window)["entityId"] == ban_id
 
     # The shown entity's own save repaints the preview with the stored values
     # (spec «Сохранение карточки обновляет предпросмотр»).
     ban_card = await _open_card(window, wait_for, "character", ban_id)
     ban_card.name_input.setText("Банн-2")
     ban_card.save_button.click()
-    # The wait rides the RENDERED text, not shown_entity.name: the service
+    # The wait rides the RENDERED text, not the shown name: the service
     # updates the session-identity-mapped row in place mid-transaction, so
     # the live row's name flips before the save task repaints the island.
-    await wait_for(lambda: window.entity_preview.vm.nameText == "Банн-2")
-    assert window.entity_preview.vm.title == "Карточка: Персонаж"
-    assert window.entity_preview.vm.nameText == "Банн-2"
+    await wait_for(lambda: _shown_name(window) == "Банн-2")
+    assert _live_pane(window)["title"] == "Карточка: Персонаж · Банн-2"
+    assert _live_pane(window)["nameText"] == "Банн-2"
 
 
 # ── guards: dead bus entries leave the shown state alone, never raise ───────
@@ -365,7 +379,7 @@ async def test_preview_bus_guards_unknown_types_and_vanished_rows(app, wait_for)
     window.entity_preview.entity_requested.emit("event", 1)
     window.entity_preview.entity_requested.emit("character", 999999)
     await helpers.wait_until_settled()
-    assert window.entity_preview.vm.shown_entity is None
+    assert _live_pane(window) is None
     assert not [d for d in window.findChildren(EntityCardDialog) if d.isVisible()]
 
     # The facade's programmatic selection is defensive the same way: a type
@@ -373,5 +387,5 @@ async def test_preview_bus_guards_unknown_types_and_vanished_rows(app, wait_for)
     window.detail_panel.select_entity("no-such-type", 1)
     window.detail_panel.select_entity("character", 999999)
     assert _current_tab(window) == 0
-    assert window.entity_preview.vm.shown_entity is None
+    assert _live_pane(window) is None
 

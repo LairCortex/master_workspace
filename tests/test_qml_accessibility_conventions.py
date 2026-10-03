@@ -53,7 +53,12 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from tests.qml_a11y_scan import QML_ROOT, find_convention_violations, rule_head
+from tests.qml_a11y_scan import (
+    DESCRIPTION_VOCABULARY,
+    QML_ROOT,
+    find_convention_violations,
+    rule_head,
+)
 
 # Exact expectations on the synthetic fixture below: (file, line, rule head).
 # Instance violations report the line of the control's opening brace; the
@@ -215,3 +220,54 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
 
     # The repository itself was never touched by the injection exercise.
     assert find_convention_violations(QML_ROOT) == []
+
+
+# ── NRI-0025 task 4.2: the preview pin's quartet of fixed wordings ───────────
+
+# The four formulations are design Д5's contract — the NAME states the
+# button's very state and doubles as the tooltip; they reach the live audit
+# register, so they are pinned here verbatim, in source. The island maps the
+# column VM's pinState word to this quartet; counting the cap stays in the
+# VM (checkpoint п.5: one owner of the number three).
+PREVIEW_PIN_QUARTET: tuple[str, ...] = (
+    "Закрепить карточку",
+    "Открепить карточку",
+    "Уже закреплена",
+    "Можно закрепить только 3 карточки",
+)
+
+
+def test_the_preview_pin_names_are_the_pinned_quartet() -> None:
+    text = (QML_ROOT / "EntityPreviewRoot.qml").read_text(encoding="utf-8")
+    # Each wording exists exactly once in the source: the pinLabel ternary is
+    # the single author — the tree name, the Nri.tooltip declaration and the
+    # hover report all read that one property, so a fifth string (or a drift
+    # of one into the tooltip) fails here. The runtime face of the same
+    # quartet is pinned per state in test_entity_preview_island.py.
+    for wording in PREVIEW_PIN_QUARTET:
+        assert text.count(f'"{wording}"') == 1, wording
+    assert "Accessible.name: pinLabel" in text
+    assert "Nri.tooltip: pinLabel" in text
+    # The pin spells no description (the name already names the action) —
+    # the hidden-meaning slot of the Button seat stays untouched.
+    assert "Accessible.description" not in text.split("id: pinButton")[1].split(
+        "onClicked"
+    )[0]
+
+
+def test_description_vocabulary_stays_the_frozen_map() -> None:
+    # NRI-0025 design Д5: the quartet lives in the NAME slot, so the fixed
+    # description map does NOT grow — equality on the whole map, not just
+    # the absence of pin wordings (a retired wording leaving silently fails
+    # here too, mirroring rule 5's two-sided guard).
+    assert DESCRIPTION_VOCABULARY == frozenset({
+        "Открывает игру",
+        "Открывает карточку",
+        "Открывает упомянутую сущность",
+        "Выбор цвета типа",
+        "Открыть изображение",
+        "Переходит к сущности",
+        "Выбирает сущность",
+        "Открывает событие",
+        "Развернуть или свернуть раздел",
+    })

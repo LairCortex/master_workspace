@@ -36,6 +36,7 @@ from app.application.services.calendar_settings_service import (
     CalendarSettingsService,
 )
 from app.application.services.current_date_service import CurrentDateService
+from app.application.services.preview_pins_service import PreviewPinsService
 from app.application.services.search_service import SearchService
 from app.application.services.entity_service import EntityService
 from app.application.services.export_service import ExportService
@@ -154,6 +155,10 @@ class Application:
         # and loaded per start() after the calendar became active, so a game
         # switch can never carry the previous game's value over.
         self._current_date_service: CurrentDateService | None = None
+        # NRI-0025 (task 1.2, design Д3): the preview column's pins — a thin
+        # game-bound storage service built per start() on the same unit; the
+        # connector reads it at game open and writes on every pin/unpin.
+        self._preview_pins_service: PreviewPinsService | None = None
         # Calendar wizard (C4, task 7.1): the one dialog at a time. Since
         # NRI-0024 (task 3.1) it is a sheet of the connector's stack, opened
         # through the very menu path; the first-entry one (NRI-0015 task 2.4)
@@ -297,6 +302,12 @@ class Application:
         self._current_date_service = CurrentDateService(self._uow)
         await self._current_date_service.load()
 
+        # NRI-0025 (task 1.2, design Д3): the preview-pins storage face on the
+        # SAME unit every write shares.  Nothing is read or written here —
+        # the connector loads the saved list at game open (group 5); the
+        # composition root only names the concrete class (design D7).
+        self._preview_pins_service = PreviewPinsService(self._uow)
+
         # Repositories
         desc_repo = BaseRepository(self._session, DescriptionModel)
         event_repo = EventRepository(self._session)
@@ -390,8 +401,16 @@ class Application:
             # NRI-0021 (task 3.3): the same VM the island shows — the
             # connector wires its popup request and the applied-value slot.
             now_date_vm=now_date_vm,
+            # NRI-0025 (task 5.2, design Д3): the pin-list storage face —
+            # the connector reads it at open below and writes every pin/unpin.
+            preview_pins_service=self._preview_pins_service,
         )
         self._wiring.connect()
+        # NRI-0025 (task 5.2, design Д3): the saved pins load right after the
+        # connector is live and before the window shows — unavailable pairs
+        # are silently dropped there, storage stays untouched (no background
+        # rewrite), the restored column paints with the window's first frame.
+        await self._wiring.restore_preview_pins()
 
         # Switch game menu (NRI-0024 task 4.1: the entry opens a sheet, a
         # synchronous show path — no task until a game is actually chosen).

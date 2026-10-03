@@ -47,7 +47,7 @@ from PySide6.QtWidgets import QApplication
 from app.presentation import qml as qml_shell
 from app.presentation.qml.engine import setup_qml_shell
 from app.presentation.theme.qml_palette import QmlPalette
-from tests.presentation.qml_helpers import click_item, find_item
+from tests.presentation.qml_helpers import click_item, find_item, walk_items
 from tests.ui.test_theme_grab import make_runtime
 
 COMPONENTS_DIR = (
@@ -120,6 +120,49 @@ Item {
         ghost: true
         accentBackground: true
         Accessible.name: "Свернуть подсобытия"
+    }
+
+    // ── stateful glyph face (the preview pin, user request 2026-10-03) ──────
+    // The two seats the pin uses: the leaning rest angle (iconRotation) and
+    // the accent-engaged tint (iconAccentTint). Ghost keeps the glyph the
+    // only paint in the region — the centring pixel pin measures against.
+    ThemeIconButton {
+        id: rotRest
+        objectName: "probeRotRest"
+        x: 10; y: 70
+        ghost: true
+        iconName: "pin"
+        iconRotation: 90
+        iconAccentTint: true
+        Accessible.name: "Закрепить карточку"
+    }
+    ThemeIconButton {
+        id: rotUpright
+        objectName: "probeRotUpright"
+        x: 50; y: 70
+        ghost: true
+        iconName: "pin"
+        iconAccentTint: true
+        Accessible.name: "Открепить карточку"
+    }
+    // The tint chain's order of precedence: engaged → accent while enabled,
+    // the mute still outranks the accent when the button is disabled.
+    ThemeIconButton {
+        id: tintAccent
+        objectName: "probeTintAccent"
+        x: 140; y: 10
+        ghost: true
+        iconName: "pin"
+        iconAccentTint: true
+    }
+    ThemeIconButton {
+        id: tintDisabled
+        objectName: "probeTintDisabled"
+        x: 180; y: 10
+        ghost: true
+        iconName: "pin"
+        iconAccentTint: true
+        enabled: false
     }
 
     // Face probes read off the controls' own background nodes: a drifted
@@ -441,3 +484,99 @@ def test_ghost_with_accent_background_hands_the_glyph_to_accent_fg(
     QApplication.processEvents()
     assert QColor(str(root.property("ghostAccentFace"))).alpha() == 0, theme
     assert widget.errors() == []
+
+
+# ── stateful glyph face (the preview pin, user request 2026-10-03) ───────────
+
+
+def test_icon_rotation_and_accent_tint_are_the_component_seats(qtbot, qapp, tmp_path):
+    """The pin's two face knobs live in the component (the usage site never
+    reaches into the icon node): ``iconRotation`` turns BOTH glyph slots and
+    lands on the ThemeIcon's ``glyphRotation``; ``iconAccentTint`` hands the
+    enabled glyph to ``color.accent`` while the one chain keeps its order —
+    a disabled glyph stays muted (the duplicate/limit pins), an accent-filled
+    face keeps its own foreground. Defaults (0 / false) answer the previous
+    face word-for-word — pinned by the untouched tests above."""
+    runtime = make_runtime(tmp_path, "dark")
+    palette = QmlPalette(runtime)
+    widget = load_probe(qtbot, qapp, runtime, tmp_path, palette)
+    tokens = palette.tokens
+
+    lean = find_item(widget, "probeRotRest")
+    upright = find_item(widget, "probeRotUpright")
+    assert float(lean.property("iconRotation")) == 90.0
+    assert float(upright.property("iconRotation")) == 0.0
+    for button, angle in ((lean, 90.0), (upright, 0.0)):
+        glyphs = [
+            i for i in walk_items(button)
+            if i.objectName() in ("themeButtonIcon", "themeButtonTrailingIcon")
+            and bool(i.property("visible"))
+        ]
+        # The trailing mirror node exists but stays hidden without a name —
+        # the visible glyph alone must carry the seat's angle.
+        assert len(glyphs) == 1, button.objectName()
+        assert float(glyphs[0].property("glyphRotation")) == angle
+
+    tint = find_item(widget, "probeTintAccent")
+    accent = QColor(tokens["color.accent"])
+    assert tint.property("iconTint") == accent
+    assert find_item(widget, "probeRotUpright").property("iconAccentTint") is True
+    disabled = find_item(widget, "probeTintDisabled")
+    assert disabled.property("iconTint") == QColor(tokens["color.fg.muted"])
+    # The flag alone never re-tints a non-ghost plain button…
+    plain = find_item(widget, "probeGlyph")
+    assert plain.property("iconAccentTint") is False
+    # …and the accent-filled face keeps its foreground precedence.
+    ghost_accent = find_item(widget, "probeGhostAccent")
+    assert ghost_accent.property("iconTint") == QColor(tokens["color.accent.fg"])
+    assert widget.errors() == []
+
+
+def test_a_leaning_glyph_turns_in_place(qtbot, qapp, tmp_path):
+    """Pixel half of the rotation seat: the lean is the pin's REST face, so
+    it must not walk the glyph off its seat — the spin pivots on the glyph's
+    own centre (the transform list scales the Lucide grid onto the item box
+    first, then rotates around that box's centre). Same ghost button, same
+    spot, two angles: the painted bounding boxes share their centre."""
+    runtime = make_runtime(tmp_path, "dark")
+    palette = QmlPalette(runtime)
+    widget = load_probe(qtbot, qapp, runtime, tmp_path, palette)
+    find_item(widget, "probeCanvas")  # load-time contract holds for this scene
+
+    upright = find_item(widget, "probeRotUpright")
+    lean = find_item(widget, "probeRotRest")
+    # The buttons sit 40 px apart; the glyph centres must keep exactly that
+    # distance — a pivot error would shift the rotated glyph.
+    image = widget.grab().toImage()
+    scale = image.width() / max(widget.width(), 1)
+
+    def _painted_center(item) -> tuple[float, float]:
+        origin = item.mapToScene(QPointF(0, 0))
+        x0 = int(origin.x() * scale)
+        y0 = int(origin.y() * scale)
+        w = int(item.width() * scale)
+        h = int(item.height() * scale)
+        ref = _scene_pixel(widget, item, 1, 1)  # the corner pixel = bare seat
+        xs, ys = [], []
+        for py in range(y0, y0 + h):
+            for px in range(x0, x0 + w):
+                col = QColor(image.pixelColor(px, py))
+                if (
+                    abs(col.red() - ref.red())
+                    + abs(col.green() - ref.green())
+                    + abs(col.blue() - ref.blue())
+                ) > 90:
+                    xs.append(px)
+                    ys.append(py)
+        assert xs, f"{item.objectName()}: the ghost glyph painted nothing"
+        return (
+            (min(xs) + max(xs)) / 2 / scale,
+            (min(ys) + max(ys)) / 2 / scale,
+        )
+
+    ux, uy = _painted_center(upright)
+    lx, ly = _painted_center(lean)
+    # The seats are 40 px apart (lean LEFT of upright in the scene) — the
+    # 90° turn must not move either glyph off its seat.
+    assert abs(abs(lx - ux) - 40.0) <= 1.5, (ux, uy, lx, ly)
+    assert abs(ly - uy) <= 1.5, (ux, uy, lx, ly)

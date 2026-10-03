@@ -41,6 +41,15 @@ Item {
     // accent fill, disabled) bind this, the default follows the theme text.
     property color tint: Tokens.token(islandTokens, "color.fg.primary", "black")
 
+    // State angle of the glyph in degrees (user request 2026-10-03, the
+    // preview's pin): a stateful glyph toggle turns this from its leaning
+    // rest angle to 0 when the state engages. The spin is around the GLYPH's
+    // own centre — the rotation joins the transform list AFTER the grid
+    // scale, whose top-left origin maps the Lucide 24-grid centre exactly
+    // onto the item centre (pixel-pinned: the rotated glyph's painted
+    // bounding box keeps the same centre as the upright one).
+    property real glyphRotation: 0
+
     // Shared library gauge for the glyph buttons' interior icon (the 32×32
     // hit square is ThemeIconButton's, this is the paint inside it).
     width: size
@@ -54,22 +63,38 @@ Item {
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
 
     // 24×24 upstream grid → `size` square; the stroke scales with it, as in
-    // every Lucide render.
+    // every Lucide render. The state rotation (glyphRotation) spins the
+    // spinner Item around its own centre — the spinner wears the raw 24-grid
+    // (rotation pivot 12,12), the parent's one Scale still folds the whole
+    // subtree into the `size` box at origin (0,0) exactly as before, so the
+    // spin pivots on the GLYPH's centre and never moves it off its seat.
+    // (Deliberately the built-in Item rotation, NOT a second transform item:
+    // a Scale+Rotation transform list on this very component crashed the
+    // QSG thread under the suite's island churn — pinned offscreen by the
+    // full-run gate.) With 0 the spinner is a pass-through box: every
+    // existing icon paints bit-for-bit as before.
     transform: Scale {
         xScale: size / 24
         yScale: size / 24
     }
 
-    Shape {
-        anchors.fill: parent
-        preferredRendererType: Shape.CurveRenderer
-        ShapePath {
-            fillColor: "transparent"
-            strokeColor: icon.tint
-            strokeWidth: 2
-            capStyle: ShapePath.RoundCap
-            joinStyle: ShapePath.RoundJoin
-            PathSvg { path: Icons.iconPath(icon.name) }
+    Item {
+        id: spinner
+        width: 24
+        height: 24
+        rotation: icon.glyphRotation
+
+        Shape {
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            ShapePath {
+                fillColor: "transparent"
+                strokeColor: icon.tint
+                strokeWidth: 2
+                capStyle: ShapePath.RoundCap
+                joinStyle: ShapePath.RoundJoin
+                PathSvg { path: Icons.iconPath(icon.name) }
+            }
         }
     }
 }

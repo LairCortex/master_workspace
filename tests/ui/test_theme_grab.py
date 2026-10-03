@@ -910,3 +910,62 @@ def test_date_window_popup_empty_window_paints_no_accent_fill(qtbot, tmp_path, t
         marked_popup.close()
     finally:
         app.setStyleSheet("")
+
+
+# ── NRI-0025 (task 4.1): the preview column's single-mode grab pin ───────────
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_preview_single_pane_paints_band_surface_and_card_canvas(qtbot, tmp_path, theme):
+    """The zero-pins column must stay the pre-NRI-0022 markup pixel-wise
+    (spec preview-pins «При отсутствии закреплений колонка SHALL выглядеть
+    … как одиночная карточка на всю высоту»): the island root's surface owns
+    the frame and the 32 px header band's row, the card canvas token fills
+    the card inside its hairline, and no OS-palette strip may leak around
+    the island (this file's launcher posture applied to the third column).
+    """
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QPointF
+
+    from app.presentation.views.entity_preview import EntityPreviewWidget
+    from tests.presentation.qml_helpers import find_item
+
+    runtime = make_runtime(tmp_path, theme)
+    widget = EntityPreviewWidget(theme=runtime)
+    qtbot.addWidget(widget)
+    widget.resize(420, 520)
+    widget.show_slots([], ("character", SimpleNamespace(
+        id=4, name="Банн", rating=8,
+        start_date=datetime.date(1200, 1, 1), end_date=None,
+        start_bc=False, end_bc=False, description=None,
+        music_url="", image_ref=None, personality=None, tasks=None,
+    )))
+    widget.show()
+    qtbot.waitExposed(widget)
+    image, factor = _grab_scaled(widget)
+
+    surface = token_color("color.bg.surface", theme)
+    canvas = canvas_color(theme)
+    assert surface != canvas  # the two readings below must differ
+
+    def sample(scene_x: float, scene_y: float) -> QColor:
+        return image.pixelColor(round(scene_x * factor), round(scene_y * factor))
+
+    # The island's own edge: root surface, not the OS palette, not QSS chrome.
+    assert sample(1, 1) == surface
+    assert sample(1, image.height() / factor - 2) == surface
+
+    card = find_item(widget.quick, "previewPaneCanvas")
+    pos = card.mapToScene(QPointF(0, 0))
+    # Inside the hairline, outside the scroll viewport (its inset is 1 +
+    # space.sm): the canvas token fills the card's margin band.
+    assert sample(pos.x() + 3, pos.y() + 3) == canvas
+    assert sample(pos.x() + 3, pos.y() + card.height() - 4) == canvas
+
+    # The pane's header-band row paints on the island surface (the band is a
+    # transparent strip over the root, not a second card face); sampled at
+    # the far right, clear of both the caption and the ghost pin square.
+    band = find_item(widget.quick, "previewPaneBand_0")
+    band_pos = band.mapToScene(QPointF(0, 0))
+    assert sample(band_pos.x() + band.width() - 2, band_pos.y() + band.height() / 2) == surface

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -59,6 +60,15 @@ CALENDAR_WIZARD_SEEN_YES = "1"
 #: explicit edit is the first write (spec «Игровая «сейчас» хранится одна на
 #: игру»).
 CURRENT_DATE_KEY = "current_date"
+
+#: Key of the preview column's pinned cards (NRI-0025, design Д3): a JSON
+#: array ``[{"t": <type>, "i": <id>}]`` whose order IS the pin order, read
+#: and written through :class:`PreviewPinsRepository`.  The key is seeded
+#: nowhere — its absence is the normal «nothing pinned yet» state, a damaged
+#: value reads as the empty list with a journal entry, and an unavailable
+#: pair is dropped silently at restore by the connector (spec «Закрепления
+#: хранятся в настройках игры и переживают перезапуск»).
+PREVIEW_PINS_KEY = "preview_pins"
 
 
 class GameSettingsRepository:
@@ -226,8 +236,101 @@ class CurrentDateRepository:
     ) -> None:
         """Store ``coord``/``is_bc`` (and the optional ``hour``) as the game's
         «now», overwriting any previous (even corrupted) value — «Перезапись
-        вместо ремонта».  ``hour=None`` writes no ``h`` key at all, keeping
+        вместо ремонта».          ``hour=None`` writes no ``h`` key at all, keeping
         the value in the pre-0023 shape (v1-compatible codec)."""
         await self._settings.upsert(
             CURRENT_DATE_KEY, _encode_current_date(coord, is_bc, hour)
         )
+
+
+# ── Typed preview-pins storage (NRI-0025 task 1.1, design Д3) ───────────────
+
+
+def _preview_pins_corrupt(reason: str, raw: str) -> None:
+    """Log one corruption the way the other typed keys phrase it: a damaged
+    pins list reads as empty with a journal entry and life by the absence
+    rule (task 1.1); the row itself is left untouched — the next explicit
+    pin/unpin rewrites a clean list (design Д3: no background repair write)."""
+    _LOGGER.warning(
+        "Ignoring corrupted %s setting (%s): %r", PREVIEW_PINS_KEY, reason, raw
+    )
+
+
+def _encode_preview_pins(pins: Sequence[tuple[str, int]]) -> str:
+    """JSON body of design Д3: ``[{"t": <type>, "i": <id>}]`` — the array
+    order IS the pin order (spec «порядок сохраняется»).  The pairs arrive
+    from the connector, whose types are entity strings by construction; the
+    encoder never re-validates them (same division of labour as
+    :func:`_encode_current_date` — no stored pair is invented here)."""
+    return json.dumps([{"t": t, "i": i} for t, i in pins], ensure_ascii=False)
+
+
+def _decode_preview_pins(raw: str) -> list[tuple[str, int]]:
+    """Read the stored array back, pair order preserved.
+
+    All-or-nothing like the «now» codec: anything unreadable — unparsable
+    JSON, a non-array body, an entry that is not an object, a ``t`` that is
+    not text or an ``i`` that is not an integer — logs the one warning naming
+    the reason and answers the EMPTY list (task 1.1: «битый JSON читается как
+    пустой список с записью в журнал»); the damaged row is never rewritten
+    here.  Whether a structurally fine pair still names an existing entity is
+    the connector's restore rule (design Д3: unavailable pairs are dropped at
+    read of the game open), not the codec's — a foreign type text reads back
+    exactly as stored.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        _preview_pins_corrupt("not parseable JSON", raw)
+        return []
+    if not isinstance(data, list):
+        _preview_pins_corrupt(
+            f"must be a JSON array, got {type(data).__name__}", raw
+        )
+        return []
+    pins: list[tuple[str, int]] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            _preview_pins_corrupt(f"entry {entry!r} is not a JSON object", raw)
+            return []
+        type_raw = entry.get("t")
+        if not isinstance(type_raw, str):
+            _preview_pins_corrupt(f"type {type_raw!r} is not text", raw)
+            return []
+        id_raw = entry.get("i")
+        if isinstance(id_raw, bool) or not isinstance(id_raw, int):
+            _preview_pins_corrupt(f"id {id_raw!r} is not an integer", raw)
+            return []
+        pins.append((type_raw, id_raw))
+    return pins
+
+
+class PreviewPinsRepository:
+    """Typed storage access for the per-game ``preview_pins`` key.
+
+    The same typed-wrapper pattern as :class:`CurrentDateRepository`: a thin
+    face over the shared :class:`GameSettingsRepository` trio, owning the
+    JSON ``[{"t", "i"}]`` format on top of it.  An absent key is the normal
+    empty state and reads as the empty list WITHOUT a warning; a damaged
+    value reads as the empty list WITH the one journal entry the codec logs,
+    the row staying byte-identical for the next explicit pin/unpin to
+    overwrite (design Д3: «молчаливое излечение хранилища» happens through
+    the user's next write, never as a background rewrite).  Like the trio,
+    this repository never commits — the caller owns the transaction (the
+    service's unit of work).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._settings = GameSettingsRepository(session)
+
+    async def load(self) -> list[tuple[str, int]]:
+        """The stored pins in pin order — empty for "absent or unreadable"."""
+        raw = await self._settings.get(PREVIEW_PINS_KEY)
+        if raw is None:
+            return []
+        return _decode_preview_pins(raw)
+
+    async def save(self, pins: Sequence[tuple[str, int]]) -> None:
+        """Store the full list as the game's pins, overwriting any previous
+        (even corrupted) value; the array order carries the pin order."""
+        await self._settings.upsert(PREVIEW_PINS_KEY, _encode_preview_pins(pins))

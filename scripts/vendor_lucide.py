@@ -67,6 +67,7 @@ ICON_NAMES = (
     "minus",
     "mouse-pointer",
     "pencil",
+    "pin",
     "play",
     "plug-zap",
     "plus",

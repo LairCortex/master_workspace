@@ -60,9 +60,25 @@ Button {
     // deliberately larger glyph (the ladder's disclosure chevron) overrides it.
     property int iconSize: 16
 
+    // State angle of the glyphs in degrees (user request 2026-10-03, the
+    // preview's pin): a stateful glyph toggle leans its glyph at rest and
+    // turns it upright when the state engages. The seat is the library's
+    // (the usage never reaches into the icon node); ThemeIcon spins around
+    // the glyph's own centre. 0 (default) paints bit-for-bit as before.
+    property real iconRotation: 0
+
+    // Glyph in the accent colour while the button is ENABLED (same request):
+    // the stateful toggles mark their engaged side by the accent, the way
+    // ``accentBackground`` marks it over an accent fill. The face law stays
+    // one chain — disabled mutes first, an accent-filled face keeps its own
+    // foreground, and plain usages never set this flag, so every existing
+    // button keeps the previous tint word-for-word.
+    property bool iconAccentTint: false
+
     readonly property color iconTint: !enabled
         ? mutedColor
-        : accentBackground ? accentFgColor : fgColor
+        : accentBackground ? accentFgColor
+        : iconAccentTint ? accentColor : fgColor
 
     // Shared gap between the icon and the caption of an icon+text button.
     readonly property real iconGap: Tokens.px(islandTokens, "space.xs", 4)
@@ -125,6 +141,7 @@ Button {
             name: control.iconName
             size: control.iconSize
             tint: control.iconTint
+            glyphRotation: control.iconRotation
             x: (contentBox.width - contentBox.groupWidth) / 2
             y: (contentBox.height - height) / 2
         }
@@ -154,6 +171,7 @@ Button {
             name: control.trailingIconName
             size: control.iconSize
             tint: control.iconTint
+            glyphRotation: control.iconRotation
             x: glyphIcon.x + contentBox.groupWidth - contentBox.trailingGlyphW
             y: (contentBox.height - height) / 2
         }

@@ -210,13 +210,16 @@ async def test_search_result_selection(app, wait_for, menu_qmenu):
     assert canvas.selected_id == event_id
     assert any(e.id == event_id for e in timeline_vm_events(canvas))
 
-    # entity result, single click (NRI-0022 task 6.2 re-pin): the full-path
-    # gesture — the character has no events, so the scale and the panel stay
-    # as they are and only the preview shows the entity; no card opens.
+    # entity result, single click (NRI-0025 task 6.1): the live-area-only
+    # gesture — the character goes to the preview and nothing else; the
+    # scale and the panel keep the event chosen above; no card opens.
     window.search_bar.result_selected.emit("character", char_id)
     await wait_for(
-        lambda: window.entity_preview.vm.shown_entity is not None
-        and window.entity_preview.vm.shown_entity.id == char_id
+        lambda: [
+            (p["entityType"], p["entityId"])
+            for p in window.entity_preview.vm.panes
+        ]
+        == [("character", char_id)]  # the list VM, zero-pin frame
     )
     await helpers.wait_until_settled()
     assert canvas.selected_id == event_id  # the scale kept the previous choice

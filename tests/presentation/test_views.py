@@ -140,12 +140,13 @@ class TestMainWindow:
         assert callable(w.detail_panel.show_event)
         assert callable(w.detail_panel.clear)
         assert hasattr(w.detail_panel, "entity_clicked")
-        # The preview's public face for the group-5 wiring (task 4.1):
-        # one feed channel in, one selection bus out, a clear() for the
-        # delete/new-game lifecycle.
-        assert callable(w.entity_preview.show_entity)
+        # The preview's public face for the group-5 wiring (NRI-0025 task
+        # 5.1): one slot-frame channel in, one selection bus + pin channel
+        # out, a clear() for the delete/new-game lifecycle.
+        assert callable(w.entity_preview.show_slots)
         assert callable(w.entity_preview.clear)
         assert hasattr(w.entity_preview, "entity_requested")
+        assert hasattr(w.entity_preview, "pin_toggle_requested")
 
     def test_main_window_game_name_in_title(self, qtbot):
         w = MainWindow(
