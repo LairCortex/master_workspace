@@ -2,6 +2,15 @@
 > существуют оффскрин-тестами и строками «Живая проверка» в docs/qa/test-cases/; исходные отчёты
 > удалены, имена отчётов ниже — исторические идентификаторы, не пути.
 
+> Сверка имён тестов 2026-10-03: все 14 файлов из таблицы живы; шесть имён упразднены NRI-0024 и
+> заменены: `test_close_while_running_asks_then_stops_and_closes`, `test_close_declined_keeps_table_and_panel`,
+> `test_close_without_table_never_asks`, `test_force_close_skips_the_prompt` — закрытие пульта больше
+> не спрашивает и не останавливает (TB1-подтверждение выведено из нормы), ныне это
+> `test_close_while_running_never_asks_and_never_stops` + `test_stop_button_is_explicit_named_and_leaves_the_desk_open`
+> (тот же файл `tests/ui/test_table_host_panel_close.py`); `test_llm_setup_entry_is_a_visible_non_modal_titled_window`
+> и `test_llm_setup_second_entry_reuses_the_single_window` — настройка LLM стала листом, норму закрепляют
+> `tests/presentation/test_llm_setup_pair_layout.py` и поведение листа в `tests/ui/test_e2e_llm.py`.
+
 # NRI-0016 — соответствие «строка спеки ↔ закрепляющий тест» (задача 7.4)
 
 Инвентарь по шести дельта-спекам `openspec/changes/nri-0016-table-llm-logging/specs/`.
