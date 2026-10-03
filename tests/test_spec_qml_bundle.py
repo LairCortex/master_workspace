@@ -217,6 +217,42 @@ def test_spec_datas_uses_runtime_import_path_as_destination():
     assert f'"{QML_DEST}"' in datas
 
 
+# Documentation viewers (app/presentation/wiring.py resolve their files as
+# bundle_resource_path("docs") / <file_name>) read exactly these two files;
+# the whole docs/ directory — QA reports/screenshots under docs/qa plus the
+# development roadmaps — must stay out of the release bundle.
+DOCS_DEST = "docs"
+EXPECTED_DOC_FILES = ("README.md", "CHANGELOG.md")
+
+
+def test_spec_datas_ship_docs_without_qa():
+    datas = _spec_section("datas")
+    # The directory copy is the defect this guards: it dragged the whole
+    # docs/qa (QA artifacts and screenshots) into the release.
+    assert f'("{DOCS_DEST}", "{DOCS_DEST}")' not in datas, (
+        "nri_manager.spec datas must not bundle the whole docs/ directory — "
+        "QA artifacts and screenshots under docs/qa do not ship in a release"
+    )
+    assert "docs/qa" not in datas, (
+        "nri_manager.spec datas must not reference docs/qa — QA artifacts "
+        "and screenshots never belong in the release bundle"
+    )
+    # The viewers must keep working: every file they open ships, under the
+    # destination the frozen bundle_resource_path("docs") layout scan derives.
+    for file_name in EXPECTED_DOC_FILES:
+        source = f"{DOCS_DEST}/{file_name}"
+        assert f'"{source}"' in datas, (
+            f"nri_manager.spec datas must ship {source} — the documentation "
+            "viewer opens bundle_resource_path('docs') / "
+            f"{file_name} from the filesystem"
+        )
+        assert (REPO_ROOT / DOCS_DEST / file_name).is_file()
+    assert f'"{DOCS_DEST}"' in datas, (
+        f"the docs files must land in the '{DOCS_DEST}' destination — the "
+        "frozen resolver scans for <resource root>/docs"
+    )
+
+
 def test_spec_hiddenimports_include_qtquick_modules():
     hidden = _spec_section("hiddenimports")
     for module in QUICK_HIDDEN_IMPORTS:

@@ -44,7 +44,15 @@ a = Analysis(
     # catalog's .py modules are already part of the PYZ archive. Keep in sync
     # with PresetCatalog.list() (checked by tests/test_spec_presets_bundle.py).
     datas=[
-        ("docs", "docs"),
+        # The documentation viewers (app/presentation/wiring.py, via
+        # bundle_resource_path("docs") / file_name) read exactly these two
+        # files; the QA artifacts and screenshots under docs/qa (~59 MB of
+        # reports) and the development roadmaps never ship in a release, so
+        # docs/ goes in as this explicit file pair, never as the directory
+        # (checked by tests/test_spec_qml_bundle.py; destination "docs" is
+        # what the frozen resolver's layout scan expects).
+        ("docs/README.md", "docs"),
+        ("docs/CHANGELOG.md", "docs"),
         # Qt translation catalogs for the Russian standard chrome (see
         # QT_TRANSLATIONS_DIR above): destination = the PySide6/Qt/translations
         # dir the frozen QLibraryInfo derives from its own prefix.
