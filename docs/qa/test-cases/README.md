@@ -6,15 +6,15 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
 
 ## Файлы набора
 
-Итог: **46 спецификаций, 1156 кейсов, 117 зафиксированных пробелов, 124 строки «Живая проверка»**
+Итог: **46 спецификаций, 1158 кейсов, 117 зафиксированных пробелов, 131 строка «Живая проверка»**
 (процедуры живого подтверждения, перенесённые из 33 аудитов `docs/qa/*.md`).
 
 | Файл | Спецификации (аббревиатура ID) | Кейсов | Пробелов |
 |---|---|---|---|
 | `01-launcher-archive-import.md` | game-launcher (LNCH), game-archive (GARC), xlsx-import (XLSX), document-viewer (DOCV) | 92 | 10 |
-| `02-calendar.md` | game-calendar-core (CALC), game-calendar-grid (CALG), game-calendar-settings (CALS), calendar-wizard (CALW), date-eras (ERAS), current-date (NOWD) | 156 | 7 |
+| `02-calendar.md` | game-calendar-core (CALC), game-calendar-grid (CALG), game-calendar-settings (CALS), calendar-wizard (CALW), date-eras (ERAS), current-date (NOWD) | 157 | 7 |
 | `03-events-timeline.md` | event-timeline (TLNE), event-subevents (SUBE), event-time (EVTM), event-types (EVTP) | 94 | 7 |
-| `04-main-window-sheets.md` | main-window (MAIN), modal-sheets (SHET), ui-layout-grid (GRID), world-snapshot (SNAP) | 76 | 8 |
+| `04-main-window-sheets.md` | main-window (MAIN), modal-sheets (SHET), ui-layout-grid (GRID), world-snapshot (SNAP) | 77 | 8 |
 | `05-entity-preview-pins.md` | entity-preview (PREV), preview-pins (PINS) | 43 | 4 |
 | `06-entities-search-mentions.md` | entity-addition (EADD), entity-generation (EGEN), related-entity-creation (RELC), mentions (MENT), global-search (SRCH) | 79 | 13 |
 | `07-character-sheets.md` | character-sheet-editor (CHED), -host (CHST), -instance (CHIN), -pdf (CHPD), -preset (CHPR), -storage (CHSR) | 222 | 15 |
@@ -53,6 +53,8 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
   — единственный объект без единой ссылки (откатывается через git).
 - Особый случай: `2026-09-29-checkbox-activation-live.md` без прямых ссылок, но это
   доказательная база «live-аудита 2026-09-29 F2» из AGENTS.md — оставлен.
+- **Архивная сводка:** отчёты и ассеты удалены 2026-10-03, сохранены только `references/`
+  (эталонный PNG + spec-test-mapping).
 
 ## Идентификаторы
 
@@ -108,3 +110,21 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
 Запуск: `python -m app.main` (или `python dev_run.py`). Изоляция по соглашению репозитория:
 одноразовая игра `qa-<дата>`, кнопки генерации ИИ не нажимать, завершение —
 `pkill -if "app.main"`. Детали экранов и флоу — в `app-map.md`.
+
+## Открытые вопросы, перенесённые из аудитов
+
+- **H1** — синтетические координатные клики харнесса долетают не до всех целей (виджетные
+  листы и контролы островов молчат при живом AX-прессе); молчание клика — не дефект,
+  повторять через доступность или реальную мышь (примечание в файле 11, предупреждение в карте).
+- **H2** — AX-рамки островных текстовых полей спроецированы со смещением экранного положения;
+  в поля заходить только пресс-действием и вводом по элементу с визуальным подтверждением фокуса.
+- **F1/A2 + кластер стола** — посадка не имеет адресного чекбокс-узла, потому живой кластер
+  над рядом поиска ни разу не наблюдался; его контракт пинен только оффскрин, живая половина
+  открыта до починки адресности посадки (TC-CHST-010/036/037).
+- **OBS-1** — строка действий обзора мира на узкой сохранённой рамке обрезает «Показать всё»;
+  default-половина закрыта, живая половина открыта (TC-SNAP-040).
+- **OBS-3** — нативные радио мастера календаря рисуются стилём ОС вне тематизации;
+  процедура наблюдения зафиксирована (TC-CALW-033).
+- **Цвета (F07/F10)** — цвет фона рейтинга карточки/предпросмотра и цвета снимка мира
+  ⏳ не подтверждены с прежних прогонов; zoom-процедура обеих тем в TC-EADD-002,
+  TC-PREV-001, TC-SNAP-023.
