@@ -161,11 +161,12 @@ Rectangle {
                 }
 
                 // The card's own band — its ONLY headline line (delta
-                // «Заголовок предпросмотра»): «Карточка: <тип из реестра> ·
-                // <имя сущности>» from the VM (the reader's fix 2026-10-03
-                // moved the name into the caption — with up to four cards in
-                // the column the headline must say WHICH card it is; the
-                // duplicate with the name field inside is the point).
+                // «Заголовок предпросмотра»): «Карточка: <тип из реестра>»
+                // from the VM — and the type ONLY: the spec bars the entity's
+                // own name from the caption (it stays the name field inside
+                // the card); the PR-015 fix retired the short-lived
+                // «· <имя>» tail of 2026-10-03 — a live copy of a pinned
+                // entity is told apart by its pin state, not by the headline.
                 // It sits OUTSIDE the flickable — the header is fixed above
                 // the scrolling content, its canvas staying the surface the
                 // band has always worn.

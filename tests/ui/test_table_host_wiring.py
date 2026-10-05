@@ -20,14 +20,14 @@ from tests.ui.test_char_sheets_wiring import (
 
 
 def _seat_box(panel: TableHostPanel, index: int) -> QCheckBox:
-    # NRI-0016 (TB3-ремонт): seating lives on the row's real QCheckBox widget.
-    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(index))
-    return row_widget.findChild(QCheckBox)
+    # NRI-0016 (TB3-ремонт) + PR-022-ремонт: seating lives on the row's real
+    # QCheckBox — a plain child widget of the desk, addressed by row order.
+    return panel.seat_boxes()[index]
 
 
 def _check_all_seats(panel: TableHostPanel) -> None:
-    for i in range(panel.seat_list.count()):
-        _seat_box(panel, i).setChecked(True)
+    for box in panel.seat_boxes():
+        box.setChecked(True)
 
 
 async def test_menu_opens_table_panel(app, wait_for):

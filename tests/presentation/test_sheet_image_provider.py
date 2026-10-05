@@ -93,7 +93,27 @@ def test_register_font_registers_the_bundled_family(qapp, monkeypatch):
     assert sheet_font(14.5).pointSizeF() == 14.5
 
 
-def test_shell_setup_registers_font_before_islands_can_load(qapp, monkeypatch):
+@pytest.fixture
+def fresh_shell(qapp, monkeypatch):
+    """A brand-new shell for the two setup-order assertions (PR-033 posture).
+
+    The session engine makes ``setup_qml_shell`` a no-op after its first call,
+    so the registration order is only observable on a deliberately reset one;
+    the reset is a documented test-only escape (see the shell docstring). The
+    finalizer only drops the shell the test built under the patches — it must
+    NOT rebuild here: fixture finalizers run before ``monkeypatch`` is undone,
+    so a rebuild would bake the patched stubs into the shared engine. Leaving
+    the shell down is safe: the next island calls ``setup_qml_shell`` and the
+    real registration runs for the rest of the session.
+    """
+    from app.presentation.qml.engine import reset_qml_shell
+
+    reset_qml_shell()
+    yield
+    reset_qml_shell()
+
+
+def test_shell_setup_registers_font_before_islands_can_load(qapp, monkeypatch, fresh_shell):
     import app.presentation.qml.sheet_font as sheet_font_mod
     import app.presentation.qml.engine as engine_mod
 

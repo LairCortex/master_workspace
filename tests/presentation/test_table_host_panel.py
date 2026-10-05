@@ -35,9 +35,9 @@ def qapp():
 
 
 def _seat_box(panel: TableHostPanel, index: int) -> QCheckBox:
-    """NRI-0016 (TB3-ремонт): the seating state lives on the row's QCheckBox."""
-    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(index))
-    return row_widget.findChild(QCheckBox)
+    """NRI-0016 (TB3-ремонт) + PR-022-ремонт: the seating state lives on the
+    row's QCheckBox — a plain child widget of the desk, by row order."""
+    return panel.seat_boxes()[index]
 
 
 def test_menu_table_exists(qtbot):

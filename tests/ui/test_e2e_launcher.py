@@ -20,6 +20,7 @@ from datetime import date
 import pytest
 
 import shutil
+import shiboken6
 
 from app.main import Application
 from app.presentation.views.game_launcher_dialog import (
@@ -101,9 +102,16 @@ async def test_launcher_open_existing_game_with_data(app, tmp_games_dir, wait_fo
         canvas = timeline_probe.tape(window2)
         assert len(canvas.events) == 1
         assert canvas.events[0].name == "Взятие Штурмграда"
-        assert not window.isVisible()  # previous window closed on switch
+        # PR-002: the replaced window retires for good — its deferred delete
+        # (posted by the replacement) lands with the next Qt pump.
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not shiboken6.isValid(window)  # previous window destroyed on switch
     finally:
-        window.close()  # no-op if start() already closed it
+        if shiboken6.isValid(window):
+            window.close()  # no-op path kept for a build that only closed it
         await application.shutdown()
 
 
@@ -147,10 +155,14 @@ async def test_switch_game_from_menu(qapp, llm_client, tmp_games_dir, tmp_llm_co
         # window shows the selected base — and it is the SAME application,
         # the very thing «без перезапуска процесса» means (spec «Подтверждение
         # пересобирает главное окно»).
-        await wait_for(lambda: "beta" in application._window.windowTitle())
+        await wait_for(
+            lambda: application._window is not None
+            and "beta" in application._window.windowTitle()
+        )
         assert application._window is not window
         assert application is application  # one process, one Application object
-        assert not window.isVisible()
+        # PR-002: the old window leaves as a destroyed object, not a hidden one.
+        assert not shiboken6.isValid(window)
     finally:
         application._window.close()
         await application.shutdown()
@@ -175,20 +187,23 @@ async def test_switch_game_entry_opens_the_launcher_as_a_sheet(app, wait_for):
     sheet = _visible_switch_sheet(window)
 
     # Sheet format (spec modal-sheets «Каждый класс окна задан контрактом»):
-    # WindowModal over the main window, the header naming the sheet with its
-    # windowTitle, a visible exit button — not a separate titled window.
-    assert sheet.windowModality() == Qt.WindowModality.WindowModal
+    # an attached native sheet (Qt.Sheet) shown NonModal at Qt level (PR-012),
+    # the header naming the sheet with its windowTitle, a visible exit button
+    # — not a separate titled window.
+    assert sheet.windowFlags() & Qt.WindowType.Sheet
+    assert sheet.windowModality() == Qt.WindowModality.NonModal
     assert sheet.isVisible()
     assert sheet.windowTitle() == "Сменить игру…"
     title_label = sheet.findChild(type(sheet._title_label), "sheetFrameTitle")
     assert title_label.text() == "Сменить игру…"
     close_button = sheet.findChild(QPushButton, "sheetFrameCloseButton")
     assert close_button.isVisible()
-    # The main layer under the sheet is blocked BY QT MODALITY (WindowModal
-    # filters the parent window's input at event dispatch — Qt never flips
-    # the parent's isEnabled() flag; the sheet family's other green pins,
-    # calendar-wizard and world-snapshot, pin the same WindowModal contract
-    # asserted above, and the app-level block is the gated entry below).
+    # The main layer under the sheet stays blocked, but NOT by Qt modality
+    # (the sheet is NonModal at Qt level — PR-012): on cocoa the attached
+    # sheet's document modality holds the parent window, and the window's own
+    # content gate (the sheet_stack_changed feed) is the cross-platform face
+    # of the block. The native menu bar keeps answering the exception entries
+    # for exactly this reason; the app-level gate is the pinned entry below.
 
     # The launcher content is really inside the sheet (task 4.1): list, VM,
     # the island under the frame's content slot.
@@ -256,7 +271,8 @@ async def _switch_via_sheet(application, window, wait_for, needle: str):
     helpers.select_launcher_game(sheet.content, needle)
     helpers.open_launcher_game(sheet.content)
     await wait_for(
-        lambda: application._window is not old
+        lambda: application._window is not None
+        and application._window is not old
         and needle in application._window.windowTitle()
     )
     await helpers.wait_until_settled()
@@ -283,7 +299,7 @@ async def test_two_switches_show_each_game_data_in_the_same_process(
     # ── switch 1: alpha → beta ─────────────────────────────────────────────
     window_b = await _switch_via_sheet(application, window_a, wait_for, "beta")
     assert window_b is not window_a
-    assert not window_a.isVisible()
+    assert not shiboken6.isValid(window_a)  # PR-002: the old window is destroyed
     # The flat beta.db is a legacy layout — the same startup rule migrates
     # it into the catalog directory games/beta/game.db (design D7/D8).
     assert application._db_path == str(tmp_games_dir / "beta" / "game.db")
@@ -296,7 +312,7 @@ async def test_two_switches_show_each_game_data_in_the_same_process(
     # ── switch 2: beta → alpha (the old game knows its flag: no wizard) ────
     window_a2 = await _switch_via_sheet(application, window_b, wait_for, "alpha")
     assert window_a2 is not window_b and window_a2 is not window_a
-    assert not window_b.isVisible()
+    assert not shiboken6.isValid(window_b)  # PR-002: the old window is destroyed
     # alpha was migrated into its catalog dir on the very first startup.
     assert application._db_path == str(tmp_games_dir / "alpha" / "game.db")
     # «данные новой базы на экране»: alpha shows its own event only.
@@ -351,6 +367,56 @@ async def test_two_switches_do_not_grow_theme_subscribers(
     await application.shutdown()
 
 
+async def test_switch_destroys_the_old_main_window_not_just_hides_it(
+    qapp, llm_client, tmp_games_dir, tmp_llm_config, wait_for,
+):
+    """PR-002 (blocking defect, full-run 2026-10-03): a confirmed «Сменить
+    игру…» used to leave the old MainWindow alive-but-hidden; on cocoa the
+    first sheet opened after the switch raised that island-less window back
+    as a black rectangle over the working one — the app was visually dead
+    until restart. The window-class norm (NRI-0024, AGENTS.md: the switch
+    replaces the window under role «main» in the same process) leaves no
+    room for a survivor: after the switch the old window's C++ side must be
+    gone, the top-level list must hold exactly one live MainWindow — the new
+    one — and never a hidden ghost of the previous game."""
+    import shiboken6
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    from app.presentation.views.main_window import MainWindow
+
+    path_a = tmp_games_dir / "alpha.db"
+    path_a.touch()
+    path_b = tmp_games_dir / "beta.db"
+    path_b.touch()
+
+    application = Application(qapp, http=llm_client)
+    window_a = await application.start(str(path_a))
+    await _dismiss_boot_wizard(application, wait_for)
+
+    window_b = await _switch_via_sheet(application, window_a, wait_for, "beta")
+    await _dismiss_boot_wizard(application, wait_for)
+    # The switch closed the old window; run its deferred retirement here.
+    QCoreApplication.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    # PR-002: hidden-but-alive was the ghost's carrier — the C++ side is gone…
+    assert not shiboken6.isValid(window_a)
+    # …and the old window no longer stands in the top-level list: there is no
+    # hidden live top-level of the previous game left to raise back as the
+    # black rectangle, and the application's current window is the visible
+    # replacement.
+    assert not any(
+        w is window_a for w in QApplication.topLevelWidgets()
+        if isinstance(w, MainWindow)
+    )
+    assert application._window is window_b
+    assert window_b.isVisible()
+    window_b.close()
+    await application.shutdown()
+
+
 async def test_switch_game_creating_a_new_game_opens_window_and_wizard(
     qapp, llm_client, tmp_games_dir, tmp_llm_config, dialog_input, wait_for,
 ):
@@ -386,12 +452,20 @@ async def test_switch_game_creating_a_new_game_opens_window_and_wizard(
 
         # The switch is async (stack down → shutdown → rebuild); the new
         # window shows the fresh game, the old window leaves, no task stays
-        # pending anywhere.
-        await wait_for(lambda: application._window is not window)
+        # pending anywhere. (``_window`` is briefly None mid-switch — the
+        # old window retires before the replacement is built, PR-002.)
+        await wait_for(
+            lambda: application._window is not None
+            and application._window is not window
+        )
         await helpers.wait_until_settled()
         new_window = application._window
         assert "Гамлет" in new_window.windowTitle()
-        assert not window.isVisible()
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        QCoreApplication.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert not shiboken6.isValid(window)  # PR-002: destroyed, not hidden
 
         # The fresh game is a first run: its calendar wizard rises as a sheet
         # over the NEW window (spec calendar-wizard «сначала главное окно,
@@ -480,14 +554,18 @@ def test_switch_game_to_new_game_survives_the_windowless_moment_on_qasync_loop(
 
         # On the buggy build the windowless moment quits the loop here and
         # this wait never gets its turn — run_until_complete then dies with
-        # "Event loop stopped before Future completed".
+        # "Event loop stopped before Future completed". (``_window`` is None
+        # for the windowless moment itself — the old window retires, PR-002.)
         await _wait_until(
-            lambda: application._window is not window,
+            lambda: application._window is not None
+            and application._window is not window,
             "the switch task died — no new window",
         )
         await _settle()
         assert "Гамлет" in application._window.windowTitle()
-        assert not window.isVisible()
+        # The live qasync loop runs the old window's deferred destroy right
+        # away: after the switch it is a dead wrapper, not a hidden window.
+        assert not shiboken6.isValid(window)
         await _wait_until(
             lambda: application._calendar_wizard is not None,
             "no first-run wizard over the new window",
@@ -555,6 +633,10 @@ async def test_switched_window_keeps_the_main_placement_role(app, tmp_games_dir,
     (tmp_games_dir / "beta.db").touch()
 
     old_rect = window.frameGeometry().getRect()
+    # The old window is destroyed by the switch (PR-002), so the probe's
+    # constraint/size — the retired window's own — are read while it is alive.
+    old_minimum = window.minimumSize()
+    old_size = window.size()
 
     window_b = await _switch_via_sheet(application, window, wait_for, "beta")
     rect_b = window_b.frameGeometry().getRect()
@@ -564,8 +646,8 @@ async def test_switched_window_keeps_the_main_placement_role(app, tmp_games_dir,
     # shrank it — a window nobody had placed would still stand at old_rect.
     assert rect_b != old_rect
     probe = QWidget()
-    probe.setMinimumSize(window.minimumSize())
-    probe.resize(window.size())
+    probe.setMinimumSize(old_minimum)
+    probe.resize(old_size)
     probe.show()
     assert application._geometries.restore(probe, "main") is True
     assert probe.frameGeometry().getRect() == rect_b

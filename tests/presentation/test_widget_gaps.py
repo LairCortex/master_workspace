@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QDialog, QFileDialog, QListWidget, QMessageBox
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 import app.presentation.views.detail_panel as _detail_panel_mod
 from app.domain.game_calendar import MonthDay
@@ -441,8 +441,7 @@ class TestEntityCardDialogGaps:
 
         assert len(requested) == 1
         picker = requested[0]
-        items = picker.findChild(QListWidget)
-        items.item(0).setSelected(True)
+        picker.vm.toggleRow(0)  # PR-020: the row ticks live on the VM now
         picker.accept()
 
         assert section.get_current_ids() == [1]

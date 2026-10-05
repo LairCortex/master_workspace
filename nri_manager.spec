@@ -130,6 +130,10 @@ a = Analysis(
          "app/presentation/qml"),
         ("app/presentation/qml/EntityCardRoot.qml",
          "app/presentation/qml"),
+        # PR-020: the «Выберите <тип>» binding picker island — the RowItem
+        # rows are the accessibility tree's only addressable channel.
+        ("app/presentation/qml/RelatedPickerRoot.qml",
+         "app/presentation/qml"),
         # nri.components library module (change
         # add-qml-component-library-q2a1, design D5): islands do
         # `import nri.components`, which Qt resolves as
@@ -152,15 +156,25 @@ a = Analysis(
         # library script imported by the three roots, not a qmldir type.
         ("app/presentation/qml/nri/components/panelHeader.js",
          "app/presentation/qml/nri/components"),
-        # Lucide glyph pair of the library ThemeIcon (user request 2026-09-30):
-        # icons.js is the GENERATED path data (scripts/vendor_lucide.py expands
-        # the ISC-licensed SVGs vendored under app/presentation/qml/nri/
-        # components/icons/ — those stay a build-time source, the runtime reads
-        # only the generated map) and ThemeIcon.qml is its brush.
+        # Lucide glyphs (user request 2026-09-30; PR-027 fix 2026-10-04): the
+        # set has TWO runtime readers, so both halves ship. The QML library
+        # ThemeIcon draws the GENERATED path data icons.js (scripts/
+        # vendor_lucide.py expands it from the vendored SVGs) and ThemeIcon.qml
+        # is its brush; the widget side app/presentation/views/lucide_icons.py
+        # builds QIcon out of the SAME vendored SVG files it reads from the
+        # filesystem at runtime (ICONS_DIR is module-relative, the precedent of
+        # preset_catalog/sheet_font — under the bundle it lands under
+        # sys._MEIPASS), so the icons/ directory is runtime data too, never a
+        # build-time-only source: without it opening any game died with
+        # KeyError "lucide icon 'chevron-left' is not vendored" (PR-027). The
+        # directory ships verbatim — every SVG plus the upstream ISC LICENSE
+        # the glyphs travel with (checked by tests/test_spec_qml_bundle.py).
         ("app/presentation/qml/nri/components/icons.js",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/ThemeIcon.qml",
          "app/presentation/qml/nri/components"),
+        ("app/presentation/qml/nri/components/icons",
+         "app/presentation/qml/nri/components/icons"),
         ("app/presentation/qml/nri/components/CardPanel.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/HintText.qml",

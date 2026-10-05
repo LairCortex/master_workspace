@@ -18,7 +18,7 @@ stack-owned, released on ``finished``) like every island sheet does.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QDialog,
@@ -113,6 +113,18 @@ class SheetFrame(QDialog):
         row.addWidget(close)
         layout.addWidget(header)
 
+        # PR-005: Esc is the sheet's OWN result, not a favour of whatever widget
+        # holds focus. QDialog answers Escape in its keyPressEvent — a route that
+        # only runs if the key ARRIVES, and the live island sheets proved it does
+        # not: a QQuickWidget forwards the key to its offscreen QQuickWindow,
+        # which accepts it there (live trace 2026-10-05: «key-> QQuickWindow(
+        # …OffscreenWindow) → accepted=True» with focus inside the document), so
+        # the frame never saw the press and the sheet stayed open. The frame
+        # therefore answers the key on the content itself (eventFilter below,
+        # armed by add_content): Qt consults event filters BEFORE the widget's
+        # own keyPressEvent, so Escape dies on the frame's terms instead of the
+        # island's, and native popups (separate windows) keep their own Escape.
+
         content = QWidget(self)
         content.setObjectName("sheetFrameContent")
         self._content_layout = QVBoxLayout(content)
@@ -160,7 +172,22 @@ class SheetFrame(QDialog):
 
     def add_content(self, widget: QWidget, stretch: int = 0) -> None:
         """Seat one content widget into the slot below the header."""
+        # PR-005: arm the frame's own Escape answer on this widget (see the
+        # eventFilter below) — Qt runs the filter before the widget's
+        # keyPressEvent, so a content that eats the key (the island's
+        # offscreen QQuickWindow) cannot keep the sheet open.
+        widget.installEventFilter(self)
         self._content_layout.addWidget(widget, stretch)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 — Qt API
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            # The one cancel path shared with the header's «Закрыть» button.
+            self.reject()
+            return True
+        return super().eventFilter(obj, event)
 
     # ── header ⇄ windowTitle (spec: «текст, соответствующий windowTitle») ───
 

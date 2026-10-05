@@ -295,17 +295,20 @@ def test_web_constants_match_the_issued_pin_length():
     assert len(FakeHost().pin_value) == issued
 
 
-# ── 3.1 посадки на настоящих QCheckBox (TB3-ремонт), 3.2 гейт «Выгнать» (TB4) ──
+# ── 3.1 посадки на настоящих QCheckBox (TB3-ремонт + PR-022-ремонт), 3.2 гейт «Выгнать» (TB4) ──
 
 def _seat_box(panel: TableHostPanel, index: int) -> QCheckBox:
-    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(index))
-    return row_widget.findChild(QCheckBox)
+    # PR-022-ремонт: the rows are plain child widgets of the desk, so the
+    # row's checkbox IS the panel's checkbox — addressed by row order.
+    return panel.seat_boxes()[index]
 
 
 def test_seat_rows_carry_real_checkboxes_and_load_quietly(qtbot):
-    # чекбокс-виджет в строке, имя — подпись рядом, у строк больше нет
-    # ItemIsUserCheckable; загрузка чекнутой строки стреляет toggled под
-    # _seats_loading-гардом — экземпляр не пересаживается (без рекурсии).
+    # чекбокс-виджет в строке, имя экземпляра — accessibleName чекбокса,
+    # загрузка чекнутой строки стреляет toggled под _seats_loading-гардом —
+    # экземпляр не пересаживается (без рекурсии).
+    from PySide6.QtWidgets import QAbstractItemView
+
     host = FakeHost(seated=(11,))
     host.start_fake()
     panel = _panel(qtbot, host)
@@ -315,16 +318,22 @@ def test_seat_rows_carry_real_checkboxes_and_load_quietly(qtbot):
     assert isinstance(_seat_box(panel, 0), QCheckBox)
     assert _seat_box(panel, 0).isChecked()
     assert _seat_box(panel, 1).isChecked() is False
-    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(1))
+    assert _seat_box(panel, 1).accessibleName() == "Лист B"
+    row_widget = _seat_box(panel, 1).parentWidget()
     assert row_widget.findChild(QLabel).text() == "Лист B"
-    # Живой ре-аудит 2026-09-25: текст на самом item рисуется делегатом ПОД
-    # прозрачным row-widget — имя двоилось под чекбоксом. Item обязан быть
-    # без текста, видимое имя несёт QLabel строки, а имя доступности —
-    # AccessibleTextRole (делегат его не рисует).
-    assert panel.seat_list.item(0).text() == ""
-    assert panel.seat_list.item(1).text() == ""
-    assert panel.seat_list.item(1).data(Qt.ItemDataRole.AccessibleTextRole) == "Лист B"
-    assert panel.seat_list.item(0).data(Qt.ItemDataRole.CheckStateRole) is None
+    # PR-022: the checkbox must be a REAL child widget of the desk, never a
+    # delegate/cell widget of an item view — an item view publishes only its
+    # virtual cells to the accessibility tree, which is how the live cocoa
+    # tree lost every seat node (0 AXCheckBox). No QAbstractItemView may sit
+    # between the box and the panel.
+    ancestor = row_widget
+    while ancestor is not panel:
+        assert not isinstance(ancestor, QAbstractItemView), (
+            "a seating checkbox hides behind an item view — the live tree "
+            "will publish cells instead of the checkbox (PR-022 regression)"
+        )
+        ancestor = ancestor.parentWidget()
+        assert ancestor is not None, "the row is not a descendant of the panel"
     assert panel.checked_seat_ids() == [11]
     host.stop_fake()
 
@@ -336,19 +345,18 @@ async def test_clicking_checkbox_and_row_label_drives_seating(qtbot):
     host.start_fake()
     panel = _panel(qtbot, host)
     panel.set_instances([(11, "Лист A"), (12, "Лист B")])
+    QApplication.processEvents()  # settle the row geometry before the mouse clicks
 
-    # клик по строке (её подписи) — текущая строка, чекбокс не тронут
-    panel.seat_list.setCurrentRow(0)
-    label1 = panel.seat_list.itemWidget(panel.seat_list.item(1)).findChild(QLabel)
+    # клик по подписи строки — чекбокс не тронут (подпись не контрол)
+    label1 = _seat_box(panel, 1).parentWidget().findChild(QLabel)
     QTest.mouseClick(label1, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
-    assert panel.seat_list.currentRow() == 1
+    assert _seat_box(panel, 1).isChecked() is False
     assert host.calls == []
 
-    # клик по свободному чекбоксу сажает и оставляет строку текущей
+    # клик по свободному чекбоксу сажает
     QTest.mouseClick(_seat_box(panel, 1), Qt.MouseButton.LeftButton)
     assert host.calls == [("seat", 12)]
-    assert panel.seat_list.currentRow() == 1
 
     # клик по чекнутому снимает посадку: drop_seat уходит в событийный цикл
     QTest.mouseClick(_seat_box(panel, 0), Qt.MouseButton.LeftButton)
@@ -365,6 +373,7 @@ def test_toggle_on_stopped_table_never_reaches_host(qtbot):
     host = FakeHost(seated=(11,))
     panel = _panel(qtbot, host)  # стол не поднят
     panel.set_instances([(11, "Лист A")])
+    QApplication.processEvents()  # settle the row geometry before the mouse click
     box = _seat_box(panel, 0)
     assert box.isChecked()  # нарисован по seated, загрузочный огонь съеден гардом
 
@@ -457,9 +466,7 @@ async def test_desk_sheet_close_keeps_the_port_listening(
     # The desk is the sheet family now: header «Стол», opened over the window.
     assert panel.findChild(QLabel, "sheetFrameTitle").text() == "Стол"
     panel.set_instances([(1, "Лист")])
-    panel.seat_list.itemWidget(
-        panel.seat_list.item(0)
-    ).findChild(QCheckBox).setChecked(True)
+    panel.seat_boxes()[0].setChecked(True)
     panel.port_spin.setValue(port)
 
     await application._start_table()

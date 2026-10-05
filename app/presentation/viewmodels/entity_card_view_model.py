@@ -2,7 +2,7 @@
 
 NRI-0025 design Д2 splits the old single-entity preview VM in two: this class
 owns the whole per-card render that ``EntityPreviewViewModel`` used to hold
-field-for-field (the «Карточка: <тип> · <имя>» band caption, the short fields,
+field-for-field (the «Карточка: <тип>» band caption, the short fields,
 the age line counted against the game's «now», the picture slot through the
 shared ``image_utils`` pipeline, the mention-anchored text sections and the
 compact relation sections from the registry), while the column VM owns only
@@ -40,12 +40,15 @@ from app.presentation.utils.mention_html import build_mention_html
 #: End-of-dates caption of an open-ended entity (the card's checkbox word).
 INFINITE_LABEL = "Бессрочно"
 
-#: The card's headline word (the reader's fix 2026-09-28, extended by the
-#: reader's fix 2026-10-03): the header band is the card's only headline —
-#: «Карточка» while the column is empty, «Карточка: <русское имя типа из
-#: реестра> · <имя сущности>» while one is shown (the name rides the caption
-#: so each of the up-to-four cards is identifiable by its headline); no
-#: second «Карточка…» line lives inside the content anymore.
+#: The card's headline word (the reader's fix 2026-09-28): the header band is
+#: the card's only headline — «Карточка» while the column is empty,
+#: «Карточка: <русское имя типа из реестра>» while one is shown. The entity's
+#: own name never rides the caption (spec «Заголовок предпросмотра —
+#: единственная строка заголовка»: «Название самой сущности в заголовок SHALL
+#: не переноситься (оно остаётся полем карточки)» — the PR-015 fix retired
+#: the short-lived 2026-10-03 «· <имя>» tail; two copies of one pair are told
+#: apart by the pin state, not by the headline); no second «Карточка…» line
+#: lives inside the content anymore.
 CARD_TITLE_LABEL = "Карточка"
 
 #: Preview copy fit into the image slot (px). The viewer half of the click
@@ -161,17 +164,14 @@ class EntityCardViewModel:
         self.name_text = str(getattr(entity, "name", "") or "")
         # The band never dangles empty off the bat: the type-titled caption is
         # built right away; the plain «Карточка» word belongs to the column's
-        # empty state, which has no card at all. Since the reader's fix of
-        # 2026-10-03 the shown entity's name rides the caption too (up to
-        # four cards share the column — the headline must say WHICH card it
-        # is; the duplicate with the name field inside is the point), glued
-        # by the same middle dot the timeline's search row uses since
-        # NRI-0023. A name-less duck (never a stored entity) keeps the
-        # type-only caption.
-        type_caption = f"{CARD_TITLE_LABEL}: {entity_registry.display_label(entity_type)}"
-        self.title = (
-            f"{type_caption} · {self.name_text}" if self.name_text else type_caption
-        )
+        # empty state, which has no card at all. The caption is the TYPE and
+        # nothing else (spec «Заголовок предпросмотра — единственная строка
+        # заголовка»: the entity's name SHALL NOT be carried into the title,
+        # it stays the card's name field below); the PR-015 fix retired the
+        # short-lived «· <имя>» tail of 2026-10-03 — the duplicate of a
+        # pinned entity in the live area is identified by its pin state
+        # («Уже закреплена»), never by headline text.
+        self.title = f"{CARD_TITLE_LABEL}: {entity_registry.display_label(entity_type)}"
         rating = getattr(entity, "rating", 1)
         if not isinstance(rating, int):
             rating = 1

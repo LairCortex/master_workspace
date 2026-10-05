@@ -4,8 +4,11 @@ the parent row's disclosure chevron and the window-only parent stub).
 
 The flat-list row (TimelineRowDelegate) and the «+» header button
 (TimelineRoot) carry the tree contract pinned by the design map: the row is
-a ListItem named by the delivered caption whose single Press is the
-double-click path — the event open (D3: accessibility has no double press),
+a ListItem named by the delivered caption whose single Press mirrors the
+WHOLE double-click interaction — select first, then open (D3: accessibility
+has no double press; PR-017: the mirror must keep the first click's
+selection side effect, the spec «одиночная активация выполняет элементное
+действие»),
 the addButton is named «Добавить событие» because its only glyph is «+».
 The chevron is the library ThemeIconButton (штатный Button role) named by
 its action («Развернуть подсобытия»/«Свернуть подсобытия») with the fixed
@@ -124,7 +127,15 @@ def test_row_is_list_item_named_by_caption_with_open_description(qtbot):
     assert iface.text(QAccessible.Description) == "Открывает событие"
 
 
-def test_row_press_opens_the_event_through_the_double_click_channel(qtbot):
+def test_row_press_selects_and_opens_the_event_full_double_click_mirror(qtbot):
+    """PR-017: a real double-click selects on its first click before the
+    second one opens, so the accessibility mirror of the WHOLE double-click
+    interaction (spec «Одиночная активация выполняет элементное действие»:
+    the activation performs what the mouse interaction does) must deliver
+    the selection side effect too. Without it no AT channel reaches event
+    selection, the middle column never populates and the detail rows'
+    «Выбирает сущность» channel — the preview column's only live-pointer
+    entry — stays unreachable."""
     panel = _island(qtbot, ROWS)
     rows = island_rows(panel.quick, "eventRow")
     doubles = track(panel.event_double_clicked)
@@ -132,10 +143,12 @@ def test_row_press_opens_the_event_through_the_double_click_channel(qtbot):
 
     press(rows[1])
 
-    # Accessibility has no double press: one Press == one open (design D3),
-    # and it is NOT a selection (clicks are the selection, spec-pinned).
+    # One Press mirrors the full double-click: select first, then open.
+    assert selects == [(2,)]
     assert doubles == [(2,)]
-    assert selects == []
+    # The island's selection mirror rides the click, as under the mouse:
+    # the row's delivered selection flag lights up.
+    qtbot.waitUntil(lambda: rows[1].property("selectedRow") is True, timeout=5000)
 
 
 def test_add_button_is_named_add_event(qtbot):

@@ -67,6 +67,73 @@ async def test_pick_image_persists_and_shows_in_card(
     assert (images_dir / sha[:2] / f"{sha}.preview.webp").exists()
 
 
+async def test_reopened_card_shows_image_saved_into_existing_entity(
+    app, wait_for, menu_qmenu, modal_qdialog, file_dialogs, tmp_path,
+):
+    """PR-013: an EXISTING entity gains its picture through the card's
+    «Выбрать файл» → save; closing and reopening the card must show the
+    picture, not «Нет изображения», while the saving session is still open.
+
+    A single click on the search row seats the entity first — the штатный
+    live-preview selection, the same posture that keeps the saved row alive
+    in the shared session across the save (what the live repro had and the
+    earlier offscreen pin silently lacked)."""
+    from tests.ui.helpers import pick_menu_action
+
+    application, window = app
+    db_path = application._db_path
+    name = "Орг Переоткрытая Картинка"
+
+    # Create the entity without any picture, through the штатный card.
+    pick_menu_action(menu_qmenu, "Новая организация")
+    timeline_probe.click_object(
+        window, "addButton", button=Qt.MouseButton.RightButton)
+    await wait_for(lambda: _visible_cards(window))
+    create_card = _visible_cards(window)[0]
+    create_card.name_input.setText(name)
+    create_card.save_button.click()
+    await wait_for(
+        lambda: len(query_db(db_path, "SELECT id FROM organizations WHERE name = ?", (name,))) == 1
+    )
+    await helpers.wait_until_settled()
+    entity_id = query_db(db_path, "SELECT id FROM organizations WHERE name = ?", (name,))[0][0]
+
+    # The live preview shows the entity: the preview column now carries the
+    # row across every later operation of the session.
+    window.search_bar.result_selected.emit("organization", entity_id)
+    await helpers.wait_until_settled()
+
+    # Open the saved card once with no picture: this settles the loaded
+    # image link to None in the shared session — the PR-013 precondition.
+    window.detail_panel.entity_clicked.emit("organization", entity_id)
+    await wait_for(lambda: [d for d in _visible_cards(window) if d.name_input.text() == name])
+    first_card = next(d for d in _visible_cards(window) if d.name_input.text() == name)
+    assert first_card.image_label.text() == "Нет изображения"
+    png = tmp_path / "pr013.png"
+    _write_png(png)
+    file_dialogs["open"] = str(png)
+    first_card.pick_image_btn.click()  # «Выбрать файл» → PNG
+    await wait_for(lambda: first_card._image_id is not None)
+    first_card.save_button.click()  # штатный close: the card accepts itself
+    await wait_for(
+        lambda: query_db(db_path, "SELECT image_id FROM organizations WHERE name = ?", (name,))[0][0]
+        is not None
+    )
+    await helpers.wait_until_settled()
+
+    # Reopen: the picture must be rendered, not only present in the DB.
+    window.detail_panel.entity_clicked.emit("organization", entity_id)
+    await wait_for(
+        lambda: [d for d in _visible_cards(window) if d.name_input.text() == name and d is not first_card]
+    )
+    reopened = next(
+        d for d in _visible_cards(window) if d.name_input.text() == name and d is not first_card
+    )
+    assert reopened.image_label.text() == ""
+    assert not reopened.image_label.pixmap().isNull()
+    assert reopened.clear_image_btn.isEnabled()
+
+
 async def test_unreadable_file_warns_and_keeps_state(
     app, wait_for, menu_qmenu, modal_qdialog, file_dialogs, message_boxes, tmp_path,
 ):

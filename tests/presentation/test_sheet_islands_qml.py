@@ -226,6 +226,30 @@ def test_empty_templates_tab_hints_at_the_next_action(qtbot, list_vm, palette):
     assert hint.property("visible") is False
 
 
+def test_empty_instances_tab_hints_at_the_next_action(qtbot, list_vm, palette):
+    # PR-021 (spec character-sheet-editor «Пустые списки вкладок объясняют
+    # себя»: the norm reads КАЖДАЯ вкладка, not just «Шаблоны»): the sheets
+    # tab in a game without sheets shows the muted hint of its nearest action
+    # («Создать» — «Создать из пресета…» lives on the templates tab only),
+    # and the first row replaces it — the templates pin's symmetry. The
+    # StackLayout hides the non-current page (its nested hint reads hidden
+    # until the tab opens — same as live), so the probe opens the tab first,
+    # exactly like the spec scenario.
+    widget = load_island(qtbot, SHEET_LIST_QML, list_vm, palette, (420, 520))
+    hint = find_item(widget, "instancesListHint")
+    list_vm.setCurrentTab(1)
+    widget.grab()
+    assert hint.property("visible") is True
+    # same face as the templates sibling: the library's muted HintText
+    assert hint.metaObject().className().startswith("HintText")
+    assert hint.property("text") == "Листов ещё нет — создайте первый"
+
+    # Anti-regression: the hint is bound to the row count, not painted once —
+    # the first instance retires it exactly like on the templates tab.
+    list_vm.set_rows(templates=[], instances=INSTANCES)
+    assert hint.property("visible") is False
+
+
 def test_list_rows_are_addressable_and_taps_land_in_vm(qtbot, list_vm, palette):
     list_vm.set_rows(templates=TEMPLATES, instances=INSTANCES)
     widget = load_island(qtbot, SHEET_LIST_QML, list_vm, palette, (420, 520))

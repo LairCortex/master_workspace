@@ -8,6 +8,7 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlEngine
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -166,6 +167,11 @@ class Application:
         # exec() nested inside it (W3/FI-6); its close step is the finish
         # task below.
         self._calendar_wizard: CalendarWizardDialog | None = None
+        # PR-010: the one corruption warning per game open, raised deferred
+        # (after the window shows) through a modeless show() on the shared
+        # loop — the live ref keeps it out of Qt's garbage between
+        # scheduling and show.
+        self._calendar_warning: QMessageBox | None = None
         self._first_run_finish: asyncio.Future | None = None
         self._wiring: ApplicationWiring | None = None
         # Character sheets (D6/D4): one service pair per game; the window
@@ -280,12 +286,15 @@ class Application:
         # exactly one warning per open, so the service stays free of Qt.
         self._calendar_service = CalendarSettingsService()
         outcome = await self._calendar_service.load_and_apply(self._session)
-        if outcome.reasons:
-            QMessageBox.warning(
-                None,
-                MONTH_WARNING_TITLE,
-                calendar_corruption_body(outcome.reasons),
-            )
+        # PR-010: the reasons are collected here but the window is NOT shown
+        # here — a static ``QMessageBox.warning`` on this contour nested a
+        # modal loop inside the still-pending start task and killed qasync
+        # («Event loop stopped before Future completed») before the window
+        # ever painted.  The fact rides to the deferred show below, the same
+        # ``call_soon`` channel the first-run wizard already uses (W3/FI-6).
+        corruption_body = (
+            calendar_corruption_body(outcome.reasons) if outcome.reasons else None
+        )
 
         # C3a (design D8): the game-open sweep of the six dated tables —
         # repair corrupted coordinate texts, shift coordinates invalid in
@@ -475,7 +484,8 @@ class Application:
         # NRI-0024 (task 5.2, design Д3, spec «Управление столом живо в шапке
         # главного окна»): the live cluster above the search row's right edge.
         # It is a parentless Qt.Tool band — a child of this window would sit
-        # inside the sheets' WindowModal layer and freeze under the first
+        # inside the sheets' blocked layer (the attached sheet's document
+        # modality covers the whole window) and freeze under the first
         # sheet; outside it, its two controls stay clickable over any scrim.
         # The desk caption re-enters the same «Стол…» path (the connector's
         # open_sheet raises the live desk over the active sheet), the stop
@@ -509,9 +519,11 @@ class Application:
         await timeline_vm.load_events()
         window.timeline_widget.update_events(timeline_vm.events)
 
-        # Replace old window if switching
+        # Replace old window if switching (PR-002: the replacement retires
+        # the old one for good — a hidden live window is the ghost cocoa
+        # re-raises over the new one, see ``_retire_window``).
         if self._window is not None:
-            self._window.close()
+            self._retire_window()
         self._window = window
         # NRI-0015 (1.3): role "main" — remembered placement returns the
         # window where the user left it, clamped into a connected screen.
@@ -520,12 +532,44 @@ class Application:
         # comes back exactly as saved.
         self._geometries.attach(window, "main")
         window.show()
+        if corruption_body is not None:
+            # PR-010: raised on the next loop pass over the SHOWN window —
+            # exactly the wizard's first-run channel, never a nested loop.
+            asyncio.get_running_loop().call_soon(
+                self._show_calendar_corruption_warning, corruption_body
+            )
         if first_run_wizard:
             # Deferred right after the window is on screen (task 2.4): the
             # next loop pass raises the wizard as a SHEET over the shown
             # window (task 3.2) — no nested event loop ever wraps start().
             asyncio.get_running_loop().call_soon(self._open_calendar_wizard, True)
         return window
+
+    def _show_calendar_corruption_warning(self, body: str) -> None:
+        """PR-010: the one warning per open about a damaged ``game_calendar``
+        (spec «Окно не глотает молчание»), raised after the window is on
+        screen through the same deferred channel as the first-run wizard.
+
+        The box rides ``show()`` on the application's shared loop — the
+        project's non-nesting show mechanism (AGENTS: no application dialog
+        enters a nested event loop; the modeless show also keeps the main
+        window workable while the reason stays on screen, unlike the former
+        static ``QMessageBox.warning`` whose nested loop inside start()
+        killed qasync).
+        """
+        box = QMessageBox(self._window)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(MONTH_WARNING_TITLE)
+        box.setText(body)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        self._calendar_warning = box
+        box.finished.connect(self._calendar_warning_finished)
+        box.show()
+
+    def _calendar_warning_finished(self, _result: int) -> None:
+        """Drop the live ref of the closed corruption warning (the box dies
+        with its parent window otherwise only until the next game open)."""
+        self._calendar_warning = None
 
     def _on_export_game(self) -> None:
         """Export current game as .nri archive.
@@ -572,7 +616,8 @@ class Application:
         header «Сменить игру…» with the cancel-equal «Закрыть» — closing
         without a choice lands back in the very same game, nothing touched.
         The show goes through the connector's one ``open_sheet`` path
-        (WindowModal over the main window, stack-owned, released on
+        (attached native sheet over the main window, NonModal at Qt level —
+        PR-012; stack-owned, released on
         ``finished``), so the stack gate keeps a second copy unreachable —
         the property the abolished registry and the old fresh-window factory
         each provided in their turn (Д2). The first-run chooser in ``main()``
@@ -647,11 +692,30 @@ class Application:
             # pins — the runtime outlives every window of every game).
             if self._window is not None:
                 self._window.shutdown()
-                self._window.close()
+                self._retire_window()
             await self.shutdown()
             await self._build_main_window(path)
         finally:
             self._qapp.setQuitOnLastWindowClosed(True)
+
+    def _retire_window(self) -> None:
+        """Take the live ``MainWindow`` out of service for good (PR-002).
+
+        A game switch replaces the window under role «main»; a bare
+        ``close()`` only hid the old one and left it a live top-level — on
+        cocoa the first native sheet opened afterwards re-raised that
+        island-less husk as a black rectangle over the working window (the
+        blocking defect of the 2026-10-03 full run). The window-class norm
+        names no survivor: ``close()`` runs the штатный closeEvent teardown
+        (idempotent with the earlier explicit ``shutdown()``) and
+        ``WA_DeleteOnClose`` takes the native window — and with it every
+        lingering child sheet of the old game — down with the deferred
+        delete, so nothing can ever come back.
+        """
+        window = self._window
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window.close()
+        self._window = None
 
     # ── Calendar wizard (C4, tasks 7.1–7.3) ──────────────────────────────────
 
@@ -678,7 +742,8 @@ class Application:
         closing needs no extra handling.
 
         NRI-0024 (tasks 3.1/3.2, design Д6/Д7): the wizard lives on the
-        application's sheet contract now — WindowModal over the main window
+        application's sheet contract now — an attached native sheet over the
+        main window (Qt.Sheet, NonModal at Qt level — PR-012)
         through the connector's one ``open_sheet`` path, the same way as the
         event dialogs and every translated sheet. Neither the menu entry nor
         the deferred first-run opening ever enters a nested event loop, and
@@ -1006,8 +1071,10 @@ class Application:
 
         The three-class contract moves «Настройка LLM…» from the non-modal
         window family into the sheet one: the dialog is a SheetFrame sheet
-        shown through the connector's one ``open_sheet`` path — WindowModal
-        over the main window, owned by the sheet stack, released on
+        shown through the connector's one ``open_sheet`` path — an attached
+        native sheet over the main window (Qt.Sheet, NonModal at Qt level —
+        PR-012),
+        owned by the sheet stack, released on
         ``finished``. While the stack is up this entry itself is gated, so a
         second copy is unreachable by construction — the property the
         abolished registry used to provide (Д2). The wizard content, its
@@ -1133,6 +1200,25 @@ class Application:
         self._http = None
 
 
+def _run_game_session(application: Application, loop: QEventLoop, db_path: str) -> None:
+    """The ordinary game-session sequence of ``main``: start, run, leave.
+
+    PR-007: everything ``start`` opened leaves through ``shutdown``. The
+    exit used to stop at ``run_forever`` — the game's single shared
+    ``AsyncSession`` was still holding its pooled connection when the loop
+    closed, so the interpreter's collector terminated it through the pool
+    (the «The garbage collector is trying to clean up non-checked-in
+    connection» error + SAWarning in the journal on every штатный Cmd+Q).
+    ``shutdown`` runs on the still-open loop after the last window's quit,
+    its awaits real: the session closes, the engine pool is disposed
+    (awaited — aiosqlite's worker threads are joined through it), the HTTP
+    client shuts down; nothing SQLAlchemy survives for the collector.
+    """
+    loop.run_until_complete(application.start(db_path))
+    loop.run_forever()
+    loop.run_until_complete(application.shutdown())
+
+
 def main():  # pragma: no cover — entry point: a second QApplication cannot be
     # instantiated in tests and run_forever() never returns, so it is exercised
     # by the manual smoke instead of the automated suite
@@ -1190,8 +1276,7 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
     db_path = launcher.selected_path
 
     with loop:
-        loop.run_until_complete(application.start(db_path))
-        loop.run_forever()
+        _run_game_session(application, loop, db_path)
 
 
 if __name__ == "__main__":

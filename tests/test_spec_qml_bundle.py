@@ -21,6 +21,7 @@ rather than the shipped app.
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -84,9 +85,11 @@ EXPECTED_COMPONENT_FILES = (
     "panelHeader.js",
     # Lucide glyph pair (user request 2026-09-30): the generated icons.js map
     # and its ThemeIcon brush. The SVGs they derive from live in the icons/
-    # subdirectory as a build-time source only (scripts/vendor_lucide.py) —
-    # the directory scan below counts module files only, the subdirectory is
-    # deliberately not bundled.
+    # subdirectory, which ships too (PR-027 fix 2026-10-04): the widget bridge
+    # app/presentation/views/lucide_icons.py reads those files at RUNTIME as
+    # QIcons, so it is runtime data, not only the build-time source
+    # scripts/vendor_lucide.py expands from. The scan below counts module files
+    # only; the subdirectory has its own guard further down this file.
     "icons.js",
     "ThemeIcon.qml",
     "ThemeButton.qml",
@@ -261,3 +264,153 @@ def test_spec_hiddenimports_include_qtquick_modules():
             "the Quick modules (and the hook anchored on PySide6.QtQml) the "
             "frozen app loses the QML islands"
         )
+
+
+# The widget-side glyph bridge (app/presentation/views/lucide_icons.py) reads
+# the vendored SVG files out of ICONS_DIR at RUNTIME to build its QIcons — the
+# same ``__file__``-relative mechanism as preset_catalog/sheet_font, so under
+# the bundle it reads <sys._MEIPASS>/app/presentation/qml/nri/components/icons.
+# Those files are runtime data, not only the build-time source that
+# scripts/vendor_lucide.py expands into icons.js: PR-027 was precisely this
+# premise being wrong (the spec comment said "build-time source", the scan
+# above counted module files only), so the release bundle opened the launcher
+# and died with KeyError "lucide icon 'chevron-left' is not vendored" the
+# moment a game was chosen. The two guards below read their expectations out
+# of the code and the spec instead of a hand-kept list: the set "glyphs the
+# code loads at runtime" must stay a subset of "files the spec ships".
+ICONS_SRC_DIR = COMPONENTS_SRC_DIR / "icons"
+
+
+def _entry_text(node: ast.expr) -> str:
+    """One datas tuple element as text: the literal value, or the expression
+    source for a computed path (the Qt translations directory)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ast.unparse(node)
+
+
+def _spec_datas_pairs() -> list[tuple[str, str]]:
+    """Every (source, destination) pair of the spec's datas list, read with
+    ast — a path named inside an explanatory comment can neither satisfy nor
+    violate an entry (the rule _spec_section enforces for substring checks)."""
+    tree = ast.parse(SPEC_PATH.read_text(encoding="utf-8"), filename=str(SPEC_PATH))
+    pairs: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Analysis"
+        ):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "datas" or not isinstance(keyword.value, ast.List):
+                continue
+            pairs.extend(
+                (_entry_text(element.elts[0]), _entry_text(element.elts[1]))
+                for element in keyword.value.elts
+                if isinstance(element, ast.Tuple) and len(element.elts) == 2
+            )
+    return pairs
+
+
+def _bundled_paths() -> set[str]:
+    """Bundle-relative file paths the datas list produces: a file entry lands
+    as ``<dest>/<name>``, a directory entry copies its whole tree into
+    ``<dest>`` (PyInstaller's own rule for hook-style datas tuples). Sources
+    the spec computes from an expression are no repo paths and are skipped —
+    no icon guard reads the Qt translations folder."""
+    bundled: set[str] = set()
+    for source, dest in _spec_datas_pairs():
+        path = REPO_ROOT / source
+        if path.is_file():
+            bundled.add(f"{dest}/{path.name}")
+        elif path.is_dir():
+            bundled.update(
+                f"{dest}/{file.relative_to(path).as_posix()}"
+                for file in sorted(path.rglob("*"))
+                if file.is_file()
+            )
+    return bundled
+
+
+def _runtime_lucide_icon_names() -> set[str]:
+    """Every literal glyph name app/ asks the widget bridge for: the first
+    argument of each ``lucide_icon()`` call, taken from the syntax tree so a
+    prose mention of the loader never counts as a call site."""
+    names: set[str] = set()
+    for module in sorted((REPO_ROOT / "app").rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else getattr(node.func, "attr", "")
+            )
+            if callee != "lucide_icon" or not node.args:
+                continue
+            first_argument = node.args[0]
+            if isinstance(first_argument, ast.Constant) and isinstance(
+                first_argument.value, str
+            ):
+                names.add(first_argument.value)
+    return names
+
+
+def _bridge_icons_dest() -> str:
+    """Where the widget bridge reads its glyphs, repo-relative: the bridge
+    derives ICONS_DIR from its own ``__file__``, which a frozen build resolves
+    under ``sys._MEIPASS`` — so the repo-relative location IS the datas
+    destination the files must land in."""
+    from app.presentation.views import lucide_icons
+
+    return Path(lucide_icons.ICONS_DIR).resolve().relative_to(REPO_ROOT).as_posix()
+
+
+def test_spec_datas_ship_every_icon_the_widget_bridge_reads():
+    names = _runtime_lucide_icon_names()
+    assert names, "no lucide_icon() call site found under app/ — test setup broken"
+    vendored = {svg.stem for svg in ICONS_SRC_DIR.glob("*.svg")}
+    assert vendored, "the vendored icons directory is empty — test setup broken"
+    not_vendored = names - vendored
+    assert not not_vendored, (
+        "lucide_icon() is called for glyphs that are not vendored: "
+        f"{sorted(not_vendored)} — add them to ICON_NAMES in "
+        "scripts/vendor_lucide.py and re-run --fetch"
+    )
+    icons_dest = _bridge_icons_dest()
+    bundled = _bundled_paths()
+    missing = {
+        f"{icons_dest}/{name}.svg"
+        for name in sorted(names)
+        if f"{icons_dest}/{name}.svg" not in bundled
+    }
+    assert not missing, (
+        f"nri_manager.spec datas must ship {sorted(missing)} under "
+        f"{icons_dest} — app/presentation/views/lucide_icons.py reads the "
+        "vendored SVGs from the filesystem at runtime, and PR-027 is the "
+        "frozen build dying with KeyError on the first opened game"
+    )
+
+
+def test_spec_datas_ship_the_vendored_icons_at_the_bridges_own_path():
+    # Presence is half of the contract, the destination the other half: the
+    # bridge derives its directory from __file__, so the bundle mirrors the
+    # development layout verbatim (the same posture the nri.components module
+    # takes) and the whole directory ships — every glyph plus the ISC license
+    # the upstream files travel with.
+    icons_dest = _bridge_icons_dest()
+    assert icons_dest == f"{COMPONENTS_DEST}/icons", (
+        "the bridge's icon directory moved away from the bundled QML module "
+        "layout — the datas destination has to follow it"
+    )
+    on_disk = {icon.name for icon in ICONS_SRC_DIR.iterdir() if icon.is_file()}
+    assert "LICENSE.txt" in on_disk, (
+        "the ISC license of the vendored glyphs must stay next to them — the "
+        "directory ships verbatim"
+    )
+    missing = {f"{icons_dest}/{name}" for name in sorted(on_disk)} - _bundled_paths()
+    assert not missing, (
+        f"the whole vendored icons directory must ship under {icons_dest}: "
+        f"{sorted(missing)} — a glyph the widgets load is read from disk in "
+        "the frozen build (PR-027)"
+    )

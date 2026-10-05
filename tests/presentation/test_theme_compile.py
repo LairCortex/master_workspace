@@ -351,6 +351,9 @@ def test_popup_sheet_covers_every_popup_category(tokens, theme):
     # too (NRI-0018 Д8: no white native cell on the dark grid)
     assert "GameCalendarEraCheck::indicator" in sheet
     assert "GameCalendarEraCheck::indicator:checked" in sheet
+    # …and so is the month picker of that row (PR-008: left OS-drawn, the system
+    # appearance's ink vanished on the field in the light theme)
+    assert "GameCalendarMonthCombo {" in sheet
     # …while the Gregorian Qt calendar widget it replaced is gone from the sheet
     assert "QCalendarWidget" not in sheet
     # the cell/chip hover wash is the accent derivation, not a new token
@@ -393,7 +396,8 @@ def test_chrome_and_popup_sheets_split_without_overlap(tokens, theme):
     for popup_only in ("QToolTip", "QComboBox QAbstractItemView",
                        "GameCalendarGrid", "GameCalendarCell",
                        "GameCalendarIntercalaryChip", "GameCalendarDayName",
-                       "GameCalendarEraCheck", "MentionPopupListView"):
+                       "GameCalendarEraCheck", "GameCalendarMonthCombo",
+                       "MentionPopupListView"):
         assert popup_only not in chrome
         assert popup_only in popup
     assert not re.search(r"\bQMenu\b(?!Bar)", chrome)  # only the QMenuBar widget stays

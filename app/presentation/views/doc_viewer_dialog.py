@@ -6,7 +6,8 @@ window (design Д1: the content stays the documentation island, the widget-
 side SheetFrame carries the shared sheet chrome). The header names the open
 document (spec document-viewer «Документ опознаваем по оболочке») — one
 windowTitle-threaded value — and its «Закрыть» performs exactly the Esc
-cancel. The show contract (WindowModal over the parent, the connector's
+cancel. The show contract (attached native sheet over the parent — Qt.Sheet,
+NonModal at Qt level, PR-012 — the connector's
 sheet stack, the single release on ``finished``) is the connector's
 ``open_sheet`` — like every other sheet, the entry is gated while a sheet is
 up, so a second copy of one document is unreachable by construction (Д2).

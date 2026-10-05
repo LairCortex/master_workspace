@@ -102,12 +102,16 @@ class WorldSnapshotWidget(IslandDialogMixin, QWidget):
         events: Sequence[Any],
         for_date: Any,
         event_names: Mapping[int, str] | None = None,
+        world_entities: Mapping[str, Sequence[Any]] | None = None,
     ) -> None:
         # ``for_date`` is the snapshot bridge payload: a (coordinate, era)
         # pair since piece C3a (a bare date or None stay legal) — the ViewModel
         # splits it. ``event_names`` (NRI-0023 task 8.3) is the wiring's
         # id → имя card the orphan stubs read the parent's name from.
-        self.vm.populate(events, for_date, event_names)
+        # ``world_entities`` (PR-019) is the wiring's census of the game's
+        # card types — the entity sections are the world's state, not a
+        # by-product of the event slice.
+        self.vm.populate(events, for_date, event_names, world_entities)
 
     def _open_date_popup(
         self, x: float, y: float, width: float, height: float
@@ -139,7 +143,8 @@ class WorldSnapshotWindow(SheetFrame):
     «Обзор мира + Закрыть» (one windowTitle-threaded caption, the frame's
     button the plain Esc cancel) and the stack scrim the connector dims
     through, and ``ApplicationWiring.open_sheet`` owns the show
-    (WindowModal over the main window, the single ``finished`` release). The
+    (an attached native sheet over the main window — Qt.Sheet, NonModal at
+    Qt level, PR-012 — the single ``finished`` release). The
     panel itself (island, VM, signals, the ListView scroll machinery) is
     untouched; the wrapper hosts it in the frame's content slot, releases
     the island on the way out, and never remembers a placement — a sheet

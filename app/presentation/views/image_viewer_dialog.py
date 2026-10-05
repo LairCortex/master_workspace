@@ -7,12 +7,14 @@ Flickable, so an image bigger than the sheet is reachable by scroll (spec
 image-display «Прокрутка крупного изображения»); the widget-side SheetFrame
 carries the shared chrome (header «Просмотр изображения» + «Закрыть» = the
 plain Esc cancel, the scrim duck the connector dims through), and
-``ApplicationWiring.open_sheet`` owns the show: WindowModal over its opening
-layer (panel, card or sheet — the parent chain is the stack), released on
+``ApplicationWiring.open_sheet`` owns the show: an attached native sheet over
+its opening
+layer (panel, card or sheet — the parent chain is the stack) — Qt.Sheet,
+NonModal at Qt level (PR-012) — released on
 the single ``finished`` channel, returning exactly to that layer (spec
-«Закрытие окна просмотра»). The show rides ``open()`` — the qasync loop
-never nests here (spec modal-sheets «Прикладные диалоги не входят во
-вложенный цикл событий»).
+«Закрытие окна просмотра»). The show is non-blocking, so
+the qasync loop never nests here (spec modal-sheets «Прикладные диалоги не
+входят во вложенный цикл событий»).
 """
 from __future__ import annotations
 
@@ -89,12 +91,10 @@ class ImageViewerDialog(IslandDialogMixin, SheetFrame):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
             return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            marker = self._root.property("defaultButton") if self._root is not None else None
-            clicked = getattr(marker, "clicked", None) if marker is not None else None
-            if clicked is not None:
-                clicked.emit()
-                return
+        # Enter closes through the island's «Закрыть» marker — the shared island
+        # bridge (PR-029), the very button the frame header's «Закрыть» mirrors.
+        if self.take_island_default_key(event):
+            return
         super().keyPressEvent(event)
 
     def _release_island(self) -> None:

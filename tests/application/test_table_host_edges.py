@@ -237,8 +237,9 @@ def test_lan_and_qr(qtbot, monkeypatch):
     qtbot.addWidget(panel)
     panel.set_instances([(1, "Лист")])
     assert panel.checked_seat_ids() == []
-    # NRI-0016 (TB3-ремонт): seating lives on the row's real QCheckBox.
-    box = panel.seat_list.itemWidget(panel.seat_list.item(0)).findChild(QCheckBox)
+    # NRI-0016 (TB3-ремонт) + PR-022-ремонт: seating lives on the row's real
+    # QCheckBox — a plain child widget of the desk.
+    box = panel.seat_boxes()[0]
     box.setChecked(True)
     assert panel.checked_seat_ids() == [1]
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))

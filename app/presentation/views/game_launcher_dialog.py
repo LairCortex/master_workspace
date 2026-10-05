@@ -108,6 +108,19 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
         # dies under a live island (test isolation resets the shell).
         self._engine = setup_qml_shell(QApplication.instance(), theme)
         self.setup_island()
+        # PR-006: the VM outlives the scene INSIDE the destruction order too.
+        # A context-property QObject dying while bindings still read it makes
+        # QML re-evaluate against null and print its TypeError to stderr —
+        # and the first-run exit (``main()`` goes from ``exec()`` straight to
+        # ``sys.exit(0)``) never grants the deferred-release loop turn, so the
+        # shutdown destroys this tree with the scene still bound. Children die
+        # in creation order, so a VM parented here died BEFORE the island and
+        # LauncherRoot.qml:114/:133 printed one TypeError per live binding
+        # (docs/qa/test-plan-2026-10-03 «### PR-006»). As a child of the
+        # island widget the VM goes last: ``~QQuickWidget`` unbinds the scene
+        # before its own children are destroyed (the palette already rides
+        # the mixin's context reparenting — the same rule).
+        self.vm.setParent(self.quick)
         layout.addWidget(self.quick)
 
         self._wire_island()

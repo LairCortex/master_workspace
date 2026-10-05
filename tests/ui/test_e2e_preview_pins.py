@@ -203,7 +203,7 @@ async def test_first_pin_splits_the_column_clears_live_and_persists(
     # pin, the live area falls empty, storage carries the one pair.
     await wait_for(lambda: _signature(window) == [(True, ban_id)])
     pane = _panes(window)[0]
-    assert pane["title"] == "Карточка: Персонаж · Банн"
+    assert pane["title"] == "Карточка: Персонаж"
     assert pane["nameText"] == "Банн"
     assert window.entity_preview.vm.liveEmpty is True
     assert application._wiring._preview_pins == [("character", ban_id)]

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedLayout,
     QVBoxLayout,
@@ -114,8 +115,38 @@ class TableHostPanel(SheetFrame):
             self,
         )
         self.firewall_label.setWordWrap(True)
-        self.seat_list = QListWidget(self)
-        set_role(self.seat_list, "list")
+        # PR-022 (live raw-дерево 2026-10-04): the seating is a scrollable
+        # stack of PLAIN row widgets, not a QListWidget of cell widgets.
+        # An item view's accessibility enumeration publishes only its virtual
+        # cells (QAccessibleTable), so the row's setItemWidget checkbox never
+        # reached the live cocoa tree (AXList→AXRow→AXStaticText, 0 AXCheckBox,
+        # action-less AXRow) and sat outside the tab chain — while the
+        # offscreen pin, querying the box by POINTER, stayed green on a face
+        # AppKit never saw. Plain-widget rows put the real QCheckBox into the
+        # panel's own child hierarchy: it projects as a named AXCheckBox,
+        # answers Press/Toggle (Qt 6.10 cocoa turns an AXPress on a CheckBox
+        # into Toggle — the widget bridge handles both), and Tab/Space reach
+        # it. The frame keeps the catalog's list face (the QSS rule reads the
+        # uiRole property, not the class).
+        self.seat_scroll = QScrollArea(self)
+        set_role(self.seat_scroll, "list")
+        self.seat_scroll.setWidgetResizable(True)
+        self.seat_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        # The viewport must not paint its palette Base over the list's themed
+        # surface — the surface belongs to the scroll area's own QSS rule.
+        self.seat_scroll.viewport().setAutoFillBackground(False)
+        self.seat_rows = QWidget()
+        self._seat_rows_layout = QVBoxLayout(self.seat_rows)
+        self._seat_rows_layout.setContentsMargins(0, 0, 0, 0)
+        # The tail stretch keeps rows at their sizeHint when the list is
+        # taller than the seating.
+        self._seat_rows_layout.addStretch(1)
+        self.seat_scroll.setWidget(self.seat_rows)
+        # (instance_id, checkbox) per drawn row, in row order — the one seat
+        # bookkeeping both checked_seat_ids and the tree-addressing use.
+        self._seat_rows: list[tuple[int, QCheckBox]] = []
         self.player_list = QListWidget(self)
         set_role(self.player_list, "list")
         # The compiled sheet paints the ordinary chrome face on every button;
@@ -151,7 +182,7 @@ class TableHostPanel(SheetFrame):
         layout.addWidget(self.qr_label)
         layout.addWidget(self.firewall_label)
         layout.addWidget(QLabel("Посадка", self))
-        layout.addWidget(self.seat_list, 1)
+        layout.addWidget(self.seat_scroll, 1)
         layout.addWidget(QLabel("Игроки", self))
         # TB7 (NRI-0016): an empty players list carries a hint instead of an
         # unexplained blank — the label stacks over the list, never stealing
@@ -210,56 +241,66 @@ class TableHostPanel(SheetFrame):
         return int(self.port_spin.value())
 
     def set_instances(self, rows: Sequence[tuple[int, str]]) -> None:
-        # TB3-ремонт (NRI-0016): a real QCheckBox in a row widget replaces the
-        # ItemIsUserCheckable hint — the checkbox's OWN QAccessible interface
-        # carries role CheckBox + Press and reaches the seat slot (pinned in
-        # tests/ui/test_table_host_seats_accessibility.py). KNOWN LIMIT, live
-        # audit 2026-10-01 (docs/qa/2026-10-01-modal-sheets.md F1/A2): the row
-        # is a cell WIDGET, and the item view's accessibility enumeration
-        # publishes only its virtual cells — the checkbox never reaches the
-        # live tree (0 AXCheckBox nodes) and keyboard Tab skips it. Making the
-        # seating rows structurally tree-addressable (plain-widget rows outside
-        # the item view) is the filed follow-up; until then do NOT re-state the
-        # original «the tree can press it» promise about this row. The name
-        # stays a plain QLabel, so a click on it keeps reaching the viewport
-        # and selecting the row.
+        # TB3-ремонт (NRI-0016) + PR-022-ремонт: every seating row is a plain
+        # child QWidget carrying the row's real QCheckBox — not an item-view
+        # cell widget. The checkbox's OWN QAccessible interface (CheckBox role,
+        # Press AND Toggle, Space on focus) is what the live tree addresses, so
+        # the box must live in the panel's widget hierarchy; the name of the
+        # instance is its accessible name right here at the point of
+        # application, so the tree can tell WHICH seat a press drives. The
+        # visible caption stays the row's own QLabel; a click on it toggles
+        # nothing — it is the label, not the control.
         self._seats_loading = True
-        self.seat_list.clear()
+        for _instance_id, box in self._seat_rows:
+            row = box.parentWidget()
+            row.setParent(None)
+            row.deleteLater()
+        self._seat_rows = []
         seated = self._host.seated_ids
         for instance_id, name in rows:
-            # Live re-audit (2026-09-25): a text-bearing item paints its own
-            # text *behind* the transparent row widget — the name showed up
-            # doubled under the checkbox row. The row keeps the name for
-            # accessibility through AccessibleTextRole (QAccessibleTableCell
-            # reads it before DisplayRole; the delegate never paints it).
-            item = QListWidgetItem("", self.seat_list)
-            item.setData(Qt.ItemDataRole.AccessibleTextRole, name)
-            item.setData(Qt.ItemDataRole.UserRole, instance_id)
-            row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
+            row = QWidget(self.seat_rows)
+            row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(6, 2, 6, 2)
-            check = QCheckBox(row_widget)
+            check = QCheckBox(row)
+            check.setAccessibleName(name)
             # Connected before the initial setChecked below: a loading fire
             # lands on the _seats_loading guard, so a pre-checked row can
             # never re-seat the instance it is drawn for (no recursion).
             check.toggled.connect(partial(self._on_seat_toggled, instance_id))
-            check.pressed.connect(partial(self._on_seat_row_pressed, item))
             row_layout.addWidget(check)
-            row_layout.addWidget(QLabel(name, row_widget))
+            row_layout.addWidget(QLabel(name, row))
             row_layout.addStretch(1)
-            self.seat_list.setItemWidget(item, row_widget)
-            item.setSizeHint(row_widget.sizeHint())
+            # Insert above the tail stretch — rows keep their top-to-bottom order.
+            self._seat_rows_layout.insertWidget(
+                self._seat_rows_layout.count() - 1, row
+            )
+            # Unlike the item view's setIndexWidget (which showed its cell
+            # widget itself), a child born after the window is shown stays
+            # hidden until asked: the desk is usually refreshed while open
+            # (seating pushes repaint the rows), so the row shows here.
+            row.show()
+            self._seat_rows.append((instance_id, check))
             check.setChecked(instance_id in seated)
         self._seats_loading = False
+        # PR-022's keyboard half: Tab must reach the seats in row order
+        # between the port spin and the players list — the chain built by
+        # creation order would park dynamically born rows at its tail.
+        prev: QWidget = self.port_spin
+        for _instance_id, check in self._seat_rows:
+            QWidget.setTabOrder(prev, check)
+            prev = check
+        QWidget.setTabOrder(prev, self.player_list)
+
+    def seat_boxes(self) -> list[QCheckBox]:
+        """The rows' checkboxes in row order (the tree-addressable face)."""
+        return [check for _instance_id, check in self._seat_rows]
 
     def checked_seat_ids(self) -> list[int]:
-        ids: list[int] = []
-        for i in range(self.seat_list.count()):
-            item = self.seat_list.item(i)
-            check = self.seat_list.itemWidget(item).findChild(QCheckBox)
-            if check.isChecked():
-                ids.append(int(item.data(Qt.ItemDataRole.UserRole)))
-        return ids
+        return [
+            instance_id
+            for instance_id, check in self._seat_rows
+            if check.isChecked()
+        ]
 
     def refresh_urls(self) -> None:
         # TB2 (NRI-0016): the address requisites exist only for a running
@@ -347,14 +388,6 @@ class TableHostPanel(SheetFrame):
             self._host.seat(instance_id)
         else:
             asyncio.ensure_future(self._host.drop_seat(instance_id))
-
-    def _on_seat_row_pressed(
-        self, item: QListWidgetItem, _pressed: bool = False
-    ) -> None:
-        # The checkbox swallows the press that used to land on the viewport;
-        # a press on the row still makes it the current row, mouse-wise as
-        # before (the label and the free row area propagate on their own).
-        self.seat_list.setCurrentItem(item)
 
     def _sync_kick_gate(self) -> None:
         # TB4 (NRI-0016): «Выгнать» is actionable only for a running table

@@ -11,6 +11,7 @@ from app.application.services.mention_rewrite import rewrite_mentions
 from app.application.services.relation_sync import sync_related
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
+from app.domain.options import EventOption, EventTypeOption
 from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.db.models import EventModel
 from app.infrastructure.db.uow import GameSessionUoW
@@ -103,6 +104,30 @@ class EventService:
     async def get_event_types(self) -> Sequence:
         """The game's event types in display order."""
         return await self._event_type_repo.get_all_ordered()
+
+    async def get_event_type_options(self) -> List[EventTypeOption]:
+        """The dialog's «Тип» list as flat frozen options (PR-032).
+
+        The dialog keeps this list alive across saves; a failed save ends in
+        the shared session's rollback, which expires EVERY held instance, so
+        handing raw rows over would let the QML metacall of ``typeNames``
+        read an expired lazy attribute outside the greenlet — the exact
+        MissingGreenlet storm of the defect. The projection happens here,
+        right after the SELECT, while the rows are still loaded; the dialog
+        then stores plain values no later rollback can reach. The read joins
+        no new transaction — it rides the caller's flow exactly like
+        ``get_event_types`` did."""
+        return [EventTypeOption.coerce(t) for t in await self.get_event_types()]
+
+    async def get_parent_options(self) -> List[EventOption]:
+        """The dialog's «Родительское событие» pool as flat frozen options
+        (PR-032): every event in the service's one chronological order, its
+        parent link riding along. The main-only filtering stays the
+        ViewModel's read-time rule (spec «Чужих детей в списке нет» — the
+        exclusion of the edited event is the dialog's own knowledge too);
+        what moves here is only the row→value projection, for the same
+        expire-after-rollback reason as :meth:`get_event_type_options`."""
+        return [EventOption.coerce(e) for e in await self.get_all_events()]
 
     async def save_event_type(
         self,

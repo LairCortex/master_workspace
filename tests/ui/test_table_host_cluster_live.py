@@ -37,8 +37,7 @@ async def _start_table(application, window, wait_for) -> None:
     await wait_for(lambda: application._table_host_panel is not None)
     panel = application._table_host_panel
     panel.set_instances([(1, "Лист")])
-    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(0))
-    row_widget.findChild(QCheckBox).setChecked(True)
+    panel.seat_boxes()[0].setChecked(True)
     await application._start_table()
     assert application._table_host.is_running
 

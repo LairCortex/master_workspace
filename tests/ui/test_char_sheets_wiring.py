@@ -263,7 +263,11 @@ async def test_switch_game_with_dirty_editor_confirm_closes_without_saving(
     helpers.select_launcher_game(sheet.content, "beta")
     helpers.open_launcher_game(sheet.content)
 
-    await wait_for(lambda: application._window is not window and "beta" in application._window.windowTitle())
+    await wait_for(
+        lambda: application._window is not None
+        and application._window is not window
+        and "beta" in application._window.windowTitle()
+    )
 
     # list closed (its C++ object may already be deleted, like the editor's)
     assert not _visible_list_dialogs(QApplication.instance().topLevelWidgets())
@@ -398,7 +402,8 @@ async def test_games_have_their_own_sheet_lists(
     helpers.open_launcher_game(sheet.content)
 
     await wait_for(
-        lambda: application._window is not window
+        lambda: application._window is not None
+        and application._window is not window
         and "beta" in application._window.windowTitle()
     )
     new_window = application._window

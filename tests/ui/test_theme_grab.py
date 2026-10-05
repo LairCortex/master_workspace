@@ -728,6 +728,68 @@ def test_mention_popup_surface_and_accent_selection(qtbot, tmp_path, theme):
         app.setStyleSheet("")
 
 
+# ── PR-008: the date popup's month field wears the tokens, not the OS appearance ─
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_date_popup_month_field_is_themed_not_os_drawn(qtbot, tmp_path, theme):
+    """Pixel acceptance for the compiled popup sheet (live defect PR-008, spec
+    ui-theme «Хром без палитры ОС»): the navigation row's month picker was the
+    one OS-drawn control of the game-calendar grid, so its caption came from the
+    SYSTEM appearance — on a dark-appearance macOS under the light app theme the
+    live popup printed a white caption on the white native field and the field
+    read as empty while its accessible value stayed «Октябрь»
+    (docs/qa/assets/2026-10-03-full-run/PR-008-month-caption-invisible-light.png).
+    Off-skin the same root cause is visible the other way round: the box paints
+    the OS field and OS-black ink in BOTH themes, no token among its pixels.
+    The themed box answers with the canvas fill, the border hairline and the
+    ``color.fg.primary`` ink, and that pair clears the WCAG AA floor by the
+    numbers of the very tokens the pixels answered."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QApplication
+
+    from app.presentation.views.theme_date_popup import ThemeDatePopup
+    from tests.presentation.test_theme_compile import _contrast_ratio
+
+    runtime = make_runtime(tmp_path, theme)
+    app = QApplication.instance()
+    app.setStyleSheet("")
+    runtime.attach_app(app)
+    runtime.apply()
+    try:
+        popup = ThemeDatePopup()
+        qtbot.addWidget(popup)
+        popup.open_at(QRect(40, 40, 120, 24))
+        qtbot.waitExposed(popup)
+        combo = popup.calendar._month_combo  # the field the report is about
+        image = combo.grab().toImage()
+        scale = image.width() / max(combo.width(), 1)
+        mid_y = image.height() // 2
+
+        canvas = token_color("color.bg.canvas", theme)
+        fg = token_color("color.fg.primary", theme)
+        border = token_color("color.border", theme)
+        assert canvas != fg  # the fill/ink claims below must differ
+
+        # The field's own face: canvas fill in the left padding band, border
+        # hairline on its edge — the rule the sheet now owns, not the OS box.
+        assert image.pixelColor(int(4 * scale), mid_y) == canvas, theme
+        assert image.pixelColor(0, mid_y) == border, theme
+        # The caption ink is the primary foreground token, and the OS ink the
+        # unstyled box painted with (black text in both themes) is gone.
+        assert _contains_pixel(image, fg), theme
+        assert not _contains_pixel(image, QColor("#000000")), theme
+        # The pair the reader actually gets, measured from the same two tokens
+        # the pixels above answered with.
+        ratio = _contrast_ratio(
+            (fg.red(), fg.green(), fg.blue()),
+            (canvas.red(), canvas.green(), canvas.blue()),
+        )
+        assert ratio >= 4.5, (theme, ratio)
+    finally:
+        app.setStyleSheet("")
+
+
 # ── W2b: rating card endpoints come from theme tokens (detail_panel) ────────
 
 def _rating_theme(tmp_path, theme: str, high_hex: str) -> ThemeRuntime:

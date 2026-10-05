@@ -37,6 +37,9 @@ class _StubEntityService:
     async def get_all(self):
         return []
 
+    async def get_options(self):
+        return []
+
 
 def _make_wiring() -> ApplicationWiring:
     """The connector with exactly what the related-create path touches.

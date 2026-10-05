@@ -3,8 +3,9 @@ re-split by NRI-0025 task 2.1).
 
 The card VM (``EntityCardViewModel``, reached through the column VM's
 ``panes``) is the whole read-only composition rule: the one headline line
-titled by the shown entity's type and name («Карточка: Персонаж · Банн»,
-the name added by the reader's fix 2026-10-03), the full-card field
+titled by the shown entity's TYPE only («Карточка: Персонаж» — spec
+«Заголовок предпросмотра» bars the name from the caption, the PR-015 fix
+2026-10-04 retired the 2026-10-03 «· <имя>» tail), the full-card field
 set with the per-type absences, the dates row with «Бессрочно», the age line
 under its documented absence postures, the image slot through the shared
 pipeline, the registry-ordered relation sections without the empty blocks.
@@ -118,7 +119,7 @@ class TestEmptyState:
         assert changed == [1]
 
 
-# ── the one headline: «Карточка: <тип из реестра> · <имя>» (fixes 4.8, 2026-10-03) ──
+# ── the one headline: «Карточка: <тип из реестра>», never the name (fix 4.8; PR-015 2026-10-04) ──
 
 
 @pytest.mark.parametrize(
@@ -134,18 +135,24 @@ def test_the_band_title_names_the_type_in_russian_from_the_registry(
     type_key, label
 ):
     # The band is titled by the TYPE in the registry's Russian wording (the
-    # reader's clarification 2026-09-28) AND carries the shown entity's name
-    # after the middle dot (the reader's fix 2026-10-03: with up to four
-    # cards in the column the headline must say WHICH card it is — the
-    # duplicate with the name field inside is the point).
+    # reader's clarification 2026-09-28) and NOTHING else: spec «Заголовок
+    # предпросмотра — единственная строка заголовка» bars the entity's own
+    # name from the caption (it stays the card's name field), so the
+    # 2026-10-03 «· <имя>» tail was the PR-015 divergence and is retired —
+    # two copies of one pair are told apart by the pin state, not the title.
     vm = EntityPreviewViewModel()
     pane = _show(vm, type_key, _entity(type_key, name="Гром-Громович"))
-    assert pane["title"] == f"Карточка: {label} · Гром-Громович"
+    assert pane["title"] == f"Карточка: {label}"
+    # Anti-regression (PR-015): the «· <имя>» format must never come back.
+    assert " · " not in pane["title"]
+    assert "Гром-Громович" not in pane["title"]
+    # While the caption stays name-free, the name field inside the card rides on.
+    assert pane["nameText"] == "Гром-Громович"
 
 
-def test_a_nameless_entity_keeps_the_type_only_caption():
-    # The duck with no name (never a stored entity — the caption must not
-    # dangle an empty « · » off the type).
+def test_a_nameless_entity_answers_the_same_type_only_caption():
+    # The caption never reads the name at all (PR-015 fix): the duck with no
+    # name (never a stored entity) answers exactly like a named one.
     vm = EntityPreviewViewModel()
     pane = _show(vm, "character", _entity(name=""))
     assert pane["title"] == "Карточка: Персонаж"

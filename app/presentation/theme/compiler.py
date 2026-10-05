@@ -456,9 +456,12 @@ def compile_popup_qss(tokens: Tokens, theme: str) -> str:
     the ``selected`` property (``[selected="true"]``, mirrored by the grid on
     every selection flip) — ``GameCalendarIntercalaryChip`` selects like a
     cell and gets the same trio, ``GameCalendarDayName`` is the week
-    header, and ``GameCalendarEraCheck`` themes the navigation row's era flag
-    through its ``::indicator`` sub-control (NRI-0018 Д8).  These five names
-    are STYLE-FACING exactly like ``_DateWindowPopup``: renaming a class
+    header, ``GameCalendarEraCheck`` themes the navigation row's era flag
+    through its ``::indicator`` sub-control (NRI-0018 Д8), and
+    ``GameCalendarMonthCombo`` is that row's month picker (PR-008: its caption
+    must read ``color.fg.primary`` — left OS-drawn, the system appearance
+    printed ink that vanished on the field).  These six names are STYLE-FACING
+    exactly like ``_DateWindowPopup``: renaming a class
     silently drops the grid's theme, so rename only together with the rules
     below (the pair test in ``test_calendar_nav_band`` guards both sides).
     The Gregorian calendar-widget rules retired together with that widget.
@@ -516,6 +519,26 @@ GameCalendarGrid {{
     background: {t['color.bg.surface']};
     border: 1px solid {t['color.border']};
     border-radius: {t['radius.sm']};
+}}
+/* The month picker of the navigation row (PR-008, spec ui-theme «Хром без
+   палитры ОС»): unstyled, the box was the one OS-drawn control of the grid, so
+   its caption came from the SYSTEM appearance rather than from the tokens — on
+   a dark-appearance macOS under the LIGHT app theme that was white ink on the
+   white native field, i.e. an empty-looking month field whose accessible value
+   still read «Октябрь» (docs/qa/test-plan-2026-10-03.md PR-008).  The field now
+   wears the catalog field face from the same roles the widget catalog uses:
+   canvas fill (the chip and the era indicator already chose this fill over the
+   grid's surface), primary ink, border hairline.  No ``::drop-down`` /
+   ``::down-arrow`` rule on purpose: a QSS arrow needs a bitmap asset and
+   generated artifacts never reach the disk (W1 D2), while an unstyled
+   sub-control keeps being drawn by the base style — the arrow survives, the
+   ink and the fill do not depend on the OS appearance any more. */
+GameCalendarMonthCombo {{
+    background: {t['color.bg.canvas']};
+    color: {t['color.fg.primary']};
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    padding: {t['space.xs']} {t['space.sm']};
 }}
 GameCalendarDayName {{
     background: transparent;

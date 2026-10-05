@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 import shiboken6
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -368,12 +368,12 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
     # ── island/keyboard contract ────────────────────────────────────────────
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            marker = self._root.property("defaultButton") if self._root is not None else None
-            clicked = getattr(marker, "clicked", None) if marker is not None else None
-            if clicked is not None:
-                clicked.emit()
-                return
+        # Enter rides the island's marker through the shared island bridge
+        # (PR-029). Behaviour is the old private copy's, with one tightening:
+        # the disabled faces of the tri-state button («анализ…») now leave the
+        # key alone instead of reaching the view model's own refusal guard.
+        if self.take_island_default_key(event):
+            return
         super().keyPressEvent(event)
 
     def _on_primary_clicked(self) -> None:

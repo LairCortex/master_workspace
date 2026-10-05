@@ -82,8 +82,7 @@ async def _raise_table_with_player(
     await wait_for(lambda: application._table_host_panel is not None)
     panel = application._table_host_panel
     panel.set_instances([(inst_id, "Лист А")])
-    row_widget = panel.seat_list.itemWidget(panel.seat_list.item(0))
-    row_widget.findChild(QCheckBox).setChecked(True)
+    panel.seat_boxes()[0].setChecked(True)
     await application._start_table()
     assert application._table_host.is_running
     assert application._sheet_fill is None  # the editable Fill was retired

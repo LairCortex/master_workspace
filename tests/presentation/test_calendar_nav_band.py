@@ -28,6 +28,7 @@ from app.infrastructure.ui_prefs.config import UiPrefsManager
 from app.presentation.theme.compiler import (
     compile_popup_qss,
     load_tokens,
+    token_rgb,
     tokens_file_path,
 )
 from app.presentation.theme.runtime import ThemeRuntime
@@ -35,6 +36,7 @@ from app.presentation.views import calendar_grid as calendar_grid_module
 from app.presentation.views.calendar_grid import (
     GameCalendarEraCheck,
     GameCalendarGrid,
+    GameCalendarMonthCombo,
 )
 
 # The row gauge of spec «Строка навигации — единая полоса высот».
@@ -50,6 +52,9 @@ STYLE_FACING_GRID_CLASSES = (
     "GameCalendarIntercalaryChip",
     "GameCalendarDayName",
     "GameCalendarEraCheck",
+    # PR-008: the month picker joined the list — left OS-drawn it printed the
+    # SYSTEM appearance's ink and vanished on its own field in the light theme
+    "GameCalendarMonthCombo",
 )
 
 
@@ -152,6 +157,55 @@ def test_popup_sheet_themes_the_era_indicator_from_tokens(tokens, theme):
     )
     assert checked, "выбранное состояние индикатора эры не тематизировано"
     assert tokens["color.accent"][theme] in checked.group(1)
+
+
+def test_month_combo_is_the_named_style_facing_class(qtbot):
+    grid = GameCalendarGrid()
+    qtbot.addWidget(grid)
+    assert isinstance(grid._month_combo, GameCalendarMonthCombo)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_popup_sheet_themes_the_month_field_from_tokens(tokens, theme):
+    # PR-008 (spec ui-theme «Хром без палитры ОС»): the month field of the
+    # navigation row was the OS-drawn control of the grid, so its caption came
+    # from the system appearance — white ink on the white native field in the
+    # light theme on a dark-appearance macOS, i.e. an empty-looking field.  Its
+    # face now compiles out of the tokens like every other rule of this sheet,
+    # and the pair the reader gets clears the WCAG AA floor by the numbers.
+    from tests.presentation.test_theme_compile import _contrast_ratio
+
+    sheet = compile_popup_qss(tokens, theme)
+    rule = re.search(r"GameCalendarMonthCombo\s*\{([^}]*)\}", sheet)
+    assert rule, "в листе попапов нет правила поля месяца"
+    body = rule.group(1)
+    assert f"background: {tokens['color.bg.canvas'][theme]};" in body
+    assert f"color: {tokens['color.fg.primary'][theme]};" in body
+    assert f"border: 1px solid {tokens['color.border'][theme]};" in body
+    assert f"border-radius: {tokens['radius.sm'][theme]};" in body
+    assert f"padding: {tokens['space.xs'][theme]} {tokens['space.sm'][theme]};" in body
+
+    ink = token_rgb(tokens, theme, "color.fg.primary")
+    field = token_rgb(tokens, theme, "color.bg.canvas")
+    assert ink is not None and field is not None
+    assert _contrast_ratio(ink, field) >= 4.5, theme
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_month_field_is_addressed_by_its_own_class_only(tokens, theme):
+    # Two halves of the same boundary.  (a) The app-wide sheet reaches every
+    # widget of the process, so the field is addressed through the grid's own
+    # class name; a bare ``QComboBox {…}`` rule would repaint EVERY combo box
+    # (W2a D2) — only the dropdown-list descendant rule may stay generic here.
+    # (b) The sheet stops before the drop-down pocket: a QSS ``::down-arrow``
+    # needs a bitmap asset and generated artifacts never reach the disk (W1 D2),
+    # so an unstyled sub-control keeps the native arrow instead of a hole.
+    sheet = compile_popup_qss(tokens, theme)
+    rules = re.sub(r"/\*.*?\*/", "", sheet, flags=re.S)  # comments may name what
+    assert not re.search(r"(?m)^\s*QComboBox\s*[{:]", rules)  # the sheet forbids
+    assert "QComboBox QAbstractItemView" in rules
+    assert "::down-arrow" not in rules
+    assert "::drop-down" not in rules
 
 
 def test_popup_sheet_carries_no_generic_checkbox_rule(tokens):

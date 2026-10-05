@@ -438,6 +438,132 @@ class TestSheetStackMenuGate:
         assert all(action.isEnabled() for action in w._sheet_opening_actions)
 
 
+class TestSheetStackContentGate:
+    """PR-012 (spec modal-sheets «действия, нацеленные на главный оконный
+    слой … SHALL быть неактивны»): with the sheet stack no longer a Qt-modal
+    window (the attached sheet is NonModal at Qt level so the native menu bar
+    keeps answering the exception entries), the block of the main content
+    layer is the window's own application-queue filter. Its offscreen face:
+    while the stack is up, SPONTANEOUS pointer input (press/release/
+    double-click/wheel — what the real hardware produces) aimed at the
+    central widget or any widget under it is swallowed, exactly the reach of
+    the AppKit sheet block it replaces; the Qt-level synthetic channels that
+    never passed through that block (``sendEvent``) stay live, keyboard input
+    and widgets outside the content layer (the sheet's own dialogs) pass; the
+    install is balanced — one per rising stack, one per its fall, never
+    doubled."""
+
+    def _window(self, qtbot) -> MainWindow:
+        w = MainWindow(
+            timeline_vm=MagicMock(), detail_vm=MagicMock(), search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        return w
+
+    def test_stack_up_installs_the_filter_stack_down_removes_it(self, qtbot):
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QLabel
+
+        seen: list[str] = []
+
+        class _SpyLabel(QLabel):
+            def mousePressEvent(self, event):  # noqa: N802 — Qt API
+                seen.append("spontaneous" if event.spontaneous() else "synthetic")
+
+        def synthetic_press() -> QMouseEvent:
+            return QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                QPointF(2, 2),
+                QPointF(2, 2),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+
+        w = self._window(qtbot)
+        w.show()
+        label = _SpyLabel("лестница", w.centralWidget())  # content-layer target
+        label.setGeometry(2, 2, 40, 20)
+        # Stack down: the content layer takes its own input, both channels.
+        assert not w._content_gate_installed
+        app = QApplication.instance()
+        app.sendEvent(label, synthetic_press())
+        QTest.mouseClick(label, Qt.MouseButton.LeftButton)
+        assert seen == ["synthetic", "spontaneous"]
+
+        w.on_sheet_stack_changed(True)
+        assert w._content_gate_installed
+        # Stack up: the spontaneous press dies in the filter — the widget
+        # never sees it — while the Qt-level synthetic channel (the exact
+        # parity scope of the AppKit block this gate replaces) passes.
+        QTest.mouseClick(label, Qt.MouseButton.LeftButton)
+        assert seen == ["synthetic", "spontaneous"]
+        app.sendEvent(label, synthetic_press())
+        assert seen == ["synthetic", "spontaneous", "synthetic"]
+
+        # A second ``True`` (a sheet joining a stack already up) never
+        # double-installs; one removal balances the single install and the
+        # spontaneous channel takes its input back.
+        w.on_sheet_stack_changed(True)
+        assert w._content_gate_installed
+        w.on_sheet_stack_changed(False)
+        assert not w._content_gate_installed
+        QTest.mouseClick(label, Qt.MouseButton.LeftButton)
+        assert seen == ["synthetic", "spontaneous", "synthetic", "spontaneous"]
+        # A stray extra ``False`` removes nothing it never installed.
+        w.on_sheet_stack_changed(False)
+        assert not w._content_gate_installed
+
+    def test_filter_blocks_the_content_layer_only_and_only_the_pointer(self, qtbot):
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QDialog, QLabel
+
+        hits: list[str] = []
+
+        class _SpyLabel(QLabel):
+            def mousePressEvent(self, event):  # noqa: N802 — Qt API
+                hits.append(self.objectName())
+
+        w = self._window(qtbot)
+        w.show()
+        content = _SpyLabel("лестница", w.centralWidget())
+        content.setObjectName("content")
+        content.setGeometry(2, 2, 40, 20)
+        sheet = QDialog(w)  # the sheet's own dialog: same parent, NOT content
+        sheet.setGeometry(0, 0, 120, 80)
+        sheet_label = _SpyLabel("лист", sheet)
+        sheet_label.setObjectName("sheet")
+        sheet_label.setGeometry(2, 2, 40, 20)
+
+        w.on_sheet_stack_changed(True)
+        # Spontaneous pointer input: content layer dies, the sheet's own
+        # widget lives; keyboard is not pointer input and passes.
+        QTest.mouseClick(content, Qt.MouseButton.LeftButton)
+        assert hits == []
+        QTest.mouseClick(sheet_label, Qt.MouseButton.LeftButton)
+        assert hits == ["sheet"]
+        QTest.keyClick(content, Qt.Key.Key_A)
+        # The wheel stays in the blocked set (the frozenset pins it); the
+        # offscreen suite has no spontaneous-wheel channel, but a
+        # non-spontaneous one is not the block's scope either.
+        wheel = QWheelEvent(
+            QPointF(2, 2),
+            QPointF(2, 2),
+            QPoint(0, 0),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        assert w.eventFilter(content, wheel) is False
+
+
+
 class TestMainWindowLogToggleCleanup:
     """Root logger must not accumulate handlers across tests."""
 

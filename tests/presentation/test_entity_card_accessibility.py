@@ -163,6 +163,87 @@ def test_text_carrying_controls_keep_their_names_untouched(card):
     assert no_end_item.property("text") == "Бессрочно"
 
 
+class _ViewerRecorder:
+    """Stand-in viewer: the constructor records the (original, preview,
+    parent, theme) package; the sheet show is the dialog's ``sheet_requested``
+    emission (the same recorder posture as the preview island's viewer pin)."""
+
+    calls: list = []
+
+    def __init__(self, original, preview, parent=None, theme=None):
+        type(self).calls.append((original, preview, parent, theme))
+
+
+@pytest.fixture
+def viewer_recorder(monkeypatch):
+    from app.presentation.views import entity_card_dialog as card_module
+
+    _ViewerRecorder.calls = []
+    monkeypatch.setattr(card_module, "ImageViewerDialog", _ViewerRecorder)
+    return _ViewerRecorder.calls
+
+
+def _image_available(card) -> None:
+    """Mirror a loaded preview into the slot (the dialog's own channel)."""
+    card.show()
+    QApplication.processEvents()
+    card.vm.set_image_source("image://dialog/pr025", True)
+    QApplication.processEvents()
+
+
+def test_picture_is_image_button_pressing_it_opens_the_viewer(qtbot, card, viewer_recorder):
+    # PR-025: the card's picture is the штатный opener the detail-panel and
+    # preview slots already are — a Button named by the entity it shows, the
+    # fixed «Открыть изображение» description, and a Press that runs the very
+    # request the mouse click drives (AGENTS: a custom Item presses only
+    # through Accessible.onPressAction; the MouseArea keeps the mouse path).
+    _image_available(card)
+    image = find_item(card.quick, "entityImagePreview")
+
+    iface = accessible_of(image)
+    assert iface.role() == QAccessible.Role.Button
+    assert iface.text(QAccessible.Name) == "Герой"
+    assert iface.text(QAccessible.Description) == "Открыть изображение"
+
+    requested: list = []
+    card.sheet_requested.connect(requested.append)
+    actions = iface.actionInterface()
+    assert "Press" in actions.actionNames()
+    actions.doAction("Press")
+
+    assert len(requested) == 1
+    assert isinstance(requested[0], _ViewerRecorder)
+    *_, parent, _theme = viewer_recorder[0]
+    # The viewer is the sheet over THIS card (the stack parent, spec
+    # image-display «Закрытие окна просмотра»).
+    assert parent is card
+
+
+def test_picture_name_falls_back_without_entity_name(card):
+    # Same fallback as the detail panel/preview: an unnamed entity still gets
+    # an addressable picture under the generic «Изображение».
+    _image_available(card)
+    card.vm.name = ""
+    QApplication.processEvents()
+
+    image = find_item(card.quick, "entityImagePreview")
+    assert accessible_of(image).text(QAccessible.Name) == "Изображение"
+
+
+def test_picture_without_image_is_not_an_addressable_target(card):
+    # PR-025's negative half: the empty slot never offers a broken press.
+    # The picture item is invisible (the placeholder paints instead), so the
+    # accessibility tree carries no live node — offscreen that reads as the
+    # invisible state, live as the node's absence (the preview-slot posture).
+    image = find_item(card.quick, "entityImagePreview")
+    assert image.property("visible") is False
+    assert bool(accessible_of(image).state().invisible) is True
+    assert find_item(
+        card.quick, "entityImagePlaceholder").property("visible") is True
+    assert find_item(
+        card.quick, "entityImageOpenArea").property("enabled") is False
+
+
 def test_no_end_checkbox_activation_reaches_the_view_model(card):
     """D1 (live audit 2026-09-27, nri-0022): the accessibility activation of
     «Бессрочно» must run the same toggle the mouse runs — on the pre-fix

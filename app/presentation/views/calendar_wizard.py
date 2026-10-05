@@ -15,7 +15,8 @@ alive (spec «Живой предпросмотр сеткой»).
 
 The container (task 3.1): a :class:`~app.presentation.views.sheet_frame.SheetFrame`
 sheet — header «Настройка календаря» + «Закрыть» (one cancel path with Esc),
-shown by ``ApplicationWiring.open_sheet`` WindowModal over the main window.
+shown by ``ApplicationWiring.open_sheet`` as an attached native sheet over
+the main window (Qt.Sheet, NonModal at Qt level — PR-012).
 The wizard content is the frame's scrolling body: the sheet tracks the host
 window's full width (spec «широкий контент — на всю ширину главного окна»),
 its height grows with the window up to the content's own limit, and whatever

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent, QPixmap
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog
 
 from app.domain import entity_registry
@@ -18,7 +19,7 @@ from app.presentation.views.entity_card_dialog import (
     EntityCardDialog,
     _FIELD_SPECS,
 )
-from tests.presentation.qml_helpers import find_item, find_items
+from tests.presentation.qml_helpers import find_item, find_items, plain_layer
 from tests.ui.test_theme_grab import make_runtime
 
 
@@ -214,6 +215,52 @@ def test_saving_and_generation_guard_all_close_paths(qtbot):
     dialog.get_ai_buttons()[0]._generating = True
     dialog._on_cancel_clicked()
     assert calls == [True]
+
+
+def test_enter_presses_the_save_marker_only_when_the_card_allows_it(qtbot, monkeypatch):
+    """PR-029: the card rides the same island bridge as the event sheet — Enter
+    clicks its «Сохранить» marker on the route a real keystroke takes (the
+    one-line name field lets Return go), the empty mandatory name keeps the
+    marker disabled and the key unclaimed, and a mention field keeps Return as
+    its own newline instead of saving."""
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    dialog.resize(820, 700)
+    dialog.show()
+    QApplication.processEvents()
+    saves: list = []
+    dialog.saved.connect(saves.append)
+
+    # No name: the parity gate disables Save, Enter stays where it was.
+    dialog.keyPressEvent(
+        QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+    )
+    assert saves == []
+    assert dialog.isVisible()
+
+    # The name filled, focus in its field: the key climbs up and saves.
+    dialog.name_input.setText("Герой")
+    name_field = find_item(dialog.quick, "entityNameField")
+    name_field.forceActiveFocus()
+    QApplication.processEvents()
+    assert name_field.property("activeFocus") is True
+    QTest.keyClick(dialog.quick, Qt.Key.Key_Return)
+    assert len(saves) == 1
+    assert dialog._saving
+    dialog.finish_saving(False)
+
+    # The multiline mention field keeps Return for its own newline; the named
+    # card stays open and asks for no second save.
+    plain = plain_layer(find_item(dialog.quick, "entityBackstoryField"))
+    plain.forceActiveFocus()
+    QApplication.processEvents()
+    QTest.keyClick(dialog.quick, Qt.Key.Key_Return)
+    assert "\n" in plain.property("text")
+    assert len(saves) == 1
+    assert dialog.isVisible()
 
 
 def test_image_provider_namespace_and_done_cleanup(qtbot):

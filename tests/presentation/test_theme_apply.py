@@ -37,6 +37,27 @@ def runtime(tmp_path):
     )
 
 
+@pytest.fixture
+def bridge_on_runtime(qapp, runtime, request):
+    """Build the shared shell ON this test's runtime, then hand it back empty.
+
+    The engine bridge palette belongs to the runtime the shell was created
+    with; under the session engine (PR-033) that is the first island's theme
+    of the process, while the DEFECT-1 counting tests below need the bridge
+    on their own fixture runtime. The documented test-only reset swaps the
+    shell in for the duration of the test and drops it at teardown; the next
+    island builds the real default shell lazily (the teardown must NOT
+    rebuild: the fixture runtime dies with the test and a bridge pinned to
+    it would be the very stale-listener shape these tests forbid).
+    """
+    from app.presentation.qml.engine import reset_qml_shell, setup_qml_shell
+
+    reset_qml_shell()
+    setup_qml_shell(qapp, runtime)
+    request.node._pr033_shell_reset_pending = True
+    yield runtime
+
+
 def make_main_window(theme):
     return MainWindow(
         timeline_vm=MagicMock(),
@@ -702,7 +723,7 @@ def test_main_window_close_unsubscribes_its_theme_listener(qtbot, runtime):
 # ── DEFECT-1 (NRI-0016): island teardowns, including the closed islands ──────
 
 
-def test_closed_llm_island_window_leaves_no_theme_listener(qtbot, runtime, caplog):
+def test_closed_llm_island_window_leaves_no_theme_listener(qtbot, runtime, bridge_on_runtime, caplog):
     """The audited reproduction of DEFECT-1, pinned offscreen.
 
     «Настройка LLM…» closes (QDialog close ⇒ the island release is deferred a
@@ -749,7 +770,7 @@ def test_closed_llm_island_window_leaves_no_theme_listener(qtbot, runtime, caplo
     assert caplog.records == []
 
 
-def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, caplog):
+def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, bridge_on_runtime, caplog):
     """The island panels are child widgets: no closeEvent ever reaches them,
     so MainWindow.closeEvent releases them too (palette + per-panel view
     model subscriptions). Re-opening the main window with the same runtime
@@ -799,7 +820,7 @@ def test_main_window_close_drops_child_island_subscriptions(qtbot, runtime, capl
     assert caplog.records == []
 
 
-def test_snapshot_window_close_drops_its_island_subscriptions(qtbot, runtime, caplog):
+def test_snapshot_window_close_drops_its_island_subscriptions(qtbot, runtime, bridge_on_runtime, caplog):
     """The same DEFECT-1 contract for the moved snapshot (NRI-0022): its
     palette and view-model subscription join the runtime when the «Обзор
     мира…» window is built and leave through the window's own done(), the

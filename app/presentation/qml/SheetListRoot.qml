@@ -200,6 +200,19 @@ Rectangle {
                         onSelectedRequested: sheetListVm.selectInstance(index)
                     }
                 }
+
+                // PR-021 (spec character-sheet-editor «Пустые списки вкладок
+                // объясняют себя»: КАЖДАЯ вкладка без элементов, а не только
+                // «Шаблоны»): the sheets tab explains itself with the same
+                // muted HintText face as its sibling; «Создать» is this tab's
+                // nearest action («Создать из пресета…» lives on templates
+                // only), and the hint disappears with the first row.
+                HintText {
+                    objectName: "instancesListHint"
+                    anchors.centerIn: parent
+                    visible: instanceListView.count === 0
+                    text: "Листов ещё нет — создайте первый"
+                }
             }
         }
 

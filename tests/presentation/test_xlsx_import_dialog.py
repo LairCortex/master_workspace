@@ -9,7 +9,9 @@ from datetime import datetime
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAccessible
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 from app.application.services import xlsx_schema
@@ -98,6 +100,32 @@ def dlg(qtbot):
 def _texts(widget, object_name: str) -> list[str]:
     return [i.property("text") for i in walk_items(widget.rootObject())
             if i.objectName() == object_name]
+
+
+def _close_buttons(widget) -> list[str]:
+    """objectNames of the island Buttons a reader experiences as «Закрыть».
+
+    This is the offscreen face of PR-011's live tree (three close affordances:
+    the header ✕ plus the two footer buttons captioned «Закрыть» in the done
+    state). Offscreen a stock text ``Button`` reports an EMPTY ``QAccessible``
+    name — text-derived naming exists on the live display only (AGENTS, the
+    offscreen stock-control quirk) — so a footer close is recognised by its own
+    visible ``text`` caption (the very string the live tree names it by), while
+    the annotated header glyph carries «Закрыть» in the name slot. A button the
+    layout hid (the retired done-phase footer row) is skipped: no reader reaches
+    a caption it cannot see.
+    """
+    closes: list[str] = []
+    for item in walk_items(widget.rootObject()):
+        if not item.isVisible():
+            continue
+        iface = QAccessible.queryAccessibleInterface(item)
+        if iface is None or iface.role() != QAccessible.Role.Button:
+            continue
+        if (iface.text(QAccessible.Name) == "Закрыть"
+                or (item.property("text") or "") == "Закрыть"):
+            closes.append(item.objectName())
+    return closes
 
 
 class TestHintFromRegistry:
@@ -483,6 +511,75 @@ class TestReportPanel:
         assert _texts(dlg.quick, "reportDateShiftText") == [
             "лист «Персонажи», строка 2: «Дата начала» 2026-08-31 → 2026-08-30"
         ]
+
+
+class TestDoneFooterSingleClose:
+    """PR-011 — the done-state sheet must expose exactly ONE «Закрыть».
+
+    Reproduction (docs/qa/test-plan-2026-10-03.md «### PR-011» +
+    PR-011-xlsx-done-double-close.png): an finished import showed two footer
+    buttons captioned «Закрыть» (the primary tri-state button relabelled + the
+    «Отмена» secondary), on top of the header ✕ — a three-way duplicate of one
+    caption and one action. Per the modal-sheets norm the header ✕ (name
+    «Закрыть», the Esc/reject outcome) is the sheet's single close; the done
+    footer has no action left to advertise, so its whole button row retires with
+    the phase. These pins keep the duplicate dead while the intermediate phases
+    still carry «Проверить…»/«Импортировать» + «Отмена» and Enter still closes.
+    """
+
+    @staticmethod
+    def _driven_to_done(qtbot):
+        d = XlsxImportDialog()
+        qtbot.addWidget(d)
+        d.show()
+        QTest.qWaitForWindowExposed(d)
+        d.vm.path = "/tmp/pr011.xlsx"
+        d.vm.on_analyzed(plan_with(rows=[RowIssue("Персонажи", 2, "x")]))
+        d.vm.requestConfirmImport()
+        d.vm.on_report(ImportReport(created=1, links=0))
+        d.quick.grab()
+        return d
+
+    def test_done_shows_exactly_one_close(self, qtbot):
+        # RED (PR-011): before the fix this counted THREE — the header plus the
+        # two footer «Закрыть». After the fix the footer row hides with the
+        # phase, so the header ✕ is the only close a reader can address.
+        d = self._driven_to_done(qtbot)
+        assert d.vm.state == "done"
+        assert _close_buttons(d.quick) == ["sheetHeaderClose"]
+
+    def test_done_footer_row_is_retired(self, qtbot):
+        # The two footer buttons live on (findable) but carry no slot in the
+        # done phase, so neither prints its «Закрыть» caption.
+        d = self._driven_to_done(qtbot)
+        assert find_item(d.quick, "importButton").isVisible() is False
+        assert find_item(d.quick, "cancelButton").isVisible() is False
+
+    def test_intermediate_phases_keep_their_two_footer_actions(self, qtbot):
+        # The row hides for the done phase ONLY: the «problems» state still
+        # shows the primary «Импортировать» + the secondary «Отмена», and the
+        # only close a reader sees stays the header (no «Закрыть» among them).
+        d = XlsxImportDialog()
+        qtbot.addWidget(d)
+        d.show()
+        QTest.qWaitForWindowExposed(d)
+        d.vm.path = "/tmp/pr011b.xlsx"
+        d.vm.on_analyzed(plan_with(rows=[RowIssue("Персонажи", 2, "пустое имя")]))
+        d.quick.grab()
+        assert d.vm.state == "problems"
+        assert find_item(d.quick, "importButton").isVisible() is True
+        assert find_item(d.quick, "cancelButton").isVisible() is True
+        assert find_item(d.quick, "cancelButton").property("text") == "Отмена"
+        assert _close_buttons(d.quick) == ["sheetHeaderClose"]
+
+    def test_enter_still_closes_a_done_sheet(self, qtbot):
+        # PR-029 preserved: the hidden primary stays the enabled defaultButton
+        # marker, so Enter runs its close branch (reject) — the Esc outcome, not
+        # a dead key and not a second dialog turn.
+        d = self._driven_to_done(qtbot)
+        QTest.keyClick(d, Qt.Key_Return)
+        assert not d.isVisible()
+        assert d.result() == QDialog.DialogCode.Rejected
 
 
 class TestDownloadTemplate:

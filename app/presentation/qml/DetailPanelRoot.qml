@@ -270,17 +270,19 @@ Rectangle {
                         // strip at the panel's real widths): without glyphs
                         // the four naturals are 101.8/90.4/83.0/71.6 px.
                         // Under the bar's equal-share law (2026-10-01) the
-                        // 382 px bar at the default 390 px column hands each
-                        // tab 95.5 px — the longest caption runs ~6 px over
-                        // it and the ellipsis takes the tail; every iconName
-                        // adds 20 px (16 glyph + 4 gap), pushing three of the
-                        // four naturals (121.8/110.4/103.0/91.6) over the
-                        // share — a strip of elided captions at the DEFAULT
-                        // width. This consumer therefore stays iconless
-                        // (Lucide pass 2026-09-30 decision; the event dialog
-                        // 720 px and the entity card 760 px sheets keep
-                        // their glyphs — wide enough that even the glyphed
-                        // naturals stay under the equal share).
+                        // 426 px bar at the default 434 px column — PR-014
+                        // moved the splitter default 390→434 — hands each
+                        // tab 106.5 px, above the longest natural, so every
+                        // caption reads whole at first launch (the retired
+                        // 390 px default gave a 99 px share and the ellipsis
+                        // took «Организации»'s tail). Every iconName adds
+                        // 20 px (16 glyph + 4 gap), pushing two of the four
+                        // naturals (121.8/110.4) back over the share, so
+                        // this consumer stays iconless (Lucide pass
+                        // 2026-09-30 decision; the event dialog 720 px and
+                        // the entity card 760 px sheets keep their glyphs —
+                        // wide enough that even the glyphed naturals stay
+                        // under the equal share).
                         iconName: ""
                         Accessible.name: detailPanelVm.tabTitles[index]
                         HoverHandler {

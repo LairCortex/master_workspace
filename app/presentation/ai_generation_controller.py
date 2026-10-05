@@ -51,8 +51,13 @@ class AiGenerationController:
 
     Field buttons trigger single-field generation; the entity button
     (top-right of the form) starts a parallel wave over all fields and
-    becomes its cancel while the wave runs. At most one wave per
-    dialog at a time; "Save" is locked for the whole generation.
+    becomes its cancel while the wave runs. Single-field generations run
+    in parallel with each other (PR-024, spec llm-remote-provider
+    «Последовательная генерация нескольких полей»: every request starts
+    without waiting for the previous ones, no shared sequential queue);
+    a field restarts only after its own request finished — while in
+    flight its button carries the busy «…» face (the feedback).
+    "Save" is locked while anything generates.
     """
 
     def __init__(self, llm_vm: LlmViewModel, service: LlmService) -> None:
@@ -79,11 +84,14 @@ class AiGenerationController:
         # ``batch`` is None outside a wave, otherwise:
         #   {"fields": {field_id: (button, field_name, field_label)},
         #    "pending": set[field_id], "errors": {field_id: reason}}
-        # ``single_field`` — field_id of the in-flight single generation (or None).
+        # ``singles`` — field_ids of the in-flight single generations (a set:
+        # PR-024, spec «Последовательная генерация нескольких полей» — every
+        # field's request starts without waiting for the previous ones, so
+        # several singles are in flight at once; the set is empty outside them).
         # ``cancelled_fields`` — fields of a stopped wave: ALL late results/
         # errors for them are dropped (cancellation is not an error). The
         # marker stays until a new generation of the same field is started.
-        state: dict = {"batch": None, "single_field": None, "cancelled_fields": set()}
+        state: dict = {"batch": None, "singles": set(), "cancelled_fields": set()}
 
         def _entity_button():
             return dialog.get_entity_button()
@@ -92,7 +100,7 @@ class AiGenerationController:
             return (
                 any(b.is_generating for b in dialog.get_ai_buttons())
                 or state["batch"] is not None
-                or state["single_field"] is not None
+                or bool(state["singles"])
             )
 
         def _sync_controls() -> None:
@@ -101,7 +109,7 @@ class AiGenerationController:
             if ebtn is not None:
                 ebtn.set_wave_running(state["batch"] is not None)
                 ebtn.set_single_in_flight(
-                    state["batch"] is None and state["single_field"] is not None
+                    state["batch"] is None and bool(state["singles"])
                 )
 
         buttons_by_id = {
@@ -112,20 +120,22 @@ class AiGenerationController:
             """Terminal failure of a dialog field (provider error or an
             unexpected break of request_generation): the single completion
             path for failures, so the dialog can never be left stuck (no
-            leaked single_field / batch pending); D6: visible warning."""
+            leaked singles / batch pending); D6: visible warning."""
             if field_id in state["cancelled_fields"]:
                 return  # late signal for a cancelled field
             btn = buttons_by_id[field_id]
             btn.set_generating(False)
             batch = state["batch"]
-            if batch is not None and field_id in batch["fields"]:
+            # ``pending`` (not ``fields``) decides the wave membership here:
+            # a field already settled in the wave may have been re-pressed
+            # (PR-024 parallelism) — that restart is a single, not a wave leg.
+            if batch is not None and field_id in batch["pending"]:
                 batch["errors"][field_id] = err
                 batch["pending"].discard(field_id)
                 if not batch["pending"]:
                     _finish_wave()
             else:
-                if state["single_field"] == field_id:
-                    state["single_field"] = None
+                state["singles"].discard(field_id)
                 QMessageBox.warning(
                     dialog,
                     "AI-ассистент",
@@ -189,11 +199,10 @@ class AiGenerationController:
             written into fields stay there."""
             batch = state["batch"]
             stopping: set[str] = set(batch["fields"]) if batch is not None else set()
-            if state["single_field"] is not None:
-                stopping.add(state["single_field"])
+            stopping |= state["singles"]
             state["cancelled_fields"] |= stopping
             state["batch"] = None
-            state["single_field"] = None
+            state["singles"] = set()
             service.cancel_all(dialog)
             for btn in dialog.get_ai_buttons():
                 btn.set_generating(False)
@@ -224,13 +233,18 @@ class AiGenerationController:
 
             def _on_generate(et, fn, fl, ct, _btn=btn):
                 field_id = f"{et}.{fn}"
-                if _any_generating():
-                    return  # at most one wave per dialog
+                if _btn.is_generating:
+                    # PR-024: the dialog-wide gate is gone (spec «Последовательная
+                    # генерация нескольких полей» — every request starts without
+                    # waiting for the previous ones). Only a field's OWN in-flight
+                    # request blocks a restart; the button carries the visible
+                    # feedback for that case — the busy «…» face, not clickable.
+                    return
                 log.info("AI button clicked: %s, label=%s, text=%r", field_id, fl, ct[:50] if ct else "")
                 # A new run invalidates the cancellation marker of a previous wave.
                 state["cancelled_fields"].discard(field_id)
                 _btn.set_generating(True)
-                state["single_field"] = field_id
+                state["singles"].add(field_id)
                 _sync_controls()
                 _launch(_target(_btn, field_id, fn, fl, ct))
 
@@ -246,13 +260,14 @@ class AiGenerationController:
                     return  # late signal for a cancelled field
                 _btn.set_result_text(text)
                 batch = state["batch"]
-                if batch is not None and field_id in batch["fields"]:
+                # Wave membership goes by ``pending`` (see _fail_field): a
+                # re-pressed field already settled in the wave is a single.
+                if batch is not None and field_id in batch["pending"]:
                     batch["pending"].discard(field_id)
                     if not batch["pending"]:
                         _finish_wave()
                 else:
-                    if state["single_field"] == field_id:
-                        state["single_field"] = None
+                    state["singles"].discard(field_id)
                     _sync_controls()
 
             def _on_field_error(owner, fid, err, _et=btn.entity_type, _fn=btn.field_name):

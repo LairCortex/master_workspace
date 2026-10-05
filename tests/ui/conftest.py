@@ -197,7 +197,10 @@ async def app(qapp, llm_client, tmp_games_dir, tmp_llm_config, tmp_path):
     # tree (and its child counts) until the next nested loop exit.
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     yield application, window
-    window.close()
+    try:
+        window.close()
+    except RuntimeError:
+        pass  # C++ side already gone: a game switch retired this window (PR-002)
     # Drain the wiring's spawned session tasks before closing the session:
     # a dialog-open load task still in flight would otherwise race
     # ``session.close()`` mid-query (IllegalStateChangeError at teardown).

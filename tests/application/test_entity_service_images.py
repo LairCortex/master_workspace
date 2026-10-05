@@ -187,6 +187,83 @@ class TestNoOpPaths:
         assert result.image_id == img.id
 
 
+class TestReopenSeesSavedImage:
+    """PR-013: the card resolved its picture through the eagerly-loaded
+    ``image_ref``; a save wrote only the FK scalar, and the shared session
+    kept handing back the identity-mapped row with its stale loaded
+    relationship — a reopened card showed «Нет изображения» although the
+    DB row and the files were fine (a fresh session loaded the row back).
+    The save must keep the relationship in step with the FK it mirrors."""
+
+    async def test_reopen_after_image_save_loads_the_image_ref(self, qapp, async_session, image_dir):
+        svc, store = await _svc(async_session, image_dir)
+        org = await _make_org(async_session, None)
+        await async_session.commit()
+
+        # First card open: the eager loader settles image_ref to None.
+        first_open = await svc.get_entity(org.id)
+        assert first_open.image_ref is None
+
+        # User picks a picture and saves the card.
+        new_id = await store.store(_png_bytes())
+        await async_session.commit()
+        await svc.update_entity_with_relations(
+            org.id,
+            field_data={"image_id": new_id},
+            characteristics="c",
+            backstory="b",
+            related_changes={},
+        )
+
+        # Reopen in the SAME session: the card reads its render input here.
+        reopened = await svc.get_entity(org.id)
+        assert reopened.image_ref is not None
+        assert reopened.image_ref.id == new_id
+
+    async def test_reopen_after_image_replacement_loads_the_new_image_ref(self, qapp, async_session, image_dir):
+        svc, store = await _svc(async_session, image_dir)
+        old_id = await store.store(_png_bytes(Qt.GlobalColor.red))
+        org = await _make_org(async_session, old_id)
+        await async_session.commit()
+
+        first_open = await svc.get_entity(org.id)
+        assert first_open.image_ref.id == old_id
+
+        new_id = await store.store(_png_bytes(Qt.GlobalColor.blue))
+        await async_session.commit()
+        await svc.update_entity_with_relations(
+            org.id,
+            field_data={"image_id": new_id},
+            characteristics="c",
+            backstory="b",
+            related_changes={},
+        )
+
+        reopened = await svc.get_entity(org.id)
+        assert reopened.image_ref is not None
+        assert reopened.image_ref.id == new_id
+
+    async def test_reopen_after_image_clear_loads_no_image_ref(self, qapp, async_session, image_dir):
+        svc, store = await _svc(async_session, image_dir)
+        old_id = await store.store(_png_bytes())
+        org = await _make_org(async_session, old_id)
+        await async_session.commit()
+
+        first_open = await svc.get_entity(org.id)
+        assert first_open.image_ref.id == old_id
+
+        await svc.update_entity_with_relations(
+            org.id,
+            field_data={"image_id": None},
+            characteristics="c",
+            backstory="b",
+            related_changes={},
+        )
+
+        reopened = await svc.get_entity(org.id)
+        assert reopened.image_ref is None
+
+
 class TestGcCrashAfterCommit:
     """Audit Q14 scenario 3 (task 5.8): the image collector is a post-write
     hook of the unit of work — its crash happens after the update has already

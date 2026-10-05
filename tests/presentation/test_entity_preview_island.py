@@ -205,14 +205,18 @@ def test_a_shown_entity_renames_the_band_and_hides_the_hint(
     widget = _preview(qtbot, type_key, _entity(type_key))
 
     # Since NRI-0025 the card's band is the PANE'S own title line — titled by
-    # the registry type name AND the shown entity's name after the middle dot
-    # (reader's fix 2026-10-03; the name field inside stays, the duplicate is
-    # the point). No inner «Карточка…» duplicate exists. The column-wide
+    # the registry type name ONLY (spec «Заголовок предпросмотра — единственная
+    # строка заголовка»: «Название самой сущности в заголовок SHALL не
+    # переноситься (оно остаётся полем карточки)»; the PR-015 fix 2026-10-04
+    # retired the short-lived 2026-10-03 «· <имя>» tail the old pinline had
+    # frozen). No inner «Карточка…» duplicate exists. The column-wide
     # «Карточка» band steps off the axis (checkpoint п.2: from the first pane
     # the first band holds it).
-    assert find_item(widget.quick, "previewPaneTitle").property("text") == (
-        f"Карточка: {label} · Банн"
-    )
+    band_title = find_item(widget.quick, "previewPaneTitle").property("text")
+    assert band_title == f"Карточка: {label}"
+    # Anti-regression (PR-015): the «· <имя>» format must never come back.
+    assert " · " not in band_title
+    assert "Банн" not in band_title
     assert bool(find_item(widget.quick, "previewHeaderBand").property("visible")) is False
     assert find_items(widget.quick, "previewTitle") == []
     assert find_item(widget.quick, "previewEmptyHint").property("visible") is False

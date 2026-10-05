@@ -34,6 +34,15 @@ def find_item(widget, object_name: str) -> QQuickItem:
     return items[0]
 
 
+def plain_layer(field: QQuickItem) -> QQuickItem:
+    """The ``MentionField``'s plain text layer — the item the keyboard belongs
+    to (the component's focus delegation puts the focus there, and a multiline
+    Return is its own newline, never the window's default action)."""
+    layers = [item for item in walk_items(field) if item.objectName() == "mentionPlain"]
+    assert len(layers) == 1, f"expected exactly one mentionPlain under {field.objectName()!r}"
+    return layers[0]
+
+
 def island_rows(widget, row_object_name: str) -> list[QQuickItem]:
     """Materialized delegate rows top-to-bottom (the launcher convention:
     ``grab`` first — delegate materialization rides the render pass; sort by

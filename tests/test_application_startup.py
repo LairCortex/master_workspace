@@ -125,3 +125,16 @@ class TestApplicationStartupOrder:
         finally:
             window.close()
             await application.shutdown()
+
+
+class TestWizardFinishWithoutSession:
+    """PR-012 coverage reseat: the first-entry close step exists only while
+    the game is live. A late ``finished`` after teardown — the guard branch
+    the old modal-teardown timing used to hit by accident — must stay an
+    explicit no-op: no finish task on a dead session, no crash."""
+
+    async def test_close_after_teardown_finishes_nothing(self, qapp):
+        application = Application(qapp)
+        assert application._first_run_finish is None
+        application._wizard_finished(QDialog(), True)
+        assert application._first_run_finish is None

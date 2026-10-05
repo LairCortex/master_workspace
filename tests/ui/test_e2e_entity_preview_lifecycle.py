@@ -191,7 +191,7 @@ async def test_selection_bus_round_trips_middle_to_preview_and_back(
     # wiring loads through the entity service and shows the read-only card.
     window.detail_panel.vm.select("character", ban_id)
     await wait_for(lambda: _shown_name(window) == "Банн")
-    assert _live_pane(window)["title"] == "Карточка: Персонаж · Банн"
+    assert _live_pane(window)["title"] == "Карточка: Персонаж"
     assert _washed_ids(window.detail_panel.vm.characters) == [ban_id]
     assert canvas.selected_id == event_id  # the scale was not touched
     # The selection opened no card: selection and activation stay separate.
@@ -364,7 +364,7 @@ async def test_card_save_refreshes_only_the_shown_entity(
     # updates the session-identity-mapped row in place mid-transaction, so
     # the live row's name flips before the save task repaints the island.
     await wait_for(lambda: _shown_name(window) == "Банн-2")
-    assert _live_pane(window)["title"] == "Карточка: Персонаж · Банн-2"
+    assert _live_pane(window)["title"] == "Карточка: Персонаж"
     assert _live_pane(window)["nameText"] == "Банн-2"
 
 

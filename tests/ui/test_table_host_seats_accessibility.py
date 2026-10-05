@@ -25,18 +25,29 @@ down immediately and the check state (and with it ``toggled``, the slot the pane
 listens to) lands only when the animation timer releases it. Therefore every
 assertion after a Press pumps BOTH event loops: the Qt one for the release timer,
 the asyncio one for the ``drop_seat`` coroutine the handler schedules.
+
+PR-022-ремонт (live raw-дерево 2026-10-04): the live cocoa tree showed ZERO
+AXCheckBox nodes because the rows were item-view CELL widgets — a QListView's
+accessibility interface publishes only its virtual cells, so the offscreen
+pointer-query above stayed green on a face AppKit never enumerated. The rows
+are plain child widgets of the desk now; three pins below catch exactly that
+class of regression: the checkbox must sit in the widget hierarchy with no
+QAbstractItemView above it, it must answer the ``Toggle`` action (Qt 6.10's
+cocoa turns an AXPress on a CheckBox role into Toggle — the PR-001 family),
+and it must live in the Tab chain with Space driving the seat.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAccessible
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QCheckBox
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QCheckBox
 
 from app.presentation.views.table_host.panel import TableHostPanel
 from tests.ui.test_table_host_panel_close import FakeHost
 
 ROWS = [(11, "Лист A"), (12, "Лист B"), (13, "Лист C")]
+_NAMES = dict(ROWS)
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -49,18 +60,20 @@ def _panel(qtbot, host: FakeHost) -> TableHostPanel:
 
 
 def _seat_box(panel: TableHostPanel, instance_id: int) -> QCheckBox:
-    """The row's checkbox, addressed by the instance its row was built for."""
-    for i in range(panel.seat_list.count()):
-        item = panel.seat_list.item(i)
-        if int(item.data(Qt.ItemDataRole.UserRole)) == instance_id:
-            return panel.seat_list.itemWidget(item).findChild(QCheckBox)
+    """The row's checkbox, addressed by the instance its row was built for —
+    the instance's name is the checkbox's accessible name (PR-022-ремонт)."""
+    for box in panel.seat_boxes():
+        if box.accessibleName() == _NAMES[instance_id]:
+            return box
     raise AssertionError(f"no seating row for instance {instance_id}")
 
 
 def _press(box: QCheckBox) -> None:
     """The tree's own activation of the checkbox — QAccessible only, never a
     synthetic ``click()``/``setChecked()``, so the pin really travels the
-    accessibility action channel."""
+    accessibility action channel. PR-022/PR-001 family: cocoa 6.10 translates
+    an AXPress on a CheckBox role into the Toggle action, so BOTH action names
+    must be exposed for the live press to land."""
     iface = QAccessible.queryAccessibleInterface(box)
     assert iface is not None, "the seating checkbox is absent from the tree"
     assert iface.role() == QAccessible.Role.CheckBox
@@ -68,6 +81,11 @@ def _press(box: QCheckBox) -> None:
     assert actions is not None, "the checkbox carries no action interface"
     assert "Press" in actions.actionNames(), (
         "the row checkbox exposes no Press action — the tree cannot actuate seating"
+    )
+    assert "Toggle" in actions.actionNames(), (
+        "the row checkbox exposes no Toggle action — Qt 6.10 cocoa sends "
+        "Toggle for an AXPress on a CheckBox, a Press-only control is a "
+        "silent no-op in the live tree (PR-001/PR-022 family)"
     )
     actions.doAction("Press")
 
@@ -206,6 +224,7 @@ async def test_one_ax_press_is_one_invocation_of_the_shared_slot(
     seen = _spy_seat_slot(monkeypatch)  # installed before the rows bind their slots
     panel = _panel(qtbot, host)
     panel.set_instances(ROWS)
+    QApplication.processEvents()  # settle the row geometry before the mouse clicks
     # nothing was checked during the load of an unseated table → no fire at all
     assert seen == []
 
@@ -240,6 +259,7 @@ async def test_the_host_is_reachable_only_through_that_slot(
     seen = _spy_seat_slot(monkeypatch, forward=False)
     panel = _panel(qtbot, host)
     panel.set_instances(ROWS)
+    QApplication.processEvents()  # settle the row geometry before the mouse clicks
 
     QTest.mouseClick(_seat_box(panel, 11), Qt.MouseButton.LeftButton)
     assert seen == [(11, True)]
@@ -251,4 +271,80 @@ async def test_the_host_is_reachable_only_through_that_slot(
     # the boxes themselves did flip — both activations reached the widget, the
     # host just never heard about it because the only door was muted
     assert panel.checked_seat_ids() == [11, 12]
+    host.stop_fake()
+
+
+# ── PR-022-ремонт: the class of the live-tree loss, pinned offscreen ────────
+
+def test_seat_checkbox_is_a_plain_child_widget_not_an_item_view_cell(qtbot):
+    """The PR-022 regression class: a checkbox drawn inside an item-view cell
+    is invisible to the live accessibility enumeration (the view publishes
+    only virtual cells), however real it is to a pointer-side QAccessible
+    query. The box must therefore sit in the panel's own widget hierarchy —
+    no QAbstractItemView may stand between it and the panel."""
+    host = FakeHost()
+    panel = _panel(qtbot, host)
+    panel.set_instances(ROWS)
+
+    for box in panel.seat_boxes():
+        ancestor = box.parentWidget()
+        while ancestor is not panel:
+            assert ancestor is not None, "the seat checkbox left the panel"
+            assert not isinstance(ancestor, QAbstractItemView), (
+                "a seating checkbox sits inside an item view — the live "
+                "cocoa tree will publish cells, not this checkbox (PR-022)"
+            )
+            ancestor = ancestor.parentWidget()
+
+
+async def test_the_toggle_action_is_the_press_cocoa_sends_and_seats_once(
+    qtbot, wait_for
+):
+    """Qt 6.10 cocoa answers an AXPress on a CheckBox role with the Toggle
+    action (qcocoaaccessibility translateAction — the PR-001 mechanism). The
+    live press therefore arrives as Toggle: it must seat EXACTLY once, no
+    double flip through a role-default bare ``checked`` write."""
+    host = FakeHost()
+    host.start_fake()
+    panel = _panel(qtbot, host)
+    panel.set_instances(ROWS)
+
+    box = _seat_box(panel, 12)
+    iface = QAccessible.queryAccessibleInterface(box)
+    iface.actionInterface().doAction("Toggle")
+    await wait_for(lambda: host.calls == [("seat", 12)])
+    assert panel.checked_seat_ids() == [12]
+
+    # the reverse through the same channel, still one call per action
+    iface.actionInterface().doAction("Toggle")
+    await wait_for(lambda: host.calls == [("seat", 12), ("drop_seat", 12)])
+    assert len(host.calls) == 2
+    host.stop_fake()
+
+
+async def test_the_seat_lives_in_the_tab_chain_and_space_drives_it(
+    qtbot, wait_for
+):
+    """PR-022's keyboard half: Tab from the port spin must reach a seating
+    checkbox (the old cell checkbox was skipped — Tab landed on the item view)
+    and Space on the focused box is the seat action."""
+    host = FakeHost()
+    host.start_fake()
+    panel = _panel(qtbot, host)
+    panel.set_instances(ROWS)
+
+    walk = panel.port_spin
+    for _ in range(25):
+        walk = walk.nextInFocusChain()
+        if isinstance(walk, QCheckBox):
+            break
+    else:
+        raise AssertionError("Tab chain from the port spin never reaches a seat")
+    assert walk in panel.seat_boxes(), "the first checkbox is not a seating box"
+
+    walk.setFocus()
+    assert panel.focusWidget() is walk
+    expected_id = {name: iid for iid, name in _NAMES.items()}[walk.accessibleName()]
+    QTest.keyClick(walk, Qt.Key.Key_Space)
+    await wait_for(lambda: host.calls == [("seat", expected_id)])
     host.stop_fake()

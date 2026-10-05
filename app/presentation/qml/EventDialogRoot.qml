@@ -82,7 +82,11 @@ Rectangle {
                 // nri-0012 task 3.5 (usage-site name, design map): the typed
                 // name rides the value slot; the caption is paint.
                 Accessible.name: "Название события"
-                onTextEdited: eventDialogVm.name = text
+                // PR-016: AX SetValue writes the text property without a
+                // user gesture, so the model follows every text change —
+                // the identity guard keeps the vm→text binding echo quiet.
+                onTextChanged: if (text !== eventDialogVm.name)
+                    eventDialogVm.name = text
             }
             // NRI-0018 (spec entity-generation «Кнопка стоит у заголовка»):
             // only the name field's own ✨ stays in this cell — the whole-event

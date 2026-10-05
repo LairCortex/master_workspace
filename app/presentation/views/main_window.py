@@ -4,10 +4,10 @@ from __future__ import annotations
 import logging
 import logging.handlers
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEvent, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QMainWindow, QMenuBar, QSplitter, QVBoxLayout, QWidget,
+    QApplication, QMainWindow, QMenuBar, QSplitter, QVBoxLayout, QWidget,
 )
 
 from app import __version__
@@ -26,6 +26,26 @@ log = logging.getLogger(__name__)
 # narrow pane), so the all-tabs-whole threshold no longer floors the panes;
 # the number only keeps a dragged pane draggable back and clickable.
 PANE_MIN_WIDTH = 220
+
+# PR-012 (spec modal-sheets «действия, нацеленные на главный оконный слой,
+# SHALL быть неактивны»): while the sheet stack is up, SPONTANEOUS pointer
+# input aimed at the window's content layer is swallowed here — the same
+# scope the native document-modality block has (it lives in the cocoa event
+# delivery and only ever touches OS input), so the Qt-level channels that
+# never passed through it (QTest, accessibility actions, ``sendEvent``) keep
+# working exactly as they did under the old WindowModal sheet. On cocoa the
+# attached sheet already blocks its parent at AppKit level; this gate is what
+# holds the contract on every platform (and what the offscreen suite can see
+# at all). Menu bar and native chrome stay live — the exceptions of the
+# window class must be reachable from under a sheet.
+_CONTENT_BLOCKED_INPUTS = frozenset(
+    {
+        QEvent.Type.MouseButtonPress,
+        QEvent.Type.MouseButtonRelease,
+        QEvent.Type.MouseButtonDblClick,
+        QEvent.Type.Wheel,
+    }
+)
 
 _LOG_FILENAME = "nri_manager.log"
 # AB5 (NRI-0016): the log lives in the one configuration home (paths.py),
@@ -196,6 +216,11 @@ class MainWindow(QMainWindow):
         # D1 (NRI-0016): the runtime listener's handle, dropped in closeEvent
         # — a closed window must unsubscribe explicitly, not via the collector.
         self._theme_listener = None
+        # PR-012: whether this window's content-input gate currently rides the
+        # application queue. One install per rising stack, one removal per its
+        # fall — the flag keeps a stray double ``True``/``False`` from
+        # stacking or orphaning the filter.
+        self._content_gate_installed = False
 
         menu_bar.setObjectName("themeMenu")  # test identifier, not a style hook (W2a)
         # NRI-0014 live audit (L2): Qt's macOS menu-role heuristic reads the
@@ -270,10 +295,18 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 1)
-        # The three default widths ride through unchanged (spec main-window
-        # «Дефолтные ширины колонок SHALL остаться прежними»): the preview
-        # column inherits the freed snapshot pane's 500 px.
-        splitter.setSizes([330, 390, 500])
+        # PR-014: the default split must hold the spec scenario «Первый запуск
+        # шире прежнего минимума» on the REAL layout, not just on a panel
+        # measured in isolation. At the 1280 first-run frame the splitter gets
+        # 1272 px (central margins 2×4), so the sum below plus the two 4 px
+        # handles lands EXACTLY on it — no stretch surplus smears the nominal
+        # split across the panes. The detail column carries the tab strip:
+        # (434 − 8) / 4 = 106.5 px per equal share ≥ the longest natural
+        # caption «Организации» (101.8 px measured offscreen), so every
+        # caption reads whole at first launch (was: 390 → 99 px share →
+        # «Организаци…»). The timeline keeps its 330; the preview keeps the
+        # 500 inherited from the freed snapshot pane (NRI-0022).
+        splitter.setSizes([330, 434, 500])
         main_layout.addWidget(splitter, 1)
 
         self._apply_theme()
@@ -297,15 +330,49 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(self._base_title)
 
     def on_sheet_stack_changed(self, active: bool) -> None:
-        """Sheet-stack menu gate (NRI-0024 task 1.2, design Д2): the slot the
-        connector's ``sheet_stack_changed`` feeds. With a sheet up, every
-        entry that would open another sheet goes inactive and the main layer
-        stays single-sheet; when the stack empties, the entries come back.
-        The window owns the entry list (its menu), the connector owns the
-        stack — bound once in ApplicationWiring.connect().
+        """Sheet-stack gate (NRI-0024 task 1.2, design Д2; PR-012 widened it):
+        the slot the connector's ``sheet_stack_changed`` feeds. With a sheet
+        up, every entry that would open another sheet goes inactive, the
+        window watches the application queue to swallow pointer input aimed
+        at its content layer, and the main layer stays single-sheet; when the
+        stack empties, both come back. Exception entries (char sheets, export,
+        theme, docs) stay live by construction — they are NOT in the gated
+        list, and with the sheet no longer a Qt-modal window (PR-012) the
+        native menu bar keeps answering their enabled states. The window owns
+        the entry list (its menu), the connector owns the stack — bound once
+        in ApplicationWiring.connect(). The open→empty symmetry of
+        ``sheet_stack_changed`` is what balances the filter install here:
+        exactly one install per rising stack, one removal per its fall.
         """
         for action in self._sheet_opening_actions:
             action.setEnabled(not active)
+        app = QApplication.instance()
+        if active and not self._content_gate_installed:
+            app.installEventFilter(self)
+            self._content_gate_installed = True
+        elif not active and self._content_gate_installed:
+            app.removeEventFilter(self)
+            self._content_gate_installed = False
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 — Qt API
+        """PR-012's content block: installed only while the sheet stack is
+        up (see :meth:`on_sheet_stack_changed`). SPONTANEOUS pointer input
+        (press/release/double-click/wheel — what the real hardware produces)
+        whose target lives under the central widget — the main content layer
+        — never reaches it while a sheet covers the window; this mirrors the
+        reach of the AppKit sheet block it replaces, so synthetic delivery
+        (``sendEvent``, QTest-free harness probes) stays untouched. Anything
+        else (the sheet's own widgets, native popups, the menu bar) passes
+        untouched."""
+        if (
+            event.type() in _CONTENT_BLOCKED_INPUTS
+            and event.spontaneous()
+            and isinstance(obj, QWidget)
+        ):
+            central = self.centralWidget()
+            if central is not None and (obj is central or central.isAncestorOf(obj)):
+                return True
+        return super().eventFilter(obj, event)
 
     def shutdown(self) -> None:
         """The window's штатный teardown (D1, NRI-0016; idempotent) — the

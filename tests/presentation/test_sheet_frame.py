@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLabel, QPushButton
+from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from app.presentation.theme.qml_palette import SCRIM_COLOR
 from app.presentation.views.sheet_frame import SheetFrame
@@ -88,6 +88,58 @@ def test_close_button_and_escape_share_the_reject_outcome(qtbot):
     QTest.keyClick(by_escape, Qt.Key.Key_Escape)
     assert not by_escape.isVisible()
     assert by_escape.result() == by_button.result()
+
+
+class _EscapeEater(QWidget):
+    """A content widget that CONSUMES Escape (PR-005).
+
+    Live face of the defect: the docs sheet's content is a QQuickWidget island,
+    and on the real cocoa display the island's offscreen QQuickWindow accepts
+    the Escape (instrumented proof: «key-> QQuickWindow(...) → accepted=True»,
+    the event never climbs to the dialog) — so the sheet stayed open. Offscreen
+    a QQuickWidget forwards the ignored key upward, so the pin models the same
+    observable with a plain widget: focus sits on a child that eats Escape.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ate_escape = False
+
+    def keyPressEvent(self, event):  # noqa: N802 — Qt API
+        if event.key() == Qt.Key.Key_Escape:
+            self.ate_escape = True
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+def test_escape_reaches_the_sheet_even_when_the_content_eats_it(qtbot):
+    """PR-005: the sheet's Esc result is the frame's own, never the content's
+    favour. «Закрыть» = Esc = QDialog.reject (spec «как Esc»), and the route
+    must survive a content widget that consumes the key — the live island sheet
+    stayed open because QDialog::keyPressEvent only runs on a key that arrives.
+    """
+    frame = SheetFrame("Changelog")
+    qtbot.addWidget(frame)
+    eater = _EscapeEater(frame)
+    frame.add_content(eater)
+    frame.show()
+    qtbot.waitExposed(frame)
+    frame.activateWindow()
+    qtbot.waitUntil(lambda: frame.isActiveWindow(), timeout=2000)
+    eater.setFocus()
+    assert frame.focusWidget() is eater
+
+    # The frame's filter answers ONLY Escape: any other key rides to the
+    # content untouched (the island keeps its own PageUp/PageDown contract).
+    QTest.keyClick(frame.windowHandle(), Qt.Key.Key_PageDown)
+    assert frame.isVisible()
+    assert eater.ate_escape is False
+
+    QTest.keyClick(frame.windowHandle(), Qt.Key.Key_Escape)
+
+    assert not frame.isVisible()  # the sheet's cancel never depends on the content
+    assert frame.result() == frame.DialogCode.Rejected
 
 
 def test_content_slot_seats_its_widget_below_the_header(qtbot):

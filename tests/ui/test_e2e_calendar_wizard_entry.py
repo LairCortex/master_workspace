@@ -215,15 +215,16 @@ async def test_menu_entry_preselects_custom_and_old_game_stays_old(
 # мастера»: лист внутри главного окна) ───────────────────────────────────────
 
 
-async def test_menu_wizard_is_a_window_modal_sheet_without_geometry_jump(
+async def test_menu_wizard_is_an_attached_sheet_without_geometry_jump(
     app, wait_for
 ):
     """The «Календарь…» wizard is a sheet of the connector's stack now
-    (nri-0024 tasks 3.1/3.2, design Д6/Д7): WindowModal over the main window
-    through ``open_sheet`` — the application-modal top-level of NRI-0014 D5
-    retired with the three-class contract. The window never moves: the sheet
-    rides its parent instead of being wider than it, and the D6 half of the
-    promise — opening the wizard must not shove the parent around — stands."""
+    (nri-0024 tasks 3.1/3.2, design Д6/Д7): an attached native sheet (Qt.Sheet,
+    NonModal at Qt level — PR-012) shown through ``open_sheet`` — the
+    application-modal top-level of NRI-0014 D5 retired with the three-class
+    contract. The window never moves: the sheet rides its parent instead of
+    being wider than it, and the D6 half of the promise — opening the wizard
+    must not shove the parent around — stands."""
     application, window = app
     window.setGeometry(140, 120, 1100, 700)
     await helpers.wait_until_settled()
@@ -234,8 +235,9 @@ async def test_menu_wizard_is_a_window_modal_sheet_without_geometry_jump(
     wizard = _visible_wizard(window)
     await helpers.wait_until_settled()
 
-    assert wizard.windowModality() == Qt.WindowModality.WindowModal
-    assert wizard.isModal()
+    assert wizard.windowFlags() & Qt.WindowType.Sheet
+    assert wizard.windowModality() == Qt.WindowModality.NonModal
+    assert not wizard.isModal()
     # A sheet of this window: the parent chain IS the stack.
     assert wizard.parent() is window
     # D6: opening over the parent must not shove the parent.

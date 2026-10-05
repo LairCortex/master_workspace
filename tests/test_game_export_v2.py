@@ -5,6 +5,8 @@ import zipfile
 
 import pytest
 
+from app import __version__
+from app.infrastructure.db import game_manager
 from app.infrastructure.db.game_manager import create_game, export_game, read_archive_meta
 
 
@@ -49,6 +51,31 @@ class TestExportWithImages:
         assert "version" in meta
         assert "exported_at" in meta
         assert "db_size_bytes" in meta
+
+    def test_meta_version_equals_app_version(self, games_dir, tmp_path):
+        # PR-004: the archive labels its creator with the app version — the
+        # single in-code source app.__version__, never a frozen literal.
+        db_path = create_game("VerFollows")
+        db_path.write_bytes(b"data")
+        dest = tmp_path / "ver.nri"
+
+        export_game(str(db_path), dest)
+
+        meta = read_archive_meta(dest)
+        assert meta["version"] == __version__
+
+    def test_meta_version_tracks_the_module_binding_not_a_literal(self, games_dir, tmp_path, monkeypatch):
+        # The exported value must ride the module binding, so bumping the
+        # version in app/__init__.py grows the archive label with the code.
+        monkeypatch.setattr(game_manager, "__version__", "9.9.9-pin")
+        db_path = create_game("VerTracks")
+        db_path.write_bytes(b"data")
+        dest = tmp_path / "verpin.nri"
+
+        export_game(str(db_path), dest)
+
+        meta = read_archive_meta(dest)
+        assert meta["version"] == "9.9.9-pin"
 
 
 class TestExportWithoutImages:

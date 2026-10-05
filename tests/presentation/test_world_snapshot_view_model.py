@@ -78,6 +78,102 @@ def test_initial_clear_and_empty_populate_states(qapp):
     assert vm.clearEnabled is False
 
 
+# ── PR-019: the entity sections are the world's state, not the slice's echo ──
+
+
+def test_entities_of_the_world_paint_with_zero_events(qapp):
+    """Spec world-snapshot «Секции снимка» + entity-addition «Успешное
+    создание»: a saved entity reaches every surface of the game, so the
+    census section stands even when the slice has no events at all — «Нет
+    событий в игре» is the events section's emptiness, never the whole panel."""
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [],
+        None,
+        {},
+        {"location": [_entity(9, "Тестовая локация")]},
+    )
+
+    rows = _rows(vm)
+    headers = [row for row in rows if row["rowKind"] == "sectionHeader"]
+    assert [row["displayText"] for row in headers] == ["Локации (1)"]
+    assert [row["name"] for row in rows if row["rowKind"] == "entityRow"] == [
+        "Тестовая локация"
+    ]
+    # The panel has something to read, so no empty-state message takes its place.
+    assert vm.emptyText == ""
+    # …and the statistics name the counts the sections show (spec «Строка
+    # статистики подводит итог среза»: no events, one location).
+    assert vm.statsText.startswith("Показано: все события")
+    assert "Событий: 0" in vm.statsText
+    assert "Локаций: 1" in vm.statsText
+
+
+def test_census_sections_stand_for_a_date_with_nothing_active(qapp):
+    """The same rule for the other emptiness: a date with no active events
+    empties the events section, it never swallows the world's entities."""
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [],
+        date(1200, 1, 15),
+        {},
+        {"character": [_entity(1, "Герой"), _entity(2, "Злодей", 16)]},
+    )
+
+    rows = _rows(vm)
+    assert vm.emptyText == ""
+    sections = [row["sectionKey"] for row in rows if row["rowKind"] == "sectionHeader"]
+    assert sections == ["characters"]
+    # the rating order of the section holds for census rows as for linked ones
+    assert [
+        row["name"] for row in rows if row["rowKind"] == "entityRow"
+    ] == ["Злодей", "Герой"]
+
+
+def test_a_world_without_entities_and_events_stays_an_honest_empty_state(qapp):
+    """Nothing in the world — the census arrives empty, so the cause-named
+    message keeps its place (spec «Причина пустоты названа точно», TC-SNAP-015)."""
+    vm = WorldSnapshotViewModel()
+    empty_census = {
+        "location": [],
+        "organization": [],
+        "character": [],
+        "item": [],
+    }
+    vm.populate([], None, {}, empty_census)
+    assert _rows(vm) == []
+    assert vm.emptyText == "Нет событий в игре"
+    assert vm.statsText == ""
+
+    vm.populate([], date(1200, 1, 15), {}, empty_census)
+    assert _rows(vm) == []
+    assert vm.emptyText == "На эту дату нет активных событий"
+
+
+def test_census_and_slice_relations_meet_in_one_row(qapp):
+    """The two sources dedup by identifier (spec «Сущность из нескольких
+    событий показана один раз»): the same location arriving from a slice event
+    and from the census occupies one row and counts once in the statistics."""
+    shared = _entity(3, "Замок")
+    vm = WorldSnapshotViewModel()
+    vm.populate(
+        [_event(locations=[shared])],
+        None,
+        {},
+        {"location": [shared, _entity(4, "Порт")]},
+    )
+    vm.toggleSection("events")
+
+    rows = _rows(vm)
+    location_rows = [
+        row for row in rows
+        if row["rowKind"] == "entityRow" and row["type"] == "location"
+    ]
+    assert [row["name"] for row in location_rows] == ["Замок", "Порт"]
+    assert "Локаций: 2" in vm.statsText
+    assert "Событий: 1" in vm.statsText
+
+
 def test_populate_builds_render_ready_flat_rows_and_stats(qapp):
     location = _entity(3, "Замок", 5, "Высокая башня")
     character = _entity(4, "Герой", 15)

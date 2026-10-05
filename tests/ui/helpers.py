@@ -15,7 +15,6 @@ from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
-    QDialogButtonBox,
     QMenu,
     QListWidget,
     QWidget,
@@ -453,12 +452,13 @@ async def link_existing_entity_in_tab(
     tab.link_button.click()
     await wait_for(lambda: _picker() is not None)
     picker = _picker()
-    for lst in picker.findChildren(QListWidget):
-        for i in range(lst.count()):
-            if name in lst.item(i).text():
-                lst.item(i).setSelected(True)
-    buttons = picker.findChild(QDialogButtonBox)
-    buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+    # PR-020: the rows are RowItem delegates on the sheet's VM now (the
+    # widgets QListWidget never reached the accessibility tree) — tick every
+    # matching row through the same VM slot the click calls, press «ОК».
+    for index, row in enumerate(picker.vm.rows):
+        if name in row["label"]:
+            picker.vm.toggleRow(index)
+    qml_h.click_item(picker.quick, qml_h.find_item(picker.quick, "okButton"))
 
 
 _EVENT_TAB_ATTR = {

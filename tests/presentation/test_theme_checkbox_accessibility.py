@@ -17,6 +17,17 @@ the probe counts ``clicked`` emits and ``checked`` flips across presses — a
 double actuation (attached handler + default action) would count 2 emits or a
 net-zero flip and fail here. The штатно role stays CheckBox (a role-losing
 annotation would break the 4.2 contract and this pin together).
+
+PR-001 (re-reproduced live 2026-10-03 under the pinned Qt 6.10): the cocoa
+bridge translates AXPress on a CheckBox/RadioButton role into the ``Toggle``
+action (``qcocoaaccessibility.mm`` translateAction), not ``Press``. With only
+the press handler attached the Toggle fell through to QAccessibleQuickItem's
+role default — a bare ``setProperty("checked", …)`` with no ``clicked`` — the
+tick flipped while the theme stayed. Offscreen the same fall-through is fully
+reachable through ``doAction("Toggle")`` (the translation itself is the only
+cocoa-only step), so the pins measure BOTH action names: each must be one
+real click, and an alternating Press/Toggle pair must net exactly two flips
+and two emits (the double-actuation guard across the two paths).
 """
 from __future__ import annotations
 
@@ -85,14 +96,24 @@ def accessible_of(item):
     return iface
 
 
-def press(item) -> None:
+def action_on(item, name: str) -> None:
     actions = accessible_of(item).actionInterface()
-    assert "Press" in actions.actionNames(), (
+    assert name in actions.actionNames(), (
         f"{item.objectName()!r} exposes accessibility actions "
         f"{list(actions.actionNames())!r} — the checkbox is unreachable to a "
-        "single Press (F2)"
+        f"single {name} (F2/PR-001)"
     )
-    actions.doAction("Press")
+    actions.doAction(name)
+
+
+def press(item) -> None:
+    action_on(item, "Press")
+
+
+def toggle(item) -> None:
+    """PR-001: on Qt 6.10 cocoa the live AXPress of a checkbox arrives here —
+    the bridge translates AXPress on the CheckBox role into ``Toggle``."""
+    action_on(item, "Toggle")
 
 
 def measure_press(widget: QQuickWidget) -> None:
@@ -114,6 +135,44 @@ def measure_press(widget: QQuickWidget) -> None:
     assert int(root.property("clicks")) == 2, (
         f"two Presses emitted clicked {int(root.property('clicks'))} times — "
         "expected exactly 2 (one emit per activation)"
+    )
+    assert widget.errors() == []
+
+
+def measure_toggle(widget: QQuickWidget) -> None:
+    """PR-001 pin of the cocoa route: one Toggle (= the live AXPress of a
+    checkbox under Qt 6.10) = one tick flip + one clicked emit, both
+    directions, and no double actuation alongside the press path."""
+    chk = find_item(widget, "probePress")
+    root = widget.rootObject()
+    assert bool(chk.property("checked")) is False
+    assert int(root.property("clicks")) == 0
+
+    toggle(chk)
+    assert bool(chk.property("checked")) is True, (
+        "first Toggle did not flip the tick — the PR-001 fall-through "
+        "(role default writes checked, no handler) or a silent handler"
+    )
+    assert int(root.property("clicks")) == 1, (
+        f"first Toggle emitted clicked {int(root.property('clicks'))} times — "
+        "expected exactly 1 (0 = the tick lies, the PR-001 live fact; "
+        "2 = double actuation)"
+    )
+
+    toggle(chk)
+    assert bool(chk.property("checked")) is False, "second Toggle did not flip back"
+    assert int(root.property("clicks")) == 2
+
+    # The two names are alternative spellings of one activation, never a
+    # sequence that double-toggles: alternating them flips once per action.
+    press(chk)
+    toggle(chk)
+    assert bool(chk.property("checked")) is False, (
+        "Press+Toggle netted a flip — one of the paths actuates twice"
+    )
+    assert int(root.property("clicks")) == 4, (
+        f"four actions emitted clicked {int(root.property('clicks'))} times — "
+        "expected exactly 4 (no path may fire alongside the other)"
     )
     assert widget.errors() == []
 
@@ -146,6 +205,24 @@ def test_offskin_press_contract_is_identical(qtbot, qapp, tmp_path):
     chk = find_item(widget, "probePress")
     assert bool(chk.property("skinned")) is False
     measure_press(widget)
+
+
+def test_toggle_action_clicks_and_flips_the_tick_exactly_once(qtbot, qapp, tmp_path):
+    """PR-001 pin, skinned: doAction("Toggle") — the action Qt 6.10 cocoa
+    derives from a live AXPress on a CheckBox — must run one real click, not
+    the role-default bare ``checked`` write that produced the lying tick."""
+    runtime = make_runtime(tmp_path, "dark")
+    widget = load_probe(qtbot, qapp, runtime, tmp_path, QmlPalette(runtime))
+    measure_toggle(widget)
+
+
+def test_offskin_toggle_contract_is_identical(qtbot, qapp, tmp_path):
+    """PR-001 off-skin (D7): the Toggle contract rides the attached handlers,
+    so re-materializing as the Basic CheckBox changes nothing."""
+    widget = load_probe(qtbot, qapp, make_runtime(tmp_path, "dark"), tmp_path)
+    chk = find_item(widget, "probePress")
+    assert bool(chk.property("skinned")) is False
+    measure_toggle(widget)
 
 
 # ── the live F2 pairing: AX-pressing the launcher checkbox switches the theme ─
@@ -183,6 +260,41 @@ def test_launcher_checkbox_press_switches_the_theme(qtbot, tmp_path):
 
     # And back — the press is no one-shot (mouse parity both directions).
     press(chk)
+    assert len(toggles) == 2
+    assert runtime.theme == "dark"
+    assert bool(chk.property("checked")) is False
+
+
+def test_launcher_checkbox_toggle_action_switches_the_theme(qtbot, tmp_path):
+    """PR-001 live-path end-to-end offscreen: under Qt 6.10 cocoa the launcher
+    checkbox's AXPress arrives as ``Toggle`` — the very action that flipped the
+    tick without touching ThemeRuntime or ui.json in the live repro. One
+    Toggle must now reach ThemeRuntime exactly once, flip the island and the
+    tick together, and flip back on the second one."""
+    runtime = ThemeRuntime(
+        prefs=UiPrefsManager(tmp_path / "ui.json"),
+        tokens_path=tokens_file_path(),
+    )
+    assert runtime.theme == "dark"
+    dlg = GameLauncherDialog(theme=runtime)
+    qtbot.addWidget(dlg)
+    quick = dlg.content.quick
+
+    toggles = track(quick.rootObject().themeToggleRequested)
+    chk = find_item(quick, "themeToggleButton")
+    assert bool(chk.property("checked")) is False
+
+    toggle(chk)
+
+    assert toggles == [()], (
+        f"one Toggle emitted themeToggleRequested {len(toggles)} times — "
+        "expected exactly 1 (0 = the PR-001 lie: tick flips, theme stays; "
+        "2 = double actuation)"
+    )
+    assert runtime.theme == "light", "the Toggle action did not reach ThemeRuntime"
+    assert bool(chk.property("checked")) is True, "the tick does not ride the runtime"
+
+    toggle(chk)
     assert len(toggles) == 2
     assert runtime.theme == "dark"
     assert bool(chk.property("checked")) is False

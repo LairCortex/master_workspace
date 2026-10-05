@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeyEvent
-from PySide6.QtWidgets import QListWidget, QMessageBox
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QMessageBox
 
 from app.domain.game_calendar import (
     CalendarSpec,
@@ -20,7 +21,7 @@ from app.presentation.viewmodels.event_dialog_island_view_model import (
     EventDialogIslandViewModel,
 )
 from app.presentation.views.event_dialog import EventDialog
-from tests.presentation.qml_helpers import find_item
+from tests.presentation.qml_helpers import find_item, plain_layer
 from tests.ui.test_theme_grab import make_runtime
 
 
@@ -204,12 +205,115 @@ def test_saving_blocks_escape_close_and_cancel(qtbot):
     assert dialog.isVisible()
 
 
-def test_related_picker_is_native_multiselect_and_empty_is_noop(qtbot):
-    """NRI-0024 task 2.5: the picker left ``exec()`` — the dialog builds the
-    «Выберите <тип>» SheetFrame and hands it to the connector's one sheet
-    channel (``sheet_requested``). The list keeps the stock multi-selection,
-    ОК's accept path commits the choice into the section, and a section
-    without candidates emits no sheet at all."""
+def _press(dialog, key: Qt.Key = Qt.Key.Key_Return) -> None:
+    """The keystroke a sheet receives while none of its items claimed it."""
+    dialog.keyPressEvent(
+        QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+    )
+
+
+def test_enter_presses_the_save_marker_only_when_the_sheet_allows_it(qtbot, monkeypatch):
+    """PR-029 (spec qml-shell «Минразмер и defaultButton»): Enter is the sheet's
+    save shortcut, taken through the island's own ``defaultButton`` marker by
+    the shared island bridge. The refusals are part of the norm: the invalid
+    form (a disabled Save must not eat the keystroke), the save already running,
+    and the multiline field that keeps Return for its own newline."""
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.resize(760, 700)
+    dialog.show()
+    QApplication.processEvents()
+    saves: list = []
+    dialog.saved.connect(saves.append)
+
+    # Nothing filled: «Сохранить» is disabled, Return changes nothing.
+    _press(dialog)
+    assert saves == []
+    assert dialog.isVisible()
+
+    # Name + one mandatory mention field: the same key now requests the save.
+    dialog.vm.name = "Enter сохраняет"
+    dialog.vm.characteristicsHost.storage = "характеристики"
+    _press(dialog)
+    assert len(saves) == 1
+    assert dialog._saving
+    dialog.finish_saving(False)
+
+    # The route a real key takes: focus sits in the one-line name field, which
+    # does not consume Return, so the key climbs to the dialog and saves again.
+    name_field = find_item(dialog.quick, "eventNameField")
+    name_field.forceActiveFocus()
+    QApplication.processEvents()
+    assert name_field.property("activeFocus") is True
+    QTest.keyClick(dialog.quick, Qt.Key.Key_Return)
+    assert len(saves) == 2
+    assert dialog._saving
+
+    # While that save waits for the connector, the Save is disabled again.
+    QTest.keyClick(dialog.quick, Qt.Key.Key_Return)
+    assert len(saves) == 2
+    dialog.finish_saving(False)
+
+    # The multiline «Предыстория» owns Return: the newline is typed, the valid
+    # sheet neither saves nor closes.
+    plain = plain_layer(find_item(dialog.quick, "eventBackstoryField"))
+    plain.forceActiveFocus()
+    QApplication.processEvents()
+    QTest.keyClick(dialog.quick, Qt.Key.Key_Return)
+    assert "\n" in plain.property("text")
+    assert len(saves) == 2
+    assert dialog.isVisible()
+
+
+def test_enter_with_an_open_mention_popup_confirms_the_popup_not_the_save(
+    qtbot, monkeypatch
+):
+    """PR-029's neighbour: while the mention popup is open Enter belongs to the
+    popup (the sheet's own keyboard flow, limit ① of the accessibility contract)
+    — the island accepts the key, so the new save bridge never sees it."""
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    dialog.resize(760, 700)
+    dialog.show()
+    QApplication.processEvents()
+    dialog.vm.name = "Имя формы"
+    saves: list = []
+    dialog.saved.connect(saves.append)
+
+    plain = plain_layer(find_item(dialog.quick, "eventCharacteristicsField"))
+    plain.forceActiveFocus()
+    QApplication.processEvents()
+    requested: list = []
+    dialog.vm.characteristicsHost.searchRequested.connect(requested.append)
+    QTest.keyClicks(dialog.quick, "@al")
+    qtbot.waitUntil(lambda: requested == ["al"], timeout=3000)
+    dialog.vm.characteristicsHost.showResults(
+        [{"type": "character", "id": 1, "name": "Alice"}]
+    )
+    assert dialog.vm.characteristicsHost.popupVisible is True
+
+    QTest.keyClick(dialog.quick, Qt.Key.Key_Return)
+    qtbot.waitUntil(
+        lambda: dialog.vm.characteristicsHost.storage == "@[Alice](character:1) ",
+        timeout=3000,
+    )
+    assert saves == []
+    assert dialog.isVisible()
+
+
+def test_related_picker_keeps_multiselect_and_empty_is_noop(qtbot):
+    """NRI-0024 task 2.5 + PR-020: the picker left ``exec()`` — the dialog
+    builds the «Выберите <тип>» island sheet and hands it to the connector's
+    one sheet channel (``sheet_requested``). The retired MultiSelection stays
+    as the VM's toggle set (every tick survives to the commit, in candidate
+    order), ОК's accept path commits the choice into the section, and a
+    section without candidates emits no sheet at all."""
     dialog = EventDialog(None)
     qtbot.addWidget(dialog)
     first = SimpleNamespace(id=1, name="One")
@@ -222,9 +326,9 @@ def test_related_picker_is_native_multiselect_and_empty_is_noop(qtbot):
     assert len(emitted) == 1
     picker = emitted[0]
     assert picker.windowTitle() == "Выберите персонажи"
-    items = picker.findChild(QListWidget)
-    assert items.selectionMode() == QListWidget.SelectionMode.MultiSelection
-    items.selectAll()
+    picker.vm.toggleRow(0)
+    picker.vm.toggleRow(1)
+    assert picker.vm.selectedIndex == [0, 1]
     picker.accept()  # ОК lands on accepted → the choice reaches the section
     assert dialog.vm.characters.get_current_ids() == [1, 2]
 

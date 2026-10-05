@@ -126,6 +126,50 @@ def _walk(root):
             stack.append(child)
 
 
+def test_detail_tabs_read_whole_at_the_default_first_run_frame(qtbot):
+    """PR-014 — spec «Первый запуск шире прежнего минимума» on the REAL layout.
+
+    The retired whole-caption pin measured the panel in isolation at a 1280 px
+    panel width (test_detail_tabs_labels), blind to the real splitter that in
+    fact leaves the detail column ~404 px at the default frame — where
+    «Организации» (natural 101.8 px) lost its tail to the ellipsis at the 99 px
+    equal share. This pin walks the SHOWN MainWindow: the default split must
+    land exactly on the splitter width at the first-run frame, and every tab
+    caption must read whole in the column the splitter ACTUALLY hands the
+    panel (detail default 390→434; the sum + 2×4 px handles fills the 1272 px
+    splitter exactly, so no stretch surplus smears the nominal split)."""
+    window = _main_window(qtbot)
+    window.show()
+    QApplication.processEvents()
+
+    assert window.size() == QSize(1280, 800)
+    splitter = _splitter(window)
+    # 1280 content − the central layout's 2×4 px margins = 1272 px of splitter.
+    assert splitter.width() == 1272
+    # The default split at the first-run frame, exact and with no surplus:
+    # 330 + 434 + 500 + 2 handles × 4 px = 1272. The preview pane keeps the
+    # 500 px it inherited from the freed snapshot pane (NRI-0022).
+    assert splitter.sizes() == [330, 434, 500]
+    assert [splitter.widget(i).minimumWidth() for i in range(3)] == [220, 220, 220]
+
+    detail_root = window.detail_panel.quick.rootObject()
+    tabs = [
+        item
+        for item in _walk(detail_root)
+        if item.metaObject().className().startswith("ThemeTabButton")
+    ]
+    tabs.sort(key=lambda tab: tab.mapToItem(detail_root, QPointF(0, 0)).x())
+    captions = list(window.detail_panel.vm.tabTitles)
+    assert len(tabs) == len(captions) == 4
+    for tab, caption in zip(tabs, captions):
+        assert tab.property("text") == caption
+        # Whole, not elided: the tab keeps at least its natural width, and
+        # the caption label inside it keeps the room its full text asks for.
+        assert tab.width() >= tab.property("implicitWidth") - 0.5, caption
+        label = tab.property("contentItem")
+        assert label.width() >= label.property("implicitWidth") - 0.5, caption
+
+
 # ── OBS-1 follow-up: the «Дата:» row whole at the snapshot's own default ────
 
 

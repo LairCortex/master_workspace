@@ -48,9 +48,11 @@ async def test_menu_action_opens_a_gated_sheet_at_the_default_size(app, wait_for
     # Sheet chrome (spec «лист с шапкой»): one windowTitle-threaded caption.
     assert sheet.windowTitle() == "Обзор мира"
     assert sheet.findChild(QLabel, "sheetFrameTitle").text() == "Обзор мира"
-    # Sheet class, not the retired window: open() — WindowModal over the main
-    # layer (spec modal-sheets «Контент открывается листом»).
-    assert sheet.windowModality() == Qt.WindowModality.WindowModal
+    # Sheet class, not the retired window: an attached native sheet (Qt.Sheet,
+    # NonModal at Qt level — PR-012) over the main layer (spec modal-sheets
+    # «Контент открывается листом»).
+    assert sheet.windowFlags() & Qt.WindowType.Sheet
+    assert sheet.windowModality() == Qt.WindowModality.NonModal
     # Default size (design Д6) at the default main window height.
     assert sheet.size() == QSize(520, 760)
     # The entry is reachable through the «Файл» submenu — a bare bar-level
@@ -108,6 +110,42 @@ async def test_the_sheet_never_remembers_a_placement(app, wait_for):
     assert reopened is not None and reopened is not sheet
     assert reopened.size() == QSize(520, 760)  # the default, never the stretched
     reopened.close()
+    await helpers.wait_until_settled()
+
+
+async def test_a_saved_entity_shows_in_the_sheet_with_no_events_at_all(
+    app, wait_for, menu_qmenu
+):
+    """PR-019 (spec world-snapshot «Секции снимка» + entity-addition «Успешное
+    создание»): a location created out of the «+» menu of an event-less game is
+    the world's current state, so «Обзор мира…» paints its section — the
+    «Нет событий в игре» hint belongs to the events section and never replaces
+    the whole snapshot.
+    """
+    application, window = app
+    await helpers.create_entity_via_context_menu(
+        window, wait_for, menu_qmenu, "location", "Тестовая локация"
+    )
+    await helpers.wait_until_settled()
+
+    panel = helpers.open_world_snapshot(application, window)
+    panel.vm.requestShowAll()  # the user's «Показать всё» in a world of zero events
+    await helpers.wait_until_settled()
+
+    rows = panel.vm._model.rows
+    assert [
+        row["displayText"] for row in rows if row["rowKind"] == "sectionHeader"
+    ] == ["Локации (1)"]
+    assert [
+        (row["type"], row["name"]) for row in rows if row["rowKind"] == "entityRow"
+    ] == [("location", "Тестовая локация")]
+    # the events section's emptiness never took the panel over, and the counts
+    # of the statistics line read the world as it is
+    assert panel.vm.emptyText == ""
+    assert "Событий: 0" in panel.vm.statsText
+    assert "Локаций: 1" in panel.vm.statsText
+
+    application._wiring.close_snapshot_sheet()
     await helpers.wait_until_settled()
 
 

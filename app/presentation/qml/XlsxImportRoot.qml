@@ -326,8 +326,19 @@ Rectangle {
             }
         }
 
+        // PR-011: in the done phase this row would print TWO footer «Закрыть»
+        // beside the header ✕ — a third close affordance with the same caption
+        // and the same cancelRequested. Per the modal-sheets norm the header
+        // ✕ (name «Закрыть», the Esc outcome) is the sheet's single exit, and
+        // the done footer has no action left to advertise (the report above is
+        // the footer's meaning), so the whole button row retires once the
+        // import finishes. The row's visibility rides the phase; the button
+        // captions/behaviours on the earlier phases stay untouched, and the
+        // defaultButton marker keeps `enabled` — Enter still closes the sheet
+        // exactly as Esc does (PR-029 bridge reads `enabled`, not visibility).
         RowLayout {
             Layout.fillWidth: true
+            visible: xlsxImportVm.state !== "done"
             Item { Layout.fillWidth: true }
             ThemeButton {
                 id: importButton

@@ -170,7 +170,7 @@ async def test_left_click_on_entity_result_shows_only_the_live_preview(
     assert _washed_ids(window.detail_panel.vm.characters) == []  # no row wash
     assert _shown_name(window) == "Банн"
     assert bar._vm.listVisible is False                # the list collapsed
-    assert window.entity_preview.vm.panes[-1]["title"] == "Карточка: Персонаж · Банн"
+    assert window.entity_preview.vm.panes[-1]["title"] == "Карточка: Персонаж"
 
 
 async def test_left_click_on_entity_result_leaves_pinned_cards_as_they_were(

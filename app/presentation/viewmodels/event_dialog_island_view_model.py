@@ -11,6 +11,7 @@ from app.application.services.llm_status import LlmStatus
 from app.domain import entity_registry
 from app.domain.date_era import duration_parts, era_key
 from app.domain.enums.entity_type import EntityType
+from app.domain.options import EntityOption, EventOption, EventTypeOption
 from app.domain.game_calendar import (
     GameCoord,
     InvalidGameDateError,
@@ -86,17 +87,25 @@ class RelatedSectionState(QObject):
     )
     selectedIndex = Property(int, lambda self: self._selected, notify=changed)
 
+    # PR-032: the entrances below flatten whatever row arrives into frozen
+    # EntityOptions.  The connector feeds live ORM rows (the edited entity's
+    # relation lists, the census for the picker) and the section rows/candidates
+    # are re-read from the QML side long after a failed save rolled the shared
+    # session back — an expired lazy attribute read there was the
+    # MissingGreenlet storm.  Nothing stored here can go lazy.
+
     def set_entities(self, entities: list[Any]) -> None:
-        self._entities = list(entities)
+        self._entities = [EntityOption.coerce(entity) for entity in entities]
         self._selected = -1
         self.changed.emit()
 
     def set_available(self, entities: list[Any]) -> None:
-        self._available = list(entities)
+        self._available = [EntityOption.coerce(entity) for entity in entities]
 
     def add_entity(self, entity: Any) -> None:
-        if getattr(entity, "id", None) not in self.get_current_ids():
-            self._entities.append(entity)
+        option = EntityOption.coerce(entity)
+        if option.id not in self.get_current_ids():
+            self._entities.append(option)
             self.changed.emit()
 
     def get_current_ids(self) -> list[int | None]:
@@ -578,9 +587,10 @@ class EventDialogIslandViewModel(QObject):
     # событие“ в карточке события») ──────────────────────────────────────────
     # The list is «—» plus every MAIN event of the game — sub-events never
     # qualify (two-level nesting), and the edited event is excluded so a card
-    # cannot parent itself.  The raw connector list stays untouched here; the
-    # filtering happens at read, so loading before or after populate cannot
-    # matter.  index 0 of the model means «без родителя».
+    # cannot parent itself.  The connector list is flattened to EventOptions
+    # at set_parent_options (PR-032); the filtering happens at read, so
+    # loading before or after populate cannot matter.  index 0 of the model
+    # means «без родителя».
 
     def _parent_choices(self) -> list[Any]:
         return [
@@ -594,8 +604,10 @@ class EventDialogIslandViewModel(QObject):
         self, events: list[Any], exclude_id: int | None = None
     ) -> None:
         """Hand the combo its candidates (the connector's event list, the
-        whole set — the main-only/self filtering is the read-time rule)."""
-        self._parent_candidates = list(events)
+        whole set — the main-only/self filtering is the read-time rule).
+        PR-032: the rows are flattened to EventOptions right here, so the
+        parentNames/selectedParentIndex metacalls survive a later rollback."""
+        self._parent_candidates = [EventOption.coerce(event) for event in events]
         self._parent_exclude_id = exclude_id
         self.stateChanged.emit()
 
@@ -774,7 +786,9 @@ class EventDialogIslandViewModel(QObject):
     def set_event_types(
         self, types: list[Any], current_type_id: int | None = None
     ) -> None:
-        self._types = list(types)
+        # PR-032: flatten at the entrance — the «Тип» binding metacall must
+        # never touch a possibly-expired ORM row after a failed save.
+        self._types = [EventTypeOption.coerce(event_type) for event_type in types]
         self._selected_type_index = 0
         if current_type_id is not None:
             for index, event_type in enumerate(self._types, 1):

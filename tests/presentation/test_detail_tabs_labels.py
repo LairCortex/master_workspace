@@ -37,11 +37,15 @@ from app.presentation.views.detail_panel import DetailPanel
 from tests.presentation.qml_helpers import find_item, walk_items
 
 FULL_TAB_LABELS = ["Организации", "Персонажи", "Предметы", "Локации"]
-# 1280 — the default window width; the detail column it leaves the panel
-# must show every full caption whole while the tabs fill the strip in
-# equal shares (spec scenario «Вкладки делят колонку равными долями на
-# дефолте», renamed 2026-10-01 from «Все вкладки прочитаны на дефолте»).
-DEFAULT_PANEL_WIDTH = 1280
+# The REAL default detail column since PR-014 (the splitter default moved
+# 390→434 so the equal tab shares read whole at the 1280×800 first-run
+# frame): measuring the panel at this width mirrors what the shown splitter
+# actually hands the island. The exact real-layout contour — window frame,
+# splitter sum, whole captions — is pinned on the MainWindow itself in
+# test_main_window_default_start.py::test_detail_tabs_read_whole_at_the_default_first_run_frame
+# (the retired 1280 here measured the panel in isolation and missed the
+# splitter entirely — that hole is what PR-014 fell into).
+DEFAULT_PANEL_WIDTH = 434
 # A column clearly narrower than the natural captions: the tabs must shrink
 # and the labels must elide instead of the strip leaking out of the panel
 # (spec scenario «Узкая колонка сокращает подписи»).

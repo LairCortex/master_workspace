@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+import shiboken6
 from PySide6.QtCore import QPointF, QPoint, Qt, QUrl
 from PySide6.QtGui import QAccessible, QColor, QImage
 from PySide6.QtQuick import QQuickItem
@@ -39,6 +40,7 @@ from app.presentation.theme.compiler import tokens_file_path
 from app.presentation.theme.qml_palette import QmlPalette
 from app.presentation.theme.runtime import ThemeRuntime
 from app.presentation.viewmodels.launcher_viewmodel import LauncherViewModel
+from app.presentation.views.game_launcher_dialog import GameLauncherDialog
 
 QML_ROOT_FILE = Path(qml_shell.__file__).resolve().parent / "LauncherRoot.qml"
 
@@ -569,3 +571,41 @@ def test_custom_accent_in_token_file_repaints_island_without_qml_edits(
         timeout=5000,
     )
     assert widget.errors() == []
+
+
+# ── PR-006: a normal launcher exit prints no QML TypeErrors ──────────────────
+
+
+def test_normal_close_without_an_event_turn_prints_no_qml_errors(qtbot, qtlog, catalog, runtime):
+    """The first-run exit (PR-006) must leave stderr clean (log-purity norm).
+
+    Reproduction of the live scenario (test-plan 2026-10-03, «### PR-006»,
+    re-captured 2026-10-05 as the Esc close — docs/qa/assets/
+    2026-10-05-pr006-fix/before-esc-stderr.log): ``main()`` goes straight from
+    ``exec()`` to ``sys.exit(0)``, so the frame's one-loop-turn-deferred
+    island release NEVER runs; the shutdown destroys the dialog's object tree
+    with the scene still bound. Children die in creation order, so a VM
+    parented to the content dies BEFORE the island widget tears the scene
+    down — the live bindings (LauncherRoot.qml:114 ``vm.games``, :133
+    ``vm.selectedIndex``) re-evaluate against the nulled context property and
+    print one TypeError for the list plus one per realized row.
+
+    The test drives the same moment deterministically: close without pumping
+    an event turn, then delete the C++ tree; every qWarning fired during the
+    destruction is captured. After the fix the VM outlives the scene (it is a
+    child of the island widget — ``~QQuickWidget`` unbinds the content before
+    its own children die), so the teardown is silent.
+    """
+    catalog.create_game("Первая")
+    catalog.create_game("Вторая")
+    dialog = GameLauncherDialog(theme=runtime)
+    dialog.show()
+    qtbot.waitUntil(lambda: len(rows(dialog.content.quick)) == 2, timeout=5000)
+
+    dialog.reject()  # Esc: done() schedules the release the shutdown never grants
+    shiboken6.delete(dialog)  # the interpreter-teardown destruction of the tree
+
+    # qtbot's qtlog capture is installed for the whole test (pytest-qt); the
+    # TypeErrors below were only ever fired by the destruction above.
+    noisy = [r.message for r in qtlog.records if "TypeError" in r.message]
+    assert noisy == [], noisy

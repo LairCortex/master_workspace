@@ -825,6 +825,8 @@ class TestSkin:
             "GameCalendarDayName",
             # NRI-0018 Д8: the era flag of the popup grids is themed too
             "GameCalendarEraCheck",
+            # PR-008: so is the month picker of the row the preview shows
+            "GameCalendarMonthCombo",
         ):
             assert name in popup_sheet
 

@@ -23,13 +23,13 @@ marker, no neighbouring-month days, incomplete weeks are filled with empty
 unclickable cells; a cell has exactly the normal/hover/selected looks.
 
 The classes ``GameCalendarGrid``, ``GameCalendarCell``,
-``GameCalendarIntercalaryChip``, ``GameCalendarDayName`` and
-``GameCalendarEraCheck`` are STYLE-FACING names: the app-wide popup sheet
-(``compile_popup_qss``) skins them by class name (``GameCalendarCell``
-additionally through its ``selected`` property, ``GameCalendarEraCheck``
-through its ``::indicator`` sub-control, NRI-0018 Д8), so renaming one
-silently drops the grid's theme — rename only together with the sheet
-(design D4; guarded by the pair test in ``test_calendar_nav_band``).
+``GameCalendarIntercalaryChip``, ``GameCalendarDayName``,
+``GameCalendarEraCheck`` and ``GameCalendarMonthCombo`` are STYLE-FACING names:
+the app-wide popup sheet (``compile_popup_qss``) skins them by class name
+(``GameCalendarCell`` additionally through its ``selected`` property,
+``GameCalendarEraCheck`` through its ``::indicator`` sub-control, NRI-0018 Д8),
+so renaming one silently drops the grid's theme — rename only together with the
+sheet (design D4; guarded by the pair test in ``test_calendar_nav_band``).
 """
 from __future__ import annotations
 
@@ -90,6 +90,23 @@ class GameCalendarCell(QPushButton):
     @property
     def selected(self) -> bool:
         return bool(self.property("selected"))
+
+
+class GameCalendarMonthCombo(QComboBox):
+    """Month picker of the navigation row (STYLE-FACING, see module).
+
+    A named class because the app-wide popup sheet may never carry a generic
+    ``QComboBox`` rule (every combo box of the process would repaint — W2a D2),
+    while the month caption of this one HAS to come from the tokens: unstyled,
+    the box is drawn by the OS appearance, which in a light app theme on a
+    dark-appearance macOS printed a white caption on a white field — the field
+    read as empty while its accessible value stayed «Октябрь» (PR-008, spec
+    ui-theme «Хром без палитры ОС»).  The sheet gives it the catalog field face
+    (field fill, ``color.fg.primary`` ink, ``color.border`` hairline); the
+    drop-down pocket is deliberately left unstyled there, so the native arrow
+    keeps being drawn — a QSS ``::down-arrow`` would need a bitmap asset and
+    generated artifacts never reach the disk.
+    """
 
 
 class GameCalendarEraCheck(QCheckBox):
@@ -189,7 +206,7 @@ class GameCalendarGrid(QWidget):
         self._prev_btn.setAccessibleName("Предыдущий месяц")
         self._prev_btn.setFixedSize(NAV_ROW_HEIGHT, NAV_ROW_HEIGHT)
         self._prev_btn.clicked.connect(partial(self._step_month, -1))
-        self._month_combo = QComboBox()
+        self._month_combo = GameCalendarMonthCombo()
         self._month_combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToContents
         )

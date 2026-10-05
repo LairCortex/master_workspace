@@ -33,6 +33,9 @@ RETRY_BACKOFFS: tuple[float, ...] = (0.5, 1.0)
 TEMPERATURE = 0.7
 #: Endpoint path appended to the user-provided base URL.
 CHAT_COMPLETIONS_PATH = "/chat/completions"
+#: One answer = text or error (PR-023): no choices, or empty/null/blank
+#: content — incl. finish_reason="length" — is this same provider error.
+EMPTY_ANSWER_MESSAGE = "LLM вернул пустой ответ. Попробуйте позже."
 
 
 def _is_retryable_status(status_code: int) -> bool:
@@ -142,6 +145,11 @@ class RemoteLlmProvider(BaseLlmProvider):
     def _extract_content(data: dict) -> str:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise LlmError("LLM вернул пустой ответ. Попробуйте позже.")
+            raise LlmError(EMPTY_ANSWER_MESSAGE)
         content = choices[0].get("message", {}).get("content", "")
-        return (content or "").strip()
+        text = (content or "").strip()
+        if not text:
+            # PR-023: an empty answer is never a success — reaching the
+            # caller with "" would silently wipe the field it writes.
+            raise LlmError(EMPTY_ANSWER_MESSAGE)
+        return text

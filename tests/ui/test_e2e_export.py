@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import zipfile
 
+from app import __version__
 from tests.ui import helpers
 from tests.ui.conftest import query_db
 
@@ -25,6 +26,8 @@ async def test_export_game_creates_nri_archive(app, file_dialogs, tmp_path, wait
         assert "meta.json" in names
         meta = json.loads(zf.read("meta.json"))
         assert meta["game_name"] == "game"
+        # PR-004: the UI export channel labels the archive with the app version.
+        assert meta["version"] == __version__
         archived_db = zf.read("game.db")
 
     # The archive really contains the game database with its data.

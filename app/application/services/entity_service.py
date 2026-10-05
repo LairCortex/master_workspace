@@ -9,6 +9,8 @@ from app.application.services.mention_rewrite import rewrite_mentions
 from app.application.services.relation_sync import sync_related
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
+from app.domain.options import EntityOption
+from app.infrastructure.db.models import ImageModel
 from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.images.store import ImageStore
 from app.infrastructure.repositories import entity_type_for_model
@@ -67,6 +69,19 @@ class EntityService:
 
     async def get_all(self) -> Sequence:
         return await self._repo.get_all()
+
+    async def get_options(self) -> list[EntityOption]:
+        """The dialog's linkable-entity census as flat frozen options (PR-032).
+
+        The event dialog and the entity card keep this list alive across
+        saves to fill their relation sections and the «Выберите …» picker.
+        Raw ORM rows there expire with the shared session's next failed-save
+        rollback (Session.rollback always expires its instances — even under
+        the app's ``expire_on_commit=False``), and the section rows / picker
+        candidates are re-read from the QML side: the MissingGreenlet storm
+        of PR-032. The (id, name) copy is made here, right after the SELECT;
+        the presentation layer stores nothing the rollback could reach."""
+        return [EntityOption.coerce(entity) for entity in await self.get_all()]
 
     async def update_entity(self, entity_id: int, **kwargs: Any):
         return await self._repo.update(entity_id, **kwargs)
@@ -209,11 +224,27 @@ class EntityService:
                 mention_type = entity_type_for_model(self._repo.model).value
                 await rewrite_mentions(self._session, mention_type, entity_id, new_name)
 
-            if has_image_field and self._image_store is not None:
+            if has_image_field:
                 new_image_id = field_data.get("image_id")
                 if new_image_id != old_image_id:
-                    self._uow.after_write(
-                        partial(self._image_store.gc_after_commit, old_image_id)
+                    # PR-013: ``update_entity`` above wrote the FK scalar on the
+                    # identity-mapped row, but the eagerly-loaded ``image_ref``
+                    # keeps whatever the shared session loaded for it — an
+                    # eager loader never overwrites loaded state. Holders that
+                    # outlive this operation (the preview column, a reopened
+                    # card) therefore kept resolving the picture from the stale
+                    # relationship and showed «Нет изображения» although DB and
+                    # disk were fine. The application mirrors the relationship
+                    # after its FK, exactly as xlsx_apply binds it (D10:
+                    # presentation only ever reads the loaded row).
+                    refreshed.image_ref = (
+                        await self._session.get(ImageModel, new_image_id)
+                        if new_image_id is not None
+                        else None
                     )
+                    if self._image_store is not None:
+                        self._uow.after_write(
+                            partial(self._image_store.gc_after_commit, old_image_id)
+                        )
 
             return refreshed

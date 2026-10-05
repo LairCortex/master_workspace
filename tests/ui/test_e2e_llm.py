@@ -192,7 +192,10 @@ async def test_llm_settings_reload_and_save_edge_paths(
         ))
         assert wizard4.result() != QDialog.DialogCode.Accepted
     finally:
-        window.close()  # already closed by start(); safe no-op
+        import shiboken6
+
+        if shiboken6.isValid(window):
+            window.close()  # start() retires the old window (PR-002): often a dead wrapper
         await application.shutdown()
 
 
@@ -285,12 +288,79 @@ async def test_single_generation_error_shows_warning_with_field_name(
 
 
 @pytest_asyncio.fixture
+async def app_empty_llm(qapp, tmp_games_dir, tmp_llm_config, tmp_path):
+    """Application where every LLM request answers HTTP 200 with empty content.
+
+    The live PR-023 shape (reasoning model, finish_reason=length): the field
+    used to be wiped silently; now it must surface as an error. Yields the
+    app pair plus the transport call counter — the retry proof (must stay 1).
+    """
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    http = AppHttpClient(client=client)
+
+    db_path = tmp_path / "game_empty_llm.db"
+    application = Application(qapp, http=http)
+    window = await application.start(str(db_path))
+    yield application, window, calls
+    window.close()
+    await application.shutdown()
+    await client.aclose()
+
+
+async def test_empty_llm_answer_is_an_error_not_a_silent_field_wipe(
+    app_empty_llm, wait_for, message_boxes
+):
+    """PR-023: an empty generation answer must keep the field text intact,
+    warn with the field name and the RU empty-answer reason, re-arm the
+    button — and cost exactly one request (empty is not retryable)."""
+    application, window, calls = app_empty_llm
+    llm_vm = application._llm_vm
+
+    timeline_probe.click_object(window, "addButton")
+    await wait_for(lambda: bool(window.findChildren(EventDialog)))
+    dialog = window.findChildren(EventDialog)[0]
+    name_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "name")
+
+    llm_vm.world_prompt = WORLD_PROMPT
+    llm_vm.apply_config(LlmConfig(base_url=ENDPOINT, model=MODEL))
+    await wait_for(lambda: llm_vm.status == LlmStatus.READY)
+    assert ai_state_is(name_btn, AI_STATE_ACTIVE)
+
+    # The already-generated text that PR-023 used to wipe without a word.
+    dialog.name_input.setText("Мёртвый прилив в Квеле")
+
+    name_btn.click()
+    await wait_for(lambda: any(kind == "warning" for kind, _t, _x in message_boxes))
+    warning = next(item for item in message_boxes if item[0] == "warning")
+    _kind, _title, text = warning
+
+    assert "Название" in text
+    assert "пустой ответ" in text
+    assert dialog.name_input.text() == "Мёртвый прилив в Квеле"
+    assert not name_btn.is_generating
+    assert name_btn.isEnabled()
+    # Zero retries on an empty answer: one POST for the whole failed generation.
+    assert calls["n"] == 1
+
+
+@pytest_asyncio.fixture
 async def slow_llm_client():
     """MockTransport LLM: per-field delays/failures configured via ``http.state``.
 
     ``state`` keys: ``delay`` (default seconds), ``field_delays`` (label→s),
     ``fail`` (label → (status, message)), ``requests``, ``started_times``,
-    ``finished_times``.
+    ``finished_times``. ``in_flight``/``max_in_flight`` are the SERVER-SIDE
+    concurrency counters (requests being handled by this transport right now
+    / their high-water mark) — the proof that requests travel in parallel.
     """
     state: dict = {
         "delay": 0.05,
@@ -301,6 +371,8 @@ async def slow_llm_client():
         "requests": [],
         "started_times": [],
         "finished_times": [],
+        "in_flight": 0,
+        "max_in_flight": 0,
     }
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -312,17 +384,22 @@ async def slow_llm_client():
         label = m.group(1) if m else "?"
         state["requests"].append(request)
         state["started_times"].append(time.monotonic())
+        state["in_flight"] += 1
+        state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
         state["attempts"][label] = state["attempts"].get(label, 0) + 1
-        first_n = state["fail_first_n"].get(label, 0)
-        if state["attempts"][label] <= first_n:
-            return httpx.Response(503, json={"error": {"message": "unavailable", "type": "test"}})
-        await asyncio.sleep(state["field_delays"].get(label, state["delay"]))
-        state["finished_times"].append(time.monotonic())
-        failure = state["fail"].get(label)
-        if failure is not None:
-            status, message = failure
-            return httpx.Response(status, json={"error": {"message": message, "type": "test"}})
-        return httpx.Response(200, json={"choices": [{"message": {"content": f"AI: {label}"}}]})
+        try:
+            first_n = state["fail_first_n"].get(label, 0)
+            if state["attempts"][label] <= first_n:
+                return httpx.Response(503, json={"error": {"message": "unavailable", "type": "test"}})
+            await asyncio.sleep(state["field_delays"].get(label, state["delay"]))
+            state["finished_times"].append(time.monotonic())
+            failure = state["fail"].get(label)
+            if failure is not None:
+                status, message = failure
+                return httpx.Response(status, json={"error": {"message": message, "type": "test"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": f"AI: {label}"}}]})
+        finally:
+            state["in_flight"] -= 1
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     http = AppHttpClient(client=client)
@@ -342,7 +419,11 @@ async def app_slow_llm(qapp, tmp_games_dir, tmp_llm_config, tmp_path, slow_llm_c
 
 
 def _make_ready_card(application, window, entity_type: str = "character"):
-    """Character/event card opened the same way the wiring opens it."""
+    """A card built with the same wiring hooks, shown for the AI-wave probes.
+
+    This opens the dialog directly (not via the connector's ``open_sheet``
+    sheet path) — the AI request machinery is under test here, not the sheet
+    format, so the card is a plain shown dialog with its AI buttons wired."""
     from app.presentation.views.entity_card_dialog import EntityCardDialog
 
     dialog = EntityCardDialog(None, entity_type=entity_type, parent=window)
@@ -755,26 +836,88 @@ async def test_close_during_single_confirmed_cancels_and_late_signals_are_droppe
     assert not any(kind in ("warning", "critical") for kind, _t, _x in message_boxes)
 
 
-async def test_concurrent_single_start_while_one_is_running_is_ignored(
+async def test_concurrent_single_start_while_one_is_running_starts_in_parallel(
+    app_slow_llm, slow_llm_client, wait_for, message_boxes
+):
+    """PR-024: a field-button start while another field's generation is in
+    flight starts its own request immediately — the spec scenario
+    «Последовательная генерация нескольких полей» («каждый запрос стартует
+    без ожидания завершения предыдущих … и выполняется параллельно»).
+
+    History: this place used to pin the opposite (…_is_ignored, the
+    «at most one wave per dialog» gate) — the pin followed the spec, not
+    the gate. Proof of parallelism is SERVER-SIDE: at the moment the second
+    request is handled the transport counts BOTH requests in flight."""
+    application, window = app_slow_llm
+    state = slow_llm_client.state
+    state["field_delays"] = {"Название": 0.4, "Характеристики": 0.4}
+    dialog = _make_ready_card(application, window)
+
+    name_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "name")
+    chars_btn = next(
+        b for b in dialog.get_ai_buttons() if b.field_name == "characteristics"
+    )
+
+    name_btn.click()
+    await wait_for(lambda: state["in_flight"] == 1)
+
+    # The second field is pressed while the first request is still in flight.
+    chars_btn.click()
+    await wait_for(lambda: state["in_flight"] == 2)
+    assert state["max_in_flight"] == 2
+
+    # Per-field button states stay independent: both fields show the busy
+    # face, both aiState markers stay "active" (the other field's generation
+    # never disables this one's button).
+    assert name_btn.is_generating and chars_btn.is_generating
+    assert not chars_btn.isEnabled() and not name_btn.isEnabled()
+    assert ai_state_is(name_btn, AI_STATE_ACTIVE)
+    assert ai_state_is(chars_btn, AI_STATE_ACTIVE)
+    # …while the fields nobody pressed stay active and editable.
+    backstory_btn = next(
+        b for b in dialog.get_ai_buttons() if b.field_name == "backstory"
+    )
+    assert not backstory_btn.is_generating and backstory_btn.isEnabled()
+    # Save is locked for the whole of the two parallel generations.
+    assert not dialog.save_button.isEnabled()
+
+    await wait_for(lambda: state["max_in_flight"] == 2 and state["in_flight"] == 0)
+    await wait_for(lambda: not name_btn.is_generating and not chars_btn.is_generating)
+    # Each result landed in its OWN field, no error dialog anywhere.
+    assert dialog.name_input.text() == "AI: Название"
+    assert dialog.characteristics_input.toPlainText() == "AI: Характеристики"
+    assert dialog.backstory_input.toPlainText() == ""
+    assert dialog.save_button.isEnabled()
+    assert not any(kind in ("warning", "critical") for kind, _t, _x in message_boxes)
+
+
+async def test_repeat_press_of_the_generating_field_itself_starts_no_second_request(
     app, wait_for, message_boxes
 ):
-    """At most one wave per dialog: a field-button start while another field
-    generation is in flight is ignored (no second request)."""
+    """PR-024's one allowed refusal: a field whose OWN request is in flight
+    does not start a second one — its button carries the busy «…» face
+    (isGenerating, not clickable): the state IS the feedback, not silence."""
     application, window = app
     provider = _GateProvider()
     dialog = _make_ready_card(application, window)
     application._llm_service.provider = provider
 
     name_btn = await _start_single_and_wait_in_flight(application, dialog, wait_for)
-    chars_btn = next(b for b in dialog.get_ai_buttons() if b.field_name == "characteristics")
 
-    chars_btn.generate_requested.emit("character", "characteristics", "Характеристики", "")
+    # The busy face is the visible feedback of the same-field repeat.
+    assert name_btn.is_generating
+    assert not name_btn.isEnabled()
+
+    # Even a raw signal (bypassing the proxy's own guard, as a synthetic
+    # press could) reaches the controller — and starts nothing.
+    name_btn.generate_requested.emit("character", "name", "Название", "")
     assert provider.calls == 1
-    assert not chars_btn.is_generating
+    assert name_btn.is_generating
 
     provider.gate.set()
     await wait_for(lambda: not name_btn.is_generating)
     assert dialog.name_input.text() == "done-1"
+    assert not any(kind in ("warning", "critical") for kind, _t, _x in message_boxes)
 
 
 async def test_nested_card_results_do_not_cross_between_dialogs(
@@ -890,10 +1033,11 @@ async def test_llm_setup_entry_opens_a_sheet_with_a_header(app, wait_for):
     листом»): «Настройка LLM…» from the menu is a SHEET over the main window.
 
     The SheetFrame header names the sheet with the entry text (one value with
-    windowTitle), the sheet is WindowModal over the main layer, and while the
-    stack is up the entries that would open another sheet — this one included
-    — are gated; closing returns the work layer (spec «главный слой под
-    затемнением недоступен до закрытия»).
+    windowTitle), the sheet is an attached native sheet over the main layer
+    (Qt.Sheet, NonModal at Qt level — PR-012), and while the stack is up the
+    entries that would open another sheet — this one included — are gated;
+    closing returns the work layer (spec «главный слой под затемнением
+    недоступен до закрытия»).
     """
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QLabel
@@ -902,7 +1046,8 @@ async def test_llm_setup_entry_opens_a_sheet_with_a_header(app, wait_for):
     window.llm_setup_action.trigger()
     await wait_for(lambda: bool(window.findChildren(LlmSetupDialog)))
     wizard = window.findChildren(LlmSetupDialog)[0]
-    assert wizard.windowModality() == Qt.WindowModality.WindowModal
+    assert wizard.windowFlags() & Qt.WindowType.Sheet
+    assert wizard.windowModality() == Qt.WindowModality.NonModal
     assert wizard.isVisible()
     # The header caption and windowTitle carry the same entry text (4.2).
     assert wizard.windowTitle() == "Настройка LLM…"

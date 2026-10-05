@@ -49,6 +49,19 @@ LEGACY_SNAPSHOT_ROLE = "world_snapshot"
 MAIN_DEFAULT_SIZE = (1280, 800)
 
 
+def _show_attached(sheet) -> None:
+    """The show half of ``ApplicationWiring.open_sheet`` (PR-012): a native
+    attached sheet (Qt.Sheet type) shown NON-modal at Qt level — AppKit's
+    document modality blocks the parent window while the native menu bar keeps
+    answering the exception entries. Tests that exercise a sheet's post-show
+    geometry state this, not the retired ``open()``."""
+    sheet.setWindowFlags(
+        (sheet.windowFlags() & ~Qt.WindowType.WindowType_Mask) | Qt.WindowType.Sheet
+    )
+    sheet.setWindowModality(Qt.WindowModality.NonModal)
+    sheet.show()
+
+
 def _main_window(qtbot, size: tuple[int, int] = MAIN_DEFAULT_SIZE) -> QWidget:
     """Stand-in for the real main window: the growth rule reads the host's
     height, so the stub stands at a chosen window size."""
@@ -88,9 +101,11 @@ def test_wrapper_is_the_sheet_home_at_the_default_size(qtbot):
     # The sheet default (design Д6): 520×760.
     assert sheet.size() == QSize(520, 760)
 
-    sheet.open()  # the show half of ApplicationWiring.open_sheet
-    # Sheet class (spec modal-sheets): WindowModal over the main layer.
-    assert sheet.windowModality() == Qt.WindowModality.WindowModal
+    _show_attached(sheet)
+    # Sheet class (spec modal-sheets «лист внутри главного окна»): attached
+    # sheet, NonModal at Qt level so the menu exceptions stay live (PR-012).
+    assert sheet.windowFlags() & Qt.WindowType.Sheet
+    assert sheet.windowModality() == Qt.WindowModality.NonModal
     assert sheet.isVisible()
 
 
@@ -102,7 +117,7 @@ def test_height_tracks_the_parent_window_up_to_the_default(qtbot):
     usability floor; a CLOSED sheet stops chasing resizes with its filter."""
     main = _main_window(qtbot)
     sheet = WorldSnapshotWindow(parent=main)
-    sheet.open()
+    _show_attached(sheet)
     assert sheet.size() == QSize(520, 760)  # default window → default size
 
     main.resize(1280, 600)  # window shrinks — the sheet fits itself to it
@@ -226,8 +241,13 @@ def test_entry_opens_a_fresh_sheet_the_connector_tracks_then_forgets(qtbot, tmp_
     menu_window.world_snapshot_requested.emit()
     first = wiring.snapshot_sheet
     assert first is not None and first.isVisible()
-    # The show contract is the sheet one, not the retired window's show().
-    assert first.windowModality() == Qt.WindowModality.WindowModal
+    # The show contract is the sheet one, not the retired window's show():
+    # a native ATTACHED sheet (Qt.Sheet type) held NonModal at Qt level so the
+    # native menu bar keeps answering the exception entries (PR-012) — the
+    # main layer's block rides the sheet's document modality + the window's
+    # content gate, not a Qt WindowModal state.
+    assert first.windowFlags() & Qt.WindowType.Sheet
+    assert first.windowModality() == Qt.WindowModality.NonModal
     assert first.size() == QSize(520, 760)
 
     menu_window.world_snapshot_requested.emit()

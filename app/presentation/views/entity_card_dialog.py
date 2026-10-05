@@ -45,11 +45,10 @@ from app.presentation.views.event_dialog import (
     _ClickProxy,
     _FieldProxy,
     _ListProxy,
-    build_related_picker,
 )
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from app.presentation.views.ai_capable_dialog import AiCapableDialogBase
-from app.presentation.views.sheet_frame import SheetFrame
+from app.presentation.views.related_picker_sheet import RelatedPickerSheet
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EntityCardRoot.qml")
@@ -702,6 +701,13 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         ):
             event.ignore()
             return
+        # PR-029: the card's Enter is the save shortcut of its own island, the
+        # same bridge the event sheet rides (one mechanism, one behavior). Its
+        # mention fields consume Return as a newline, and an empty name keeps
+        # «Сохранить» disabled — then the key stays unclaimed, exactly like the
+        # «Save карточки без названия» gate the mouse path already enforces.
+        if self.take_island_default_key(event):
+            return
         super().keyPressEvent(event)
 
     def _open_date_popup(
@@ -737,9 +743,10 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             return
         # Task 2.5: the card's picker is the event dialog's sheet builder now
         # (the two exec'd bodies were the same lines) — shown over the card
-        # through the connector's stack, close returns to the card.
-        picker = build_related_picker(
-            self, self._theme, f"Выберите {label.lower()}", state, candidates
+        # through the connector's stack, close returns to the card; PR-020 put
+        # its rows on RowItem so accessibility can name and press them.
+        picker = RelatedPickerSheet(
+            f"Выберите {label.lower()}", state, candidates, self, self._theme
         )
         self.sheet_requested.emit(picker)
 

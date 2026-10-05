@@ -93,12 +93,14 @@ async def test_first_run_wizard_opens_after_start_and_cancel_returns(
             wizard = application._calendar_wizard
             assert isinstance(wizard, CalendarWizardDialog)
             assert wizard.isVisible()
-            # NRI-0024 task 3.2: the very same sheet the menu raises — a
-            # WindowModal sheet of the connector's stack over the SHOWN
-            # window, through the same call_soon channel, no nested loop
-            # (the deferred-top-level shape of NRI-0015 task 2.4 became a
-            # sheet with the three-class contract, tasks 3.1/3.2).
-            assert wizard.windowModality() == Qt.WindowModality.WindowModal
+            # NRI-0024 task 3.2: the very same sheet the menu raises — an
+            # attached native sheet (Qt.Sheet, NonModal at Qt level — PR-012)
+            # of the connector's stack over the SHOWN window, through the same
+            # call_soon channel, no nested loop (the deferred-top-level shape
+            # of NRI-0015 task 2.4 became a sheet with the three-class
+            # contract, tasks 3.1/3.2).
+            assert wizard.windowFlags() & Qt.WindowType.Sheet
+            assert wizard.windowModality() == Qt.WindowModality.NonModal
             assert wizard.parent() is window
             await helpers.wait_until_settled()
             assert wizard._stack.currentWidget() is wizard._pages["choice"]

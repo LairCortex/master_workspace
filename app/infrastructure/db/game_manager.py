@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
 
+from app import __version__
 from app.infrastructure.images.paths import PREVIEW_SUFFIX
 
 
@@ -143,7 +144,6 @@ def get_db_url(path: str | Path) -> str:
 
 # ── Export / Import ───────────────────────────────────────────────────────
 
-_APP_VERSION = "0.15.0"
 _ARCHIVE_VERSION = 2
 _ARCHIVE_DB_NAME = "game.db"
 _ARCHIVE_META_NAME = "meta.json"
@@ -165,7 +165,7 @@ def export_game(db_path: str | Path, dest_path: str | Path) -> Path:
 
     meta = {
         "game_name": game_dir.name,
-        "version": _APP_VERSION,
+        "version": __version__,
         "archive_version": _ARCHIVE_VERSION,
         "exported_at": datetime.now().isoformat(),
         "db_size_bytes": db_path.stat().st_size,

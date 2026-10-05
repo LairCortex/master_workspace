@@ -13,6 +13,23 @@ Control {
     property bool mono: false
     property bool syncing: false
 
+    // PR-016 (limit ② closure, NRI-0013 follow-up): QAccessibleQuickItem
+    // reads and writes this item's value slot through a "text" property —
+    // without it an assistive SetValue vanished silently and the field read
+    // back empty. This mirror makes both directions real: an external write
+    // is pushed into the host's edit channel (the same one typing drives),
+    // while every plain-layer change (host pulls included) republishes the
+    // display text. The equality guards tie the two directions in a knot
+    // that cannot loop.
+    property string text: ""
+    onTextChanged: {
+        if (!host || syncing || plain.text === text)
+            return
+        var safe = host.updateDisplay(text, plain.cursorPosition, false)
+        syncFromHost()
+        plain.cursorPosition = Math.min(safe, plain.length)
+    }
+
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
     readonly property bool skinned:
@@ -74,6 +91,18 @@ Control {
     Connections {
         target: control.host
         function onDisplayChanged() { control.syncFromHost() }
+    }
+
+    // PR-016: the value-slot mirror — outside the sync/edit guards, every
+    // plain-layer change (typed, host-pulled, externally pushed) republishes
+    // the display text so the value slot never goes stale. The write below
+    // satisfies the push handler's equality guard, so it never bounces back.
+    Connections {
+        target: plain
+        function onTextChanged() {
+            if (control.text !== plain.text)
+                control.text = plain.text
+        }
     }
 
     background: control.skinned ? fieldBackground : null

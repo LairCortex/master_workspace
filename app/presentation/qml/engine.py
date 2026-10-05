@@ -172,19 +172,26 @@ def reset_qml_shell() -> None:
     talks to the engine, so a live scene on a dead engine is use-after-free.
     Pending ``deleteLater`` and zero-timer ``_release_island`` callbacks run
     first, while the engine is still alive; leftover islands are unbound
-    (``setSource(QUrl())``) and deleted immediately; only then is the engine
-    reparented and dropped.
+    (``setSource(QUrl())``) and deleted immediately; the private island
+    contexts go next — ``~QQmlContext`` unregisters through the engine's QV4
+    context, and it must not do that after the engine is gone (PR-033: the
+    context lives by its window, and JS wrapper cycles around the bound VM
+    kept the window — and with it the context — alive until some later test's
+    GC pass ran the destructor against the freed engine); only then is the
+    engine reparented and dropped.
     """
     global _engine
     if _engine is None:
         return
 
     from PySide6.QtCore import QCoreApplication, QEvent, QUrl
+    from PySide6.QtQml import QQmlContext
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     import asyncio
     import contextlib
+    import gc
     import shiboken6
 
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -227,12 +234,40 @@ def reset_qml_shell() -> None:
                 if shiboken6.isValid(widget):
                     shiboken6.delete(widget)
 
+        # The private island contexts (``island_context``) are owned by their
+        # window's QObject storage, not by the widget loop above, and JS
+        # wrapper cycles around the bound VM keep the window's Python wrapper
+        # alive until some arbitrary later GC pass (PR-033). Their C++
+        # destructors unregister through the engine's QV4 context, so they
+        # must run HERE, while the engine is alive — never deferred to a GC
+        # pass in a later test. ``QQmlContext`` is not a QObject, so the live
+        # wrappers are found through gc; the engine's root context (no
+        # parent) belongs to the engine and stays. Components are children of
+        # their context and die in its cascade.
+        for obj in gc.get_objects():
+            with contextlib.suppress(RuntimeError):  # C++ side may be gone
+                if isinstance(obj, QQmlContext) and obj.parent() is not None and obj.engine() is _engine:
+                    shiboken6.delete(obj)
+
         _engine.clearComponentCache()
         _engine.collectGarbage()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
+        # ``setParent(None)`` alone NEVER destroys the engine here: it was
+        # constructed with the QApplication as C++ parent, so Shiboken marked
+        # it C++-owned and dropping the Python reference leaks the C++ object.
+        # The old idiom therefore piled one live QQmlEngine per test up
+        # (PR-033: fourteen live engines at the crash point) — each with its
+        # own JS heap and GC, all sharing the process-wide QML caches; their
+        # asynchronous sweeps were the corruption that detonated in the next
+        # construction. An explicit C++ delete (same tool as the islands
+        # above) is the only thing that actually ends an engine; the
+        # (invalidated) wrapper left behind is inert.
         _engine.setParent(None)
-        _engine = None
+        engine, _engine = _engine, None
+        with contextlib.suppress(RuntimeError):
+            if shiboken6.isValid(engine):
+                shiboken6.delete(engine)
     finally:
         if created_loop is not None:
             created_loop.close()

@@ -20,6 +20,9 @@ from app.infrastructure.llm.errors import LlmHttpError
 from app.application.services.event_service import EventService
 from app.infrastructure.llm.remote_provider import RemoteLlmProvider
 from app.presentation.dialog_results import EntityCreateResult
+from app.presentation.viewmodels.world_snapshot_view_model import (
+    SUPPORTED_ENTITY_TYPES,
+)
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 
@@ -430,12 +433,18 @@ async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):
     # NRI-0023 task 8.3: every dispatch also hands the id → имя card (the
     # orphan stubs' naming source) — one event in this game, one entry.
     snapshot = helpers.open_world_snapshot(application, window)
-    monkeypatch.setattr(
-        snapshot, "populate",
-        lambda events, target_date, event_names=None: calls.append(
-            (len(events), target_date, sorted((event_names or {}).values()))
-        ),
-    )
+
+    def _spy_populate(events, target_date, event_names=None, world_entities=None):
+        calls.append(
+            (
+                len(events),
+                target_date,
+                sorted((event_names or {}).values()),
+                sorted(world_entities or {}),
+            )
+        )
+
+    monkeypatch.setattr(snapshot, "populate", _spy_populate)
 
     # "Показать всё" (None) and a concrete date
     snapshot.snapshot_requested.emit(None)
@@ -443,9 +452,12 @@ async def test_snapshot_requested_both_modes(app, wait_for, monkeypatch):
     snapshot.snapshot_requested.emit(datetime.date(1300, 5, 15))
     await helpers.wait_until_settled()
 
+    # PR-019: every dispatch also carries the world census — the four card
+    # types the panel renders, whatever the slice holds.
+    census_keys = sorted(SUPPORTED_ENTITY_TYPES)
     assert calls == [
-        (1, None, ["МоментВремени"]),
-        (1, datetime.date(1300, 5, 15), ["МоментВремени"]),
+        (1, None, ["МоментВремени"], census_keys),
+        (1, datetime.date(1300, 5, 15), ["МоментВремени"], census_keys),
     ]
 
 

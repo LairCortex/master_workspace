@@ -34,15 +34,6 @@ from app.presentation.views.timeline_rows import event_parent_id
 
 
 ICON_SIZE = 24
-SUPPORTED_ENTITY_TYPES = frozenset(
-    etype.value
-    for etype in (
-        EntityType.LOCATION,
-        EntityType.ORGANIZATION,
-        EntityType.CHARACTER,
-        EntityType.ITEM,
-    )
-)
 _TRANSPARENT = "#00000000"
 # Section header copy is this view's presentation surface; the collection
 # keys, canonical order and type ids derive from the entity registry (wave 3,
@@ -63,6 +54,19 @@ _SECTION_META: dict[str, tuple[str, str]] = {
     entity_registry.descriptor(etype).plural: (header, etype.value)
     for etype, header in _SECTION_KINDS
 }
+#: the four card-type sections the panel renders, as (section key, type key):
+#: the section key is the registry plural — the internal bucket name and the
+#: relation attribute a slice event carries its entities on; the type key is
+#: what the wiring's world census is keyed by (PR-019)
+_CARD_SECTIONS: tuple[tuple[str, str], ...] = tuple(
+    (entity_registry.collection(etype.value), etype.value)
+    for etype, _ in _SECTION_KINDS
+    if etype is not EntityType.EVENT
+)
+#: the card types whose rows answer activation with a card jump (the events
+#: section stays a reading surface) — exactly the four types the world census
+#: arrives under (PR-019)
+SUPPORTED_ENTITY_TYPES = frozenset(type_key for _, type_key in _CARD_SECTIONS)
 
 
 class WorldSnapshotRowModel(QAbstractListModel):
@@ -222,15 +226,29 @@ class WorldSnapshotViewModel(QObject):
         events: Sequence[Any],
         for_date: date | None,
         event_names: Mapping[int, str] | None = None,
+        world_entities: Mapping[str, Sequence[Any]] | None = None,
     ) -> None:
         # ``event_names`` is the wiring's id → имя card of every game event
         # (NRI-0023 task 8.3, design Д9): the slice alone cannot name the
         # parent of an orphaned sub-event, and the stub row is spec'd to
         # carry the parent's NAME. Absent card — an orphan just stays the
         # plain row it always was (nothing invented from an unnamed id).
+        #
+        # ``world_entities`` (PR-019) is the wiring's census of the game: the
+        # four card types keyed by type id, whatever the event slice holds.
+        # The snapshot is the world's CURRENT state (spec world-snapshot
+        # «Секции снимка» + entity-addition «Успешное создание»: a saved
+        # entity reaches every surface of the game), so a section paints
+        # whenever the world has entities of that type — an event-less world
+        # or a date with nothing active on it empties the EVENTS section, it
+        # never swallows the entity sections.
         events = list(events)
         self._clear_enabled = True
-        if not events:
+        entities = self._collect_entities(events, world_entities)
+        if not events and not any(entities.values()):
+            # Nothing to read at all — the hint is this section's own
+            # emptiness, named by its cause (spec «Причина пустоты названа
+            # точно»), and it is the panel's only empty state.
             self._sections = {}
             self._model.replace([])
             self._stats_text = ""
@@ -242,25 +260,9 @@ class WorldSnapshotViewModel(QObject):
             self.stateChanged.emit()
             return
 
-        entities: dict[str, dict[int, Any]] = {
-            "locations": {},
-            "organizations": {},
-            "characters": {},
-            "items": {},
-        }
-        for event in events:
-            for section, attribute in (
-                ("locations", "locations"),
-                ("organizations", "organizations"),
-                ("characters", "characters"),
-                ("items", "items"),
-            ):
-                for entity in getattr(event, attribute, ()) or ():
-                    entities[section][entity.id] = entity
-
-        self._sections = {
-            "events": self._event_tree(events, event_names),
-        }
+        self._sections = {}
+        if events:
+            self._sections["events"] = self._event_tree(events, event_names)
         for section, values in entities.items():
             records = list(values.values())
             if section in {"locations", "organizations"}:
@@ -281,6 +283,35 @@ class WorldSnapshotViewModel(QObject):
         self._stats_text = self._stats(events, entities, for_date)
         self._rebuild_rows()
         self.stateChanged.emit()
+
+    @staticmethod
+    def _collect_entities(
+        events: Sequence[Any],
+        world_entities: Mapping[str, Sequence[Any]] | None,
+    ) -> dict[str, dict[int, Any]]:
+        """Per-section buckets (id → entity) of everything the sections show.
+
+        Two sources meet in one bucket by identifier, so an entity linked from
+        several slice events occupies a single row (spec «Сущность из
+        нескольких событий показана один раз») and the census only adds the
+        entities the slice relations could not reach — a just-created, still
+        unlinked one above all (PR-019).
+        """
+        entities: dict[str, dict[int, Any]] = {
+            section: {} for section, _ in _CARD_SECTIONS
+        }
+        for event in events:
+            for section, _type_key in _CARD_SECTIONS:
+                for entity in getattr(event, section, ()) or ():
+                    entities[section][entity.id] = entity
+        for type_key, records in (world_entities or {}).items():
+            # strict on unknown keys, like the registry's other readers: a
+            # census key the panel does not render is a wiring bug, not a
+            # section to invent
+            bucket = entities[entity_registry.collection(type_key)]
+            for entity in records:
+                bucket[entity.id] = entity
+        return entities
 
     @Slot()
     def clear(self) -> None:

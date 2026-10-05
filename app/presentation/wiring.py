@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Any, Coroutine
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QMessageBox
 
 from app.application.services.current_date_service import CurrentDateService
@@ -31,6 +31,9 @@ from app.presentation.utils.date_utils import split_date_era
 from app.presentation.viewmodels.detail_viewmodel import DetailViewModel
 from app.presentation.viewmodels.entity_preview_view_model import MAX_PINNED_CARDS
 from app.presentation.viewmodels.timeline_viewmodel import TimelineViewModel
+from app.presentation.viewmodels.world_snapshot_view_model import (
+    SUPPORTED_ENTITY_TYPES,
+)
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
@@ -646,7 +649,10 @@ class ApplicationWiring(QObject):
                 await self._load_available_into_dialog(dialog)
                 # Types before populate: the selector gets the game's set, then
                 # populate() preselects this event's current type (W4 6.3).
-                dialog.set_event_types(list(await event_service.get_event_types()))
+                # Flat options (PR-032), same as the create dialog's loader.
+                dialog.set_event_types(
+                    await event_service.get_event_type_options()
+                )
                 dialog.populate(event)
                 # NRI-0023 task 7.1: the parent pool loads AFTER populate — the
                 # exclusion of the edited event reads the id populate() loaded.
@@ -849,10 +855,12 @@ class ApplicationWiring(QObject):
         """Picture click → viewer SHEET (NRI-0024 task 2.5, design Д6/Д7, spec
         image-display «Просмотр оригинала полного размера»): the two columns'
         facades build their viewer — they hold the entity's pixels — and hand
-        it to the connector's one show path. The sheet is WindowModal over the
-        main layer, the original above the sheet's size stays reachable by
+        it to the connector's one show path. The sheet is attached natively
+        over the main layer (Qt.Sheet, NonModal at Qt level — PR-012), the
+        original above the sheet's size stays reachable by
         scroll, and both closes (header «Закрыть», Esc) land back on the
-        column that opened it — on ``open()``, so the qasync loop never
+        column that opened it — on the non-blocking ``open_sheet`` show, so
+        the qasync loop never
         nests (spec «Прикладные диалоги не входят во вложенный цикл
         событий»). The card's viewer travels the same channel, connected on
         the card factory below.
@@ -944,7 +952,8 @@ class ApplicationWiring(QObject):
         activation.
 
         Every entry opens a fresh sheet through the connector's one show path
-        (:meth:`open_sheet`): WindowModal over the main window, the header
+        (:meth:`open_sheet`): attached natively over the main window (Qt.Sheet,
+        NonModal at Qt level — PR-012), the header
         «Обзор мира», a stack the opening entry is gated in (spec «Повторный
         вызов недостижим» — the abolished registry's single instance falls out
         of the gate), and NO placement memory — a sheet reopens at its default
@@ -1028,10 +1037,23 @@ class ApplicationWiring(QObject):
         # sample (the whole game's events), the same source the search prefix
         # reads. In «все события» mode no parent can be out of the slice, so
         # the card simply never gets asked.
+        #
+        # PR-019 (spec world-snapshot «Секции снимка» + entity-addition
+        # «Успешное создание»): the four entity sections are the game's
+        # census, read on every query — an entity the master has just saved
+        # belongs to the world whether or not any event mentions it, so the
+        # panel must not learn about it through the event slice alone.
+        world_entities = {
+            type_key: list(
+                await self._app._entity_services[type_key].get_all()
+            )
+            for type_key in SUPPORTED_ENTITY_TYPES
+        }
         snapshot.populate(
             events,
             target,
             {event.id: event.name for event in self._timeline_vm.all_events},
+            world_entities,
         )
 
     def _connect_now_date(self) -> None:
@@ -1161,34 +1183,40 @@ class ApplicationWiring(QObject):
 
     # ── Helper: load available entities and set them on dialog sections ──
     async def _load_available_into_dialog(self, dialog) -> None:
-        """Load all entities from DB and set them as available for linking."""
+        """Load all entities from DB and set them as available for linking.
+
+        PR-032: the census arrives as flat EntityOptions — the section rows
+        and picker candidates outlive failed-save rollbacks on the QML side,
+        so raw ORM rows must not be handed over here."""
         dialog.set_available_entities(
             "organizations",
-            list(await self._app._entity_services["organization"].get_all()),
+            await self._app._entity_services["organization"].get_options(),
         )
         dialog.set_available_entities(
             "characters",
-            list(await self._app._entity_services["character"].get_all()),
+            await self._app._entity_services["character"].get_options(),
         )
         dialog.set_available_entities(
             "items",
-            list(await self._app._entity_services["item"].get_all()),
+            await self._app._entity_services["item"].get_options(),
         )
         dialog.set_available_entities(
             "locations",
-            list(await self._app._entity_services["location"].get_all()),
+            await self._app._entity_services["location"].get_options(),
         )
 
     async def _load_types_into_dialog(self, dialog) -> None:
-        """Fill the event dialog's type selector with the game's set (W4)."""
-        dialog.set_event_types(list(await self._event_service.get_event_types()))
+        """Fill the event dialog's type selector with the game's set (W4).
+        Flat options (PR-032) — the «Тип» binding survives a failed save."""
+        dialog.set_event_types(await self._event_service.get_event_type_options())
 
     async def _load_parents_into_dialog(self, dialog) -> None:
         """Fill the event dialog's «Родительское событие» pool (NRI-0023
-        task 7.1): the whole event list is handed over — the ViewModel keeps
-        main events only out of it (spec «Чужих детей в списке нет») and the
-        facade excludes the edited event through its loaded id."""
-        dialog.set_parent_options(list(await self._event_service.get_all_events()))
+        task 7.1): the whole event list is handed over as flat options
+        (PR-032) — the ViewModel keeps main events only out of it (spec
+        «Чужих детей в списке нет») and the facade excludes the edited event
+        through its loaded id."""
+        dialog.set_parent_options(await self._event_service.get_parent_options())
 
     # ── Shared entity-card factory (task 5.10, design D5) ──────────────
     # One place for the card's opening ceremony: creation, populate, the
@@ -1228,8 +1256,10 @@ class ApplicationWiring(QObject):
             for cfg in entity_registry.related_refs_for_key(entity_type):
                 rel_svc = self._app._get_entity_service(cfg.entity_type.value)
                 if rel_svc:
-                    available = await rel_svc.get_all()
-                    dialog.set_available_entities(cfg.attr, list(available))
+                    # Flat options (PR-032): the card's sections live across
+                    # failed saves just like the event dialog's.
+                    available = await rel_svc.get_options()
+                    dialog.set_available_entities(cfg.attr, available)
         dialog.saved.connect(lambda result: self._spawn(on_saved(result)))
         if popup_cleanup:
             dialog.accepted.connect(lambda: self._popup_created.pop(dialog, None))
@@ -1344,7 +1374,7 @@ class ApplicationWiring(QObject):
     # (``set_sheet_scrim_alpha``): the connector never asks what class it is.
 
     def open_sheet(self, sheet) -> None:
-        """Show ``sheet`` (WindowModal over its parent) under the stack.
+        """Show ``sheet`` (attached sheet over its parent) under the stack.
 
         NRI-0024 (task 5.1, design Д5) adds the reopen contour: a sheet whose
         content outlives its close (the table desk — the session rides the
@@ -1354,6 +1384,20 @@ class ApplicationWiring(QObject):
         release twice on the next close and the second ``remove`` would raise.
         The hook marker rides the dialog's own dynamic property, so it dies
         with the sheet and can never alias another sheet.
+
+        PR-012 (the show half, this method's last lines): the sheet rides the
+        ``Qt.Sheet`` window type with NO Qt-side modality — never ``open()``,
+        never WindowModal. On cocoa ``Qt.Sheet`` is what keeps the window a
+        native attached sheet (the platform plugin calls ``beginSheet`` on
+        exactly this flag, independent of modality), so AppKit document
+        modality still blocks the main window's layer, while the native menu
+        bar answers the app's own enabled states: Qt's cocoa validation
+        (``QNSViewMenuHelper.validateMenuItem:``) disables EVERY foreign
+        window's menu items while a Qt-modal window is active, which is what
+        used to kill the window-class exceptions under a live sheet. Off the
+        native sheet the main layer is held by ``MainWindow``'s own input
+        gate (the same ``sheet_stack_changed`` signal), so the block is the
+        contract on every platform, not an accident of the attached window.
         """
         if sheet in self._open_sheets:
             # Already up: raise the live sheet, never stack it twice.
@@ -1371,14 +1415,70 @@ class ApplicationWiring(QObject):
             sheet.finished.connect(
                 lambda _result, _sheet=sheet: self._release_sheet(_sheet)
             )
-        sheet.open()
+        # The type swap goes through the whole WindowType_Mask, not
+        # ``setWindowFlag``: QWidget::windowType() reports the widget's
+        # extra-set type (the default Window bit here), so setWindowFlag
+        # would only OR the Sheet bit over the Dialog one — and the cocoa
+        # plugin compares the decoded type against Qt::Sheet exactly.
+        sheet.setWindowFlags(
+            (sheet.windowFlags() & ~Qt.WindowType.WindowType_Mask)
+            | Qt.WindowType.Sheet
+        )
+        sheet.setWindowModality(Qt.WindowModality.NonModal)
+        sheet.show()
 
     def _release_sheet(self, sheet) -> None:
-        """Undo :meth:`open_sheet` for the one sheet that just closed."""
+        """Undo :meth:`open_sheet` for the one sheet that just closed.
+
+        PR-034 (the native attached-stack invariant, live 2026-10-05): a
+        native attached sheet carries its children down with it — closing a
+        LOWER sheet detaches the whole cascade, and the detached children
+        never emit ``finished``. The stack's own knowledge of "attached
+        over" is the Qt parent chain (design D3, the same chain the scrim
+        walks), so every entry standing above ``sheet`` and chained to it
+        is already dead on screen: each one is run through this very
+        channel, topmost first (the direction :meth:`close_all_sheets`
+        tears the stack down in), by its own plain ``close()`` — that
+        emits the ``finished`` the cascade withheld, the emission re-enters
+        here, and each nested release peels its scrim back. The departing
+        sheet stays in ``_open_sheets`` until that cascade has passed, so
+        the nested releases see a non-empty stack and the gate's single
+        ``False`` for the emptied stack rides exactly this call.
+
+        An entry above that is NOT chained to this sheet is a sibling sheet
+        of the same window — cocoa detaches it with neither sheet, so it
+        stays (TC-SHET-005/006: a lower sheet under any close stays whole;
+        nothing lives above the top sheet, so ordinary closings never see
+        this cascade at all).
+        """
+        if sheet not in self._open_sheets:
+            # A late ``finished`` of an already-released sheet (a detached
+            # child closing one turn after the cascade released it): the
+            # channel already ran — a second ``remove`` would raise.
+            return
+        index = self._open_sheets.index(sheet)
+        for over in reversed(self._open_sheets[index + 1:]):
+            if self._attached_under(over, sheet):
+                over.close()  # the sheet's own finished re-enters this method
         self._open_sheets.remove(sheet)
         self._lift_sheet_stack(sheet)
         if not self._open_sheets:
             self.sheet_stack_changed.emit(False)
+
+    @staticmethod
+    def _attached_under(sheet, host_sheet) -> bool:
+        """True when ``sheet``'s Qt parent chain passes through ``host_sheet``.
+
+        A child sheet is built with its parent sheet as Qt parent, which is
+        what makes cocoa attach it to that sheet — so the parent's cascade
+        detach takes exactly these sheets down with it.
+        """
+        parent = sheet.parent()
+        while parent is not None:
+            if parent is host_sheet:
+                return True
+            parent = parent.parent()
+        return False
 
     def close_all_sheets(self) -> None:
         """Take the whole sheet stack down at once (NRI-0024 task 4.2, the
@@ -1390,7 +1490,14 @@ class ApplicationWiring(QObject):
         :meth:`QDialog.close` passes ``finished``, so each sheet leaves
         through the single :meth:`_release_sheet` channel — the scrim walks
         back, the stack empties, and the menu gate reopens exactly the way
-        an ordinary closing click does."""
+        an ordinary closing click does.
+
+        PR-034 compatibility: children-first means nothing is ever left
+        stacked above the sheet being closed, so the release-side cascade
+        of :meth:`_release_sheet` never fires from this loop — the two
+        teardown routes meet at the same single channel without recursion
+        or a double release (the late-finished guard covers any stray).
+        """
         for sheet in reversed(list(self._open_sheets)):
             sheet.close()
 

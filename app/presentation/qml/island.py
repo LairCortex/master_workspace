@@ -13,12 +13,28 @@ screen: for the QDialog facades :meth:`accept`, :meth:`reject` and
 :meth:`done` (done covers ``close()`` and the window-manager close); the
 QWidget panel facades leave via :meth:`closeEvent`. Both paths are handled
 here because every facade mixes this class in next to its window base.
+
+Every close additionally waits out a nested modal/popup show (PR-003): a
+static ``QFileDialog``/``QMessageBox`` show runs its own event loop INSIDE
+the QML signal handler that opened it, and a close landing during that loop
+would run the deferred release and the facade's ``deleteLater`` right there
+— Qt 6.10 dispatches zero-timers AND DeferredDelete inside a nested loop,
+destroying QML objects whose handler is still on the stack (the
+«Object destroyed while one of its QML signal handlers is in progress»
+abort). :meth:`_defer_close_under_modal` parks such a close and replays it
+on the first loop turn with no nested show, where the stack holds only the
+event dispatch.
+
+The same facade family also owes its island the keyboard default action —
+see :meth:`IslandDialogMixin.take_island_default_key`, the one bridge that
+reads the root's ``defaultButton`` marker.
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication
 
 from app.presentation.qml.engine import (
     QML_IMPORT_PATH,
@@ -127,6 +143,44 @@ class IslandDialogMixin:
         self._component = load_island(quick, self._context, self.island_source(), initial)
         self._root = quick.rootObject()
 
+    # ── keyboard default action: the island's own «Сохранить» ────────────────
+
+    #: The two keys Qt's default-button machinery answers with (PR-029).
+    ISLAND_DEFAULT_KEYS = (Qt.Key_Return, Qt.Key_Enter)
+
+    def take_island_default_key(self, event) -> bool:
+        """Give a default-action key to the island's ``defaultButton`` marker.
+
+        A QML island has no ``QPushButton`` for :class:`QDialog` to auto-default,
+        so every sheet with a default action has to press the marker itself.
+        Reading it is one knowledge, held here (PR-029 — the event dialog and
+        the entity card had simply forgotten the bridge and their Enter stayed
+        dead while the marker was declared):
+
+        * the keys are Qt's own pair, Return and numpad Enter;
+        * the marker is the root's ``defaultButton`` property, duck-typed on
+          ``clicked`` — an island without a marker claims nothing;
+        * only an ENABLED marker claims the key: the Save of an invalid (or
+          saving, or generation-locked) form is disabled, and a sheet must not
+          eat the key of a form it refuses to save — the key stays where Qt
+          would have left it;
+        * a key the scene consumed never reaches a facade at all: a multiline
+          field takes Return into its own text (the «Предыстория» newline), so
+          this bridge only ever sees the keys the island let go.
+
+        Returns True when the marker took the key; False means the caller owes
+        the event to its own base (``super().keyPressEvent(event)``).
+        """
+        if event.key() not in self.ISLAND_DEFAULT_KEYS:
+            return False
+        root = getattr(self, "_root", None)
+        marker = root.property("defaultButton") if root is not None else None
+        clicked = getattr(marker, "clicked", None) if marker is not None else None
+        if clicked is None or marker.property("enabled") is False:
+            return False
+        clicked.emit()
+        return True
+
     # ── release: one loop turn after the window closed, never inside QML ──
 
     def release_island(self) -> None:
@@ -158,20 +212,86 @@ class IslandDialogMixin:
             # race, documented at its flag site).
             self.release_island()
 
+    # ── close: parked while a nested modal/popup show is in progress ────────
+
+    #: One parked close at most (the first press wins, re-presses ignored
+    #: until it replays). Class-level default: the instance gains the slot
+    #: only while a close is actually parked.
+    _pending_close = None
+
+    def _close_is_nested(self) -> bool:
+        """True while a nested exec() loop could run this window's teardown.
+
+        The loop-depth fact this module can observe: Qt tracks the one modal
+        widget and the one active popup for the application, and both exist
+        exactly while their static convenience show (``getOpenFileName``,
+        ``getSaveFileName``, ``QMessageBox.question``, ``QMenu.exec``) blocks
+        inside the QML handler that opened it. A modal that IS this window
+        (a launcher under its own ``exec()``) is not a nesting above the
+        handler stack — that close has to run synchronously, or the show it
+        answers could never end.
+        """
+        app = QApplication.instance()
+        modal = app.activeModalWidget()
+        if modal is not None and modal is not self:
+            return True
+        return app.activePopupWidget() is not None
+
+    def _defer_close_under_modal(self, close_call) -> bool:
+        """Park the public close while a nested show runs; else let it pass.
+
+        Returns True when the caller must not proceed: the close rides a
+        zero-timer that re-arms every loop turn it still finds a nested show
+        (zero-timers fire inside nested loops — the one-shot alone is what
+        PR-003 died of), and replays the PUBLIC entry (``self.accept`` and
+        friends, never a bound ``super()``) so the replayed close walks the
+        exact same scheduling path a normal one does.
+        """
+        if not self._close_is_nested():
+            return False
+        if self._pending_close is None:
+            self._pending_close = close_call
+            QTimer.singleShot(0, self, self._run_pending_close)
+        return True
+
+    def _run_pending_close(self) -> None:
+        if self._pending_close is None:
+            return
+        if self._close_is_nested():
+            QTimer.singleShot(0, self, self._run_pending_close)
+            return
+        close_call, self._pending_close = self._pending_close, None
+        close_call()
+
     # Qt leaves a QDialog through all three of these (done covers close()).
 
     def accept(self) -> None:
+        if self._defer_close_under_modal(self.accept):
+            return
         self._schedule_island_release()
         super().accept()
 
     def reject(self) -> None:
+        if self._defer_close_under_modal(self.reject):
+            return
         self._schedule_island_release()
         super().reject()
 
     def done(self, result: int) -> None:
+        if self._defer_close_under_modal(lambda: self.done(result)):
+            return
         self._schedule_island_release()
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt casing
+        # Parked as ``self.close`` (not this event): a QCloseEvent is owned
+        # by the dispatch it arrived with and must not outlive it. Qt 6
+        # treats a SILENT closeEvent as an accepted close (measured: the
+        # widget hides), so the park must ignore this event explicitly —
+        # the window stays open until the replayed close() walks the whole
+        # chain on the outer loop.
+        if self._defer_close_under_modal(self.close):
+            event.ignore()
+            return
         self._schedule_island_release()
         super().closeEvent(event)

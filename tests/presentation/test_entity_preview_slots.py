@@ -126,7 +126,7 @@ _PRE_SPLIT_SNAPSHOT: dict[str, dict] = {
             {"html": "Найти брата", "key": "tasks", "label": "Задачи"},
         ],
         "shownEntityId": 4,
-        "title": "Карточка: Персонаж · Банн",
+        "title": "Карточка: Персонаж",
     },
     "character_linked_mentioned": {
         "ageText": "Возраст: 3 года",
@@ -162,7 +162,7 @@ _PRE_SPLIT_SNAPSHOT: dict[str, dict] = {
             {"html": "Найти брата", "key": "tasks", "label": "Задачи"},
         ],
         "shownEntityId": 4,
-        "title": "Карточка: Персонаж · Банн",
+        "title": "Карточка: Персонаж",
     },
     "item_bc_time": {
         "ageText": "",
@@ -178,7 +178,7 @@ _PRE_SPLIT_SNAPSHOT: dict[str, dict] = {
             {"html": "Долгая история", "key": "backstory", "label": "Предыстория"},
         ],
         "shownEntityId": 4,
-        "title": "Карточка: Предмет · Меч",
+        "title": "Карточка: Предмет",
     },
 }
 

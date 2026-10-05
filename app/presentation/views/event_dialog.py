@@ -6,15 +6,7 @@ from typing import Any, Callable
 
 import shiboken6
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
-    QDialogButtonBox,
-    QListWidget,
-    QListWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
@@ -36,7 +28,7 @@ from app.presentation.viewmodels.event_dialog_island_view_model import (
 )
 from app.presentation.views.event_types_dialog import type_dot_icon
 from app.presentation.views.ai_capable_dialog import AiCapableDialogBase
-from app.presentation.views.sheet_frame import SheetFrame
+from app.presentation.views.related_picker_sheet import RelatedPickerSheet
 from app.presentation.views.theme_date_popup import ThemeDatePopup
 
 ROOT_QML = str(Path(QML_IMPORT_PATH) / "EventDialogRoot.qml")
@@ -226,55 +218,6 @@ class _RelatedProxy:
 class _TabsProxy:
     def isHidden(self) -> bool:
         return False
-
-
-def build_related_picker(
-    parent: QWidget,
-    theme,
-    title: str,
-    state: RelatedSectionState,
-    candidates: list,
-) -> SheetFrame:
-    """The «Выберите <тип>» sheet (nri-0024 task 2.5, design Д6/Д7) — one
-    widget for the event dialog and the entity card (they shared the old
-    exec'd dialog body line for line, they share this one).
-
-    A SheetFrame named by the target caption (spec modal-sheets «текст,
-    соответствующий windowTitle»), its content the multi-selection list of
-    the still-unlinked candidates with the ОК/Отмена pair. The opening sheet
-    shows it through the connector's stack with ``open()`` — no nested event
-    loop (spec «Прикладные диалоги не входят во вложенный цикл событий»);
-    ОК commits the choice into ``state`` (the RelatedSectionState duck) on
-    ``accepted``, while Отмена, Esc and the header «Закрыть» cancel and hand
-    the opener layer back untouched. Enter keeps the ОК outcome the exec'd
-    dialog had — the frame's «Закрыть» is the Esc twin, never the default.
-    """
-    picker = SheetFrame(title, parent, theme)
-    picker.setMinimumSize(300, 400)  # the floor the old dialog carried
-    items = QListWidget(picker)
-    items.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-    for entity in candidates:
-        item = QListWidgetItem(getattr(entity, "name", str(entity)))
-        item.setData(256, getattr(entity, "id", None))
-        items.addItem(item)
-    picker.content_layout.addWidget(items)
-    buttons = QDialogButtonBox(
-        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-        parent=picker,
-    )
-    buttons.accepted.connect(picker.accept)
-    buttons.rejected.connect(picker.reject)
-    buttons.button(QDialogButtonBox.StandardButton.Ok).setDefault(True)
-    picker.content_layout.addWidget(buttons)
-
-    def apply_selection() -> None:
-        selected_ids = {item.data(256) for item in items.selectedItems()}
-        for entity in candidates:
-            if getattr(entity, "id", None) in selected_ids:
-                state.add_entity(entity)
-
-    picker.accepted.connect(apply_selection)
-    return picker
 
 
 class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
@@ -586,6 +529,14 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         ):
             event.ignore()
             return
+        # PR-029 (spec qml-shell «Минразмер и defaultButton»): Enter is the
+        # sheet's save shortcut. The scene keeps what it consumes — the two
+        # multiline MentionFields take Return into their own text, so a newline
+        # typed in «Предыстория» never reaches this line — and while the form
+        # is invalid, saving or generating the «Сохранить» marker is disabled,
+        # so the shared bridge leaves the key where Qt would have left it.
+        if self.take_island_default_key(event):
+            return
         super().keyPressEvent(event)
 
     def _open_date_popup(
@@ -620,11 +571,12 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         if not candidates:
             return
         # Task 2.5: the exec'd picker dialog is gone — the same choice is the
-        # shared SheetFrame sheet now, handed to the connector's stack over
-        # this dialog (spec modal-sheets «Цепочка … закрытие верхнего
-        # возвращает к нижнему»).
-        picker = build_related_picker(
-            self, self._theme, f"Выберите {label.lower()}", section, candidates
+        # shared island sheet now, handed to the connector's stack over this
+        # dialog (spec modal-sheets «Цепочка … закрытие верхнего возвращает к
+        # нижнему»); PR-020 moved its rows onto RowItem so the accessibility
+        # tree can name and press them.
+        picker = RelatedPickerSheet(
+            f"Выберите {label.lower()}", section, candidates, self, self._theme
         )
         self.sheet_requested.emit(picker)
 

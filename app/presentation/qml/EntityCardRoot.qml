@@ -114,6 +114,21 @@ Rectangle {
                             fillMode: Image.PreserveAspectFit
                             visible: entityCardVm.imageAvailable
                             cache: false
+                            // PR-025: the card's picture joins the detail-panel
+                            // and preview slots as the named «open the image»
+                            // Button — the usage-site name is the entity's own
+                            // name (the card edits it live), «Изображение» when
+                            // unnamed, the fixed vocabulary description, and the
+                            // Press rides the VM's open request (a custom Item
+                            // presses only through onPressAction). The empty
+                            // slot stays unaddressable: the visible binding
+                            // hides the whole node (no broken press), and the
+                            // MouseArea below keeps driving the mouse path.
+                            Accessible.role: Accessible.Button
+                            Accessible.name: entityCardVm.name !== ""
+                                ? entityCardVm.name : "Изображение"
+                            Accessible.description: "Открыть изображение"
+                            Accessible.onPressAction: entityCardVm.requestImageOpen()
                         }
                         // The empty picture slot: the Lucide «image» glyph
                         // above the hint (user request 2026-09-30 — the mute
@@ -183,7 +198,12 @@ Rectangle {
                             // the typed value lives in the tree's value slot —
                             // the name slot carries the field's purpose.
                             Accessible.name: "Название"
-                            onTextEdited: entityCardVm.name = text
+                            // PR-016: AX SetValue writes the text property
+                            // without a user gesture, so the model follows
+                            // every text change — the identity guard keeps
+                            // the vm→text binding echo from writing back.
+                            onTextChanged: if (text !== entityCardVm.name)
+                                entityCardVm.name = text
                         }
                         // NRI-0018 (spec qml-shell «Строка названия разгружена»):
                         // only the name field's own ✨ stays in this cell — the
@@ -207,7 +227,11 @@ Rectangle {
                             value: entityCardVm.rating
                             editable: true
                             Accessible.name: "Рейтинг"
-                            onValueModified: entityCardVm.setRating(value)
+                            // PR-016: AX SetValue drives the value property
+                            // without a user gesture; the model follows every
+                            // change, the guard blocks the binding echo.
+                            onValueChanged: if (value !== entityCardVm.rating)
+                                entityCardVm.setRating(value)
                             contentItem: TextInput {
                                 text: ratingSpin.textFromValue(ratingSpin.value, ratingSpin.locale)
                                 color: root.foregroundColor
@@ -357,7 +381,10 @@ Rectangle {
                                 // nri-0012 task 2.4 (design map «Ссылка на
                                 // музыку»): the placeholder is not a name.
                                 Accessible.name: "Ссылка на музыку"
-                                onTextEdited: entityCardVm.setMusicUrl(text)
+                                // PR-016: same guarded-change channel as the
+                                // name field — AX SetValue reaches the model.
+                                onTextChanged: if (text !== entityCardVm.musicUrl)
+                                    entityCardVm.setMusicUrl(text)
                             }
                             ThemeButton {
                                 objectName: "entityMusicOpenButton"

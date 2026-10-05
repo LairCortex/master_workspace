@@ -7,9 +7,10 @@ the document's name in its header — through the one ``open_sheet`` path, so
 
 * each header names its document and the two sheets are distinguishable by
   the header alone (spec «Два документа различимы»);
-* the sheet is WindowModal over the main window while open — reading blocks
-  the work layer, closing resumes it (the sheet is shown with ``open()``,
-  the modality check is the offscreen face of that);
+* the sheet is an attached native sheet over the main window while open
+  (Qt.Sheet, NonModal at Qt level — PR-012) — reading blocks the work layer,
+  closing resumes it (the block's offscreen face is the window's content gate
+  plus the sheet's native document modality, not Qt modality);
 * the header «Закрыть» and Escape leave the sheet through the same cancel
   outcome, and the stack releases on either route;
 * the document stays fully readable: the island's ScrollView reaches the
@@ -29,8 +30,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QObject, QEvent, QSize, Qt
+from PySide6.QtGui import QAccessible, QAction
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
@@ -111,9 +112,12 @@ def test_each_header_names_its_document(qtbot, docs_tree):
     assert doc.windowTitle() == "Документация"
     assert _header_title(doc) == "Документация"
     assert doc.vm.text == "DOC CONTENT"
-    # A sheet, not a window: open() under the parent — WindowModal over the
-    # main layer (spec «Чтение блокирует работу до закрытия»).
-    assert doc.windowModality() == Qt.WindowModality.WindowModal
+    # A sheet, not a window: an attached native sheet (Qt.Sheet) shown
+    # NonModal at Qt level so the menu exceptions stay reachable (PR-012);
+    # the main layer's block is the sheet's document modality + the window's
+    # content gate (spec «Чтение блокирует работу до закрытия»).
+    assert doc.windowFlags() & Qt.WindowType.Sheet
+    assert doc.windowModality() == Qt.WindowModality.NonModal
     assert states == [True]
 
     doc.reject()
@@ -164,6 +168,96 @@ def test_close_button_and_escape_share_the_cancel_outcome(qtbot, docs_tree):
     assert not by_escape.isVisible()
     assert by_escape.result() == by_button.result()
     assert states == [True, False, True, False]
+
+
+class _IslandSwallowingEscape(QObject):
+    """The live cocoa face of PR-005, modelled offscreen.
+
+    Instrumented live proof (2026-10-05, `app.main` under a QApplication with a
+    notified spy): with focus inside the document island the Escape travels
+    «QWindow → QQuickWidget → QQuickWindow(…OffscreenWindow)» and is ACCEPTED
+    there — «accepted=True» — never climbing to the dialog, so
+    QDialog::keyPressEvent never ran and the sheet stayed open. This filter is
+    installed on the island's offscreen window — the very node where the live
+    key died (name «QQuickWidgetOffscreenWindow», same as in the live trace) —
+    and reproduces the one observable that matters: the island consumed the
+    Escape before it could ever climb to the frame. The frame's answer (its
+    eventFilter on the content widget, installed by add_content) sits UPSTREAM
+    of this node — a filter on the widget runs before Qt forwards the key down
+    into the offscreen scene, which is exactly why the fix wins over the live
+    swallow — so the model must NOT sit on the widget itself, where Qt runs
+    object filters last-installed-first and the model would outrank the fix.
+    """
+
+    def eventFilter(self, watched, event):
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            event.accept()
+            return True
+        return False
+
+
+def test_escape_closes_the_sheet_when_the_island_consumes_it(qtbot, docs_tree):
+    """PR-005: Esc is the sheet's OWN result (spec modal-sheets «кнопку
+    закрытия, выполняющую отменяющее действие (как Esc)»), so it survives an
+    island that eats the key — the live reader had the Changelog sheet stuck
+    open for exactly this reason."""
+    window, wiring, states = _docs_wiring(qtbot, docs_tree)
+    window.changelog_action.trigger()
+    sheet = _live_docs(window)[0]
+    qtbot.waitExposed(sheet)
+    sheet.activateWindow()
+    qtbot.waitUntil(lambda: sheet.isActiveWindow(), timeout=2000)
+
+    offscreen = sheet.quick.quickWindow()
+    assert offscreen is not None and offscreen.objectName() == "QQuickWidgetOffscreenWindow"
+    offscreen.installEventFilter(_IslandSwallowingEscape(sheet))
+    sheet.quick.setFocus()
+    assert sheet.focusWidget() is sheet.quick  # the live posture: island focused
+
+    QTest.keyClick(sheet.windowHandle(), Qt.Key.Key_Escape)
+
+    assert not sheet.isVisible()
+    assert sheet.result() == sheet.DialogCode.Rejected
+    assert states == [True, False]  # one stack release on the Esc route
+
+
+def test_close_button_is_an_addressable_accessible_button(qtbot, docs_tree):
+    """PR-005's second half: «Закрыть» lives in the sheet's accessibility tree
+    as a named Button whose Press performs the same cancel (the live audit found
+    no such node at all). The role is the stock QPushButton's and the caption is
+    the widget's own text — nothing re-annotated (AGENTS a11y contract)."""
+    window, wiring, states = _docs_wiring(qtbot, docs_tree)
+    window.changelog_action.trigger()
+    sheet = _live_docs(window)[0]
+    qtbot.waitExposed(sheet)
+
+    iface = QAccessible.queryAccessibleInterface(sheet)
+    assert iface is not None
+
+    def find_buttons(node):
+        found = []
+        for i in range(node.childCount()):
+            child = node.child(i)
+            if child.role() == QAccessible.Role.Button:
+                found.append(child)
+            found.extend(find_buttons(child))
+        return found
+
+    buttons = find_buttons(iface)
+    close = [b for b in buttons if b.text(QAccessible.Name) == "Закрыть"]
+    names = [(b.role(), b.text(QAccessible.Name)) for b in buttons]
+    assert close, f"no «Закрыть» Button among {names}"
+
+    action = close[0].actionInterface()
+    assert action is not None
+    assert "Press" in list(action.actionNames())  # the AT address of the button
+    action.doAction("Press")
+    qtbot.waitUntil(lambda: not sheet.isVisible(), timeout=2000)
+    assert sheet.result() == sheet.DialogCode.Rejected
+    assert states == [True, False]
 
 
 def test_scroll_reaches_the_end_of_a_long_document(qtbot, docs_tree):

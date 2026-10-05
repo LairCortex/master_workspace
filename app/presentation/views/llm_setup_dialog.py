@@ -5,7 +5,8 @@ family into the sheet one (design Д1): the content stays the wizard island,
 the widget-side ``SheetFrame`` carries the shared sheet chrome — the header
 row «Настройка LLM… + Закрыть» (one windowTitle-threaded caption, the frame's
 button a plain reject) and the stack scrim the connector dims through. The
-show contract (WindowModal over the parent, the connector's sheet stack, the
+show contract (attached native sheet over the parent — Qt.Sheet, NonModal at
+Qt level, PR-012 — the connector's sheet stack, the
 single release on ``finished``) is ``ApplicationWiring.open_sheet`` like
 every other sheet, and the gated entry makes a second copy unreachable (Д2).
 

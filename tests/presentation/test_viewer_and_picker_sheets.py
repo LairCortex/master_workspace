@@ -29,15 +29,17 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QPushButton, QWidget
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QDialog, QPushButton, QWidget
 
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from app.presentation.views.sheet_frame import SheetFrame
 from app.presentation.wiring import ApplicationWiring
-from tests.presentation.qml_helpers import find_item
+from tests.presentation.qml_helpers import click_item, find_item
 
 # One sheet under a parent costs, pinned literally (test_sheet_stack_contract).
 UNIT = 0.25
@@ -45,6 +47,9 @@ UNIT = 0.25
 
 class _StubEntityService:
     async def get_all(self):
+        return []
+
+    async def get_options(self):
         return []
 
 
@@ -185,10 +190,10 @@ def test_picker_sits_over_the_dialog_and_ok_returns_the_choice_to_it(qtbot):
     assert dialog._root.property("sheetScrimAlpha") == pytest.approx(UNIT)
     assert states == [True]  # a child sheet does not re-announce the stack
 
-    items = picker.findChild(QListWidget)
-    items.item(0).setSelected(True)
-    buttons = picker.findChild(QDialogButtonBox)
-    buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+    # PR-020: the rows are RowItem delegates on the sheet's VM now — the
+    # MultiSelection toggle moved to the VM, «ОК» is the island button.
+    picker.vm.toggleRow(0)
+    click_item(picker.quick, find_item(picker.quick, "okButton"))
 
     assert not picker.isVisible()
     assert dialog.vm.characters.get_current_ids() == [entities[0].id]
@@ -214,8 +219,10 @@ def test_picker_cancel_and_header_close_hand_the_opener_back(qtbot, close_route)
     assert dialog._root.property("sheetScrimAlpha") == pytest.approx(UNIT)
 
     if close_route == "cancel":
-        buttons = picker.findChild(QDialogButtonBox)
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).click()
+        # The island «Отмена» rides a queued hop into reject (the preset
+        # dialog's teardown lesson) — the loop turn is awaited, not assumed.
+        click_item(picker.quick, find_item(picker.quick, "cancelButton"))
+        qtbot.waitUntil(lambda: not picker.isVisible(), timeout=3000)
     else:
         picker.findChild(QPushButton, "sheetFrameCloseButton").click()
 
@@ -223,6 +230,32 @@ def test_picker_cancel_and_header_close_hand_the_opener_back(qtbot, close_route)
     assert dialog.vm.characters.get_current_ids() == []
     assert dialog.isVisible()
     assert dialog._root.property("sheetScrimAlpha") == pytest.approx(0.0)
+    dialog.reject()
+
+
+def test_picker_enter_is_ok_and_escape_stays_cancel(qtbot):
+    """The migrated dialog's keyboard half (PR-020 keeps it through the island
+    bridge): Enter clicks the «ОК» marker — the whole selection commits —
+    while Escape stays the cancel twin of «Отмена», the section untouched."""
+    host = _host(qtbot)
+    wiring = _make_wiring()
+    _spy(wiring)
+    dialog, entities = _event_dialog_with_candidates(qtbot, wiring, host)
+
+    dialog._open_related_picker("characters", "Персонажи")
+    picker = _live_picker(dialog)
+    picker.vm.toggleRow(0)
+    QTest.keyClick(picker, Qt.Key.Key_Return)
+    assert not picker.isVisible()
+    assert dialog.vm.characters.get_current_ids() == [entities[0].id]
+
+    # The remaining candidate: Escape cancels, nothing is added.
+    dialog._open_related_picker("characters", "Персонажи")
+    picker = _live_picker(dialog)
+    picker.vm.toggleRow(0)
+    QTest.keyClick(picker, Qt.Key.Key_Escape)
+    assert not picker.isVisible()
+    assert dialog.vm.characters.get_current_ids() == [entities[0].id]
     dialog.reject()
 
 
@@ -262,11 +295,8 @@ def test_viewer_and_picker_paths_never_enter_a_nested_event_loop(
     dialog, entities = _event_dialog_with_candidates(qtbot, wiring, host)
     dialog._open_related_picker("characters", "Персонажи")
     picker = _live_picker(dialog)
-    items = picker.findChild(QListWidget)
-    items.item(1).setSelected(True)
-    picker.findChild(QDialogButtonBox).button(
-        QDialogButtonBox.StandardButton.Ok
-    ).click()
+    picker.vm.toggleRow(1)
+    click_item(picker.quick, find_item(picker.quick, "okButton"))
     assert dialog.vm.characters.get_current_ids() == [entities[1].id]
 
     # Stack fully drained by the two closes.

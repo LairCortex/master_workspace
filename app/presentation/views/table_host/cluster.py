@@ -6,10 +6,11 @@ While the table is raised the master keeps control of it from the main
 window's top-right corner — in the same band as the game-date chip, i.e.
 above the right edge of the search row: the caption «Стол · N игроков»
 (opens the desk sheet) and the «Остановить стол» button (stops the service
-outright). The cluster lives through any sheet on purpose: the штатная
-``WindowModal`` of a sheet blocks EVERY child widget of the main window, and
+outright). The cluster lives through any sheet on purpose: a sheet attaches
+natively over the main window and its document modality blocks the whole
+window layer — every child widget of the main window included — and
 the only legal way to keep these two controls clickable over the scrim is a
-window outside the modal layer. Hence the parentless
+window outside that blocked layer. Hence the parentless
 ``Qt.Tool | FramelessWindowHint | WindowStaysOnTopHint`` + ``WA_ShowWithoutActivating``
 — the same parentless-popup pattern the mention popup already ships (rule P3),
 raised straight onto the desktop over the sheets.
@@ -69,7 +70,7 @@ class TableCluster(QWidget):
         theme=None,
     ) -> None:
         # Parentless by design (Д3): a child of MainWindow would sit inside
-        # the WindowModal layer and freeze under the first sheet.
+        # the sheet-blocked window layer and freeze under the first sheet.
         super().__init__(
             None,
             Qt.WindowType.Tool

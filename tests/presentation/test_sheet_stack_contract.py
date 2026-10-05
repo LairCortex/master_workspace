@@ -42,6 +42,9 @@ class _StubEntityService:
     async def get_all(self):
         return []
 
+    async def get_options(self):
+        return []
+
 
 def _make_wiring(window=None) -> ApplicationWiring:
     """The connector with exactly what the sheet-open paths touch."""
@@ -77,7 +80,7 @@ def test_open_sheet_announces_the_stack_on_and_off(qtbot):
     first = SheetFrame("Лист первый", host)
     wiring.open_sheet(first)
     assert states == [True]
-    assert first.isVisible()  # the contract shows the sheet itself (open())
+    assert first.isVisible()  # the contract shows the sheet itself (attached, NonModal)
 
     second = SheetFrame("Лист второй", host)
     wiring.open_sheet(second)
@@ -93,6 +96,35 @@ def test_open_sheet_announces_the_stack_on_and_off(qtbot):
     assert states == [True, False, True]
     again.reject()
     assert states == [True, False, True, False]
+
+
+def test_open_sheet_shows_an_attached_non_modal_sheet(qtbot):
+    """PR-012's show class, pinned on the connector's one show path: the sheet
+    joins the Qt type bits as ``Qt.Sheet`` ONLY (a clean WindowType_Mask swap —
+    ``setWindowFlag`` would OR the bit over the dialog's, leaving a type cocoa
+    never attaches) and rides NO Qt modality — the native attached sheet's
+    document modality blocks the parent window while the native menu bar keeps
+    answering the exception entries (a Qt-modal window there would grey out
+    every foreign menu item, the PR-012 breakage)."""
+    from PySide6.QtCore import Qt
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.show()
+    wiring = _make_wiring()
+
+    sheet = SheetFrame("PR-012", host)
+    wiring.open_sheet(sheet)
+    try:
+        assert sheet.windowFlags() & Qt.WindowType.Sheet
+        assert (
+            sheet.windowFlags() & Qt.WindowType.WindowType_Mask
+        ) == Qt.WindowType.Sheet  # the Dialog bit is gone, not OR-ed over
+        assert sheet.windowModality() == Qt.WindowModality.NonModal
+        assert not sheet.isModal()
+        assert sheet.isVisible()
+    finally:
+        sheet.reject()
 
 
 def test_reopening_a_surviving_sheet_releases_exactly_once(qtbot, monkeypatch):
@@ -129,6 +161,77 @@ def test_reopening_a_surviving_sheet_releases_exactly_once(qtbot, monkeypatch):
 
     assert states == [True, False, True, False]
     assert errors == []  # one close, one release — no double ``remove``
+
+
+def test_closing_a_lower_sheet_releases_the_sheets_attached_over_it(qtbot):
+    """PR-034's connector pin (the native attached-stack invariant).
+
+    The cocoa fact the live screen gave twice (2026-10-05): an AX press of
+    the LOWER sheet's «Закрыть» detaches the whole attached cascade — the
+    lower sheet emits its own ``finished``, the child attached over it never
+    does. The cocoa cascade itself is unreproducible offscreen, so the pin
+    draws the Qt-level picture: two sheets raised through ``open_sheet`` (the
+    child parented to the bottom — the parent chain IS the stack, design D3)
+    and the bottom closed with a plain ``close()`` while the child stays
+    Qt-visible. Everything the stack holds attached over the departing sheet
+    must be run through the same single release channel: the stack ends
+    empty, the gate announces exactly one False, the scrim units peel back,
+    and the child performs its OWN release (its ``finished`` fires through
+    the connector's cascade close). Before the fix the child stayed a zombie
+    in ``_open_sheets`` and the menu gate never came back."""
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.show()
+    wiring = _make_wiring()
+    states = _spy(wiring)
+
+    bottom = SheetFrame("Обзор мира", host)
+    child = SheetFrame("Карточка: Персонаж", bottom)
+    wiring.open_sheet(bottom)
+    wiring.open_sheet(child)
+    assert states == [True]
+    assert wiring._open_sheets == [bottom, child]
+    assert bottom.sheet_scrim_alpha == pytest.approx(UNIT)
+
+    child_finishes: list[int] = []
+    child.finished.connect(child_finishes.append)
+
+    bottom.close()  # the live AX press: the bottom's finished fires, the child's does not
+
+    assert len(child_finishes) == 1  # the child went through its own finished
+    assert wiring._open_sheets == []  # no zombie left in the stack
+    assert states == [True, False]  # the gate reopened exactly once
+    assert not bottom.isVisible()
+    assert not child.isVisible()
+    assert wiring._sheet_scrim_units == {}
+    assert bottom.sheet_scrim_alpha == pytest.approx(0.0)
+
+
+def test_a_late_finished_of_an_already_released_sheet_is_silent(qtbot, monkeypatch):
+    """PR-034's release-channel guard: a detached child may deliver its
+    ``finished`` after the cascade already released it. The channel runs
+    once: the late emission must not reach a second ``remove`` (before the
+    fix that raised ValueError through the signal, surfaced below by the
+    excepthook spy) and must not re-announce the gate."""
+    import sys
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.show()
+    wiring = _make_wiring()
+    states = _spy(wiring)
+    errors: list[BaseException] = []
+    monkeypatch.setattr(sys, "excepthook", lambda _t, value, _tb: errors.append(value))
+
+    sheet = SheetFrame("Лист", host)
+    wiring.open_sheet(sheet)
+    sheet.reject()  # the one legitimate release
+    assert states == [True, False]
+
+    sheet.finished.emit(0)  # the late emission of the already-released sheet
+    assert errors == []
+    assert wiring._open_sheets == []
+    assert states == [True, False]
 
 
 def test_three_layer_cascade_dims_lower_sheets_harder(qtbot):
@@ -205,7 +308,11 @@ def test_connect_sheet_gate_routes_the_stack_on_and_off_to_the_window(qtbot):
     """Task 1.2 (design Д2): ``connect()`` binds the announcement to the
     window's slot, and the gate's whole input is the stack's two edges —
     one True when it rises, one False when it empties; the sheets piling
-    up between the edges are the window's silence."""
+    up between the edges are the window's silence. The mid-stack close is
+    the TOP sheet since PR-034: with a child attached over its parent the
+    native world never lets the parent leave alone (the cascade detaches
+    the child), so the sequence that stays true on a live display closes
+    top-first and the chained-bottom close is pinned in its own test."""
     window = _GateWindow()
     qtbot.addWidget(window)
     window.show()
@@ -219,9 +326,10 @@ def test_connect_sheet_gate_routes_the_stack_on_and_off_to_the_window(qtbot):
     wiring.open_sheet(second)
     assert window.states == [True]  # already up: no re-announcement
 
-    first.reject()
-    assert window.states == [True]
     second.reject()
+    assert window.states == [True]  # the parent sheet is still up: silence
+    assert first.isVisible()  # TC-SHET-005/006: closing the top leaves the bottom whole
+    first.reject()
     assert window.states == [True, False]
 
 

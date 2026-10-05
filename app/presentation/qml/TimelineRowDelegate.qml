@@ -156,19 +156,27 @@ Item {
     objectName: row.stubRow ? "stubRow" : "eventRow"
 
     // Accessibility contract (change nri-0012-qml-accessibility, task 2.1,
-    // design D2/D3; NRI-0023 task 5.3 for the stub gate): the row is a list
-    // item, its name is the delivered caption, and a single Press takes the
-    // DOUBLE-click path — the event open (accessibility has no double press;
-    // the review opens with one activation). A stub explains its orphans and
-    // never interacts: the description slot stays unset («» — the contract's
-    // empty) and its Press opens nothing. The mouse paths below stay
-    // untouched (single = select).
+    // design D2/D3; NRI-0023 task 5.3 for the stub gate; PR-017 for the
+    // full mirror): the row is a list item, its name is the delivered
+    // caption, and a single Press mirrors the WHOLE double-click
+    // interaction — the real double-click selects on its first click and
+    // opens on its second, so the press runs both halves in that order
+    // (accessibility has no double press; the spec «одиночная активация
+    // выполняет элементное действие»: selection is the side effect AT must
+    // reach too — without it the middle column never populates and the
+    // detail rows' «Выбирает сущность» channel, the preview column's only
+    // live-pointer entry, stays unreachable). A stub explains its orphans
+    // and never interacts: the description slot stays unset («» — the
+    // contract's empty) and its Press opens and selects nothing. The mouse
+    // paths below stay untouched (single = select).
     Accessible.role: Accessible.ListItem
     Accessible.name: row.caption
     Accessible.description: row.stubRow ? "" : "Открывает событие"
     Accessible.onPressAction: {
-        if (!row.stubRow)
+        if (!row.stubRow) {
+            row.rowClicked()
             row.rowDoubleClicked()
+        }
     }
 
     // Row geometry: mark cell at TEXT_LEFT_PAD sized MARK_SIZE (the glyph

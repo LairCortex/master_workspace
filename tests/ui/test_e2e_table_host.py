@@ -37,10 +37,10 @@ async def test_e2e_start_join_field_persists_then_stop(
     await wait_for(lambda: application._table_host_panel is not None)
     panel = application._table_host_panel
     panel.set_instances([(inst_id, "Лист")])
-    # NRI-0016 (TB3-ремонт): seats are ticked through the rows' real QCheckBoxes.
-    for i in range(panel.seat_list.count()):
-        row_widget = panel.seat_list.itemWidget(panel.seat_list.item(i))
-        row_widget.findChild(QCheckBox).setChecked(True)
+    # NRI-0016 (TB3-ремонт) + PR-022-ремонт: seats are ticked through the
+    # rows' real QCheckBoxes — plain child widgets of the desk.
+    for box in panel.seat_boxes():
+        box.setChecked(True)
     await application._start_table()
     host = application._table_host
     assert host.is_running

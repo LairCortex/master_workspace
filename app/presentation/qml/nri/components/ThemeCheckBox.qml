@@ -33,19 +33,28 @@ CheckBox {
     topPadding: Tokens.px(islandTokens, "space.sm", 8)
     bottomPadding: Tokens.px(islandTokens, "space.sm", 8)
 
-    // F2 (live audit 2026-09-30, docs/qa/2026-09-30-lucide-pass-main-window.md):
-    // the stock accessibility activation of a CheckBox writes ``checked``
-    // without a user gesture — the tick flipped while ``clicked`` (and every
-    // onClicked action wired at the usage sites, the launcher's theme toggle
-    // among them) stayed silent, so the tick lied about the state the
-    // NRI-0016 D2 semantics hangs on. The press machinery is the component's,
-    // per the NRI-0012 D2 rule and the ThemeTabButton precedent (NRI-0017 F4):
-    // one accessibility Press runs the very ``click()`` a mouse click runs —
-    // checked toggles once and clicked emits once (both counted by the
-    // offscreen pin tests/presentation/test_theme_checkbox_accessibility.py,
-    // off-skin included). Only the handler is attached; the штатно role,
-    // name and state slots stay untouched (4.1/4.2 guards stay green).
+    // F2 (live audit 2026-09-30, docs/qa/2026-09-30-lucide-pass-main-window.md;
+    // PR-001 re-fix 2026-10-04): the stock accessibility activation of a
+    // CheckBox writes ``checked`` without a user gesture — the tick flipped
+    // while ``clicked`` (and every onClicked action wired at the usage sites,
+    // the launcher's theme toggle among them) stayed silent, so the tick lied
+    // about the state the NRI-0016 D2 semantics hangs on. The press machinery
+    // is the component's, per the NRI-0012 D2 rule and the ThemeTabButton
+    // precedent (NRI-0017 F4): one accessibility action runs the very
+    // ``click()`` a mouse click runs — checked toggles once and clicked emits
+    // once (both counted by the offscreen pin
+    // tests/presentation/test_theme_checkbox_accessibility.py, off-skin
+    // included). BOTH action names must carry a handler: the Qt 6.10 cocoa
+    // bridge translates AXPress on a CheckBox/RadioButton role into the
+    // ``Toggle`` action (qcocoaaccessibility.mm translateAction), while
+    // readers of other platforms still send ``Press`` — with only onPressAction
+    // connected, the live AXPress fell through to QAccessibleQuickItem's
+    // role-default ``setProperty("checked", …)`` and the tick lied again
+    // (PR-001, the Qt-6.10 regression of F2). Only the handlers are attached;
+    // the штатно role, name and state slots stay untouched (4.1/4.2 guards
+    // stay green).
     Accessible.onPressAction: control.click()
+    Accessible.onToggleAction: control.click()
 
     // Caption metrics drive the optical placement of the box (spec «Чекбокс
     // ставит индикатор и подпись на один оптический центр»): descent+leading

@@ -208,6 +208,60 @@ def test_tree_stub_renders_name_only_and_stays_unclickable(qtbot):
     assert emitted == []
 
 
+def _island_texts(widget) -> list[str]:
+    return [
+        item.property("text")
+        for item in walk_items(widget.quick.rootObject())
+        if item.property("text")
+    ]
+
+
+def test_census_without_events_paints_sections_instead_of_the_hint(qtbot):
+    """PR-019 on the island's own surface: a world whose slice has no events
+    still paints its entity sections. The empty-state hint shows only while
+    the list is empty, so with a census row on screen the «Нет событий в игре»
+    caption must be nowhere in the island, and the statistics line reads the
+    counts the sections show."""
+    widget = WorldSnapshotWidget()
+    widget.resize(760, 520)
+    qtbot.addWidget(widget)
+    widget.show()
+    assert "Выберите дату и нажмите «Показать»" in _island_texts(widget)
+
+    widget.populate([], None, {}, {"location": [_entity(20, "Тестовая локация")]})
+    list_view = find_item(widget.quick, "snapshotList")
+    assert int(list_view.property("count")) == 2  # the section header + the row
+    entity_rows = island_rows(widget.quick, "snapshotEntityRow")
+    assert [row.property("entityType") for row in entity_rows] == ["location"]
+    assert entity_rows[0].property("displayText") == "Тестовая локация"
+    texts = _island_texts(widget)
+    assert not [text for text in texts if "Нет событий" in text]
+    assert not [text for text in texts if "нет активных событий" in text]
+    stats = find_item(widget.quick, "snapshotStats")
+    assert stats.property("visible") is True
+    assert "Событий: 0" in stats.property("text")
+    assert "Локаций: 1" in stats.property("text")
+
+
+def test_an_empty_world_leaves_the_hint_alone(qtbot):
+    """The other half of PR-019: a game with neither entities nor events keeps
+    the honest empty state — the hint carries the cause, the list stays empty."""
+    widget = WorldSnapshotWidget()
+    widget.resize(760, 520)
+    qtbot.addWidget(widget)
+    widget.populate(
+        [],
+        None,
+        {},
+        {"location": [], "organization": [], "character": [], "item": []},
+    )
+    widget.show()
+
+    assert int(find_item(widget.quick, "snapshotList").property("count")) == 0
+    assert "Нет событий в игре" in _island_texts(widget)
+    assert find_item(widget.quick, "snapshotStats").property("visible") is False
+
+
 def test_date_popup_and_deferred_release(qtbot, monkeypatch):
     widget = WorldSnapshotWidget()
     qtbot.addWidget(widget)

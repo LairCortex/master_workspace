@@ -8,9 +8,11 @@ through the connector's one ``open_sheet`` path, so (spec «Настройка
 * the header names the sheet with the entry text «Настройка LLM…», the one
   value it also carries as windowTitle, and the sheet opens at the design Д6
   default 640×560 (placement is never remembered);
-* the sheet is WindowModal over the main window while open — the main layer
-  stays unavailable until the close (the offscreen face of ``open()``; the
-  menu-gate half of the same rule lives in the window-side gate tests);
+* the sheet is an attached native sheet (Qt.Sheet, NonModal at Qt level —
+  PR-012) over the main window while open: the main layer stays unavailable
+  until the close (its offscreen face is the window's content gate, not Qt
+  modality; the menu-gate half of the same rule lives in the window-side gate
+  tests);
 * the header «Закрыть» and Escape leave the sheet through the same cancel
   outcome, and the stack releases on either route;
 * the running-save guard survives the container move (spec «на время
@@ -79,15 +81,17 @@ def _close_button(sheet: LlmSetupDialog) -> QPushButton:
 def test_header_names_the_setup_and_the_sheet_defaults_to_640x560(qtbot, stack):
     """Spec «Настройка открывается листом» + design Д6: the header names the
     sheet with exactly the windowTitle (the entry text), the sheet opens at
-    its default 640×560, WindowModal over the main layer, and the stack rises
-    with it."""
+    its default 640×560 as an attached sheet (Qt.Sheet, NonModal at Qt level —
+    PR-012 keeps the native menu exceptions live), and the stack rises with
+    it."""
     _window, _wiring, states = stack
     dlg = _open_sheet(qtbot, stack)
 
     assert dlg.windowTitle() == "Настройка LLM…"
     assert _header_title(dlg) == "Настройка LLM…"
     assert dlg.size() == QSize(640, 560)
-    assert dlg.windowModality() == Qt.WindowModality.WindowModal
+    assert dlg.windowFlags() & Qt.WindowType.Sheet
+    assert dlg.windowModality() == Qt.WindowModality.NonModal
     assert dlg.isVisible()
     assert states == [True]
 

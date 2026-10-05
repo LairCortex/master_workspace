@@ -29,6 +29,14 @@ qasync он печалится ошибкой вида «Cannot enter into task�
 
 QML-контракты этот guard не касаются: ``tests/qml_a11y_scan.py`` сканирует
 исключительно ``*.qml`` и токены ``Accessible.*`` — пересечения логики нет.
+
+PR-010 (первый кусок «среза 3»): стартовый контур ``app/main.py`` закрыт
+отдельной точечной проверкой — внутри сборки окна запуска запрещены и
+``.exec``/``.exec_``, и статические модальные показы ``QMessageBox``
+(``warning``/``information``/``critical``/``question``/``about`` — внутри них
+тот же вложенный exec-цикл, которым статический ``QMessageBox.warning`` убил
+qasync до показа MainWindow).Runtime-половину пина держит
+``tests/test_application_settings_errors.py`` (ловушка на ``app.main.QMessageBox``).
 """
 from __future__ import annotations
 
@@ -283,3 +291,146 @@ def test_unrelated_attrs_are_not_violations():
         "plan.execute()\n"
     )
     assert _scan_source(source, Path("app/presentation/views/x.py")) == []
+
+
+# --------------------------------------------------------------------------
+# PR-010: стартовый контур app/main.py (статическая половина «среза 3»)
+# --------------------------------------------------------------------------
+
+#: функции старта, на которых вложенная модальность убила qasync (PR-010:
+#: статический ``QMessageBox.warning`` внутри сборки окна — и есть регрессия)
+BOOT_CONTOUR_FUNCTIONS = frozenset(
+    {"_build_main_window", "_show_calendar_corruption_warning"}
+)
+#: статические показы QMessageBox — внутри каждого свой вложенный exec-цикл,
+#: поэтому на стартовом контуре они запрещены наравне с ``.exec()``
+BANNED_MSGBOX_STATICS = frozenset(
+    {"warning", "information", "critical", "question", "about"}
+)
+
+
+def _boot_contour_violations_in_tree(
+    tree: ast.AST, path: Path
+) -> list[tuple[Path, int, str]]:
+    """Внутри функций стартового контура — ни ``.exec``/``.exec_``, ни
+    статического модального показа QMessageBox; конструктор + show()/open()
+    легальны (штатный невкладывающий механизм)."""
+    violations: list[tuple[Path, int, str]] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in BOOT_CONTOUR_FUNCTIONS
+        ):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Attribute):
+                continue
+            if inner.attr in BANNED_EXEC_ATTRS:
+                violations.append((
+                    path,
+                    inner.lineno,
+                    f"блокирующий вызов «.{inner.attr}()» на стартовом контуре "
+                    "(PR-010: вложенный цикл событий убивает qasync до показа "
+                    "MainWindow)",
+                ))
+            elif (
+                inner.attr in BANNED_MSGBOX_STATICS
+                and isinstance(inner.value, ast.Name)
+                and inner.value.id == "QMessageBox"
+            ):
+                violations.append((
+                    path,
+                    inner.lineno,
+                    f"статический модальный показ «QMessageBox.{inner.attr}()» "
+                    "на стартовом контуре (PR-010: внутри него вложенный "
+                    "exec-цикл; предупреждение показывается отложенным "
+                    "show() после window.show())",
+                ))
+    return violations
+
+
+def _scan_boot_contour() -> list[tuple[Path, int, str]]:
+    main = REPO_ROOT / "app" / "main.py"
+    return _boot_contour_violations_in_tree(
+        ast.parse(main.read_text(encoding="utf-8")), main
+    )
+
+
+def test_boot_contour_functions_still_live_in_main():
+    """Sanity области скана: защищаемые функции на месте — guard не висит
+    на пустоте после переименования."""
+    names = {
+        node.name
+        for node in ast.walk(
+            ast.parse((REPO_ROOT / "app" / "main.py").read_text(encoding="utf-8"))
+        )
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert BOOT_CONTOUR_FUNCTIONS <= names
+
+
+def test_boot_contour_has_no_modal_shows():
+    """Зелёное дерево: в стартовом контуре app/main.py нет ни exec-подобных
+    показов, ни статических QMessageBox (PR-010 зафиксирован статически)."""
+    violations = _scan_boot_contour()
+    assert not violations, (
+        "модальный показ вернулся на стартовый контур — qasync умирает до "
+        "показа MainWindow (PR-010):\n" + _format_violations(violations)
+    )
+
+
+def test_planted_static_msgbox_warning_on_boot_contour_is_a_violation():
+    """Регрессия PR-010 ловится: статический ``QMessageBox.warning`` внутри
+    ``_build_main_window`` краснеет с файлом и строкой."""
+    source = (
+        "class Application:\n"
+        "    async def _build_main_window(self):\n"
+        "        QMessageBox.warning(None, 't', 'b')\n"
+    )
+    violations = _boot_contour_violations_in_tree(
+        ast.parse(source), Path("app/main.py")
+    )
+    assert len(violations) == 1 and violations[0][1] == 3
+    assert "PR-010" in violations[0][2]
+
+
+def test_planted_exec_on_boot_contour_is_a_violation():
+    source = (
+        "class Application:\n"
+        "    async def _build_main_window(self):\n"
+        "        return self._dialog.exec_()\n"
+    )
+    violations = _boot_contour_violations_in_tree(
+        ast.parse(source), Path("app/main.py")
+    )
+    assert len(violations) == 1 and violations[0][1] == 3
+    assert ".exec_()" in violations[0][2]
+
+
+def test_deferred_warning_show_is_not_a_boot_contour_violation():
+    """Штатный механизм легален: конструктор + ``show()``/``open()`` — не
+    нарушение (иначе зелёное дерево было бы недостижимо)."""
+    source = (
+        "class Application:\n"
+        "    def _show_calendar_corruption_warning(self, body):\n"
+        "        box = QMessageBox(self._window)\n"
+        "        box.setWindowTitle('t')\n"
+        "        box.setText(body)\n"
+        "        box.show()\n"
+    )
+    assert _boot_contour_violations_in_tree(
+        ast.parse(source), Path("app/main.py")
+    ) == []
+
+
+def test_msgbox_static_outside_boot_contour_is_untouched():
+    """Точечность скана: те же статические показы вне стартового контура
+    (экспорт, упоминания) этим guard'ом не гейтятся."""
+    source = (
+        "class Application:\n"
+        "    def _on_export_game(self):\n"
+        "        QMessageBox.information(self._window, 't', 'b')\n"
+    )
+    assert _boot_contour_violations_in_tree(
+        ast.parse(source), Path("app/main.py")
+    ) == []

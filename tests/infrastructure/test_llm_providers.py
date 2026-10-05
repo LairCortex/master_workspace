@@ -296,6 +296,76 @@ async def test_empty_choices_raises():
         await http.close()
 
 
+# PR-023: an HTTP 200 whose answer text is empty is a provider-answer error,
+# not a success: RU LlmError, field never receives "", exactly ONE request
+# (empty is not timeout/network/429/5xx — the retry policy does not cover it).
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", None, "   \n "])
+async def test_empty_content_raises_ru_error_without_retry(content):
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}, "finish_reason": "stop"}]},
+        )
+
+    provider, http = make_provider(handler)
+    try:
+        with pytest.raises(LlmError, match="пустой ответ"):
+            await provider.generate("s", "u")
+    finally:
+        await http.close()
+
+    assert attempts["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_finish_reason_length_with_empty_content_raises_without_retry():
+    """The live PR-023 shape: reasoning ate the budget, HTTP 200, empty content."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
+        )
+
+    provider, http = make_provider(handler)
+    try:
+        with pytest.raises(LlmError, match="пустой ответ"):
+            await provider.generate("s", "u")
+    finally:
+        await http.close()
+
+    assert attempts["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_check_connection_empty_content_raises_ru_error_without_retry():
+    """Same single rule at the provider boundary: one answer = text or error."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+        )
+
+    provider, http = make_provider(handler)
+    try:
+        with pytest.raises(LlmError, match="пустой ответ"):
+            await provider.check_connection()
+    finally:
+        await http.close()
+
+    assert attempts["n"] == 1
+
+
 @pytest.mark.asyncio
 async def test_malformed_200_body_raises_ru_error():
     """A 200 with an unparseable body is a provider answer problem, not a

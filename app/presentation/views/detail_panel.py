@@ -119,7 +119,7 @@ class DetailPanel(IslandDialogMixin, QWidget):
         # Task 2.5: the viewer left exec() — it is a sheet now, built here
         # (this widget holds the entity's pixels) and shown by the connector
         # through the stack (parent chain: the panel never dims, the main
-        # layer is simply covered by the WindowModal sheet).
+        # layer is simply covered by the attached sheet).
         original = load_entity_original(entity)
         preview = load_entity_preview(entity, slot_size=4096)
         viewer = ImageViewerDialog(
