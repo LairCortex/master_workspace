@@ -6,18 +6,18 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
 
 ## Файлы набора
 
-Итог: **46 спецификаций, 1158 кейсов, 117 зафиксированных пробелов, 131 строка «Живая проверка»**
+Итог: **46 спецификаций, 1161 кейс, 118 зафиксированных пробелов, 133 строки «Живая проверка»**
 (процедуры живого подтверждения, перенесённые из 33 аудитов `docs/qa/*.md`).
 
 | Файл | Спецификации (аббревиатура ID) | Кейсов | Пробелов |
 |---|---|---|---|
-| `01-launcher-archive-import.md` | game-launcher (LNCH), game-archive (GARC), xlsx-import (XLSX), document-viewer (DOCV) | 92 | 10 |
+| `01-launcher-archive-import.md` | game-launcher (LNCH), game-archive (GARC), xlsx-import (XLSX), document-viewer (DOCV) | 93 | 10 |
 | `02-calendar.md` | game-calendar-core (CALC), game-calendar-grid (CALG), game-calendar-settings (CALS), calendar-wizard (CALW), date-eras (ERAS), current-date (NOWD) | 157 | 7 |
 | `03-events-timeline.md` | event-timeline (TLNE), event-subevents (SUBE), event-time (EVTM), event-types (EVTP) | 94 | 7 |
-| `04-main-window-sheets.md` | main-window (MAIN), modal-sheets (SHET), ui-layout-grid (GRID), world-snapshot (SNAP) | 77 | 8 |
+| `04-main-window-sheets.md` | main-window (MAIN), modal-sheets (SHET), ui-layout-grid (GRID), world-snapshot (SNAP) | 78 | 8 |
 | `05-entity-preview-pins.md` | entity-preview (PREV), preview-pins (PINS) | 43 | 4 |
 | `06-entities-search-mentions.md` | entity-addition (EADD), entity-generation (EGEN), related-entity-creation (RELC), mentions (MENT), global-search (SRCH) | 79 | 13 |
-| `07-character-sheets.md` | character-sheet-editor (CHED), -host (CHST), -instance (CHIN), -pdf (CHPD), -preset (CHPR), -storage (CHSR) | 222 | 15 |
+| `07-character-sheets.md` | character-sheet-editor (CHED), -host (CHST), -instance (CHIN), -pdf (CHPD), -preset (CHPR), -storage (CHSR) | 223 | 16 |
 | `08-llm.md` | llm-configuration (LLMC), llm-remote-provider (LLMP) | 40 | 10 |
 | `09-images.md` | image-storage (IMGS), image-display (IMGD) | 55 | 12 |
 | `10-theme-shell-components-lang.md` | ui-theme (THME), qml-shell (SHEL), qml-components (CMPS), ui-widget-catalog (WCAT), interface-language (LANG) | 189 | 15 |
