@@ -1,8 +1,8 @@
 """E2E boot stub: full Application start with an injected mock HTTP client.
 
-Verifies the DI seam (task 1.1) on the boot fixtures (task 1.2): one LLM
-request answered by the canned ``httpx.MockTransport`` response — no real
-network, all paths in tmp.
+Verifies the DI seam (task 1.1) on the boot fixtures (task 1.2): an LLM
+generation (plus its one-shot budget probe) answered by the canned
+``httpx.MockTransport`` response — no real network, all paths in tmp.
 """
 from __future__ import annotations
 
@@ -27,9 +27,10 @@ async def test_boot_with_injected_mock_client(app, llm_client, tmp_llm_config):
     )
     assert finished == [("event.name", "Сгенерированный текст из mock-LLM")]
 
-    # The LLM request went through the injected emulated client
-    assert len(llm_client.requests) == 1
-    assert llm_client.requests[0].url.path.endswith("/chat/completions")
+    # The LLM requests went through the injected emulated client: the
+    # one-shot budget probe of the fresh provider, then the generation.
+    assert len(llm_client.requests) == 2
+    assert all(r.url.path.endswith("/chat/completions") for r in llm_client.requests)
     # Config file stayed inside the tmp path
     assert application._config_manager.config_file == tmp_llm_config
 

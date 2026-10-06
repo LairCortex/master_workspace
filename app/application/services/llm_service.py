@@ -43,7 +43,12 @@ class GenerationRequest:
     field_prompt: str
     field_label: str
     current_text: str
-    max_tokens: int = 512
+    #: None = the provider decides its largest safe output budget.
+    max_tokens: int | None = None
+    #: A single-field generation lets the model think (quality over
+    #: speed); the parallel whole-card wave runs without thinking so the
+    #: reasoning budget cannot eat the answer.
+    with_thinking: bool = False
     #: Owner of the request (the host dialog). Used as an identity key in
     #: the active-requests registry — two dialogs of the same entity type
     #: can be open at once (nested cards), so scope is never the field_id.
@@ -90,7 +95,8 @@ class LlmService:
         field_prompt: str,
         field_label: str,
         current_text: str,
-        max_tokens: int = 512,
+        max_tokens: int | None = None,
+        with_thinking: bool = False,
         owner: Any = None,
     ) -> str:
         request = GenerationRequest(
@@ -101,6 +107,7 @@ class LlmService:
             field_label=field_label,
             current_text=current_text,
             max_tokens=max_tokens,
+            with_thinking=with_thinking,
             owner=owner,
         )
         task: asyncio.Task[str] = asyncio.ensure_future(self._run(request))
@@ -180,6 +187,7 @@ class LlmService:
                 user_prompt=user_prompt,
                 max_tokens=request.max_tokens,
                 on_phase=record.set_phase,
+                with_thinking=request.with_thinking,
             )
         finally:
             self._remove(request.owner, request.field_id, record)

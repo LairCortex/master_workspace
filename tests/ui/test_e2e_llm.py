@@ -16,6 +16,10 @@ from PySide6.QtWidgets import QDialog
 from app.application.services.llm_status import LlmStatus
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.config import LlmConfig
+from app.infrastructure.llm.remote_provider import (
+    OUTPUT_BUDGET_SHARE,
+    PROBE_MAX_OUTPUT_TOKENS,
+)
 from app.main import Application
 from app.presentation.viewmodels.llm_viewmodel import _default_field_prompts
 from app.presentation.viewmodels.event_dialog_island_view_model import (
@@ -72,8 +76,10 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     assert find_item(wizard.quick, "checkButton").property("enabled")
     _click(wizard, "checkButton")
     await wait_for(lambda: wizard.vm.checkText == "Соединение установлено")
-    check_payload = json.loads(llm_client.requests[0].content)
-    assert check_payload["max_tokens"] == 1
+    # The check first asks the server its output budget (oversized probe),
+    # then sends the one-token test.
+    check_payloads = [json.loads(r.content)["max_tokens"] for r in llm_client.requests]
+    assert check_payloads == [PROBE_MAX_OUTPUT_TOKENS, 1]
 
     # ── World prompt + save (dialog accepts only after the async save is done)
     _click(wizard, "nextButton")  # → world prompt page
@@ -107,8 +113,12 @@ async def test_llm_wizard_check_connection_and_field_generation(app, llm_client,
     generation_payload = json.loads(llm_client.requests[-1].content)
     assert generation_payload["model"] == MODEL
     assert WORLD_PROMPT in generation_payload["messages"][0]["content"]
-    # All requests went through the single emulated client
-    assert len(llm_client.requests) == 2
+    # A single field lets the model think and asks for the learned budget.
+    assert generation_payload["chat_template_kwargs"] == {"enable_thinking": True}
+    assert generation_payload["max_tokens"] == int(PROBE_MAX_OUTPUT_TOKENS * OUTPUT_BUDGET_SHARE)
+    # All requests went through the single emulated client: wizard check
+    # (probe + test) and the app provider (its own probe + the answer).
+    assert len(llm_client.requests) == 4
 
 
 
@@ -298,6 +308,11 @@ async def app_empty_llm(qapp, tmp_games_dir, tmp_llm_config, tmp_path):
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["max_tokens"] == PROBE_MAX_OUTPUT_TOKENS:
+            # The budget probe is not a generation: answered, never counted.
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "ОК"}}]}
+            )
         calls["n"] += 1
         return httpx.Response(
             200,
@@ -379,6 +394,12 @@ async def slow_llm_client():
         import re as _re
 
         payload = json.loads(request.content)
+        if payload["max_tokens"] == PROBE_MAX_OUTPUT_TOKENS:
+            # The budget probe is answered out of state: it is not one of
+            # the generations whose counts, timings and delays are pinned.
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "ОК"}}]}
+            )
         user_prompt = payload["messages"][1]["content"]
         m = _re.search(r"поле «(.+?)»", user_prompt)
         label = m.group(1) if m else "?"
@@ -741,7 +762,7 @@ class _GateProvider:
         self.gate = asyncio.Event()
         self.calls = 0
 
-    async def generate(self, system_prompt, user_prompt, max_tokens=512, on_phase=None):
+    async def generate(self, system_prompt, user_prompt, max_tokens=None, on_phase=None, with_thinking=False):
         # The result is the entry-time call number: with a released gate the
         # answer is stable per request (done-N for the N-th started request).
         call_no = self.calls + 1

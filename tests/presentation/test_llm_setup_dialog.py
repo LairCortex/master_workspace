@@ -8,6 +8,7 @@ its provider factory (nri-0011, design D2), the save lifecycle stays facade.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +29,10 @@ from app.application.services.llm_service import LlmService
 from app.infrastructure.http import AppHttpClient
 from app.infrastructure.llm.base_provider import BaseLlmProvider
 from app.infrastructure.llm.config import LlmConfig, LlmConfigManager
-from app.infrastructure.llm.remote_provider import RemoteLlmProvider
+from app.infrastructure.llm.remote_provider import (
+    PROBE_MAX_OUTPUT_TOKENS,
+    RemoteLlmProvider,
+)
 from app.presentation.qml.engine import qml_engine
 from app.presentation.views import llm_setup_dialog as dialog_module
 from app.presentation.views.llm_setup_dialog import LlmSetupDialog
@@ -183,6 +187,8 @@ async def test_check_blocked_while_running(make_dialog):
     holder: dict = {}
 
     def capturing(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["max_tokens"] == PROBE_MAX_OUTPUT_TOKENS:
+            return _ok_response(request)  # the budget probe carries no state to read
         states.append(holder["vm"].checkEnabled)
         return _ok_response(request)
 

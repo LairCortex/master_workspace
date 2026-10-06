@@ -157,13 +157,14 @@ class AiGenerationController:
             asyncio.ensure_future(_do())
 
         def _target(btn, field_id: str, field_name: str, field_label: str,
-                    current_text: str) -> GenerationTarget:
+                    current_text: str, with_thinking: bool = False) -> GenerationTarget:
             return GenerationTarget(
                 field_id=field_id,
                 entity_type=btn.entity_type,
                 field_name=field_name,
                 field_label=field_label,
                 current_text=current_text,
+                with_thinking=with_thinking,
                 owner=dialog,
             )
 
@@ -222,7 +223,9 @@ class AiGenerationController:
             _sync_controls()
             for field_id, (btn, fn, fl) in fields.items():
                 # Existing field text is part of the prompt; the result
-                # overrides it (safe override per spec).
+                # overrides it (safe override per spec). The wave runs
+                # without thinking: five budget-hungry reasoners would eat
+                # the answers again (the 2026-10-06 incident).
                 _launch(_target(btn, field_id, fn, fl, btn.current_text))
 
         for btn in dialog.get_ai_buttons():
@@ -246,7 +249,7 @@ class AiGenerationController:
                 _btn.set_generating(True)
                 state["singles"].add(field_id)
                 _sync_controls()
-                _launch(_target(_btn, field_id, fn, fl, ct))
+                _launch(_target(_btn, field_id, fn, fl, ct, with_thinking=True))
 
             btn.generate_requested.connect(_on_generate)
 

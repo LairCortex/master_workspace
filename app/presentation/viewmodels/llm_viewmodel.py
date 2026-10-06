@@ -32,6 +32,9 @@ class GenerationTarget:
     field_name: str
     field_label: str
     current_text: str
+    #: Single-field press: the model may think (see BaseLlmProvider.generate);
+    #: the whole-card wave leaves this False — fast, budget-safe answers.
+    with_thinking: bool = False
     owner: Any = None  # host dialog (delivery/registration scoping)
 
 
@@ -163,6 +166,7 @@ class LlmViewModel(QObject):
                 field_prompt=field_prompt,
                 field_label=target.field_label,
                 current_text=target.current_text,
+                with_thinking=target.with_thinking,
                 owner=target.owner,
             )
             log.info("Generation finished: %s (%d chars)", target.field_id, len(result))

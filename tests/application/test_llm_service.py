@@ -13,7 +13,7 @@ from app.infrastructure.llm.base_provider import BaseLlmProvider
 class FakeProvider(BaseLlmProvider):
     def __init__(self):
         self._ready = True
-        self.calls: list[tuple[str, str, int]] = []
+        self.calls: list[tuple[str, str, int | None, bool]] = []
 
     def is_ready(self) -> bool:
         return self._ready
@@ -24,8 +24,8 @@ class FakeProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         self._ready = False
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int = 512, on_phase=None) -> str:
-        self.calls.append((system_prompt, user_prompt, max_tokens))
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
+        self.calls.append((system_prompt, user_prompt, max_tokens, with_thinking))
         return f"result for: {user_prompt[:20]}"
 
 
@@ -46,7 +46,7 @@ class SlowProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int = 512, on_phase=None) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
         loop = asyncio.get_running_loop()
         marker = re.search(r"MARKER(\d+)", user_prompt)
         idx = int(marker.group(1)) if marker else 0
@@ -66,7 +66,7 @@ class ErrorProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt, user_prompt, max_tokens=512, on_phase=None):
+    async def generate(self, system_prompt, user_prompt, max_tokens=None, on_phase=None, with_thinking=False):
         raise RuntimeError("generation failed")
 
 
@@ -150,7 +150,7 @@ async def test_generate_for_field_calls_provider(service, provider):
         current_text="",
     )
     assert len(provider.calls) == 1
-    sys_p, usr_p, _ = provider.calls[0]
+    sys_p, usr_p, _, _ = provider.calls[0]
     assert "Fantasy" in sys_p
     assert "Имя организации" in usr_p
     assert "result for:" in result
@@ -170,6 +170,23 @@ async def test_generate_for_field_returns_provider_result():
     )
     assert result == f"result for: {provider.calls[0][1][:20]}"
     assert result != provider.calls[0][1]  # not an echo of the input prompt
+
+
+async def test_generate_for_field_thinking_and_budget_reach_provider():
+    """Single-field semantics ride the whole way down to the provider:
+    with_thinking asks the model to reason; max_tokens=None defers the
+    budget to the provider; the wave default keeps both historical."""
+    provider = FakeProvider()
+    service = LlmService(provider)
+
+    await service.generate_for_field("ch.backstory", "character", "w", "", "Предыстория", "",
+                                     with_thinking=True)
+    await service.generate_for_field("ch.name", "character", "w", "", "Название", "")
+
+    assert provider.calls[0][2] is None
+    assert provider.calls[0][3] is True
+    assert provider.calls[1][2] is None
+    assert provider.calls[1][3] is False
 
 
 async def test_generate_for_field_runs_requests_in_parallel():
@@ -221,7 +238,7 @@ class HangingProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int = 512, on_phase=None) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
         marker = re.search(r"MARKER(\d+)", user_prompt)
         idx = int(marker.group(1)) if marker else 0
         self.reached.append(str(idx))
@@ -249,7 +266,7 @@ class PhasedHangProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens: int = 512, on_phase=None) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
         phase = self.phases.pop(0) if self.phases else "in_flight"
         if on_phase is not None:
             on_phase(phase)

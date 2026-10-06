@@ -52,11 +52,13 @@ def vm(mock_service, config_manager, make_provider):
 
 
 def target(field_id="event.name", entity_type="event", field_name="name",
-           field_label="Название", current_text="", owner=None) -> GenerationTarget:
+           field_label="Название", current_text="", owner=None,
+           with_thinking=False) -> GenerationTarget:
     """One generation request as the controller hands it to the ViewModel."""
     return GenerationTarget(
         field_id=field_id, entity_type=entity_type, field_name=field_name,
-        field_label=field_label, current_text=current_text, owner=owner,
+        field_label=field_label, current_text=current_text,
+        with_thinking=with_thinking, owner=owner,
     )
 
 
@@ -285,3 +287,15 @@ async def test_request_generation_passes_owner_to_service(vm, mock_service):
 
     kwargs = mock_service.generate_for_field.await_args.kwargs
     assert kwargs["owner"] is owner
+    # The wave posture is the target default: no thinking.
+    assert kwargs["with_thinking"] is False
+
+
+async def test_request_generation_forwards_thinking_mode(vm, mock_service):
+    """The single-field press's thinking wish reaches the service."""
+    vm.apply_config(LlmConfig("http://x", "m"))
+
+    await vm.request_generation(target(with_thinking=True))
+
+    kwargs = mock_service.generate_for_field.await_args.kwargs
+    assert kwargs["with_thinking"] is True
