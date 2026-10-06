@@ -324,14 +324,16 @@ Rectangle {
                             spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
                             // The identity band (live fix 2026-09-27, the
-                            // reader's sketch): the picture seats top-left,
-                            // the short lines (name, rating, dates, age) read
-                            // to its right, and only below them do the long
+                            // reader's sketch): the picture — a quarter of
+                            // the band wide (share cut 2026-10-05) — seats
+                            // top-left, the short lines (name, rating,
+                            // dates, age) read on the rest of the band to
+                            // its right, and only below them do the long
                             // text sections, the music and the relation
-                            // blocks run full width. The rule is the top-slice
-                            // answer to short panes (checkpoint п.6): the
-                            // name/rating/dates/age are what stays visible
-                            // when 3–4 panes share the column.
+                            // blocks run full width. The rule is the
+                            // top-slice answer to short panes (checkpoint
+                            // п.6): the name/rating/dates/age are what stays
+                            // visible when 3–4 panes share the column.
                             RowLayout {
                                 id: previewIdentityRow
                                 objectName: "previewIdentityRow"
@@ -343,14 +345,16 @@ Rectangle {
                                 // through the shared image_utils pipeline; a
                                 // null pixmap arrives here as an empty
                                 // imageSource and the placeholder paints. It
-                                // takes exactly half of the band and scales
+                                // takes a quarter of the band and scales
                                 // with the column (the reader's sketch, live
-                                // fix 2026-09-28), the portrait 4:3 proportion
-                                // keeping the tall look as the width grows.
+                                // fix 2026-09-28; the share cut from half to
+                                // a quarter on 2026-10-05), the portrait 4:3
+                                // proportion keeping the tall look as the
+                                // width grows.
                                 Item {
                                     id: previewImageSlot
                                     objectName: "previewImageBlock"
-                                    Layout.preferredWidth: Math.round(previewIdentityRow.width / 2)
+                                    Layout.preferredWidth: Math.round(previewIdentityRow.width / 4)
                                     Layout.preferredHeight: Math.round(previewImageSlot.width * 4 / 3)
                                     Layout.alignment: Qt.AlignTop
 
@@ -385,7 +389,13 @@ Rectangle {
                                     // glyph above the hint (user request
                                     // 2026-09-30); the HintText keeps the
                                     // placeholder's objectName and its caption
-                                    // — the icon is decoration.
+                                    // — the icon is decoration. Since the
+                                    // quarter-slot fix (2026-10-05) the
+                                    // caption is width-gated: it paints only
+                                    // while the whole phrase fits the slot, a
+                                    // narrow slot shows the glyph alone, so
+                                    // the hint never reaches into the fields
+                                    // column.
                                     Column {
                                         anchors.centerIn: parent
                                         spacing: Tokens.px(root.islandTokens, "space.xs", 4)
@@ -402,6 +412,7 @@ Rectangle {
                                             anchors.horizontalCenter: parent.horizontalCenter
                                             text: "Нет изображения"
                                             italic: true
+                                            visible: implicitWidth <= previewImageSlot.width
                                         }
                                     }
 

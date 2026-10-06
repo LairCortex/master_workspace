@@ -56,6 +56,10 @@ def test_image_viewer_vm_source_key():
 def test_doc_viewer_vm_text():
     vm = DocViewerViewModel("hello")
     assert vm.text == "hello"
+    # The island shows the rendered face: a plain paragraph, not raw text.
+    assert "<p" in vm.html and "hello" in vm.html
     vm.text = "hello"
-    vm.text = "world"
-    assert vm.text == "world"
+    vm.text = "# world"
+    assert vm.text == "# world"
+    # A new source re-renders the html half — headings print as headings.
+    assert "<h1" in vm.html

@@ -218,28 +218,8 @@ class TestOnRethemeIsWired:
         assert bar._palette._runtime is runtime
 
 
-# ── doc viewer: chrome-attached mono comes from the QSS rule, not setFont ──
-
-class TestDocViewerMonoLive:
-    def test_attached_mono_follows_token(self, tmp_path, qtbot):
-        from app.presentation.views.doc_viewer_dialog import DocViewerDialog
-        from tests.presentation.qml_helpers import find_item
-
-        runtime = _runtime(
-            tmp_path,
-            **{"font.family.mono": {
-                "light": "Monaco, monospace", "dark": "Menlo, monospace",
-            }},
-        )
-        dlg = DocViewerDialog("t", tmp_path / "missing.md", theme=runtime)
-        qtbot.addWidget(dlg)
-        dlg.show()
-        qtbot.waitExposed(dlg)
-        area = find_item(dlg.quick, "docText")
-        assert "Menlo" in area.property("font").family()
-        assert runtime.toggle() is True
-
-        def monaco() -> bool:
-            return "Monaco" in find_item(dlg.quick, "docText").property("font").family()
-
-        qtbot.waitUntil(monaco, timeout=5000)
+# The doc-viewer mono pin (TestDocViewerMonoLive) was retired together with
+# the raw-markup view: the formatted-rendering pass replaced the chrome mono
+# TextArea with a RichText label whose typography comes from the printed
+# document itself. The code-run monospace lives in the generated HTML and is
+# pinned on the converter in tests/presentation/test_doc_html.py.

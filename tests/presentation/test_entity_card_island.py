@@ -56,6 +56,36 @@ def test_related_tabs_carry_the_one_map_glyphs(qtbot):
         assert len(glyph_items) == 1 and glyph_items[0].property("visible") is True
 
 
+def test_related_create_button_follows_the_sections_can_create_flag(qtbot):
+    """Design claim 2026-10-06: a shown button must work. The related-create
+    popup card (built with ``related_create_enabled=False``) hides «Создать
+    нового» in every section — the hidden item reports visible False and
+    leaves the accessibility tree; the working «Привязать существующего» /
+    «Отвязать» pair stays on the current tab. A plain card keeps the trio
+    exactly as it was (default True)."""
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    popup = EntityCardDialog(None, "character", related_create_enabled=False)
+    qtbot.addWidget(popup)
+
+    assert dialog.vm.sections and popup.vm.sections
+    assert all(state.canCreate for state in dialog.vm.sections.values())
+    assert not any(state.canCreate for state in popup.vm.sections.values())
+
+    # The current tab is the first related ref (StackLayout hides the rest);
+    # the button item survives the walk but reports its own visible False.
+    first_attr = entity_registry.related_refs_for_key("character")[0].attr
+    create = find_item(dialog.quick, f"entityRelated_{first_attr}CreateButton")
+    assert bool(create.property("visible")) is True
+    for attr in popup.vm.sections:
+        hidden = find_items(popup.quick, f"entityRelated_{attr}CreateButton")
+        assert hidden, f"no create button under {attr}"
+        assert all(bool(i.property("visible")) is False for i in hidden)
+    for suffix in ("LinkButton", "UnlinkButton"):
+        pair = find_item(popup.quick, f"entityRelated_{first_attr}{suffix}")
+        assert bool(pair.property("visible")) is True
+
+
 @pytest.mark.parametrize("entity_type", tuple(_FIELD_SPECS))
 def test_one_root_builds_exact_python_configured_composition(qtbot, entity_type):
     dialog = EntityCardDialog(None, entity_type)

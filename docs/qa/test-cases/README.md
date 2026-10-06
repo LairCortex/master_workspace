@@ -6,20 +6,21 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
 
 ## Файлы набора
 
-Итог: **46 спецификаций, 1161 кейс, 118 зафиксированных пробелов, 133 строки «Живая проверка»**
-(процедуры живого подтверждения, перенесённые из 33 аудитов `docs/qa/*.md`).
+Итог: **46 спецификации, 1167 кейсов, 118 зафиксированных пробелов, 133 строки «Живая проверка»**
+(процедуры живого подтверждения, перенесённые из 33 аудитов `docs/qa/*.md`; +TC-IMGD-013,
++TC-CALW-034, +TC-CALW-035, +TC-CALW-036, +TC-CALW-037 и +TC-RELC-019 от 2026-10-06).
 
 | Файл | Спецификации (аббревиатура ID) | Кейсов | Пробелов |
 |---|---|---|---|
 | `01-launcher-archive-import.md` | game-launcher (LNCH), game-archive (GARC), xlsx-import (XLSX), document-viewer (DOCV) | 93 | 10 |
-| `02-calendar.md` | game-calendar-core (CALC), game-calendar-grid (CALG), game-calendar-settings (CALS), calendar-wizard (CALW), date-eras (ERAS), current-date (NOWD) | 157 | 7 |
+| `02-calendar.md` | game-calendar-core (CALC), game-calendar-grid (CALG), game-calendar-settings (CALS), calendar-wizard (CALW), date-eras (ERAS), current-date (NOWD) | 161 | 7 |
 | `03-events-timeline.md` | event-timeline (TLNE), event-subevents (SUBE), event-time (EVTM), event-types (EVTP) | 94 | 7 |
 | `04-main-window-sheets.md` | main-window (MAIN), modal-sheets (SHET), ui-layout-grid (GRID), world-snapshot (SNAP) | 78 | 8 |
 | `05-entity-preview-pins.md` | entity-preview (PREV), preview-pins (PINS) | 43 | 4 |
-| `06-entities-search-mentions.md` | entity-addition (EADD), entity-generation (EGEN), related-entity-creation (RELC), mentions (MENT), global-search (SRCH) | 79 | 13 |
+| `06-entities-search-mentions.md` | entity-addition (EADD), entity-generation (EGEN), related-entity-creation (RELC), mentions (MENT), global-search (SRCH) | 80 | 13 |
 | `07-character-sheets.md` | character-sheet-editor (CHED), -host (CHST), -instance (CHIN), -pdf (CHPD), -preset (CHPR), -storage (CHSR) | 223 | 16 |
 | `08-llm.md` | llm-configuration (LLMC), llm-remote-provider (LLMP) | 40 | 10 |
-| `09-images.md` | image-storage (IMGS), image-display (IMGD) | 55 | 12 |
+| `09-images.md` | image-storage (IMGS), image-display (IMGD) | 56 | 12 |
 | `10-theme-shell-components-lang.md` | ui-theme (THME), qml-shell (SHEL), qml-components (CMPS), ui-widget-catalog (WCAT), interface-language (LANG) | 189 | 15 |
 | `11-accessibility.md` | qml-accessibility (A11Y) | 35 | 7 |
 | `12-app-system.md` | app-logging (LOGG), app-version (VERS), save-error-reporting (SAVE), architecture-integrity (ARIN), ui-testing (UITT) | 75 | 9 |
@@ -51,6 +52,12 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
   строками «Живая проверка».
 - **Удалено как лишнее (2026-10-03):** `assets/2026-09-28-entity-preview-typed-band/`
   — единственный объект без единой ссылки (откатывается через git).
+- **Удалено как лишнее (2026-10-06):** отчёты `2026-10-06-calendar-sheet-height.md` и
+  `2026-10-06-calendar-sheet-width.md` — компактность листа мастера календаря проверена
+  живьём и закрыта; вечное (нормы, оффскрин-пины, живые замеры 1000×668, приёмка «нет полос»,
+  возобновление шага/черновика) перенесено в TC-CALW-034…037. Из ~33 кадров
+  `references/` эталонными оставлены ровно два, на которые есть ссылка в TC-CALW-037:
+  `2026-10-06-calendar-sheet-refix-2560.png` и `2026-10-06-calendar-sheet-refix-1280-right-strip.png`.
 - Особый случай: `2026-09-29-checkbox-activation-live.md` без прямых ссылок, но это
   доказательная база «live-аудита 2026-09-29 F2» из AGENTS.md — оставлен.
 - **Архивная сводка:** отчёты и ассеты удалены 2026-10-03, сохранены только `references/`

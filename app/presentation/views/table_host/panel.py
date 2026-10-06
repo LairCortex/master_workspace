@@ -19,8 +19,8 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 import segno
-from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QEvent, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -32,11 +32,15 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QStackedLayout,
+    QStyle,
+    QStyleOptionButton,
     QVBoxLayout,
     QWidget,
 )
 
+from app.presentation.theme import get_default_theme
 from app.presentation.theme.catalog import set_role
+from app.presentation.theme.compiler import token_rgb
 from app.application.services.table_host_service import (
     EmptySeatingError,
     PortBusyError,
@@ -44,6 +48,7 @@ from app.application.services.table_host_service import (
 )
 from app.infrastructure.table_host.http import DEFAULT_PORT
 from app.infrastructure.table_host.lan import local_ipv4_addresses
+from app.presentation.utils.clipboard_utils import copy_pixmap, copy_text
 from app.presentation.views.lucide_icons import (
     ACCENT_INK_TOKEN_KEY,
     lucide_icon,
@@ -59,11 +64,116 @@ def qr_pixmap(url: str, scale: int = 4) -> QPixmap:
     return pix
 
 
+#: Address prefixes of virtual adapters the host enumeration keeps reporting
+#: although they are almost always dead for LAN guests (macOS's vmnet shared
+#: network lives in 192.168.64.0/24, user request 2026-10-05).  Such an
+#: address is neither shown nor encoded into the QR.  The filter lives HERE,
+#: not in lan.py: the panel's tests substitute the whole ``list_ipv4``, so
+#: the desk's offer is the surface that must never carry a virtual address.
+VIRTUAL_SUBNET_PREFIXES: tuple[str, ...] = ("192.168.64.",)
+
+
 def host_urls(port: int, ipv4: Sequence[str]) -> list[str]:
-    non_loop = [ip for ip in ipv4 if not ip.startswith("127.")]
+    non_loop = [
+        ip
+        for ip in ipv4
+        if not ip.startswith("127.")
+        and not ip.startswith(VIRTUAL_SUBNET_PREFIXES)
+    ]
     urls = [f"http://{ip}:{port}/" for ip in non_loop]
     urls.append(f"http://127.0.0.1:{port}/")
     return urls
+
+
+#: The ink of the seat tick: the same caption ink the accent fill is read
+#: against (``color.accent.fg``, the ink the QSS checked-indicator pairs with
+#: the accent background).
+SEAT_TICK_TOKEN_KEY = "color.accent.fg"
+
+#: The checkmark legs of the skinned state, one ``(x, y, length, angle)`` per
+#: leg in the indicator's fractions — the geometry of the QML library's tick
+#: (``ThemeCheckBox.qml`` ``tickLegs``): a short leg running down-right into
+#: the elbow and a long leg leaving it up-right, both hanging off their top-
+#: left corner.  The QML measures them against the 16 px box, so every number
+#: scales with the actual indicator width.
+_SEAT_TICK_LEGS: tuple[tuple[float, float, float, float], ...] = (
+    (0.18, 0.48, 0.24, 45.0),
+    (0.34, 0.52, 0.44, -45.0),
+)
+_SEAT_TICK_LEG_PX = 2.0  # leg thickness at the 16 px box (geometry, no token)
+_SEAT_TICK_BOX_PX = 16.0  # the width the QML fractions were measured against
+
+
+class TableHostSeatCheck(QCheckBox):
+    """A seating row's flag with a visible checkmark (STYLE-FACING, see
+    :class:`GameCalendarEraCheck` for the naming contract's precedent).
+
+    Qt QSS draws no tick without bitmap assets, so the compiled sheet gives
+    the checked state only the solid accent fill (NRI-0018 Д8) — the desk's
+    seating rows therefore ask for MORE than QSS can paint: the user must see
+    a tick, not a filled square.  The tick is the widget's own QPainter
+    content in :meth:`paintEvent` — two legs of ``color.accent.fg`` over the
+    accent fill, the very geometry the QML ``ThemeCheckBox`` draws its
+    ``tickLegs`` with; the ink travels the canonical token route (precedent
+    ``lucide_icons._ink_for``: the runtime's tokens through ``token_rgb``,
+    degrading to the named black the same way, never an invented color).
+
+    The named class is the styling handle for the sheet rule that keeps the
+    indicator's frame/fill from tokens (``compile_qss``); the accessibility
+    face is stock ``QCheckBox`` untouched (CheckBox role, Press/Toggle, Tab +
+    Space — the PR-022 contract).  Off-skin (D7) nothing is drawn on top of
+    ``super()`` and the native OS indicator — native tick included — stands
+    (ui-widget-catalog «Off-skin не ломается»).
+    """
+
+    def paintEvent(self, event) -> None:  # noqa: N802 — Qt API
+        super().paintEvent(event)
+        if not self.isChecked():
+            return
+        runtime = get_default_theme()
+        if runtime.tokens is None:
+            # Off-skin: super() just painted the native indicator with its
+            # native tick — a token-colored leg painted over it would be the
+            # invented color D7 forbids.
+            return
+        rgb = token_rgb(runtime.tokens, runtime.theme, SEAT_TICK_TOKEN_KEY)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        # Qt 6.10's PySide bindings do not expose QStyle::CC_CheckBox /
+        # SC_CheckBoxIndicator (the enums ship truncated), so the indicator's
+        # box is reconstructed the way the sheet draws it: PM_IndicatorWidth/
+        # Height answer the QSS rule's full indicator geometry (16 px + the
+        # 1 px border), and ``subcontrol-position: left center`` lands it at
+        # the contents rect's left edge, vertically centred.
+        style = self.style()
+        width = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorWidth, option, self)
+        height = style.pixelMetric(QStyle.PixelMetric.PM_IndicatorHeight, option, self)
+        area = self.contentsRect()
+        indicator = QRect(
+            area.left(),
+            area.top() + (area.height() - height) // 2,
+            width,
+            height,
+        )
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(
+            QColor(*rgb) if rgb is not None else QColor(Qt.GlobalColor.black)
+        )
+        leg_height = _SEAT_TICK_LEG_PX * indicator.width() / _SEAT_TICK_BOX_PX
+        for x_ratio, y_ratio, length_ratio, angle in _SEAT_TICK_LEGS:
+            painter.save()
+            painter.translate(
+                indicator.x() + indicator.width() * x_ratio,
+                indicator.y() + indicator.height() * y_ratio,
+            )
+            painter.rotate(angle)
+            painter.drawRect(
+                QRectF(0.0, 0.0, indicator.width() * length_ratio, leg_height)
+            )
+            painter.restore()
+        painter.end()
 
 
 class TableHostPanel(SheetFrame):
@@ -162,9 +272,23 @@ class TableHostPanel(SheetFrame):
         self.stop_button.setIcon(lucide_icon("circle-stop"))
         self.kick_button = QPushButton("Выгнать", self)
         self.kick_button.setIcon(lucide_icon("user-minus"))
+        # User request 2026-10-05: the shown requisites must be TAKEN, not
+        # only read — the address goes to the clipboard as text, the QR as an
+        # image, both through the app's one clipboard roof (AGENTS principle
+        # 2, clipboard_utils).
+        self.copy_address_button = QPushButton("Копировать адрес", self)
+        self.copy_address_button.setIcon(lucide_icon("copy"))
+        self.copy_qr_button = QPushButton("Копировать QR", self)
+        self.copy_qr_button.setIcon(lucide_icon("copy"))
         # TB5 (NRI-0016): no QDialog button may swallow Enter from the port
         # field — pressing Return in the panel must never start or stop anything.
-        for button in (self.start_button, self.stop_button, self.kick_button):
+        for button in (
+            self.start_button,
+            self.stop_button,
+            self.kick_button,
+            self.copy_address_button,
+            self.copy_qr_button,
+        ):
             button.setDefault(False)
             button.setAutoDefault(False)
 
@@ -180,6 +304,13 @@ class TableHostPanel(SheetFrame):
         layout.addWidget(self.pin_label)
         layout.addWidget(self.urls_label)
         layout.addWidget(self.qr_label)
+        # The two copy actions live right with the requisites they read and
+        # are gated with them (a copy of a stopped table's stale address is
+        # never one click away).
+        copy_row = QHBoxLayout()
+        copy_row.addWidget(self.copy_address_button)
+        copy_row.addWidget(self.copy_qr_button)
+        layout.addLayout(copy_row)
         layout.addWidget(self.firewall_label)
         layout.addWidget(QLabel("Посадка", self))
         layout.addWidget(self.seat_scroll, 1)
@@ -209,6 +340,8 @@ class TableHostPanel(SheetFrame):
         self.start_button.clicked.connect(self.start_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
         self.kick_button.clicked.connect(lambda: asyncio.ensure_future(self.kick_selected()))
+        self.copy_address_button.clicked.connect(self._on_copy_address)
+        self.copy_qr_button.clicked.connect(self._on_copy_qr)
         self.player_list.itemSelectionChanged.connect(self._on_player_click)
         # NRI-0024 (task 5.3, spec character-sheet-host «Повторный клик
         # поднимает живое окно»): a click on the row that is ALREADY current
@@ -230,7 +363,13 @@ class TableHostPanel(SheetFrame):
         # TB2 (NRI-0016): editing the port before start drops whatever address
         # was shown, so stale requisites of an unstarted table never linger.
         self.port_spin.valueChanged.connect(self._on_port_changed)
-        host.subscribe_occupancy(self.refresh_players)
+        # An occupancy push is also the desk's stop notification: the real
+        # service stop clears the room and pushes HERE, so the handler must
+        # re-read the running state along with the players — requisites and
+        # the copy buttons riding with them come down even when no explicit
+        # sync_running follows (the cluster subscribes its sync_running the
+        # same way).
+        host.subscribe_occupancy(self._on_occupancy)
         self._seats_loading = False
         # NRI-0024 (task 5.3): the row current at the last player-list press —
         # the click-side snapshot that recognises the repeat click.
@@ -261,7 +400,7 @@ class TableHostPanel(SheetFrame):
             row = QWidget(self.seat_rows)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(6, 2, 6, 2)
-            check = QCheckBox(row)
+            check = TableHostSeatCheck(row)
             check.setAccessibleName(name)
             # Connected before the initial setChecked below: a loading fire
             # lands on the _seats_loading guard, so a pre-checked row can
@@ -312,6 +451,9 @@ class TableHostPanel(SheetFrame):
             self.qr_label.clear()
             return
         urls = host_urls(self._host.port, self._list_ipv4())
+        # urls[0] is the live host: lan.py leads the enumeration with the
+        # active (default-route) address and the virtual prefixes are already
+        # filtered here; only a loopback-only host leaves the fallback (2026-10-05).
         self.qr_url = urls[0]
         self.urls_label.setText("\n".join(urls))
         self.qr_label.setPixmap(qr_pixmap(urls[0]))
@@ -320,8 +462,31 @@ class TableHostPanel(SheetFrame):
         self.refresh_urls()
 
     def _set_requisites_visible(self, visible: bool) -> None:
-        for widget in (self.pin_label, self.urls_label, self.qr_label):
+        for widget in (
+            self.pin_label,
+            self.urls_label,
+            self.qr_label,
+            self.copy_address_button,
+            self.copy_qr_button,
+        ):
             widget.setVisible(visible)
+
+    def _on_copy_address(self) -> None:
+        # The desk's own notify channel (show_start_error's QMessageBox) —
+        # an unready requisite is announced, never copied as empty garbage.
+        if not copy_text(self.qr_url):
+            QMessageBox.warning(self, "Стол", "Адрес ещё не готов — копировать нечего.")
+
+    def _on_copy_qr(self) -> None:
+        if not copy_pixmap(self.qr_label.pixmap()):
+            QMessageBox.warning(self, "Стол", "QR-код ещё не готов — копировать нечего.")
+
+    def _on_occupancy(self) -> None:
+        # The one subscriber of the service: players AND the running gate ride
+        # every push, so a stopped table never leaves live requisites — nor a
+        # live copy button — standing in a closed desk.
+        self.refresh_players()
+        self.sync_running()
 
     def refresh_players(self) -> None:
         self.player_list.clear()

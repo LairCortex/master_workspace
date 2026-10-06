@@ -230,6 +230,11 @@ def test_lan_and_qr(qtbot, monkeypatch):
     urls = host_urls(7845, ["10.0.0.1", "127.0.0.1"])
     assert urls[0] == "http://10.0.0.1:7845/"
     assert urls[-1].startswith("http://127.0.0.1:")
+    # 2026-10-05: the dead vmnet subnet (192.168.64.0/24) is neither offered
+    # nor QR-encoded — a real host keeps first place even behind it.
+    vmnet = host_urls(7845, ["192.168.64.1", "10.0.0.1", "127.0.0.1"])
+    assert vmnet[0] == "http://10.0.0.1:7845/"
+    assert all("192.168.64." not in url for url in vmnet)
     pix = qr_pixmap(urls[0])
     assert not pix.isNull()
     host = TableHostService(MagicMock(), MagicMock())
@@ -287,8 +292,9 @@ def test_lan_partial_sources(monkeypatch):
         lambda: [(1, "lo0"), (2, "en0")],
     )
     ips = local_ipv4_addresses()
-    assert "10.1.2.3" in ips
-    assert "10.9.8.7" in ips
+    # 2026-10-05: the default-route (active) address LEADS the list — the desk
+    # encodes the first address into its QR and must encode the live one.
+    assert ips == ["10.9.8.7", "10.1.2.3"]
 
 
 def test_lan_if_nameindex_missing(monkeypatch):

@@ -40,6 +40,7 @@ from app.presentation.views.xlsx_import_dialog import (
     TEMPLATE_FILE_NAME,
     XLSX_FILTER,
     XlsxImportDialog,
+    build_format_html,
     build_format_text,
     date_formats_hint,
     save_template_as,
@@ -151,8 +152,47 @@ class TestHintFromRegistry:
         assert "алиасы: name" in hint  # старый англ. заголовок упомянут
 
     def test_dialog_hint_matches_registry_generation(self, dlg):
+        # Both faces of the hint ride the one data pass: the plain source
+        # stays addressable (continuity), the island shows the HTML table.
         assert dlg.format_text.toPlainText() == build_format_text()
+        assert dlg.format_text.toHtml() == build_format_html()
         assert dlg.format_text.isReadOnly()
+        assert find_item(dlg.quick, "formatArea").property("text") == build_format_html()
+
+
+class TestHintHtmlFace:
+    """Formatted-rendering pass — ``build_format_html`` prints the same data
+    as the pipe layout of ``build_format_text``: the surrounding wording and
+    the registry tokens stay word-for-word (spec continuity), only the shape
+    changes (tables instead of the monospace padding, no pipe left)."""
+
+    def test_tables_replace_the_pipe_layout(self):
+        hint = build_format_html()
+        assert "<table" in hint and "|" not in hint
+
+    def test_every_wording_survives_the_html_face(self):
+        hint = build_format_html()
+        for line in date_formats_hint(StandardCalendar()).splitlines():
+            assert line in hint
+        for token in (
+            "имена через «;»",
+            "Строки с проблемами пред-анализа",
+            "PNG, JPG, BMP, GIF, WebP",
+            "Ссылка на музыкальную тему",
+            "алиасы: name",
+        ):
+            assert token in hint
+        for sheet in xlsx_schema.all_sheets():
+            assert f"<b>Лист «{sheet.sheet_name}»</b>" in hint
+            for column in xlsx_schema.all_headers(sheet):
+                assert f"<td>{column.label}</td>" in hint
+
+    def test_required_column_reads_danet_not_the_padded_word(self):
+        # The plain layout padded «да » before the separator; a table cell
+        # states the answer whole, and the caption bolds each sheet.
+        hint = build_format_html()
+        assert "<td>да</td>" in hint and "<td>нет</td>" in hint
+        assert "да " not in hint
 
 
 class TestDateFormatsHint:
@@ -243,10 +283,14 @@ class TestHintDateBlockIsCalendarAware:
             d = XlsxImportDialog()
             qtbot.addWidget(d)
             text = d.format_text.toPlainText()
+            html_text = d.format_text.toHtml()
         finally:
             reset_current_calendar()
         assert "«03 Зимостой 44 г. до н.э.»" in text
         assert "игровая форма" in text
+        # Табличное лицо подсказки говорит тем же активным календарём.
+        assert "«03 Зимостой 44 г. до н.э.»" in html_text
+        assert "игровая форма" in html_text
 
 
 class TestConstruction:

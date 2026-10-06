@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QKeyEvent, QPixmap
+from PySide6.QtGui import QColor, QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from app.presentation.utils.clipboard_utils import copy_pixmap, copy_text
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from tests.presentation.qml_helpers import click_item, find_item
 
@@ -83,4 +84,93 @@ class TestCloseInteractions:
         dlg.show()
         event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
         dlg.keyPressEvent(event)
+        assert dlg.isVisible()
+
+
+# ── «Копировать» → the system clipboard (user request 2026-10-05) ─────────────
+
+
+class TestClipboardHelper:
+    """The one clipboard knowledge lives in ``utils/clipboard_utils`` (AGENTS
+    principle 2): the image half lands, both no-image halves refuse silently."""
+
+    def test_copy_pixmap_lands_the_image(self, qapp):
+        qapp.clipboard().clear()
+        assert copy_pixmap(_pixmap(3, 3, Qt.GlobalColor.blue)) is True
+        image = qapp.clipboard().image()
+        assert (image.width(), image.height()) == (3, 3)
+        assert image.pixelColor(1, 1).name() == QColor(Qt.GlobalColor.blue).name()
+
+    @pytest.mark.parametrize("kind", ["none", "null"])
+    def test_copy_pixmap_refuses_and_leaves_the_clipboard_alone(self, qapp, kind):
+        qapp.clipboard().setText("сторонняя строка")
+        assert copy_pixmap(None if kind == "none" else QPixmap()) is False
+        assert qapp.clipboard().text() == "сторонняя строка"
+
+    def test_copy_text_lands_the_string(self, qapp):
+        qapp.clipboard().clear()
+        assert copy_text("http://10.0.0.9:7845/") is True
+        assert qapp.clipboard().text() == "http://10.0.0.9:7845/"
+
+    @pytest.mark.parametrize("kind", ["none", "empty"])
+    def test_copy_text_refuses_and_leaves_the_clipboard_alone(self, qapp, kind):
+        qapp.clipboard().setText("сторонняя строка")
+        assert copy_text(None if kind == "none" else "") is False
+        assert qapp.clipboard().text() == "сторонняя строка"
+
+
+class TestCopyButton:
+    """The island's «Копировать» copies what the sheet SHOWS — the original,
+    else the preview — and with no image it neither crashes nor overwrites
+    what the user had copied before."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_clipboard(self, qapp):
+        # Every case starts and ends on an empty buffer: no test inherits the
+        # image another one copied, nothing is left in the user's clipboard.
+        qapp.clipboard().clear()
+        yield
+        qapp.clipboard().clear()
+
+    def test_button_is_a_worded_theme_button_in_the_close_band(self, qapp, qtbot):
+        dlg = ImageViewerDialog(_pixmap())
+        qtbot.addWidget(dlg)
+        copy = find_item(dlg.quick, "copyButton")
+        assert copy.property("text") == "Копировать"
+        assert copy.property("iconName") == "copy"
+        # Same band as «Закрыть» (one RowLayout), so no second chrome row.
+        assert copy.parentItem() is find_item(dlg.quick, "closeButton").parentItem()
+        # The sheet's Enter keeps the exit outcome: the copy button is never
+        # the island's default action.
+        assert dlg._root.property("defaultButton").objectName() == "closeButton"
+
+    def test_click_copies_the_original(self, qapp, qtbot):
+        dlg = ImageViewerDialog(
+            _pixmap(7, 5, Qt.GlobalColor.green),
+            _pixmap(3, 3, Qt.GlobalColor.blue),
+        )
+        qtbot.addWidget(dlg)
+        dlg.show()
+        click_item(dlg.quick, find_item(dlg.quick, "copyButton"))
+        image = qapp.clipboard().image()
+        assert (image.width(), image.height()) == (7, 5)
+        assert image.pixelColor(0, 0).name() == QColor(Qt.GlobalColor.green).name()
+
+    def test_click_copies_the_preview_when_the_original_is_missing(self, qapp, qtbot):
+        dlg = ImageViewerDialog(QPixmap(), _pixmap(4, 6, Qt.GlobalColor.red))
+        qtbot.addWidget(dlg)
+        dlg.show()
+        click_item(dlg.quick, find_item(dlg.quick, "copyButton"))
+        image = qapp.clipboard().image()
+        assert (image.width(), image.height()) == (4, 6)
+        assert image.pixelColor(0, 0).name() == QColor(Qt.GlobalColor.red).name()
+
+    def test_click_without_any_image_keeps_the_clipboard_untouched(self, qapp, qtbot):
+        qapp.clipboard().setText("сторонняя строка")
+        dlg = ImageViewerDialog(None, None)
+        qtbot.addWidget(dlg)
+        dlg.show()
+        click_item(dlg.quick, find_item(dlg.quick, "copyButton"))
+        assert qapp.clipboard().text() == "сторонняя строка"
+        assert qapp.clipboard().image().isNull()
         assert dlg.isVisible()

@@ -339,8 +339,10 @@ async def test_calendar_wizard_minimum_stays_on_the_scale_after_the_recount(
     # scale half of the promise: the floor is that sum climbed to the next
     # step of 40 («ширина поднимается к ближайшей ступени вверх»), so the
     # content never opens off the scale.  Since nri-0024 task 3.1 the floor
-    # belongs to the scrolling BODY of the sheet — the sheet itself takes the
-    # window's width and the scroll answers what stops fitting.
+    # belongs to the scrolling BODY of the sheet; since the owner ruling
+    # 2026-10-06 the sheet itself is a compact block frozen from the content
+    # (the width scale pins the frozen number too), and on a host narrower
+    # than the floor the scroll answers the squeeze.
     body = dlg._body
     column = dlg._step_column.minimumWidth()
     col_margins = dlg._step_column.layout().contentsMargins()
@@ -358,8 +360,8 @@ async def test_calendar_wizard_minimum_stays_on_the_scale_after_the_recount(
     assert body.minimumWidth() - body.minimumSizeHint().width() < STEP
     # the height of the body minimum is not part of the width scale
     assert body.minimumHeight() == 620
-    # the sheet sheds the top-level floor with the format move: window-sized
-    # by contract, never wider than its host (pinned E2E in
+    # the sheet sheds the top-level floor with the format move: never wider
+    # than its host (pinned E2E in
     # tests/ui/test_e2e_calendar_wizard_entry.py)
     assert dlg.minimumWidth() < column
 

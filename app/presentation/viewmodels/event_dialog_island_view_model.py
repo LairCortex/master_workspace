@@ -71,11 +71,22 @@ class RelatedSectionState(QObject):
     linkRequested = Signal()
     createRequested = Signal()
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self, parent: QObject | None = None, *, can_create: bool = True
+    ) -> None:
         super().__init__(parent)
         self._entities: list[Any] = []
         self._available: list[Any] = []
         self._selected = -1
+        self._can_create = can_create
+
+    #: Visibility of the section's «Создать нового» entry (design claim
+    #: 2026-10-06: a shown button must work).  The related-create popup card
+    #: is the one consumer built with False — at depth = 1 the nested create
+    #: signal has no receiver, so its card hides the button; every other
+    #: section (event dialog, plain cards) keeps the default True.  Set once
+    #: at construction, never rewritten — hence a constant property.
+    canCreate = Property(bool, lambda self: self._can_create, constant=True)
 
     rows = Property(
         "QVariant",

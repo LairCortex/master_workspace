@@ -474,6 +474,43 @@ def test_chrome_sheet_themes_the_checkbox_indicator_from_tokens(tokens, theme):
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chrome_sheet_addresses_the_seat_tick_class_from_tokens(tokens, theme):
+    # The desk's seating rows paint their own checkmark (Qt QSS draws no tick
+    # without bitmaps), so their STYLE-FACING class gets the indicator's token
+    # face by its own name — the GameCalendarEraCheck precedent — while the
+    # generic rule above (solid-fill language for every OTHER checkbox) stays
+    # untouched.  The selector name is read from the real class, so renaming
+    # the widget without the sheet fails here (the pair-test contract of the
+    # calendar's STYLE-FACING names).
+    from app.presentation.views.table_host.panel import TableHostSeatCheck
+
+    qss = compile_qss(tokens, theme)
+    name = TableHostSeatCheck.__name__
+
+    box = re.search(rf"{name}::indicator\s*\{{([^}}]*)\}}", qss)
+    assert box, f"в chrome-листе нет именованного правила {name}::indicator"
+    rule = box.group(1)
+    assert "width: 16px;" in rule
+    assert "height: 16px;" in rule
+    assert f"border: 1px solid {tokens['color.border'][theme]};" in rule
+    assert f"border-radius: {tokens['radius.sm'][theme]};" in rule
+    assert f"background: {tokens['color.bg.canvas'][theme]};" in rule
+
+    checked = re.search(rf"{name}::indicator:checked\s*\{{([^}}]*)\}}", qss)
+    assert checked, f"{name} в выбранном состоянии не тематизирован"
+    body = checked.group(1)
+    accent = tokens["color.accent"][theme]
+    # the tick's ink needs the accent fill under it — the same face the
+    # generic checked rule paints
+    assert f"background: {accent};" in body
+    assert f"border-color: {accent};" in body
+
+    caption = re.search(rf"^{name}\s*\{{([^}}]*)\}}", qss, re.MULTILINE)
+    assert caption, f"метка {name} не тематизирована"
+    assert f"color: {tokens['color.fg.primary'][theme]};" in caption.group(1)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
 def test_chrome_switch_captions_read_from_the_primary_foreground(tokens, theme):
     # «метки читаемы в обеих темах»: the switch label itself rides on
     # color.fg.primary, the same token every chrome text uses.
@@ -484,6 +521,37 @@ def test_chrome_switch_captions_read_from_the_primary_foreground(tokens, theme):
         )
         assert caption, f"метка {cls} не тематизирована"
         assert f"color: {tokens['color.fg.primary'][theme]};" in caption.group(1)
+
+
+# ── PR (2026-10-05): switch row metrics follow the QML ThemeCheckBox ─────────
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_chrome_switch_rows_keep_the_qml_checkbox_metrics(tokens, theme):
+    # The QML ``ThemeCheckBox`` is the эталон of a check row: the indicator↔text
+    # gap is ``space.xs`` and the row band is the text plus ``space.sm`` above
+    # and below.  Widgets speak the same numbers through the control's own
+    # ``spacing`` and ``padding``; the horizontal padding is 0 so the left edge
+    # of the indicators keeps the step's text border (NRI-0018 Д7).
+    qss = compile_qss(tokens, theme)
+    spacing = f"spacing: {tokens['space.xs'][theme]};"
+    padding = f"padding: {tokens['space.sm'][theme]} 0;"
+    for cls in ("QRadioButton", "QCheckBox"):
+        row = re.search(rf'QWidget\[uiRole="chrome"\] {cls}\s*\{{([^}}]*)\}}', qss)
+        assert row, f"в chrome-листе нет правила строки {cls}"
+        assert spacing in row.group(1), f"{cls}: зазор индикатор↔текст не из space.xs"
+        assert padding in row.group(1), f"{cls}: полоса строки не из space.sm"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_popup_era_check_row_keeps_the_same_metrics(tokens, theme):
+    # The popup-era flag of the calendar grid is the same row family, so the
+    # sheet gives it the very gap and band the chrome switches carry.
+    sheet = compile_popup_qss(tokens, theme)
+    row = re.search(r"GameCalendarEraCheck\s*\{([^}]*)\}", sheet)
+    assert row, "в листе попапов нет правила строки чекбокса эры"
+    assert f"spacing: {tokens['space.xs'][theme]};" in row.group(1)
+    assert f"padding: {tokens['space.sm'][theme]} 0;" in row.group(1)
 
 
 # ── CSS compilation ────────────────────────────────────────────────────────

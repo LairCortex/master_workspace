@@ -329,6 +329,21 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(self._base_title)
 
+    def attach_table_cluster(self, cluster: QWidget) -> None:
+        """Give the live table cluster its row in the content column (the
+        owner ruling 2026-10-05, was the floating Tool band of NRI-0024
+        task 5.2): directly under the search bar, above the splitter —
+        «там же», the same band as the game-date chip's row sits above.
+        The cluster spans the row's width and hugs its right end through
+        the layout stretch of the cluster's own QHBoxLayout; the height is
+        the cluster's fixed sizeHint, inserted with stretch 0, so the
+        splitter keeps every surplus pixel of a resize. The stopped table
+        reserves no strip: the panel manages its own visibility, and a
+        hidden widget takes neither height nor spacing in a box layout.
+        """
+        layout = self.centralWidget().layout()
+        layout.insertWidget(layout.indexOf(self.search_bar) + 1, cluster, 0)
+
     def on_sheet_stack_changed(self, active: bool) -> None:
         """Sheet-stack gate (NRI-0024 task 1.2, design Д2; PR-012 widened it):
         the slot the connector's ``sheet_stack_changed`` feeds. With a sheet

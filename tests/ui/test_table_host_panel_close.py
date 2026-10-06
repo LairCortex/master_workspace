@@ -244,6 +244,17 @@ def test_port_caption_and_selectable_pin(qtbot, fake_host):
     fake_host.stop_fake()  # no running table left for the cleanup close
 
 
+def test_address_texts_are_selectable_for_copying(qtbot, fake_host):
+    # User request 2026-10-05 (c): the address line must be highlightable,
+    # not just shown — the flag lives on the label (the PIN precedent above
+    # already had its pin; here both selectable requisites are pinned whole).
+    fake_host.start_fake()
+    panel = _panel(qtbot, fake_host)
+    for label in (panel.urls_label, panel.pin_label):
+        assert label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+    fake_host.stop_fake()
+
+
 def test_players_placeholder_tracks_list_emptiness(qtbot, fake_host):
     fake_host.start_fake()
     panel = _panel(qtbot, fake_host)
@@ -260,11 +271,21 @@ def test_players_placeholder_tracks_list_emptiness(qtbot, fake_host):
     fake_host.stop_fake()
 
 
-def test_qr_encodes_first_non_loopback_address(qtbot, fake_host):
+def test_qr_encodes_the_active_address_and_the_dead_virtual_one_is_never_offered(
+    qtbot, fake_host
+):
+    # User request 2026-10-05 (a)+(b), the live failure reproduced: the
+    # enumeration led with the dead vmnet adapter (192.168.64.0/24) and the
+    # QR encoded it. The vmnet prefix is now filtered out of the offer, and
+    # lan.py leads the list with the ACTIVE (default-route) address — so the
+    # first surviving address, the one the QR encodes, is a live host.
     fake_host.start_fake(1234)
-    panel = _panel(qtbot, fake_host, ipv4=("127.0.0.1", "10.0.0.9"))
+    panel = _panel(qtbot, fake_host, ipv4=("192.168.64.1", "10.0.0.9", "127.0.0.1"))
     assert panel.qr_url == "http://10.0.0.9:1234/"
-    assert "http://127.0.0.1:1234/" in panel.urls_label.text()
+    text = panel.urls_label.text()
+    assert "192.168.64" not in text
+    assert "http://10.0.0.9:1234/" in text
+    assert "http://127.0.0.1:1234/" in text
     fake_host.stop_fake()
 
 
@@ -272,6 +293,108 @@ def test_qr_falls_back_to_loopback_when_only_loopback(qtbot, fake_host):
     fake_host.start_fake(1234)
     panel = _panel(qtbot, fake_host, ipv4=("127.0.0.1",))
     assert panel.qr_url == "http://127.0.0.1:1234/"
+    fake_host.stop_fake()
+
+
+def test_qr_falls_back_to_loopback_when_the_virtual_filter_empties_the_offer(
+    qtbot, fake_host
+):
+    # (a): the filter may leave no real host behind — the QR then rides the
+    # loopback fallback, never the virtual address it just dropped.
+    fake_host.start_fake(1234)
+    panel = _panel(qtbot, fake_host, ipv4=("192.168.64.1", "127.0.0.1"))
+    assert panel.qr_url == "http://127.0.0.1:1234/"
+    assert "192.168.64" not in panel.urls_label.text()
+    fake_host.stop_fake()
+
+
+# ── 1.4 кнопки «Копировать адрес» / «Копировать QR» (user request 2026-10-05) ──
+
+
+@pytest.fixture
+def clean_clipboard(qapp):
+    # The discipline of tests/test_image_viewer.py: a case starts and ends on
+    # an empty buffer — no test inherits a copy, nothing stays in the user's
+    # clipboard after the run (the offscreen clipboard is the real machine's).
+    qapp.clipboard().clear()
+    yield qapp.clipboard()
+    qapp.clipboard().clear()
+
+
+def test_copy_buttons_gate_with_the_requisites_and_never_bite_enter(
+    qtbot, fake_host
+):
+    panel = _panel(qtbot, fake_host)  # стол не поднят — копировать нечего
+    assert panel.copy_address_button.isVisible() is False
+    assert panel.copy_qr_button.isVisible() is False
+
+    fake_host.start_fake()
+    panel.sync_running()
+    assert panel.copy_address_button.text() == "Копировать адрес"
+    assert panel.copy_qr_button.text() == "Копировать QR"
+    assert panel.copy_address_button.isVisible()
+    assert panel.copy_qr_button.isVisible()
+    for button in (panel.copy_address_button, panel.copy_qr_button):
+        # TB5 holds here too: Enter in the port field must not copy either
+        assert button.autoDefault() is False
+        assert button.isDefault() is False
+
+    fake_host.stop_fake()
+    assert panel.copy_address_button.isVisible() is False
+    assert panel.copy_qr_button.isVisible() is False
+
+
+def test_copy_address_button_puts_the_qr_url_into_the_clipboard(
+    qtbot, fake_host, clean_clipboard
+):
+    fake_host.start_fake(1234)
+    panel = _panel(qtbot, fake_host, ipv4=("192.168.64.1", "10.0.0.9"))
+    clean_clipboard.setText("сторонняя строка")
+    panel.copy_address_button.click()
+    # the copied text is the QR's address — the active host, no vmnet
+    assert clean_clipboard.text() == "http://10.0.0.9:1234/"
+    fake_host.stop_fake()
+
+
+def test_copy_qr_button_puts_the_shown_pixmap_into_the_clipboard(
+    qtbot, fake_host, clean_clipboard
+):
+    fake_host.start_fake(1234)
+    panel = _panel(qtbot, fake_host)
+    shown = panel.qr_label.pixmap()
+    assert shown is not None and not shown.isNull()
+    panel.copy_qr_button.click()
+    image = clean_clipboard.image()
+    assert not image.isNull()
+    assert (image.width(), image.height()) == (shown.width(), shown.height())
+    fake_host.stop_fake()
+
+
+def test_copy_without_ready_requisites_warns_and_touches_nothing(
+    qtbot, fake_host, clean_clipboard, monkeypatch
+):
+    # Не молча: the desk's own notify channel (the show_start_error precedent)
+    # announces an unready requisite; the user's copy survives untouched.
+    fake_host.start_fake()
+    panel = _panel(qtbot, fake_host)
+    warned: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(
+            lambda *a, **k: warned.append(a) or QMessageBox.StandardButton.Ok
+        ),
+    )
+    clean_clipboard.setText("сторонняя строка")
+    panel.qr_url = None  # both requisites broken behind the gate's back
+    panel.qr_label.clear()
+
+    panel.copy_address_button.click()
+    panel.copy_qr_button.click()
+
+    assert [args[1] for args in warned] == ["Стол", "Стол"]
+    assert clean_clipboard.text() == "сторонняя строка"
+    assert clean_clipboard.image().isNull()
     fake_host.stop_fake()
 
 

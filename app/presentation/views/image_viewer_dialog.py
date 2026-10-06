@@ -15,6 +15,12 @@ the single ``finished`` channel, returning exactly to that layer (spec
 «Закрытие окна просмотра»). The show is non-blocking, so
 the qasync loop never nests here (spec modal-sheets «Прикладные диалоги не
 входят во вложенный цикл событий»).
+
+«Копировать» (user request 2026-10-05) sits beside the island's «Закрыть» and
+puts the very picture the sheet shows — the original, else the preview — into
+the system clipboard through ``utils.clipboard_utils.copy_pixmap``, the app's
+only clipboard contact; with no image the helper refuses and the clipboard
+stays untouched.
 """
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.dialog_image_provider import clear_dialog_pixmap, put_dialog_pixmap
 from app.presentation.qml.island import QML_IMPORT_PATH, IslandDialogMixin
 from app.presentation.theme import get_default_theme
+from app.presentation.utils.clipboard_utils import copy_pixmap
 from app.presentation.viewmodels.image_viewer_view_model import ImageViewerViewModel
 from app.presentation.views.sheet_frame import SheetFrame
 
@@ -66,6 +73,10 @@ class ImageViewerDialog(IslandDialogMixin, SheetFrame):
         elif preview is not None and not preview.isNull():
             pixmap = preview
             used_preview = True
+        # The «Копировать» band hands THIS resolved picture (original, else
+        # preview) to the clipboard — the same value the island shows, never a
+        # second read of the caller's two arguments.
+        self._copied_pixmap = pixmap
 
         self._engine = setup_qml_shell(QApplication.instance(), self._theme)
         if pixmap is not None:
@@ -86,6 +97,14 @@ class ImageViewerDialog(IslandDialogMixin, SheetFrame):
         # The island's «Закрыть» keeps the outcome it always had (the sheet
         # closes = the Esc cancel); the frame's header button is its twin.
         self._root.closeRequested.connect(self.close)
+        # The island's «Копировать» hands the shown picture to the system
+        # clipboard through the one shared helper (utils/clipboard_utils).
+        self._root.copyRequested.connect(self._copy_to_clipboard)
+
+    def _copy_to_clipboard(self) -> None:
+        # With no image on screen the helper refuses and the clipboard keeps
+        # whatever the user had copied before (no null image pushed through).
+        copy_pixmap(self._copied_pixmap)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt API
         if event.key() == Qt.Key.Key_Escape:

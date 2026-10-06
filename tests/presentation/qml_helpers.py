@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtQuick import QQuickItem
+from PySide6.QtQml import QQmlExpression
 from PySide6.QtTest import QTest
 
 
@@ -22,6 +23,21 @@ def walk_items(root: QQuickItem):
         for child in stack.pop().childItems():
             yield child
             stack.append(child)
+
+
+def enum_as_int(widget, item: QQuickItem, property_name: str) -> int:
+    """One enum-valued QML property as an int (e.g. ``Text.textFormat``).
+
+    A bare ``property()`` cannot hand such values to Python — PySide has no
+    converter for the private enums behind QML types (``QQuickText::
+    TextFormat`` raises «Can't find converter») — so the number is coerced
+    on the QML side: the widget's own root context is a live, valid scope,
+    ``name + 0`` evaluates inside it and arrives back as a plain int.
+    """
+    expression = QQmlExpression(widget.rootContext(), item, f"{property_name} + 0")
+    value, is_undefined = expression.evaluate()
+    assert not is_undefined, f"{property_name!r} did not evaluate"
+    return int(value)
 
 
 def find_items(widget, object_name: str) -> list[QQuickItem]:

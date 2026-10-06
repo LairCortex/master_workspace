@@ -5,7 +5,10 @@ A thin widgets view over :class:`~app.presentation.viewmodels.calendar_wizard_vi
 it renders the frozen :class:`~app.presentation.viewmodels.calendar_wizard_viewmodel.CalendarWizardState`
 snapshots it is handed and forwards clicks/edits as intents — all flow,
 validation, draft and apply rules live in the view model (the repo's review
-rule: no business logic in the view).  A ``QStackedWidget`` carries the screens
+rule: no business logic in the view).  A step stack (a
+:class:`~PySide6.QtWidgets.QStackedLayout` on a plain widget — see
+:class:`_StepStack`, which is what keeps a short step as short as its own
+content) carries the screens
 «выбор → неделя → месяцы → вставные дни → сутки → предпросмотр» plus the «отчёт»
 screen reached through «Применить», and the right-hand panel is the live
 preview: the very :class:`~app.presentation.views.calendar_grid.GameCalendarGrid`
@@ -17,10 +20,14 @@ The container (task 3.1): a :class:`~app.presentation.views.sheet_frame.SheetFra
 sheet — header «Настройка календаря» + «Закрыть» (one cancel path with Esc),
 shown by ``ApplicationWiring.open_sheet`` as an attached native sheet over
 the main window (Qt.Sheet, NonModal at Qt level — PR-012).
-The wizard content is the frame's scrolling body: the sheet tracks the host
-window's full width (spec «широкий контент — на всю ширину главного окна»),
-its height grows with the window up to the content's own limit, and whatever
-the window cannot show is reached by the body's vertical scroll («не влезшее
+The wizard content is the frame's scrolling body: the sheet is a compact
+block sized by its own content (owner ruling 2026-10-06, retiring the task
+3.1 «широкий контент — на всю ширину главного окна» law — the spec's line is
+amended by the next stage): both dimensions are frozen once at construction
+— the width from the body's content formula (step column + preview at its
+natural width + chrome, on the 40 step), the height from the content fit —
+and the host window only rides them DOWN: a narrower window narrows the sheet
+back, and whatever it cannot show is reached by the body's scroll («не влезшее
 — прокруткой»).  The flow, the validations and the apply points are untouched
 by the container move.
 
@@ -75,8 +82,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
-    QStackedWidget,
+    QStackedLayout,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
@@ -150,6 +158,19 @@ STEP_COLUMN_MAX_WIDTH = 520
 #: WIDTH from the new column sum and left the height alone.
 WIZARD_MIN_HEIGHT = 620
 
+#: Fallback of the preview panel's right/bottom inner inset — the number
+#: tokens.json itself carries for ``space.xs``; only an off-skin sheet
+#: (design D7) ever reads it (the SheetFrame fallback pattern).
+PREVIEW_EDGE_FALLBACK_PX = 4
+
+#: The short steps — a block of fields with nothing scrollable in it («Выбор
+#: типа», «Сутки», «Предпросмотр»).  For these the step stack stops eating the
+#: column's vertical slack: the slack moves BELOW the footer, so the footer
+#: reads right under its own content instead of riding the bottom of the sheet
+#: across an empty band.  Every other step («Неделя», «Месяцы», «Вставные дни»,
+#: «Отчёт») carries a scroll list or a table, where the stretch is the point.
+COMPACT_STEPS = frozenset({STEP_CHOICE, STEP_DAY, STEP_PREVIEW})
+
 
 def _bind_spin(spin: QSpinBox, value: int) -> None:
     """``setValue`` without echoing the value-changed intent back into the
@@ -167,6 +188,67 @@ def _set_text(edit: QLineEdit, value: str) -> None:
         edit.setText(value)
 
 
+class _StepStack(QWidget):
+    """The step stack: a stacked layout that speaks the HEIGHT of the step on
+    screen.
+
+    Qt's stock stacked answer to both size hints is the maximum over ALL pages
+    — and that maximum is also what its layout's minimum pins the widget to
+    inside a parent layout, so not even a widget-level ``sizeHint`` override
+    gets under it (measured on PySide 6.10: the short steps stayed exactly as
+    tall as the tallest one).  A compact step therefore needs the stacked
+    layout itself to follow the current page, which is why the stack is a plain
+    widget carrying :class:`_CurrentStepLayout` (the same installation pattern
+    the table desk's players box uses).  The width keeps the widest-page hint —
+    the step column is sized from it (NRI-0018 Д7); only the height follows the
+    step on screen, and it does so live: no pinned number can go stale when a
+    caption or a wrap changes.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._steps = _CurrentStepLayout(self)
+
+    def addWidget(self, page: QWidget) -> None:  # noqa: N802 — Qt API name
+        self._steps.addWidget(page)
+
+    def currentWidget(self) -> QWidget | None:  # noqa: N802 — Qt API name
+        return self._steps.currentWidget()
+
+    def setCurrentWidget(self, page: QWidget) -> None:  # noqa: N802 — Qt API name
+        self._steps.setCurrentWidget(page)
+
+
+class _CurrentStepLayout(QStackedLayout):
+    """Stacked layout that speaks the current page in every height channel.
+
+    The stock answer is the maximum over ALL pages — in ``sizeHint``, in
+    ``minimumSize`` and, decisively, in ``heightForWidth``: the word-wrapped
+    descriptions make the stack a height-for-width item, and a box layout takes
+    that number instead of the size hint, so overriding the hint alone changes
+    nothing (measured on PySide 6.10).  Delegating all three to the page on
+    screen is what lets a compact step occupy exactly its own height — and it
+    stays true live: a longer caption or a re-wrap moves the height with it,
+    no pinned number to go stale.
+    """
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 — Qt API
+        return self.currentWidget().hasHeightForWidth()
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 — Qt API
+        return self.currentWidget().heightForWidth(width)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 — Qt API
+        hint = super().sizeHint()
+        hint.setHeight(self.currentWidget().sizeHint().height())
+        return hint
+
+    def minimumSize(self) -> QSize:  # noqa: N802 — Qt API
+        hint = super().minimumSize()
+        hint.setHeight(self.currentWidget().minimumSizeHint().height())
+        return hint
+
+
 class CalendarWizardDialog(SheetFrame):
     """Widgets shell of the calendar wizard: state out, intents in.
 
@@ -178,9 +260,12 @@ class CalendarWizardDialog(SheetFrame):
     Since nri-0024 task 3.1 the shell is a :class:`SheetFrame` sheet: the
     frame owns the header («Настройка календаря» + «Закрыть» — one cancel path
     with Esc), the stack scrim and the chrome skin, while the wizard screens
-    live in the frame's scrolling body — the sheet takes the host window's
-    full width and grows with it up to the body's own limit; what the window
-    cannot show the vertical scroll answers (spec «не влезшее — прокруткой»).
+    live in the frame's scrolling body.  The sheet is a compact block sized by
+    its own content (owner ruling 2026-10-06): width and height freeze once at
+    construction — the width from the body's content formula on the 40 step,
+    the height from the content fit — and the host window only rides them
+    down; what a narrower window cannot show the body's scroll answers (spec
+    «не влезшее — прокруткой»).
     """
 
     #: Usability floor of the sheet itself (the WorldSnapshotWindow rule): a
@@ -229,7 +314,7 @@ class CalendarWizardDialog(SheetFrame):
         left = QVBoxLayout()
         right = QVBoxLayout()
 
-        self._stack = QStackedWidget()
+        self._stack = _StepStack()
         self._pages = {
             STEP_CHOICE: self._build_choice_page(),
             STEP_WEEK: self._build_week_page(),
@@ -241,6 +326,12 @@ class CalendarWizardDialog(SheetFrame):
         }
         for page in self._pages.values():
             self._stack.addWidget(page)
+        # Where the column's vertical slack goes is a per-step switch (see
+        # COMPACT_STEPS): the stack itself (the scroll steps) or the parking
+        # strip below the footer (the short ones).  Both seats are in the
+        # layout from the start; _render_state only moves the stretch factors,
+        # so no widget is ever pulled out of or pushed into the layout.
+        self._stack_index = left.count()
         left.addWidget(self._stack, 1)
 
         # Why «Далее» is disabled, in Russian (the spec scenarios quote the
@@ -275,6 +366,14 @@ class CalendarWizardDialog(SheetFrame):
         footer_row.addWidget(self._apply_button)
         left.addWidget(self._footer)
 
+        # The short step's parking strip: normally inert (stretch 0), it takes
+        # the whole column slack the moment a compact step becomes current —
+        # under the footer, so the empty canvas ends up at the bottom of the
+        # sheet instead of between the content and its buttons.
+        self._steps_layout = left
+        self._parking_index = left.count()
+        left.addStretch()
+
         # Catalog skin: the SheetFrame attached and applied the chrome sheet
         # on its root in super().__init__ — the generated rules reach the
         # widgets below through the widget-parent chain (QA 2026-09-30 F3:
@@ -298,8 +397,8 @@ class CalendarWizardDialog(SheetFrame):
 
         # Д7 (spec «Левая колонка мастера широка ровно по содержимому»): the
         # old fixed 3:2 share is gone.  The column is exactly as wide as its
-        # widest natural content — the step stack (the QStackedWidget hint
-        # already carries the MAXIMUM over all pages) or the one-row buttons,
+        # widest natural content — the step stack (its WIDTH is still the
+        # maximum over all pages, see _StepStack) or the one-row buttons,
         # plus the column's own insets (without them the 40-step rounding
         # would let the padding eat the content's room) — rounded UP to the
         # 40 step and capped; the width then stays fixed so the step forms
@@ -339,6 +438,30 @@ class CalendarWizardDialog(SheetFrame):
         # away from the numbers; every slack pixel belongs to the trailing
         # stretch below the grid, never between the header and the cells.
         self._preview = GameCalendarGrid(interactive=False, show_era=False)
+        # Live audit 2026-10-06: a vertically growable grid took any slack the
+        # right column ever showed and inflated its week rows past their natural
+        # height (measured ~55 px cells against the natural ~30).  This SEAT
+        # pins the vertical to the grid's own live sizeHint — the number still
+        # recounts when the month or a long-week page repaints — and leaves the
+        # trailing stretch as the only place the slack can park.  The grid class
+        # stays untouched: the date popups keep their native seat.
+        self._preview.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
+        # Live audit 2026-10-06: the grid's root layout insets its content by
+        # 2 px, so «Воскресенье» ended ~1 pt from the panel's inner frame and
+        # the frame closed ~1–2 pt under the last week.  The frame is painted
+        # on the grid widget itself (the ``GameCalendarGrid`` QSS), so the one
+        # door between the content and that frame — without touching
+        # :mod:`calendar_grid` (the date popups keep their native seat) — is
+        # THIS instance's root layout, set here at the usage site: the right
+        # and bottom edges breathe by ``space.xs``, the cells shift inward by
+        # the same amount while the nav band's own left seat stays put.
+        preview_margins = self._preview.layout().contentsMargins()
+        preview_edge = self._token_px("space.xs", PREVIEW_EDGE_FALLBACK_PX)
+        preview_margins.setRight(preview_edge)
+        preview_margins.setBottom(preview_edge)
+        self._preview.layout().setContentsMargins(preview_margins)
         right.addWidget(self._preview)
         right.addStretch(1)
         # Every pixel the fixed step column does not need belongs to the
@@ -413,6 +536,16 @@ class CalendarWizardDialog(SheetFrame):
             + root_margins.right()
             + spacing
         )
+        # The body's own scroll bar, in pixels: both frozen numbers below pay
+        # for its seat up front (live audit 2026-10-06 follow-up).  The header
+        # draws taller than its sizeHint under the live sheet (42 pt drawn vs
+        # 41 hinted), the exact content sums froze the sheet ~1 pt short, the
+        # vertical bar stood permanently over a fully visible content — and
+        # then ate ~13.5 pt out of the frozen width until the horizontal bar
+        # joined the parade.  One scroll extent is the conservative margin:
+        # whatever the live font metrics add on top of the hints, the bar's
+        # seat is already paid for and neither bar appears at live metrics.
+        scroll_extent = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
         body.setMinimumSize(
             ceil_to_width_step(
                 self._step_column.maximumWidth()
@@ -422,34 +555,102 @@ class CalendarWizardDialog(SheetFrame):
             WIZARD_MIN_HEIGHT,
         )
 
-        # Sheet geometry (task 3.1, spec «широкий контент — на всю ширину
-        # главного окна»): width rides the host window, height grows with it
-        # up to the body's content limit (the WorldSnapshotWindow contract).
-        # The growth filter dies with the sheet in done() below.
+        # The sheet's default height is frozen ONCE here: the first render above
+        # walked the chrome sheet and warmed the preview's metrics (the 448-cold
+        # vs 458-warm note stands just above), and the body's floor is set.  The
+        # live re-read of ``_default_sheet_height`` is what inflated the sheet:
+        # under the body's ``setWidgetResizable`` scroll area the estimate chased
+        # the layout's own geometry (the «height → hint → height» loop, re-run on
+        # every host Resize through the filter below), so a tall host window
+        # landed the sheet at exactly «host − HEIGHT_INSET» and the preview rows
+        # swelled with it (live audit 2026-10-06).  The frozen number is the
+        # growth rule's CAP only: the height still follows the host DOWN
+        # (floor MIN_SHEET_HEIGHT included), and since the owner ruling below
+        # the width does the same from its own frozen content number.
+        self._frozen_default_height = self._default_sheet_height()
+
+        # The sheet's default WIDTH freezes the same way (owner ruling
+        # 2026-10-06, retiring the task-3.1 «широкий контент — на всю ширину
+        # главного окна» law — the spec line is amended by the next stage):
+        # the body's content formula — the fixed step column + the preview at
+        # its own NATURAL width (the warmed sizeHint, the same warmed-metrics
+        # rule the height reads above) + the root layout's chrome + the seat of
+        # the body's vertical scroll bar — climbed to the 40 step, so the
+        # frozen number itself stays on the width scale
+        # (test_window_width_scale).  The extent term is what keeps a vertical
+        # bar from ever forcing a horizontal one at the frozen width: the
+        # viewport is the sheet minus the bar, and content + chrome still fit
+        # inside it, so the preview panel never presses its frame against the
+        # bar (the root layout's right margin survives).  Live audit 2026-10-06
+        # follow-up: without it the live 984 px of content froze at 1000, the
+        # vertical bar took 13.5 of those and the horizontal bar followed.  A
+        # wide host therefore gets the sheet as a compact block, not a strip:
+        # the right column never receives the window's surplus and the grid's
+        # cells never inflate past their natural width.  The parent-less probe
+        # below opens at the body's floor instead — the narrowest content
+        # shape, unchanged.
+        self._frozen_default_width = ceil_to_width_step(
+            self._step_column.maximumWidth()
+            + self._preview.sizeHint().width()
+            + chrome
+            + scroll_extent
+        )
+
+        # Sheet geometry (owner ruling 2026-10-06 «компактный лист по
+        # контенту»): both dimensions are the numbers frozen at this point,
+        # the host window only riding them down — a narrower window narrows
+        # the sheet back (the body keeps its own floor and its scroll answers
+        # the squeeze), never a pixel WIDER than the parent.  The growth
+        # filter dies with the sheet in done() below.
         if parent is not None:
             parent.installEventFilter(self)
             self.resize(self._sheet_size_for(parent))
         else:
             # A parent-less offscreen probe opens content-sized — the shape
             # the old top-level took at its own minimum.
-            self.resize(self._body.minimumWidth(), self._default_sheet_height())
+            self.resize(self._body.minimumWidth(), self._frozen_default_height)
 
-    # ── sheet geometry (task 3.1: full host width, body vertical scroll) ────
+    # ── sheet geometry (content-frozen size, host rides it down, scroll) ────
 
     def _default_sheet_height(self) -> int:
-        """The sheet's content-fit default: the body floor plus the header."""
+        """The sheet's content-fit default: the body floor plus the header plus
+        one scroll bar's extent as the live-chrome margin.
+
+        Read ONCE into :attr:`_frozen_default_height` at the end of the
+        constructor (the live value is geometry-sensitive under the body's
+        ``setWidgetResizable`` scroll area: the stretch steps grow the body
+        hint with whatever height the layout handed it, which let a tall host
+        window pull the estimate — and with it the sheet — to «host − inset»
+        and let the preview rows swell in the freed space; live audit
+        2026-10-06).  After the freeze only the frozen number caps growth.
+
+        The extent term answers the same audit's follow-up: the header draws
+        taller than its sizeHint under the live sheet (42 pt drawn vs 41
+        hinted), the exact hint sum froze the sheet ~1 pt short, and a ~13.5 pt
+        vertical bar stood permanently over a fully visible content.  Rather
+        than chase the drawn height through a re-freeze on first show (a second
+        cap the repeated showEvents could move), the hint sum conservatively
+        pays for the bar's own seat: whatever the live font metrics add on top
+        of the hints, it stays under one scroll extent and no bar appears.
+        """
         return (
             max(self._body.sizeHint().height(), self._body.minimumHeight())
             + self.header.sizeHint().height()
+            + self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
         )
 
     def _sheet_size_for(self, host: QWidget) -> QSize:
-        """The growth rule at this host size: «на всю ширину» plus the
-        window-following height between the floor and the content cap."""
+        """The growth rule at this host size: the width frozen at construction
+        capped by the host (the sheet is a compact content block, never wider
+        than its parent; a host narrower than the frozen width narrows the
+        sheet back and the body's floor + horizontal scroll answer the
+        squeeze — the narrowing task 3.1 pinned, preserved), plus the
+        window-following height between the floor and the FROZEN content cap
+        (never the live estimate — see :meth:`_default_sheet_height`)."""
         return QSize(
-            host.width(),
+            min(self._frozen_default_width, host.width()),
             min(
-                self._default_sheet_height(),
+                self._frozen_default_height,
                 max(self.MIN_SHEET_HEIGHT, host.height() - self.HEIGHT_INSET),
             ),
         )
@@ -525,7 +726,8 @@ class CalendarWizardDialog(SheetFrame):
         # does not touch.)
         layout.addWidget(self._standard_radio)
         layout.addWidget(self._custom_radio)
-        layout.addStretch()
+        # No tail stretch on a compact step: its own bottom edge is the content,
+        # the parking strip under the footer owns the column's slack.
         return page
 
     def _build_week_page(self) -> QWidget:
@@ -597,7 +799,6 @@ class CalendarWizardDialog(SheetFrame):
         self._day_hours_spin.setRange(DAY_SIZE_MIN, DAY_SIZE_MAX)
         self._minutes_per_hour_spin = self._spin_row(layout, "Минут в часе:")
         self._minutes_per_hour_spin.setRange(DAY_SIZE_MIN, DAY_SIZE_MAX)
-        layout.addStretch()
         return page
 
     def _build_preview_page(self) -> QWidget:
@@ -619,7 +820,6 @@ class CalendarWizardDialog(SheetFrame):
         grid_hint = hint("Слева — сводка, справа — сетка будущего календаря. «Применить» — внизу.")
         grid_hint.setWordWrap(True)
         layout.addWidget(grid_hint)
-        layout.addStretch()
         return page
 
     def _build_report_page(self) -> QWidget:
@@ -669,8 +869,19 @@ class CalendarWizardDialog(SheetFrame):
     def _render(self) -> None:
         self._render_state(self._vm.state)
 
+    def _move_step_slack(self, step: str) -> None:
+        """One switch, two seats: the scroll steps keep stretching the stack
+        (the list owns the column's height), the short steps hand the very
+        slack to the strip below the footer, which lifts the footer right behind
+        the step's content.  ``setStretch`` keeps every widget in place and
+        revalidates the layout itself."""
+        compact = step in COMPACT_STEPS
+        self._steps_layout.setStretch(self._stack_index, 0 if compact else 1)
+        self._steps_layout.setStretch(self._parking_index, 1 if compact else 0)
+
     def _render_state(self, state: CalendarWizardState) -> None:
         self._stack.setCurrentWidget(self._pages[state.step])
+        self._move_step_slack(state.step)
 
         self._standard_radio.blockSignals(True)
         self._custom_radio.blockSignals(True)

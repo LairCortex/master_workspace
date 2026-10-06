@@ -51,6 +51,7 @@ class EntityCardIslandViewModel(QObject):
         owner=None,
         parent: QObject | None = None,
         now: tuple[GameCoord, bool] | None = None,
+        related_create_enabled: bool = True,
     ) -> None:
         super().__init__(parent)
         self._entity_type = entity_type
@@ -130,7 +131,13 @@ class EntityCardIslandViewModel(QObject):
         self.entityAi = EntityGenerateProxy(owner, self)
 
         self._sections: dict[str, RelatedSectionState] = {
-            cfg.attr: RelatedSectionState(self) for cfg in self._related_configs
+            # The related-create popup card is the one consumer built with
+            # related_create_enabled=False — its sections hide the «Создать
+            # нового» entry (no receiver at depth = 1); see RelatedSectionState.
+            cfg.attr: RelatedSectionState(
+                self, can_create=related_create_enabled
+            )
+            for cfg in self._related_configs
         }
 
     def _set_name(self, value: str) -> None:

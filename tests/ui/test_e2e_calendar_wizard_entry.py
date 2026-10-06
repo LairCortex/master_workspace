@@ -243,11 +243,16 @@ async def test_menu_wizard_is_an_attached_sheet_without_geometry_jump(
     # D6: opening over the parent must not shove the parent.
     assert window.geometry() == geometry_before
 
-    # Task 3.1 width law: «на всю ширину главного окна» — and, as the task
-    # pins, never a pixel WIDER than the parent window, through resizes too.
-    assert wizard.width() == window.width()
+    # Owner ruling 2026-10-06 width law (retires the task-3.1 «на всю ширину
+    # главного окна» norm): the wizard is a compact content block — its width
+    # is the number frozen at construction, the host only ever riding it down.
+    # As the task pinned, never a pixel WIDER than the parent window, through
+    # resizes too; at these host widths the block simply stands at its own
+    # number (the growth-filter following itself is pinned in
+    # tests/presentation/test_calendar_wizard_dialog.py).
+    assert wizard.width() == wizard._frozen_default_width < window.width()
     window.resize(1024, 700)
-    assert wizard.width() == window.width()  # the growth filter followed
+    assert wizard.width() == wizard._frozen_default_width  # the compact block
     assert wizard.width() <= window.width()  # the pinned invariant itself
 
     wizard.reject()
@@ -279,7 +284,9 @@ async def test_wizard_sheet_scrolls_the_body_a_short_window_cannot_show(
     window.resize(1024, 680)
     body_floor = wizard._body.minimumHeight()
     assert wizard.height() < body_floor + wizard.header.height()
-    assert wizard.width() == window.width()  # the width law holds here too
+    # the width law holds here too: the compact block is its frozen number,
+    # never wider than the host (owner ruling 2026-10-06)
+    assert wizard.width() == wizard._frozen_default_width <= window.width()
     assert wizard._body_scroll.verticalScrollBar().maximum() > 0
     # the body itself is never squeezed below its content floor
     assert wizard._body.height() >= body_floor

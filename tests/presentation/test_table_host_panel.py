@@ -40,6 +40,25 @@ def _seat_box(panel: TableHostPanel, index: int) -> QCheckBox:
     return panel.seat_boxes()[index]
 
 
+def test_seat_rows_use_the_style_facing_tick_checkbox(qtbot):
+    # The seating rows are the STYLE-FACING TableHostSeatCheck: the named rule
+    # in compile_qss and the painted tick in its paintEvent hang on this class.
+    # The stock contract the PR-022 pins rely on survives the subclass: it IS
+    # a QCheckBox (isinstance), so every old type check keeps passing.
+    from PySide6.QtWidgets import QCheckBox as StockQCheckBox
+
+    from app.presentation.views.table_host.panel import TableHostSeatCheck
+
+    host = TableHostService(MagicMock(), MagicMock())
+    panel = TableHostPanel(host, list_ipv4=lambda: ["10.0.0.2"])
+    qtbot.addWidget(panel)
+    panel.set_instances([(1, "Лист A"), (2, "Лист B")])
+    box = _seat_box(panel, 0)
+    assert isinstance(box, TableHostSeatCheck)
+    assert isinstance(box, StockQCheckBox)
+    assert type(box) is TableHostSeatCheck
+
+
 def test_menu_table_exists(qtbot):
     w = MainWindow(
         timeline_vm=MagicMock(),

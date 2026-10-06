@@ -272,6 +272,7 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         parent: QWidget | None = None,
         theme=None,
         now_vm=None,
+        related_create_enabled: bool = True,
     ) -> None:
         super().__init__(parent)
         self._vm = entity_vm
@@ -309,6 +310,9 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             # the new-card date bounds default to the game's «now»; the edit
             # flow's populate() below overwrites them with the saved dates.
             now=(now_vm.coord, now_vm.is_bc) if now_vm is not None else None,
+            # The related-create popup is the only card built with False: its
+            # own sections hide «Создать нового» (depth = 1, no receiver).
+            related_create_enabled=related_create_enabled,
         )
         # NRI-0021 task 4.3 (design Д2/Д5): the read-only age line follows the
         # game's «now» while this card is open. The wiring hands its widget VM

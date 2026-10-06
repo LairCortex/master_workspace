@@ -17,6 +17,7 @@ game's own calendar.
 """
 from __future__ import annotations
 
+import html
 import io
 from pathlib import Path
 
@@ -173,6 +174,46 @@ def _date_column_description(column: xlsx_schema.ColumnSpec, calendar: GameCalen
     return column.description + game
 
 
+def _hint_parts(
+    active: GameCalendar,
+) -> tuple[list[str], list[str], str, str, list[tuple[str, list[tuple[str, str, str]]]], str]:
+    """The hint's ONE data pass over the schema registry (design D1): the
+    surrounding wording lines, the calendar-aware «Даты» block, the per-sheet
+    rows (label, «да »/«нет», description + aliases) and the image note. Both
+    renderers — the plain-text ``build_format_text`` and the RichText
+    ``build_format_html`` — print these very parts, so the two faces of the
+    hint can never drift from each other or from the registry.
+    """
+    intro = [
+        "Один файл — все пять листов; импортируются только присутствующие",
+        "знакомые листы (имена без учёта регистра). Заголовки ищутся по",
+        "первой строке, порядок колонок произвольный, лишние колонки",
+        "игнорируются; старые английские заголовки читаются как алиасы.",
+    ]
+    dates = date_formats_hint(active).splitlines()
+    links = f"Связи в ячейке — имена через «{xlsx_schema.LINK_SEPARATOR}»."
+    skip = "Строки с проблемами пред-анализа пропускаются, остальные импортируются."
+    sheets: list[tuple[str, list[tuple[str, str, str]]]] = []
+    for sheet in xlsx_schema.all_sheets():
+        rows: list[tuple[str, str, str]] = []
+        for column in xlsx_schema.all_headers(sheet):
+            if isinstance(column, xlsx_schema.LinkColumnSpec):
+                alias = ""
+            else:
+                alias = (
+                    " (алиасы: " + ", ".join(column.aliases) + ")"
+                    if column.aliases else ""
+                )
+            required = "да " if getattr(column, "required", False) else "нет"
+            description = _date_column_description(column, active)
+            rows.append((column.label, required, description + alias))
+        sheets.append((sheet.sheet_name, rows))
+    image_note = (
+        "Для колонок «Изображение» допустимы форматы: PNG, JPG, BMP, GIF, WebP."
+    )
+    return intro, dates, links, skip, sheets, image_note
+
+
 def build_format_text(calendar: GameCalendar | None = None) -> str:
     """Full column hint for all five sheets from the schema registry (D1).
 
@@ -184,37 +225,50 @@ def build_format_text(calendar: GameCalendar | None = None) -> str:
     explicit argument the hint speaks for the calendar active right now.
     """
     active = current_calendar() if calendar is None else calendar
-    lines = [
-        "Один файл — все пять листов; импортируются только присутствующие",
-        "знакомые листы (имена без учёта регистра). Заголовки ищутся по",
-        "первой строке, порядок колонок произвольный, лишние колонки",
-        "игнорируются; старые английские заголовки читаются как алиасы.",
-        "",
-        *date_formats_hint(active).splitlines(),
-        f"Связи в ячейке — имена через «{xlsx_schema.LINK_SEPARATOR}».",
-        "Строки с проблемами пред-анализа пропускаются, остальные импортируются.",
-    ]
-    for sheet in xlsx_schema.all_sheets():
+    intro, dates, links, skip, sheets, image_note = _hint_parts(active)
+    lines = [*intro, "", *dates, links, skip]
+    for sheet_name, rows in sheets:
         lines.append("")
-        lines.append(f"Лист «{sheet.sheet_name}»")
-        for column in xlsx_schema.all_headers(sheet):
-            if isinstance(column, xlsx_schema.LinkColumnSpec):
-                alias = ""
-            else:
-                alias = (
-                    " (алиасы: " + ", ".join(column.aliases) + ")"
-                    if column.aliases else ""
-                )
-            required = "да " if getattr(column, "required", False) else "нет"
-            description = _date_column_description(column, active)
-            lines.append(
-                f"  {column.label:<22} | {required} | {description}{alias}"
-            )
-    image_note = (
-        "Для колонок «Изображение» допустимы форматы: PNG, JPG, BMP, GIF, WebP."
-    )
+        lines.append(f"Лист «{sheet_name}»")
+        for label, required, description in rows:
+            lines.append(f"  {label:<22} | {required} | {description}")
     lines += ["", image_note]
     return "\n".join(lines)
+
+
+def build_format_html(calendar: GameCalendar | None = None) -> str:
+    """The same hint as an HTML table document (the island renders markup).
+
+    The pipe-and-padding layout of ``build_format_text`` was the monospace
+    TextArea's trick; a RichText surface gets the real thing instead: the
+    surrounding wording stays its paragraphs (word-for-word, spec continuity
+    of the hint texts), every sheet gets a caption and a three-column table
+    метка | обязательность | описание. No inline styles — colour, family and
+    size ride the reading surface, exactly like the stripped link colour of
+    the doc-viewer converter. Registry words are HTML-escaped on the way in.
+    """
+    active = current_calendar() if calendar is None else calendar
+    intro, dates, links, skip, sheets, image_note = _hint_parts(active)
+    parts = [
+        "<p>" + "<br>".join(html.escape(line) for line in intro) + "</p>",
+        "<p>" + "<br>".join(html.escape(line) for line in dates) + "</p>",
+        f"<p>{html.escape(links)}</p>",
+        f"<p>{html.escape(skip)}</p>",
+    ]
+    for sheet_name, rows in sheets:
+        parts.append(f"<p><b>Лист «{html.escape(sheet_name)}»</b></p>")
+        parts.append("<table cellspacing=\"4\">")
+        for label, required, description in rows:
+            parts.append(
+                "<tr>"
+                f"<td>{html.escape(label)}</td>"
+                f"<td>{html.escape(required.strip())}</td>"
+                f"<td>{html.escape(description)}</td>"
+                "</tr>"
+            )
+        parts.append("</table>")
+    parts.append(f"<p>{html.escape(image_note)}</p>")
+    return "".join(parts)
 
 
 class _PathEdit:
@@ -261,11 +315,17 @@ class _ImportButton:
 
 
 class _FormatText:
+    """Mirror of the island's format-hint node: the RichText table shows the
+    HTML face, the plain source stays addressable for the continuity pins."""
+
     def __init__(self, vm: XlsxImportViewModel) -> None:
         self._vm = vm
 
     def toPlainText(self) -> str:  # noqa: N802
         return self._vm.formatText
+
+    def toHtml(self) -> str:  # noqa: N802
+        return self._vm.formatHtml
 
     def isReadOnly(self) -> bool:  # noqa: N802
         return True
@@ -290,7 +350,9 @@ class XlsxImportDialog(IslandDialogMixin, QDialog):
         self.setWindowTitle("Импорт из .xlsx…")
         self.setMinimumSize(640, 520)
 
-        self.vm = XlsxImportViewModel(build_format_text(), parent=self)
+        self.vm = XlsxImportViewModel(
+            build_format_text(), format_html=build_format_html(), parent=self
+        )
         self.path_edit = _PathEdit(self.vm)
         self.progress_bar = _ProgressBar(self.vm)
         self.import_btn = _ImportButton(self)

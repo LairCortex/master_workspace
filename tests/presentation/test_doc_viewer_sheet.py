@@ -37,7 +37,7 @@ from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 from app.presentation.wiring import ApplicationWiring
-from tests.presentation.qml_helpers import find_item
+from tests.presentation.qml_helpers import enum_as_int, find_item
 
 
 class _GateWindow(QWidget):
@@ -300,6 +300,30 @@ def test_scroll_reaches_the_end_of_a_long_document(qtbot, docs_tree):
     text = find_item(doc.quick, "docText")
     bottom = text.mapToItem(flick, 0.0, float(text.property("height"))).y()
     assert abs(bottom - viewport_h) <= 1.0
+
+
+def test_doc_island_renders_markup_not_raw_source(qtbot, docs_tree):
+    """Formatted-rendering pass: the sheet shows the document typeset, not
+    its markup. The island's label is a RichText ``Text`` (role static text,
+    pinned in the thin-islands file) fed by the VM's Qt-md4c converter: the
+    raw ``#``/``**`` never reaches the eyes, a heading arrives as a larger
+    bold line, bold rides the weight (the converter's own face is pinned in
+    ``tests/presentation/test_doc_html.py``) — and the very same html string
+    the VM publishes is what the label carries."""
+    (docs_tree / "README.md").write_text(
+        "# Заголовок\n\nобычный **текст**\n", encoding="utf-8"
+    )
+    window, wiring, states = _docs_wiring(qtbot, docs_tree)
+    window.readme_action.trigger()
+    doc = _live_docs(window)[0]
+    qtbot.waitExposed(doc)
+
+    text = find_item(doc.quick, "docText")
+    assert enum_as_int(doc.quick, text, "textFormat") == 1  # Text.RichText
+    shown = text.property("text")
+    assert shown == doc.vm.html
+    assert "# Заголовок" not in shown and "**текст**" not in shown
+    assert "<h1" in shown and "xx-large" in shown and "font-weight:700" in shown
 
 
 def test_repeat_entry_on_closed_stack_opens_fresh_never_a_duplicate(

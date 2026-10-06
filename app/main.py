@@ -183,8 +183,9 @@ class Application:
         self._sheets: SheetWindowsManager | None = None
         self._table_host: TableHostService | None = None
         self._table_host_panel: TableHostPanel | None = None
-        # NRI-0024 (task 5.2, design Д3): the live table cluster over the
-        # search row — a parentless Tool band shadowing THIS game's window.
+        # NRI-0024 (task 5.2, re-docked by the owner ruling 2026-10-05): the
+        # live table cluster docked into THIS game's window, as a child row
+        # between the search bar and the columns.
         self._table_cluster: TableCluster | None = None
         # NRI-0015 (design T3): the geometry memory of the named windows
         # (main, sheet list/editor/fill) rides the one ui.json manager the
@@ -481,20 +482,23 @@ class Application:
         )
         window.char_sheets_requested.connect(self._on_char_sheets)
         window.table_host_requested.connect(self._on_table_host)
-        # NRI-0024 (task 5.2, design Д3, spec «Управление столом живо в шапке
-        # главного окна»): the live cluster above the search row's right edge.
-        # It is a parentless Qt.Tool band — a child of this window would sit
-        # inside the sheets' blocked layer (the attached sheet's document
-        # modality covers the whole window) and freeze under the first
-        # sheet; outside it, its two controls stay clickable over any scrim.
-        # The desk caption re-enters the same «Стол…» path (the connector's
-        # open_sheet raises the live desk over the active sheet), the stop
-        # button rides the very stop the desk button uses. The cluster hides
-        # itself on every occupancy push (start alone never pushes — the
-        # sync below covers that transition) and dies with this window.
+        # The live desk controls docked into this window (NRI-0024 task 5.2's
+        # Tool band, re-docked by the owner ruling 2026-10-05; the spec
+        # «Управление столом живо в шапке главного окна» is retouched by the
+        # next change): a child row between the search bar and the columns,
+        # hugging the search row's right edge, visible only while the table
+        # is up. Deliberate trade of the re-dock: under an open sheet the
+        # panel is visible but unclickable — the sheet's block covers the
+        # whole window content layer, this panel included. The desk caption
+        # re-enters the same «Стол…» path (the connector's open_sheet raises
+        # the live desk), the stop button rides the very stop the desk
+        # button uses. The panel hides itself on every occupancy push (start
+        # alone never pushes — the sync in _start_table covers that
+        # transition) and dies with this window as its child.
         self._table_cluster = TableCluster(
-            self._table_host, window.search_bar, theme=self._theme,
+            self._table_host, window, theme=self._theme,
         )
+        window.attach_table_cluster(self._table_cluster)
         self._table_cluster.desk_requested.connect(self._on_table_host)
         self._table_cluster.stop_requested.connect(
             lambda: self._wiring.run_locked(self._stop_table())

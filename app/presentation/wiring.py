@@ -1232,6 +1232,7 @@ class ApplicationWiring(QObject):
         entity: Any = None,
         load_available: bool = True,
         popup_cleanup: bool = False,
+        related_create_enabled: bool = True,
     ):
         dialog = EntityCardDialog(
             None, entity_type=entity_type, parent=parent,
@@ -1240,6 +1241,7 @@ class ApplicationWiring(QObject):
             # related popup) reads and follows the game's «now» through the
             # widget VM for its read-only age line.
             now_vm=self._now_date_vm,
+            related_create_enabled=related_create_enabled,
         )
         if entity is not None:
             dialog.populate(entity)
@@ -1555,8 +1557,11 @@ class ApplicationWiring(QObject):
     # links are written as one unit of work (task 5.8): the row never
     # rides a later unrelated finish, and rejecting the parent deletes it
     # through the cleanup's own transaction (tasks 5.4/5.6, audit Q14
-    # scenario 1 stays closed). Nested «Создать нового» is intentionally
-    # not wired (depth = 1).
+    # scenario 1 stays closed). The nested «Создать нового» stays unwired
+    # (depth = 1) and — design claim 2026-10-06, a shown button must work —
+    # this card is built with related_create_enabled=False, so its sections
+    # HIDE the entry instead of showing one that silently does nothing;
+    # «Привязать существующего» and «Отвязать» work and stay visible.
     async def _open_related_create_dialog(self, parent_dialog, attr_name: str, entity_type: str):
         async def on_sub_saved(result: EntityCreateResult) -> None:
             sub_svc = self._app._get_entity_service(entity_type)
@@ -1593,6 +1598,7 @@ class ApplicationWiring(QObject):
 
         sub_dialog = await self._open_entity_card(
             entity_type, parent=parent_dialog, on_saved=on_sub_saved,
+            related_create_enabled=False,
         )
         # NRI-0014 task 4.3 (CR5) + NRI-0024 task 1.1: the show contract does
         # what the manual dim/finished pair did before it was generalized —

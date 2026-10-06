@@ -1,31 +1,36 @@
-"""The live table cluster over the main window's search row (NRI-0024,
-task 5.2, design Д3; spec character-sheet-host «Управление столом живо в
-шапке главного окна»).
+"""The live table cluster docked into the main window (was NRI-0024 task 5.2,
+design Д3's parentless Tool band; the owner ruling 2026-10-05 re-docked it —
+the character-sheet-host spec «Управление столом живо в шапке главного окна»
+is retouched by the next change).
 
-While the table is raised the master keeps control of it from the main
-window's top-right corner — in the same band as the game-date chip, i.e.
-above the right edge of the search row: the caption «Стол · N игроков»
-(opens the desk sheet) and the «Остановить стол» button (stops the service
-outright). The cluster lives through any sheet on purpose: a sheet attaches
-natively over the main window and its document modality blocks the whole
-window layer — every child widget of the main window included — and
-the only legal way to keep these two controls clickable over the scrim is a
-window outside that blocked layer. Hence the parentless
-``Qt.Tool | FramelessWindowHint | WindowStaysOnTopHint`` + ``WA_ShowWithoutActivating``
-— the same parentless-popup pattern the mention popup already ships (rule P3),
-raised straight onto the desktop over the sheets.
+While the table is raised the master keeps control of it from the same place
+as before — at the right end of the search row's band, above the columns —
+but no longer from a floating window: the cluster is a CHILD panel of the
+main window, occupying its own layout row between the search bar and the
+splitter (``MainWindow.attach_table_cluster``). The deliberate trade of the
+re-dock, accepted by the owner: under an open sheet the panel stays VISIBLE
+but unclickable — the sheet's block covers the whole window content layer,
+and this panel is part of that layer now.
 
-Positioning is the window's shadow, not a layout row: the cluster re-reads
-the search row's global rectangle on the anchor window's Move/Resize and on
-its WindowStateChange (minimized → the row is off screen, the cluster hides;
-restored → it comes back while the table is still up). Closing the anchor
-window takes the cluster down with it — it never outlives the game it shadows.
+Placement is the window's layout, not a positioning shadow: the controls
+hug the row's right end through the layout's leading stretch, the height is
+fixed (vertical policy ``Fixed`` — a window resize never stretches the band,
+the splitter absorbs the surplus), and a stopped table reserves no strip at
+all: the panel manages its own visibility, and a hidden widget takes neither
+height nor spacing in a box layout.
 
 The caption rides the service's occupancy pushes (join/leave/kick/drop all
 notify; ``start`` alone never does, so the composition root calls
 :meth:`TableCluster.sync_running` right after a successful start). The desk
 click re-enters the connector's one ``open_sheet`` path with the live desk
-panel (re-entry raises the live sheet, spec «Глянуть пульт из-под листа»).
+panel (re-entry raises the live sheet) whenever no sheet covers the window;
+the stop button rides the very locked stop the desk button uses.
+
+Theming: as a child of the ``#themeChrome`` central container the panel is
+skinned by the window's own QSS — the compiler addresses chrome buttons as
+``QWidget[uiRole="chrome"] QPushButton`` (a descendant selector reaching
+this subtree), so the cluster is no longer a chrome root and never calls
+``attach_theme``. Only the token insets still read the runtime directly.
 
 Accessibility follows the island convention (AGENTS.md) with the widget-side
 means: штатной controls only, role and press owned by the widgets themselves.
@@ -36,13 +41,12 @@ adds only the description slot, the hidden meaning of its activation,
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSizePolicy, QWidget
 
 from app.application.services.table_host_service import TableHostService
-from app.presentation.theme.catalog import attach_theme
 
-#: Fallback of the inset from the anchor row's right/top edges — the number
+#: Fallback of the inset from the band's right edge — the number
 #: tokens.json itself carries for space.sm (the SheetFrame fallback pattern).
 _EDGE_INSET_FALLBACK_PX = 8
 
@@ -58,7 +62,7 @@ def cluster_caption(player_count: int) -> str:
 
 
 class TableCluster(QWidget):
-    """Parentless Tool band shadowing the main window while the table runs."""
+    """Child panel of the main window, visible only while the table runs."""
 
     desk_requested = Signal()
     stop_requested = Signal()
@@ -66,26 +70,23 @@ class TableCluster(QWidget):
     def __init__(
         self,
         host: TableHostService,
-        search_row: QWidget,
+        parent: QWidget,
         theme=None,
     ) -> None:
-        # Parentless by design (Д3): a child of MainWindow would sit inside
-        # the sheet-blocked window layer and freeze under the first sheet.
-        super().__init__(
-            None,
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint,
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # A plain child — the floating Tool posture of design Д3 is retired:
+        # the desk controls live inside the window's content layer now and
+        # ride its sheet-stack block like every other child.
+        super().__init__(parent)
         self._host = host
-        self._row = search_row
         self._theme = theme
-        self._inset = self._token_px("space.sm", _EDGE_INSET_FALLBACK_PX)
+        inset = self._token_px("space.sm", _EDGE_INSET_FALLBACK_PX)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(self._inset, 2, self._inset, 2)
+        layout.setContentsMargins(inset, 2, inset, 2)
+        # The leading stretch keeps the row's full width with the controls at
+        # its right end and natural width: the panel sits where the floating
+        # band used to shadow — above the right edge of the search row.
+        layout.addStretch(1)
         # The desk caption is a штатной text button wearing the flat face:
         # role Button, the Press action and the tree name all come from Qt's
         # own button semantics (the convention forbids re-annotating a stock
@@ -101,17 +102,14 @@ class TableCluster(QWidget):
         layout.addWidget(self.desk_label)
         layout.addWidget(self.stop_button)
 
-        if self._theme is not None:
-            # The cluster is a chrome root of its own top-level window (the
-            # QSS never reaches an unattached parentless widget on its own).
-            attach_theme(self, self._theme)
-            self._theme.apply()
+        # Fixed height: sizeHint is the only acceptable height, so neither a
+        # window resize nor a layout surplus ever stretches the band.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         # join / leave / kick / drop / stop all push an occupancy notify; the
         # caption count and the «only while the table is up» rule both ride
         # this one slot (start never notifies — main.py syncs it there).
         host.subscribe_occupancy(self.sync_running)
-        self._row.window().installEventFilter(self)
         self.sync_running()
 
     def _token_px(self, key: str, fallback: int) -> int:
@@ -126,48 +124,12 @@ class TableCluster(QWidget):
     def sync_running(self) -> None:
         """Repaint the count and show/hide from the service's state.
 
-        A minimized anchor window hides the cluster too: its anchor row is
-        off screen, a stays-on-top band floating over the desktop would be
-        detached from the window it shadows (design Д3's desync risk).
+        The panel is the row's only visibility source: hidden, it reserves
+        neither height nor spacing, so the stopped table leaves no empty
+        strip between the search bar and the columns.
         """
-        window = self._row.window()
-        if self._host.is_running and not (
-            window.windowState() & Qt.WindowState.WindowMinimized
-        ):
+        if self._host.is_running:
             self.desk_label.setText(cluster_caption(len(self._host.players())))
             self.show()
-            self._reposition()
         else:
             self.hide()
-
-    def _reposition(self) -> None:
-        """Pin the cluster's right-top corner over the anchor row's right edge.
-
-        Top-aligned with the row (the game-date chip's band, spec «в одном
-        ряду с чипом игровой даты») and right-aligned to it, inset by the
-        same space.sm margin on both sides.
-        """
-        top_right = self._row.mapToGlobal(QPoint(self._row.width(), 0))
-        size = self.sizeHint()
-        self.move(
-            top_right.x() - size.width() - self._inset,
-            top_right.y() + self._inset,
-        )
-
-    # ── following the anchor window (design Д3) ─────────────────────────────
-
-    def eventFilter(self, obj, event) -> bool:  # noqa: N802 — Qt API
-        etype = event.type()
-        if etype in (QEvent.Type.Move, QEvent.Type.Resize):
-            if self.isVisible():
-                self._reposition()
-        elif etype == QEvent.Type.WindowStateChange:
-            # Covers both directions: minimized → the row is off screen;
-            # restored → the cluster returns while the table is still up.
-            self.sync_running()
-        elif etype == QEvent.Type.Close:
-            # The cluster is the window's shadow and never outlives it (game
-            # switch and exit both pass here through the anchor's closeEvent).
-            self.close()
-            self.deleteLater()
-        return False

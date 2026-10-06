@@ -1,16 +1,24 @@
 """DocViewer island scroll contract (NRI-0014 task 2.1, defect AB1).
 
 Offscreen pin that the document island is genuinely scrollable: the root
-carries a stock ``ScrollView`` (the ``SheetPresetRoot.qml`` pattern) around the
-read-only ``mono`` ``ThemeTextArea``, its content is taller than the viewport,
+carries a stock ``ScrollView`` (the ``SheetPresetRoot.qml`` pattern) around
+the read-only RichText ``Text``, its content is taller than the viewport,
 and a programmatic ``contentY`` visibly moves the text. Before this change the
 island had no scroll container at all — only the fragment that fit at open
-time was reachable.
+time was reachable. The formatted-rendering pass swapped the mono TextArea
+for a RichText label; the scroll contract (and the page-key paging) is the
+half this file keeps pinned.
 """
 from __future__ import annotations
 
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog
-from tests.presentation.qml_helpers import find_item, walk_items
+from tests.presentation.qml_helpers import enum_as_int, find_item, walk_items
+
+#: The QML ``Text.RichText`` enum value (``Text`` type numbering: 0 plain,
+#: 1 rich, 2 markdown; read through ``enum_as_int`` — PySide has no
+#: converter for the private ``QQuickText::TextFormat`` behind a bare
+#: ``property()``).
+RICH_TEXT = 1
 
 
 def _long_document(tmp_path) -> "object":
@@ -49,10 +57,11 @@ def test_doc_viewer_root_wraps_the_text_in_a_scroll_view(qtbot, tmp_path):
     scroll, flick = _flick_of(dlg)
     assert "ScrollView" in scroll.metaObject().className()
 
-    # The document itself is still the same read-only monospace field.
+    # The document itself is the formatted RichText label (markup renders,
+    # the raw source never shows).
     text = find_item(dlg.quick, "docText")
-    assert text.property("readOnly") is True
-    assert text.property("mono") is True
+    assert enum_as_int(dlg.quick, text, "textFormat") == RICH_TEXT
+    assert text.property("text") == dlg.vm.html
     # …and it lives inside the scrolling content (the flickable's subtree),
     # which is what makes the content clip and move with contentY.
     assert any(i is text for i in walk_items(flick))

@@ -10,6 +10,8 @@ Rectangle {
     readonly property var islandTokens:
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
     readonly property color surfaceColor: Tokens.token(islandTokens, "color.bg.surface", "white")
+    readonly property color fgColor: Tokens.token(islandTokens, "color.fg.primary", "black")
+    readonly property color accentColor: Tokens.token(islandTokens, "color.accent", "black")
 
     color: surfaceColor
     implicitWidth: 720
@@ -17,13 +19,12 @@ Rectangle {
 
     // Independent-audit addendum (spec document-viewer «Клавиатура
     // прокручивает»): the requirement names PageUp/PageDown next to the
-    // movement keys. Arrow keys reach the Flickable on their own (the
-    // readOnly text edit ignores them and they bubble), but a readOnly
-    // TextArea ACCEPTS the page keys without moving anything and the
-    // ScrollView owns no key handler — so pages are stepped here, one
-    // viewport height per press, clamped to the content. The offset lives
-    // on the ScrollView's contentItem Flickable (ScrollView itself exposes
-    // only the content metrics, not contentY).
+    // movement keys. Pages are stepped here, one viewport height per
+    // press, clamped to the content: the Keys handler runs as the focused
+    // item's event filter BEFORE the selectable RichText sees the key, so
+    // the page steps win over any cursor move the text would make. The
+    // offset lives on the ScrollView's contentItem Flickable (ScrollView
+    // itself exposes only the content metrics, not contentY).
     function pageScroll(direction) {
         var flick = docScroll.contentItem
         var page = docScroll.availableHeight
@@ -47,19 +48,37 @@ Rectangle {
         clip: true
         contentWidth: availableWidth
 
-        ThemeTextArea {
+        // The document renders formatted (md4c → HTML in the VM, the same
+        // Qt rich-text engine): headings/lists/bold/code print as markup,
+        // the colours ride the island tokens (the converter strips Qt's
+        // hardcoded link colour so the accent paints the links). A plain
+        // read-only mono field would show the raw asterisks and hashes.
+        // Mouse selection is NOT available on this runtime: the PySide6
+        // 6.10.3 wheel is built without the Qt textcontrol feature —
+        // Text.selectable/selectByMouse/selectionColor are not types at all
+        // there (probe: QML compile error), so a formatted label is read
+        // and paged, never selected.
+        Text {
             objectName: "docText"
             width: docScroll.availableWidth
-            readOnly: true
-            mono: true
-            text: docViewerVm.text
+            text: docViewerVm.html
+            textFormat: Text.RichText
+            wrapMode: Text.WordWrap
+            color: root.fgColor
+            linkColor: root.accentColor
+            // The reader's carrier takes the scene focus on its own: with no
+            // selection gesture left to earn focus (textcontrol is out of the
+            // wheel), the page keys must still land after the open — this is
+            // the focus the Keys handler below rides.
+            focus: true
             // nri-0012 task 3.4 (usage-site name, design map): the whole
             // island is this one viewer — the name states what it shows.
+            // The role is the stock Text item's static text (readable, not
+            // editable) — the expected face of the formatted viewer.
             Accessible.name: "Текст документа"
             // The page keys land on the focused text (see pageScroll above):
-            // accepted here, the readOnly field would eat them motionless.
-            // Keys has no per-key PageUp/PageDown signal — one onPressed
-            // switch covers both (formal-parameter style of SheetCanvas.qml).
+            // one onPressed switch covers both (formal-parameter style of
+            // SheetCanvas.qml).
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_PageDown) {
                     root.pageScroll(1)

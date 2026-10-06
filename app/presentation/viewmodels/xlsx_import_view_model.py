@@ -59,9 +59,15 @@ class XlsxImportViewModel(QObject):
     # kept from the old island contract: the facade owns QFileDialog
     browseRequested = Signal()
 
-    def __init__(self, format_text: str = "", parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        format_text: str = "",
+        format_html: str = "",
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self._format = format_text
+        self._format_html = format_html
         self._path = ""
         self._state = STATE_IDLE
         self._issues: list[dict[str, Any]] = []
@@ -148,11 +154,18 @@ class XlsxImportViewModel(QObject):
     progressVisible = Property(bool, _get_progress_visible, notify=progressChanged)
 
     # ── hint text (registry-generated, continuity of old hint texts) ──────
+    # Two faces of the one generated hint: the plain source (continuity pin)
+    # and the table HTML the island actually renders (build_format_html).
 
     def _get_format(self) -> str:
         return self._format
 
     formatText = Property(str, _get_format, notify=formatChanged)
+
+    def _get_format_html(self) -> str:
+        return self._format_html
+
+    formatHtml = Property(str, _get_format_html, notify=formatChanged)
 
     # ── report ─────────────────────────────────────────────────────────────
 

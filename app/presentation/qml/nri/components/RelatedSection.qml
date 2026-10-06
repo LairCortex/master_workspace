@@ -73,6 +73,12 @@ ColumnLayout {
         ThemeButton {
             objectName: control.objectPrefix + "CreateButton"
             text: "Создать нового"
+            // The component owns the view (design claim 2026-10-06): the
+            // related-create popup builds its sections with canCreate false
+            // — the nested «Создать нового» signal has no receiver at depth
+            // 1, and a button that silently does nothing must not be shown.
+            // A section without state (gallery probe) keeps the entry.
+            visible: !control.section || control.section.canCreate
             iconName: "plus"
             onClicked: if (control.section) control.section.requestCreate()
         }

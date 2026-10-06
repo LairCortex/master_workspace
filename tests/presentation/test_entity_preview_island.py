@@ -295,15 +295,16 @@ def test_identity_band_seats_the_short_fields_right_of_the_picture(qtbot):
 
 
 @pytest.mark.parametrize("width", [420, 720])
-def test_picture_takes_half_the_band_and_scales_with_the_column(qtbot, width):
-    # The reader's sketch rule (live fix 2026-09-28): no fixed-pixel cap —
-    # the picture block is exactly half of the identity band and its height
-    # keeps the portrait 4:3 proportion, so dragging the splitter resizes
-    # the picture together with the column.
+def test_picture_takes_quarter_the_band_and_scales_with_the_column(qtbot, width):
+    # The reader's sketch rule (live fix 2026-09-28; the share cut from half
+    # to a quarter on 2026-10-05): no fixed-pixel cap — the picture block is
+    # exactly a quarter of the identity band and its height keeps the
+    # portrait 4:3 proportion, so dragging the splitter resizes the picture
+    # together with the column.
     widget = _preview(qtbot, "character", _entity(), size=(width, 1600))
     row = find_item(widget.quick, "previewIdentityRow")
     picture = find_item(widget.quick, "previewImageBlock")
-    assert abs(picture.width() - row.width() / 2) <= 1.0
+    assert abs(picture.width() - row.width() / 4) <= 1.0
     assert abs(picture.height() - picture.width() * 4 / 3) <= 1.0
 
 
@@ -558,14 +559,41 @@ def test_image_press_action_opens_the_same_viewer(
 
 
 def test_missing_link_shows_the_no_image_placeholder(qtbot):
-    widget = _preview(qtbot, "character", _entity())
+    # The caption half of the placeholder, pinned at a width whose quarter
+    # slot fits the whole phrase (at the narrow floor the caption steps out
+    # for the glyph alone — the next test pins that half).
+    widget = _preview(qtbot, "character", _entity(), size=(720, 1400))
     placeholder = find_item(widget.quick, "previewImagePlaceholder")
     assert placeholder.property("text") == "Нет изображения"
     assert placeholder.property("visible") is True
+    # The caption stays inside its slot and never reaches into the fields.
+    slot = find_item(widget.quick, "previewImageBlock")
+    slot_pos = slot.mapToScene(QPointF(0, 0))
+    hint_pos = placeholder.mapToScene(QPointF(0, 0))
+    assert hint_pos.x() >= slot_pos.x() - 1.0
+    assert hint_pos.x() + placeholder.width() <= slot_pos.x() + slot.width() + 1.0
     assert find_item(widget.quick, "previewImage").property("visible") is False
     # With nothing painted the picture is not a target either (its MouseArea
     # is disabled and leaves the scene).
     assert find_item(widget.quick, "previewImageMouseArea").property("enabled") is False
+
+
+def test_narrow_slot_placeholder_shows_only_the_glyph(qtbot):
+    # The narrow-slot half of the quarter rule (2026-10-05): at the column's
+    # 220 px floor (PANE_MIN_WIDTH) the picture slot is ~48 px — too small
+    # for «Нет изображения» — so the caption steps out, the glyph alone keeps
+    # the placeholder face, and nothing overflows into the fields column.
+    widget = _preview(qtbot, "character", _entity(), size=(220, 1400))
+    slot = find_item(widget.quick, "previewImageBlock")
+    placeholder = find_item(widget.quick, "previewImagePlaceholder")
+    assert slot.width() < placeholder.implicitWidth()
+    assert placeholder.property("visible") is False
+    icon = find_item(widget.quick, "previewImagePlaceholderIcon")
+    assert icon.property("visible") is True
+    slot_pos = slot.mapToScene(QPointF(0, 0))
+    icon_pos = icon.mapToScene(QPointF(0, 0))
+    assert slot_pos.x() <= icon_pos.x()
+    assert icon_pos.x() + icon.width() <= slot_pos.x() + slot.width()
 
 
 def test_unavailable_file_degrades_to_the_placeholder_and_the_viewer_survives(
@@ -581,8 +609,11 @@ def test_unavailable_file_degrades_to_the_placeholder_and_the_viewer_survives(
         _entity(image_ref=SimpleNamespace(sha256="b" * 64, ext="png")),
     )
     assert widget.vm.panes[0]["imageSource"] == ""
+    # The 420 px test frame's quarter slot is below the caption's fit
+    # (2026-10-05), so the glyph alone is the placeholder face pinned here.
     assert (
-        find_item(widget.quick, "previewImagePlaceholder").property("visible") is True
+        find_item(widget.quick, "previewImagePlaceholderIcon").property("visible")
+        is True
     )
     # The picture itself is not clickable (nothing is painted), so the open
     # arrives the way the accessibility press drives it; the click then hands

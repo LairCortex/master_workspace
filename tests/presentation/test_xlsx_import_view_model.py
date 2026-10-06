@@ -49,6 +49,13 @@ class TestIdle:
         assert vm.progress == 0
         assert vm.progressVisible is False
 
+    def test_hint_arrives_in_both_faces(self):
+        # The island shows the HTML table, the plain source stays on the VM
+        # (continuity pin of the hint texts) — both arrive at construction.
+        v = XlsxImportViewModel("hint", format_html="<p>hint</p>")
+        assert v.formatText == "hint"
+        assert v.formatHtml == "<p>hint</p>"
+
     def test_path_enables_analyze(self, vm):
         vm.path = "/a.xlsx"
         assert vm.state == STATE_IDLE

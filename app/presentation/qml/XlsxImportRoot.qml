@@ -65,15 +65,32 @@ Rectangle {
             text: "Требования к файлу:"
         }
 
-        ThemeTextArea {
-            objectName: "formatArea"
+        // The hint renders formatted (the dialog's build_format_html — the
+        // same registry data, printed as tables instead of the monospace
+        // pipe layout): the fixed 150 pt band keeps its scroll, now carried
+        // by a stock ScrollView around the RichText label (doc-viewer
+        // pattern — a bare Text does not scroll itself).
+        ScrollView {
+            id: formatScroll
+            objectName: "formatScroll"
             Layout.fillWidth: true
             Layout.preferredHeight: 150
-            readOnly: true
-            mono: true
-            text: xlsxImportVm.formatText
-            // nri-0012 task 3.4 (usage-site name, design map).
-            Accessible.name: "Требования к формату файла"
+            clip: true
+            contentWidth: availableWidth
+
+            Text {
+                objectName: "formatArea"
+                width: formatScroll.availableWidth
+                text: xlsxImportVm.formatHtml
+                textFormat: Text.RichText
+                wrapMode: Text.WordWrap
+                color: root.fgColor
+                font.pixelSize: Tokens.px(root.islandTokens, "font.size.md", 13)
+                // nri-0012 task 3.4 (usage-site name, design map). The role
+                // is the stock Text item's static text — a rendered hint is
+                // read, not edited.
+                Accessible.name: "Требования к формату файла"
+            }
         }
 
         RowLayout {

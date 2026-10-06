@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QStyle,
     QStyleOptionButton,
     QWidget,
@@ -92,9 +93,10 @@ from app.presentation.views.calendar_grid import (
     GameCalendarGrid,
     GameCalendarIntercalaryChip,
 )
-from app.presentation.layout_grid import WIDTH_STEP
+from app.presentation.layout_grid import WIDTH_STEP, ceil_to_width_step
 from app.presentation.views.calendar_wizard import (
     APPLY_ERROR_TITLE,
+    COMPACT_STEPS,
     DAY_SIZE_MAX,
     DAY_SIZE_MIN,
     STEP_COLUMN_MAX_WIDTH,
@@ -974,6 +976,32 @@ class TestPreviewIsOneBlock:
         )
         assert dlg.width() - rightmost >= 4  # «не прижата к границе»
 
+    async def test_content_breathes_off_the_panel_frame(self, async_session, qtbot):
+        """Live audit 2026-10-06: the day-name caption ended ~1 pt from the
+        panel's inner right frame and the frame closed ~1–2 pt under the last
+        week.  The frame is painted on the grid widget itself, so the inset
+        rides on THIS instance's root layout at the usage site (the popups
+        keep the grid's native 2 px seat): between the outermost content
+        edges and the frame the panel keeps its breath."""
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        grid = dlg._preview
+        children = [c for c in grid.findChildren(QWidget) if c.isVisible()]
+        assert children
+        right = max(
+            grid.mapFrom(child, QPoint(child.width() - 1, 0)).x()
+            for child in children
+        )
+        bottom = max(
+            grid.mapFrom(child, QPoint(0, child.height() - 1)).y()
+            for child in children
+        )
+        assert grid.width() - 1 - right >= 2  # right breathes off the frame
+        assert grid.height() - 1 - bottom >= 2  # bottom breathes off the frame
+        # The inset is the space.xs token, and it sits on the right/bottom
+        # only — the grid's own left/top seat stays untouched.
+        margins = grid.layout().contentsMargins()
+        assert (margins.right(), margins.bottom()) == (4, 4)
+
 
 class TestPreviewNumberColour:
     """W5 (spec «числа предпросмотра SHALL иметь контраст не ниже текста
@@ -1118,7 +1146,10 @@ class TestLeftColumnSizedByContent:
         # the preview panel, not to a share-proportional growth of the steps.
         # Since nri-0024 task 3.1 the content lives in the sheet's scrolling
         # body, so the sums read the BODY — the sheet's own chrome (header
-        # row, scroll frame) stands above it, «на всю ширину главного окна».
+        # row, scroll frame) stands above it.  This probe DIRECTLY resizes the
+        # sheet past its frozen content width (the growth rule bypassed): even
+        # a deliberately wide sheet still hands the leftover to the preview,
+        # never to the step column.
         assert dlg._step_column.width() < dlg._body.width() // 2
         leftover_bound = (
             dlg._body.width()
@@ -1191,9 +1222,17 @@ class TestSheetHeightIsCappedByTheContent:
     window the wizard body sat at the top while the footer rode the bottom,
     leaving a ~330 pt empty band between them.  The growth rule answers F4
     (task 3.1): the sheet's height is the window-following value CAPPED at
-    the body's own content fit — a taller window buys no empty band, a
-    shorter one shrinks the sheet to the window (min-height floor included),
-    and only below the content floor does the body scroll take over."""
+    the content fit — a taller window buys no empty band, a shorter one
+    shrinks the sheet to the window (min-height floor included), and only
+    below the content floor does the body scroll take over.
+
+    Live audit 2026-10-06 tightened the cap: the content fit is the number
+    frozen once at construction (``_frozen_default_height``), not a live
+    re-read — under the body's ``setWidgetResizable`` scroll area the live
+    estimate chased its own geometry («height → hint → height») and a tall
+    host landed the sheet at exactly «host − inset».  The cap is absolute:
+    whatever the theme's font metrics do, the compact default stays compact.
+    """
 
     def _on_host(self, qtbot, async_session, host_size):
         host = QWidget()
@@ -1208,15 +1247,56 @@ class TestSheetHeightIsCappedByTheContent:
     ):
         host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
         await dlg.begin()
-        # The cap itself: the sheet opened at the content fit, not at the
-        # window — the F4 band had nowhere to appear…
-        assert dlg.height() == dlg._default_sheet_height()
+        # The cap is the height frozen at construction — the sheet opened at
+        # the content fit, not at the window (the F4 band had nowhere to
+        # appear), and the frozen field, not a re-warmable estimate, is what
+        # the growth rule applied.
+        assert dlg.height() == dlg._frozen_default_height
+        # The absolute pin: a content-fit default on the frozen floor stays
+        # compact at any host height — the old live inflation climbed toward
+        # «host − inset» (here 1360), a compact default cannot pass 700.
+        assert dlg._frozen_default_height <= 700
         assert dlg.height() < host.height()
         # …and nothing to scroll at that size (the sheet never outgrows
         # what the body can show).
         dlg.show()
         QApplication.processEvents()
         assert dlg._body_scroll.verticalScrollBar().maximum() == 0
+        dlg.close()
+
+    async def test_the_grid_keeps_its_natural_height_under_column_slack(
+        self, async_session, qtbot
+    ):
+        """Live audit 2026-10-06, second half: the unfrozen sheet's surplus
+        height landed in the preview — vertically growable, the grid spread
+        its week rows ~30 → ~55 px.  The wizard's seat pins the grid's
+        vertical to its live sizeHint, so the slack that EVER reaches the
+        right column (an oversized sheet included — a direct resize bypasses
+        the frozen growth rule) belongs to the trailing stretch, never to
+        the rows."""
+        host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
+        await dlg.begin()
+        # The seat's policy pin (the calendar_grid class stays untouched —
+        # the popups keep their native, unpinned seat).
+        policy = dlg._preview.sizePolicy()
+        assert policy.verticalPolicy() == QSizePolicy.Policy.Fixed
+        assert policy.horizontalPolicy() == QSizePolicy.Policy.Preferred  # width still takes the leftover
+
+        natural = dlg._preview.sizeHint().height()
+        # Show first (the showEvent re-fit lands the sheet on its frozen cap),
+        # then push the sheet far above its content: the right column now
+        # shows more height than the grid asked for.
+        dlg.show()
+        QApplication.processEvents()
+        dlg.resize(dlg.width(), 1200)
+        QApplication.processEvents()
+        # The body really got the slack (the slack exists; the grid declines it).
+        assert dlg._body.height() > dlg._body.sizeHint().height()
+        assert dlg._preview.height() == dlg._preview.sizeHint().height()
+        assert dlg._preview.sizeHint().height() == natural  # rows not swollen
+        cells = [c for c in dlg._preview.findChildren(GameCalendarCell) if c.text()]
+        assert cells
+        assert max(cell.height() for cell in cells) <= natural
         dlg.close()
 
     async def test_a_short_window_shrinks_the_sheet_floor_and_all(
@@ -1237,6 +1317,189 @@ class TestSheetHeightIsCappedByTheContent:
         # …down to the floor, the sheet never shrinking below it.
         assert dlg.height() == CalendarWizardDialog.MIN_SHEET_HEIGHT
         # done() on the way out uninstalls the growth filter again.
+        dlg.close()
+
+
+class TestSheetWidthIsCappedByTheContent:
+    """Owner ruling 2026-10-06 (retires the nri-0024 task-3.1 «широкий контент
+    — на всю ширину главного окна» law; the calendar-wizard spec line is
+    amended by the next stage): on a wide host the sheet is a compact block
+    sized by its own content, not a strip across the screen.  The width
+    freezes once at construction exactly like the height: the body's content
+    formula — fixed step column + the preview at its NATURAL width (the warmed
+    sizeHint, not the minimum) + the root layout's chrome — climbed to the 40
+    step, so the frozen number itself stays on the width scale.  The narrowing
+    task 3.1 pinned stays: a host narrower than the frozen number narrows the
+    sheet back (never wider than its parent), the body keeps its own floor and
+    the horizontal scroll answers the squeeze.
+    """
+
+    def _on_host(self, qtbot, async_session, host_size):
+        host = QWidget()
+        qtbot.addWidget(host)
+        host.resize(*host_size)
+        dlg = CalendarWizardDialog(_vm(async_session), parent=host)
+        qtbot.addWidget(dlg)
+        return host, dlg
+
+    async def test_a_wide_window_never_stretches_the_sheet_past_the_content(
+        self, async_session, qtbot
+    ):
+        host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
+        await dlg.begin()
+        # The sheet opened at its content's own number, not at the window:
+        # the growth rule applied the frozen width, not a host-width read.
+        assert dlg.width() == dlg._frozen_default_width
+        # The absolute pin against the retired full-width law — the twin of
+        # the height's «≤ 700»: whatever the host and the theme's metrics do,
+        # the content-fit sheet on this scale cannot cross 1100.  The margin
+        # over the old 1000 is deliberate (live audit 2026-10-06 follow-up):
+        # offscreen the frozen width is 880, live metrics land it at
+        # ~1000–1020 (the formula now carries a scroll bar's extent), and the
+        # pin needs slack past the live number to stay a cap, not a hairline.
+        assert dlg._frozen_default_width <= 1100
+        assert dlg.width() < host.width()
+        # the frozen number itself rides the 40 step (квантование сохранено)…
+        assert dlg._frozen_default_width % WIDTH_STEP == 0
+        # …and it IS the body's content formula, not a new magic number:
+        # step column at its fixed width + preview's natural width + chrome
+        # + the seat of the body's vertical scroll bar (the live bar must
+        # never force a horizontal one at the frozen width).
+        root = dlg._body.layout()
+        style_spacing = dlg.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
+        spacing = root.spacing() if root.spacing() >= 0 else style_spacing
+        chrome = (
+            root.contentsMargins().left()
+            + root.contentsMargins().right()
+            + spacing
+        )
+        extent = dlg.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        assert dlg._frozen_default_width == ceil_to_width_step(
+            dlg._step_column.maximumWidth()
+            + dlg._preview.sizeHint().width()
+            + chrome
+            + extent
+        )
+        # The grid no longer inflates across the freed screen: seated on a
+        # content-width column, it carries at most the step's ceiling slack.
+        dlg.show()
+        QApplication.processEvents()
+        assert dlg._preview.width() <= dlg._preview.sizeHint().width() + WIDTH_STEP
+        # and the compact block still shows its whole body — no scroll needed.
+        assert dlg._body_scroll.verticalScrollBar().maximum() == 0
+        assert dlg._body_scroll.horizontalScrollBar().maximum() == 0
+        dlg.close()
+
+    async def test_a_narrower_host_still_narrows_the_sheet_and_the_scroll_answers(
+        self, async_session, qtbot
+    ):
+        # The narrowing behavior is preserved as it stood before the freeze
+        # (measured, not assumed): below the frozen width the sheet rides the
+        # host — it is the BODY that never squeezes under its own floor.
+        host, dlg = self._on_host(qtbot, async_session, (700, 1400))
+        await dlg.begin()
+        assert dlg.width() == 700 < dlg._frozen_default_width
+        dlg.show()
+        QApplication.processEvents()
+        # what stops fitting answers horizontally, the body floor intact.
+        assert dlg._body.width() >= dlg._body.minimumWidth()
+        assert dlg._body_scroll.horizontalScrollBar().maximum() > 0
+        dlg.close()
+
+
+class TestFrozenNumbersCarryTheScrollBarSeat:
+    """Live audit 2026-10-06 follow-up: the header DRAWS 42 pt live while its
+    sizeHint says 41, and the exact hint sums froze the sheet ~1 pt short — a
+    ~13.5 pt vertical bar stood permanently over a fully visible content and
+    then ate into the frozen width until the horizontal bar joined (both bars
+    visible, nothing to scroll).  Both frozen numbers now pay for one scroll
+    bar's seat (PM_ScrollBarExtent): at live metrics neither bar appears at
+    all, and at a genuine squeeze a vertical bar never forces a horizontal one
+    at the frozen width.  The margin is a constructor-time number like the
+    freeze itself — repeated showEvents and host Resizes only ride the frozen
+    cap down, they can never move it."""
+
+    def _on_host(self, qtbot, async_session, host_size):
+        host = QWidget()
+        qtbot.addWidget(host)
+        host.resize(*host_size)
+        dlg = CalendarWizardDialog(_vm(async_session), parent=host)
+        qtbot.addWidget(dlg)
+        return host, dlg
+
+    async def test_first_show_on_a_wide_host_needs_no_scroll_at_all(
+        self, async_session, qtbot
+    ):
+        host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
+        await dlg.begin()
+        # The standard «Выбор типа» step — the screen the live audit walked.
+        assert dlg._stack.currentWidget() is dlg._pages[STEP_CHOICE]
+        dlg.show()
+        QApplication.processEvents()
+        body_scroll = dlg._body_scroll
+        assert body_scroll.verticalScrollBar().maximum() == 0
+        assert body_scroll.horizontalScrollBar().maximum() == 0
+        dlg.close()
+
+    async def test_both_frozen_numbers_hold_the_bar_seat(
+        self, async_session, qtbot
+    ):
+        host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
+        await dlg.begin()
+        extent = dlg.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        assert extent > 0  # the metric answers on every platform's style
+        # Height: the frozen cap is the body floor plus the header hint plus
+        # a whole bar's extent on top — the live header may draw a pt or two
+        # taller than its hint, but not a bar's width taller, so the vertical
+        # bar has no content left to appear for.
+        assert dlg._frozen_default_height >= (
+            dlg._body.minimumHeight()
+            + dlg.header.sizeHint().height()
+            + extent
+        )
+        # Width: the frozen number covers the raw content sum (before its own
+        # 40-step climb) plus the bar's seat, so the viewport — the sheet
+        # minus a vertical bar, if one ever shows — still fits the content
+        # with the root layout's chrome, right margin included.
+        root = dlg._body.layout()
+        style_spacing = dlg.style().pixelMetric(QStyle.PM_LayoutHorizontalSpacing)
+        spacing = root.spacing() if root.spacing() >= 0 else style_spacing
+        chrome = (
+            root.contentsMargins().left()
+            + root.contentsMargins().right()
+            + spacing
+        )
+        assert dlg._frozen_default_width >= (
+            dlg._step_column.maximumWidth()
+            + dlg._preview.sizeHint().width()
+            + chrome
+            + extent
+        )
+        dlg.close()
+
+    async def test_the_frozen_cap_does_not_spread_across_reshow_and_resize(
+        self, async_session, qtbot
+    ):
+        """The margin may not turn the freeze into a moving target: hide and
+        show again, resize the host both ways — the cap stays the constructor
+        number and a wider host never pushes the sheet past it."""
+        host, dlg = self._on_host(qtbot, async_session, (2560, 1400))
+        await dlg.begin()
+        height, width = dlg._frozen_default_height, dlg._frozen_default_width
+        dlg.show()
+        QApplication.processEvents()
+        dlg.hide()
+        host.resize(1400, 900)
+        dlg.show()
+        QApplication.processEvents()
+        assert (dlg._frozen_default_height, dlg._frozen_default_width) == (
+            height,
+            width,
+        )
+        assert (dlg.height(), dlg.width()) == (min(height, 900 - dlg.HEIGHT_INSET), width)
+        host.resize(2560, 1400)
+        QApplication.processEvents()
+        assert (dlg.height(), dlg.width()) == (height, width)
         dlg.close()
 
 
@@ -1295,3 +1558,121 @@ class TestRadioChoiceThroughAccessibility:
         dlg._standard_radio.click()  # re-clicking the checked radio toggles nothing
         assert calls == [KIND_CUSTOM, KIND_STANDARD]
         assert vm.state.kind == KIND_STANDARD
+
+
+# ═════════ live audit 2026-10-05 — короткий шаг не держит мёртвую полосу ═════
+
+
+def _top_in(widget, relative_to) -> int:
+    """y of the widget's top edge in ``relative_to`` coordinates."""
+    return widget.mapTo(relative_to, QPoint(0, 0)).y()
+
+
+def _content_bottom_in(page, relative_to) -> int:
+    """Lowest visible point of the step's own widgets in ``relative_to``
+    coordinates.  Only the widgets count: a spacer is not content — the band it
+    used to leave between the fields and the footer is exactly what these tests
+    measure away."""
+    leaves = [
+        widget
+        for widget in page.findChildren(QWidget)
+        if widget.isVisible() and widget.height() > 0
+        and not widget.findChildren(QWidget)
+    ]
+    assert leaves, f"{page}: шаг без видимого содержимого — мерить нечего"
+    return max(
+        widget.mapTo(relative_to, QPoint(widget.width(), widget.height())).y()
+        for widget in leaves
+    )
+
+
+class TestShortStepsAreCompact:
+    """Live audit 2026-10-05: the short steps («Выбор типа», «Сутки»,
+    «Предпросмотр») held the whole body's height — the content was pinned to the
+    top while the footer rode the bottom of the sheet across a band of empty
+    canvas.  Now a compact step is as tall as its own content and the column's
+    slack parks BELOW the footer; the scroll steps («Неделя», «Месяцы»,
+    «Вставные дни») keep the stretch — there the list owns the vertical, and on
+    «Отчёт» the table does.  The sheet's height cap and the body's 620 floor
+    (WIZARD_MIN_HEIGHT) are untouched: the dead band disappears, the sheet does
+    not shrink, and «Лист может оставаться высоким» stays true.
+
+    Every threshold is counted in ROWS of the step's own content, never in raw
+    pixels — the metrics move with the theme's font while the bands do not.
+    """
+
+    def test_the_compact_vocabulary_names_exactly_the_short_screens(self):
+        # The set is the one switch behind the per-step stretch (a new step must
+        # be placed in one of the two buckets on purpose, never by accident).
+        assert COMPACT_STEPS == {STEP_CHOICE, STEP_DAY, STEP_PREVIEW}
+
+    @staticmethod
+    async def _advance(dlg: CalendarWizardDialog, target: str) -> None:
+        """Stand on ``target`` on the untouched custom defaults.  The package's
+        ``_walk_to`` is a one-shot from the choice screen (it re-picks the kind
+        first); these tests visit several steps of one walk in a row, so this
+        one only ever presses «Далее»."""
+        if dlg._vm.state.step == STEP_CHOICE:
+            dlg._custom_radio.click()
+        while dlg._vm.state.step != target:
+            dlg._next_button.click()
+            await dlg.wait_idle()
+        QApplication.processEvents()
+
+    async def test_the_footer_follows_the_choice_step_content(self, async_session, qtbot):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        page = dlg._pages[STEP_CHOICE]
+        row = dlg._custom_radio.sizeHint().height()
+
+        gap = _top_in(dlg._footer, dlg) - _content_bottom_in(page, dlg)
+        assert 0 <= gap <= 3 * row, (
+            f"между последней строкой шага и футером {gap} pt при строке {row} pt — "
+            "футер обязан идти сразу за контентом"
+        )
+        # The very slack moved below the buttons: the sheet stays as tall as the
+        # body's floor promises, the empty canvas is under the footer.
+        below = (
+            dlg._body.height() - _top_in(dlg._footer, dlg._body) - dlg._footer.height()
+        )
+        assert below >= 3 * row, f"под футером осталось лишь {below} pt пустого холста"
+
+    async def test_the_other_short_steps_carry_their_footer_too(
+        self, async_session, qtbot
+    ):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        for target, ruler in (
+            (STEP_DAY, dlg._day_hours_spin),
+            (STEP_PREVIEW, dlg._summary_label),
+        ):
+            await self._advance(dlg, target)
+            row = ruler.sizeHint().height()
+            gap = (
+                _top_in(dlg._footer, dlg)
+                - _content_bottom_in(dlg._pages[target], dlg)
+            )
+            assert 0 <= gap <= 3 * row, f"{target}: {gap} pt при строке {row} pt"
+            # The strip under the footer, not the step's own rows, is what holds
+            # the column's height here — otherwise the fields would merely be
+            # spread apart across the same dead band.
+            parking = dlg._steps_layout.itemAt(dlg._parking_index).geometry().height()
+            assert parking >= 3 * row, f"{target}: под футером лишь {parking} pt"
+
+    async def test_the_scroll_steps_keep_their_list_stretched(
+        self, async_session, qtbot
+    ):
+        dlg = await _shown_at_audit_size(qtbot, _vm(async_session))
+        for target in (STEP_WEEK, STEP_MONTHS, STEP_INTERCALARY):
+            await self._advance(dlg, target)
+            # The stack eats the column down to the footer — nothing parks under
+            # it, the vertical belongs to the step's own scroll rows.
+            parking = dlg._steps_layout.itemAt(dlg._parking_index).geometry().height()
+            assert parking == 0, f"{target}: под футером припарковалось {parking} pt"
+            page = dlg._pages[target]
+            assert dlg._stack.height() >= 2 * page.sizeHint().height(), target
+            if target == STEP_WEEK:
+                scroll = page.findChild(QScrollArea)
+                row = dlg._week_fields[0].sizeHint().height()
+                assert scroll.height() >= 8 * row, (
+                    f"список недельных дней взял лишь {scroll.height()} pt "
+                    f"при строке {row} pt"
+                )

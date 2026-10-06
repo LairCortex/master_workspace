@@ -314,15 +314,23 @@ QWidget[uiRole="chrome"] QPushButton[uiRole="primary"]:disabled {{
    beyond stop 0.4 — the dot stays well under the ring's diameter, never a
    lit area).  Geometry: 16 px checkbox box with the corner on radius.sm;
    the radio measured down to 14 px, the circle the half of that box
-   («радио — круг»). */
+    («радио — круг»).  The row metrics are the QML ``ThemeCheckBox``'s,
+    single-sourced in this sheet: the indicator↔text gap is ``space.xs`` and
+    the row band is the text plus ``space.sm`` above and below.  The
+    horizontal padding stays 0 — the left edge of the indicators does not
+    shift off the step's text border (NRI-0018 Д7). */
 QWidget[uiRole="chrome"] QRadioButton {{
-    background: transparent;
-    color: {t['color.fg.primary']};
-}}
-QWidget[uiRole="chrome"] QCheckBox {{
-    background: transparent;
-    color: {t['color.fg.primary']};
-}}
+     background: transparent;
+     color: {t['color.fg.primary']};
+     spacing: {t['space.xs']};
+     padding: {t['space.sm']} 0;
+ }}
+ QWidget[uiRole="chrome"] QCheckBox {{
+     background: transparent;
+     color: {t['color.fg.primary']};
+     spacing: {t['space.xs']};
+     padding: {t['space.sm']} 0;
+ }}
 QWidget[uiRole="chrome"] QCheckBox::indicator {{
     width: 16px;
     height: 16px;
@@ -332,6 +340,34 @@ QWidget[uiRole="chrome"] QCheckBox::indicator {{
     background: {t['color.bg.canvas']};
 }}
 QWidget[uiRole="chrome"] QCheckBox::indicator:checked {{
+    background: {t['color.accent']};
+    border-color: {t['color.accent']};
+}}
+/* The desk's seating rows (``table_host/panel.py``) want the checkmark VISIBLE,
+   which QSS cannot paint (no bitmap assets, generated artifacts never reach the
+   disk) — so their flag is the STYLE-FACING class ``TableHostSeatCheck``, the
+   widget paints the tick itself (two ``color.accent.fg`` legs, geometry from
+   the QML ``ThemeCheckBox``'s ``tickLegs``) and this named rule only keeps the
+   indicator's frame and fills from the tokens — the very face the generic rule
+   above gives every chrome checkbox, restated by the class's own name (the
+   popup era-check precedent, NRI-0018 Д8) so the tick sits on the accent fill
+   in the checked state.  The generic rule above stays untouched: every other
+   checkbox of the process keeps the solid-fill state language.  Off-skin this
+   sheet is never applied and the box keeps the native look, native tick
+   included (ui-widget-catalog «Off-skin не ломается»). */
+TableHostSeatCheck {{
+    background: transparent;
+    color: {t['color.fg.primary']};
+}}
+TableHostSeatCheck::indicator {{
+    width: 16px;
+    height: 16px;
+    subcontrol-position: left center;
+    border: 1px solid {t['color.border']};
+    border-radius: {t['radius.sm']};
+    background: {t['color.bg.canvas']};
+}}
+TableHostSeatCheck::indicator:checked {{
     background: {t['color.accent']};
     border-color: {t['color.accent']};
 }}
@@ -588,12 +624,16 @@ GameCalendarIntercalaryChip[selected="true"] {{
    process (W2a D2), and off-skin this sheet is empty, so the box keeps the
    native look.  The checked box is the solid accent fill — Qt QSS draws no
    tick without a bitmap and generated artifacts never reach the disk, while
-   the accent-vs-canvas difference is the same state language the QML
-   checkbox speaks. */
-GameCalendarEraCheck {{
-    background: transparent;
-    color: {t['color.fg.primary']};
-}}
+    the accent-vs-canvas difference is the same state language the QML
+    checkbox speaks.  The row metrics repeat the chrome rule above (the QML
+    ``ThemeCheckBox``'s gap and band), so the popup list and the wizard's own
+    switches read as one family. */
+ GameCalendarEraCheck {{
+     background: transparent;
+     color: {t['color.fg.primary']};
+     spacing: {t['space.xs']};
+     padding: {t['space.sm']} 0;
+ }}
 GameCalendarEraCheck::indicator {{
     width: 16px;
     height: 16px;

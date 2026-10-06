@@ -64,6 +64,13 @@ Rectangle {
             Layout.fillWidth: true
             Item { Layout.fillWidth: true }
             ThemeButton {
+                id: copyButton
+                objectName: "copyButton"
+                text: "Копировать"
+                iconName: "copy"
+                onClicked: root.copyRequested()
+            }
+            ThemeButton {
                 id: closeButton
                 objectName: "closeButton"
                 text: "Закрыть"
@@ -74,4 +81,5 @@ Rectangle {
     }
 
     signal closeRequested()
+    signal copyRequested()
 }

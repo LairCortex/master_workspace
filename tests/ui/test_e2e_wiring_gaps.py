@@ -390,6 +390,12 @@ async def test_create_related_entity_from_card(app, wait_for, menu_qmenu, modal_
         if d.isVisible() and d._entity_type == "item"
     )
 
+    # Design claim 2026-10-06: the popup's own sections hide «Создать
+    # нового» (depth = 1, the nested signal has no receiver); the parent
+    # card opened through the same factory keeps it.
+    assert not any(s.canCreate for s in sub.vm.sections.values())
+    assert all(s.canCreate for s in card.vm.sections.values())
+
     # The popup's related sections are populated: link the existing location.
     await helpers.link_existing_entity_in_tab(
         window, wait_for, sub._related_sections["locations"], "Цех"

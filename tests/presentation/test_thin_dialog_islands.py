@@ -7,11 +7,17 @@ from PySide6.QtGui import QAccessible, QImage, QPixmap
 from app.presentation.views.doc_viewer_dialog import DocViewerDialog
 from app.presentation.views.image_viewer_dialog import ImageViewerDialog
 from app.presentation.views.xlsx_import_dialog import XlsxImportDialog
-from tests.presentation.qml_helpers import find_item, walk_items
+from tests.presentation.qml_helpers import enum_as_int, find_item, walk_items
 
 
 def _names(root) -> set[str]:
     return {root.objectName()} | {i.objectName() for i in walk_items(root)}
+
+
+#: The QML ``Text.RichText`` enum value (the ``Text`` type's own numbering —
+#: PlainText=0, RichText=1, Markdown=2; ``property()`` cannot hand the
+#: private ``QQuickText::TextFormat`` to Python, hence ``enum_as_int``).
+RICH_TEXT = 1
 
 
 def test_xlsx_import_root_object_names(qtbot):
@@ -20,7 +26,7 @@ def test_xlsx_import_root_object_names(qtbot):
     root = dlg.quick.rootObject()
     names = _names(root)
     assert "formatArea" in names
-    assert find_item(dlg.quick, "formatArea").property("readOnly") is True
+    assert enum_as_int(dlg.quick, find_item(dlg.quick, "formatArea"), "textFormat") == RICH_TEXT
     assert "pathField" in names
     assert "browseButton" in names
     assert "downloadButton" in names
@@ -64,7 +70,7 @@ def test_image_viewer_close_button_carries_its_pass_glyph(qtbot):
     assert close.property("text") == "Закрыть"
 
 
-def test_doc_viewer_root_has_textarea_no_buttons(qtbot, tmp_path):
+def test_doc_viewer_root_has_rich_text_no_buttons(qtbot, tmp_path):
     path = tmp_path / "doc.md"
     path.write_text("hello", encoding="utf-8")
     dlg = DocViewerDialog("T", path)
@@ -74,7 +80,7 @@ def test_doc_viewer_root_has_textarea_no_buttons(qtbot, tmp_path):
     assert "docText" in names
     assert "saveButton" not in names
     assert "closeButton" not in names
-    assert find_item(dlg.quick, "docText").property("readOnly") is True
+    assert enum_as_int(dlg.quick, find_item(dlg.quick, "docText"), "textFormat") == RICH_TEXT
 
 
 def test_xlsx_island_live_retheme(qtbot, tmp_path):
@@ -174,10 +180,13 @@ def _iface(quick, name: str):
 
 
 def test_xlsx_import_zones_carry_map_names(qtbot):
+    """The formatted hint is a rendered, not editable, label: its role is the
+    stock Text item's static text (the formatted-rendering pass swapped the
+    editable-text field; the usage-site name from the nri-0012 map stands)."""
     dlg = XlsxImportDialog()
     qtbot.addWidget(dlg)
     fmt = _iface(dlg.quick, "formatArea")
-    assert fmt.role() == QAccessible.Role.EditableText
+    assert fmt.role() == QAccessible.Role.StaticText
     assert fmt.text(QAccessible.Name) == "Требования к формату файла"
 
     path_field = _iface(dlg.quick, "pathField")
@@ -185,11 +194,13 @@ def test_xlsx_import_zones_carry_map_names(qtbot):
     assert path_field.text(QAccessible.Name) == "Путь к файлу .xlsx"
 
 
-def test_doc_viewer_textarea_carries_map_name(qtbot, tmp_path):
+def test_doc_viewer_text_carries_map_name(qtbot, tmp_path):
+    """Same swap on the doc viewer: the formatted document reads as static
+    text — the expected role of a rendered, non-editable surface."""
     path = tmp_path / "doc.md"
     path.write_text("hello", encoding="utf-8")
     dlg = DocViewerDialog("T", path)
     qtbot.addWidget(dlg)
     doc_text = _iface(dlg.quick, "docText")
-    assert doc_text.role() == QAccessible.Role.EditableText
+    assert doc_text.role() == QAccessible.Role.StaticText
     assert doc_text.text(QAccessible.Name) == "Текст документа"
