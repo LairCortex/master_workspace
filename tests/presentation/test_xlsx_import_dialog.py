@@ -195,6 +195,52 @@ class TestHintHtmlFace:
         assert "да " not in hint
 
 
+def _hint_sheet_labels(hint: str, sheet_name: str) -> list[str]:
+    """Column labels of one sheet block of the plain-text hint, in printed
+    order (the rows after the sheet caption, up to the next non-row line)."""
+    block = hint.split(f"Лист «{sheet_name}»", 1)[1]
+    labels: list[str] = []
+    for line in block.splitlines():
+        if line.startswith("  ") and "|" in line:
+            labels.append(line.split("|")[0].strip())
+        elif line:
+            break
+    return labels
+
+
+class TestHintNri0027Columns:
+    """NRI-0027 task 5.3 — the two event columns joined the hint tables
+    straight from the registry with the design Д7 descriptions verbatim, at
+    the registry positions (time next to the date, parent next to «Тип»);
+    every pre-existing hint token stayed word-for-word (the continuity
+    guards above pin that half)."""
+
+    def test_text_face_lists_the_new_rows_with_registry_descriptions(self):
+        sheet = xlsx_schema.sheet_for("event")
+        hint = build_format_text()
+        # Optional columns read «нет» and carry the registry's own description.
+        assert f"| нет | {sheet.column('start_time').description}" in hint
+        assert f"| нет | {sheet.column('parent_event').description}" in hint
+        # The design's wordings verbatim — a description drift breaks here.
+        assert (
+            "| нет | Время начала: `HH:MM` или ячейка времени; "
+            "для игрового календаря — в его границах"
+        ) in hint
+        assert "| нет | Родительское событие: имя события-родителя (одно)" in hint
+
+    def test_new_rows_sit_at_the_registry_positions(self):
+        labels = _hint_sheet_labels(build_format_text(), "События")
+        assert labels.index("Время начала") == labels.index("Дата начала") + 1
+        assert labels.index("Родительское событие") == labels.index("Тип") + 1
+
+    def test_html_face_carries_the_same_new_rows(self):
+        hint = build_format_html()
+        assert "<td>Время начала</td>" in hint
+        assert "<td>Родительское событие</td>" in hint
+        assert "Время начала: `HH:MM` или ячейка времени" in hint
+        assert "Родительское событие: имя события-родителя (одно)" in hint
+
+
 class TestDateFormatsHint:
     """C5 task 5.1 — the «Даты» helper: the preset answers the old two lines
     word-for-word; a custom calendar keeps them and adds the game wording with

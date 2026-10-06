@@ -19,22 +19,28 @@ template of the previous version (spec «Стандартный пресет п�
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 
 from openpyxl import Workbook
 
 from app.application.services import xlsx_schema
 from app.domain.game_calendar import GameCalendar, StandardCalendar
+from app.domain.time_of_day import TimeOfDay
 
 # Sample rows keyed by column key (ColumnSpec.key) / link target type. The
 # rows cross-reference each other in BOTH directions with `;` lists (spec
 # «Ссылка на строку другого листа») so the template demonstrates the link
 # syntax; «Бал» carries a native date cell, the other rows ISO text, and
 # «Заговор» shows both accepted BC text forms — all valid date spellings.
+# Since NRI-0027 (design Д6) the time and parent columns demo the same way:
+# «Бал» carries a start time, «Дуэль» a start time AND «Бал» as its parent —
+# the parent name resolves among the template's own rows, so the re-imported
+# template stays clean (spec «Шаблон импортируется в свою игру чисто»).
 SAMPLE_ROWS: dict[str, list[dict[str, object]]] = {
     "event": [
         {
             "name": "Бал", "start_date": date(1820, 5, 1), "end_date": "1820-05-02",
+            "start_time": "19:00",
             "characteristics": "Зимний бал в особняке на соборной площади",
             "backstory": "Танец, после которого старый город заговорил о Марии и Иване.",
             "rating": 4, "event_type": "Праздник",
@@ -43,8 +49,10 @@ SAMPLE_ROWS: dict[str, list[dict[str, object]]] = {
         },
         {
             "name": "Дуэль", "start_date": "1815-01-10", "end_date": None,
+            "start_time": "06:00",
             "characteristics": "На рассвете, за старыми дубами",
             "backstory": None, "rating": None, "event_type": "Дуэль",
+            "parent_event": "Бал",
             "character": "Иван", "organization": None,
             "item": None, "location": "Поляна",
         },
@@ -207,13 +215,44 @@ def _adjust_date_cell(value: object, calendar: GameCalendar) -> object:
     return iso
 
 
+def _adjust_time_cell(value: object, calendar: GameCalendar) -> object:
+    """One sample time → the same wall-clock time clamped into ``calendar``:
+    hour → ``min`` over the calendar's day length, minute → ``min`` over its
+    hour (design Д6, the time half of D7's cleanliness invariant).  The
+    carrier survives — a native time cell stays a native time, ``HH:MM``
+    text stays text; a cell the preset reader cannot read ships unchanged
+    (rewriting what is not legible here is the author's error to fix, not
+    this function's to guess).  For the «Стандартный» preset every sample
+    time is already a valid wall-clock time, so there the adjustment is the
+    identity and nothing is rewritten (spec «Стандартный пресет получает
+    прежний шаблон»).
+    """
+    spec = getattr(calendar, "spec", None)
+    if spec is None:
+        return value  # preset adjustment — the identity (spec «прежний шаблон»)
+    # Same posture as _adjust_date_cell: samples are authored in the preset
+    # spelling, the untouched preset reader just extracts the numbers.
+    minutes = xlsx_schema.parse_cell_time(value, _PRESET_READER)
+    if minutes is None:
+        return value
+    moment = TimeOfDay.from_minutes(minutes, _PRESET_READER.minutes_per_hour)
+    hour = min(moment.hour, calendar.day_hours - 1)
+    minute = min(moment.minute, calendar.minutes_per_hour - 1)
+    if isinstance(value, time):
+        return time(hour=hour, minute=minute)  # native cell stays native
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _adjust_row(row: dict[str, object], calendar: GameCalendar) -> dict[str, object]:
-    """Copy of one sample row with its two date columns adjusted."""
+    """Copy of one sample row with its date columns and its time cell adjusted."""
     adjusted = dict(row)
     for key in ("start_date", "end_date"):
         value = adjusted.get(key)
         if value is not None:
             adjusted[key] = _adjust_date_cell(value, calendar)
+    time_value = adjusted.get("start_time")
+    if time_value is not None:
+        adjusted["start_time"] = _adjust_time_cell(time_value, calendar)
     return adjusted
 
 

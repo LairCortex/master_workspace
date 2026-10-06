@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Iterable, Iterator
 
 from app.domain import entity_registry
@@ -117,6 +117,12 @@ COL_START_DATE = ColumnSpec(
     description="Начало: YYYY-MM-DD, дата Excel (наша эра), «5 марта 44 г. до н.э.» "
                 "или -0044-03-05",
 )
+COL_START_TIME = ColumnSpec(
+    key="start_time", label="Время начала",
+    # No English alias: the column is new (NRI-0027), the old format never had it.
+    description="Время начала: `HH:MM` или ячейка времени; для игрового календаря "
+                "— в его границах",
+)
 COL_END_DATE = ColumnSpec(
     key="end_date", label="Дата конца", aliases=("end_date",),
     description="Конец: форматы те же, что у даты начала",
@@ -140,6 +146,13 @@ COL_IMAGE = ColumnSpec(
 COL_EVENT_TYPE = ColumnSpec(
     key="event_type", label="Тип", special=True,
     description="Тип события (отсутствующий тип создаётся автоматически)",
+)
+COL_PARENT_EVENT = ColumnSpec(
+    key="parent_event", label="Родительское событие",
+    # No English alias (new column, NRI-0027); the key deliberately differs
+    # from the ORM column parent_id — the name never rides the setattr cycle
+    # (design Д1/Д4).
+    description="Родительское событие: имя события-родителя (одно)",
 )
 COL_PERSONALITY = ColumnSpec(
     key="personality", label="personality",
@@ -213,44 +226,52 @@ def _common_columns() -> tuple[ColumnSpec, ...]:
 # Sheet ids and names come from the registry / EntityType (wave 3, A4 — the
 # RU sheet captions ARE the registry plural labels); the columns and the per
 # sheet link target layout stay this file's format knowledge (spec "Колонки
-# листа" / "Колонки связей").
+# листа" / "Колонки связей").  Since NRI-0027 (design Д1) the «События» tuple
+# is full and explicit — its «Время начала» must sit right next to «Дата
+# начала» and «Родительское событие» right after «Тип», which the common
+# "_common_columns() + extras" tail assembly cannot express; the other four
+# sheets keep that assembly.
 SHEETS: dict[str, SheetSpec] = {
     spec.entity_type: spec
     for spec in tuple(
         SheetSpec(
             entity_type=etype.value,
             sheet_name=entity_registry.descriptor(etype).plural_label,
-            columns=_common_columns() + extras,
+            columns=columns,
             link_targets=tuple(target.value for target in targets),
         )
-        for etype, extras, targets in (
+        for etype, columns, targets in (
             (
                 EntityType.EVENT,
-                (COL_EVENT_TYPE,),
+                (
+                    COL_NAME, COL_START_DATE, COL_START_TIME, COL_END_DATE,
+                    COL_CHARACTERISTICS, COL_BACKSTORY, COL_RATING,
+                    COL_EVENT_TYPE, COL_PARENT_EVENT,
+                ),
                 (EntityType.CHARACTER, EntityType.ORGANIZATION,
                  EntityType.ITEM, EntityType.LOCATION),
             ),
             (
                 EntityType.CHARACTER,
-                (COL_PERSONALITY, COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
+                _common_columns() + (COL_PERSONALITY, COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
                 (EntityType.EVENT, EntityType.ORGANIZATION,
                  EntityType.ITEM, EntityType.LOCATION),
             ),
             (
                 EntityType.LOCATION,
-                (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
+                _common_columns() + (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
                 (EntityType.EVENT, EntityType.CHARACTER,
                  EntityType.ORGANIZATION, EntityType.ITEM),
             ),
             (
                 EntityType.ORGANIZATION,
-                (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
+                _common_columns() + (COL_TASKS, COL_MUSIC_URL, COL_IMAGE),
                 (EntityType.EVENT, EntityType.CHARACTER,
                  EntityType.ITEM, EntityType.LOCATION),
             ),
             (
                 EntityType.ITEM,
-                (COL_MUSIC_URL,),
+                _common_columns() + (COL_MUSIC_URL,),
                 (EntityType.EVENT, EntityType.CHARACTER,
                  EntityType.ORGANIZATION, EntityType.LOCATION),
             ),
@@ -674,6 +695,49 @@ _GAME_INTERCALARY_RE = re.compile(
 )
 
 
+# The «HH:MM» text of the time column (spec «Колонка „Время начала“»): both
+# parts 1–2 digits around the one `:` separator — the same caption shape the
+# app's own time surfaces print.  Whether the numbers fit the game day is the
+# calendar's question, not this grammar's (design Д2).
+_TIME_TEXT_RE = re.compile(r"^(?P<hour>\d{1,2}):(?P<minute>\d{1,2})$")
+
+
+def parse_cell_time(
+    value: object, calendar: GameCalendar | None = None
+) -> int | None:
+    """Cell → minutes from the start of the game day; else None (design Д2).
+
+    The two accepted cells are the ``HH:MM`` text and a native Excel time
+    cell (``datetime.time``, its seconds dropped — spec «Секунды нативной
+    ячейки отбрасываются»).  The result is the storage currency of
+    ``events.start_time``: whole hours counted in the calendar's own minute
+    unit (:meth:`app.domain.time_of_day.TimeOfDay.to_minutes`).  The bounds —
+    hour < ``day_hours``, minute < ``minutes_per_hour`` — are read only from
+    ``calendar``, so no 24/60 ever appears here (spec: «никаких чисел про
+    календарь парсер не хранит»); any valid minute is accepted, the card's
+    step of 5 is an input convenience, never a data rule.  Unreadable content
+    and out-of-calendar numbers answer None alike — the caller turns None on
+    a non-empty cell into a report warning, not a row problem (the warning
+    text echoes the original cell value, so the caller needs no finer
+    distinction).  ``calendar`` defaults to :func:`current_calendar`, the
+    same active-calendar posture as :func:`parse_cell_date`.
+    """
+    active = current_calendar() if calendar is None else calendar
+    if isinstance(value, time):
+        hour, minute = value.hour, value.minute
+    elif isinstance(value, str):
+        match = _TIME_TEXT_RE.match(value.strip())
+        if match is None:
+            return None
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute"))
+    else:
+        return None
+    if hour >= active.day_hours or minute >= active.minutes_per_hour:
+        return None
+    return hour * active.minutes_per_hour + minute
+
+
 def parse_cell_rating(value: object) -> int | None:
     """Integer rating 1..5; None for empty cells; ValueError for garbage.
 
@@ -746,6 +810,7 @@ __all__ = [
     "normalize_header",
     "parse_cell_date",
     "parse_cell_rating",
+    "parse_cell_time",
     "parse_link_cell",
     "resolve_headers",
     "sheet_for",

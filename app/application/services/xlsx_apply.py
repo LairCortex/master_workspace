@@ -23,12 +23,16 @@ from app.application.services.event_service import COLOR_INDEX_MAX, COLOR_INDEX_
 from app.application.services.xlsx_analyze import (
     DateShiftRow,
     ImportPlan,
+    LINK_TO_DB,
     PlannedLink,
     PlannedRow,
     RowIssue,
     coord_text,
 )
-from app.application.services.xlsx_report_text import vanished_after_analysis
+from app.application.services.xlsx_report_text import (
+    start_time_warning,
+    vanished_after_analysis,
+)
 from app.domain import entity_registry
 from app.domain.allowed_image_extensions import ALLOWED_IMAGE_EXTENSIONS
 from app.domain.enums.entity_type import EntityType
@@ -54,10 +58,12 @@ def orm_model(entity_type_key: str) -> type:
 # ── Apply / report (rework-xlsx-import, task group 3, designs D4–D6) ─────
 # ``apply_plan`` consumes a finished ImportPlan: pass 1 materializes every
 # planned entity (updates by unique name, creates, ghost link targets, auto
-# event types, image ingestion), pass 2 adds links through the ORM
-# relationships. Neither pass ever unlinks an existing relation (design D4),
-# and the whole run is one transaction: exactly one commit on success,
-# rollback + re-raise on any failure (spec "Транзакционность импорта").
+# event types, image ingestion) and ends with the deferred parent writes of
+# design Д4, pass 2 adds links through the ORM relationships. Neither pass
+# ever unlinks an existing relation (design D4) or unbinds a stored parent
+# (NRI-0027), and the whole run is one transaction: exactly one commit on
+# success, rollback + re-raise on any failure (spec "Транзакционность
+# импорта").
 
 # The ORM relationship attribute carrying links to entities of one target
 # type is the registry's plural collection name (wave 3, A4): all M2M
@@ -66,6 +72,11 @@ def orm_model(entity_type_key: str) -> type:
 
 #: PlannedRow.fields keys consumed by dedicated rules (name / description
 #: row / event-type resolution / image pipeline) instead of plain setattr.
+#: ``start_time`` deliberately stays OUT (NRI-0027, design Д3): the registry
+#: key is the very name of the model's public property, so the plain setattr
+#: cycle writes the domain ``TimeOfDay`` through it (``parent_event`` needs
+#: no entry here — it names no column, the gate below drops it, and the
+#: deferred parent phase of design Д4 consumes it).
 _NON_SCALAR_KEYS = frozenset({"name", "characteristics", "backstory", "event_type", "image"})
 
 
@@ -116,8 +127,12 @@ async def apply_entities_pass(
     image_store: ImageStore | None,
 ) -> tuple[dict[tuple[str, str], Any], list[int]]:
     """Pass 1: every planned row upserts, every ghost materializes
-    (design D5). Returns the (type, lower(name)) → model map used by
-    pass 2, plus image ids replaced by updates (post-commit GC list)."""
+    (design D5); once ALL entities exist, the deferred phase of design Д4
+    writes every resolved ``parent_id`` (a file parent is read off its
+    flushed instance — its row may sit below the child's —, a DB parent
+    needs no instance: the name index already carried the id). Returns the
+    (type, lower(name)) → model map used by pass 2, plus image ids replaced
+    by updates (post-commit GC list)."""
     instances: dict[tuple[str, str], Any] = {}
     replaced_images: list[int] = []
     event_types = await _load_event_types(session)
@@ -157,6 +172,24 @@ async def apply_entities_pass(
             f"по ссылающимся строкам: {refs}"
         )
         tick()
+
+    # Deferred parent phase (NRI-0027, design Д4): the «Родительское событие»
+    # needs an id on both ends, so it lands only after every entity exists —
+    # deferred the way the links are. A LINK_TO_FILE parent is read off its
+    # plan row's flushed instance (the file may describe the parent BELOW the
+    # child); a LINK_TO_DB parent is written straight by the id the name
+    # index carried, no instance needed. The two-level validity was decided
+    # by the pre-analysis on the common judge, so nothing is re-checked here.
+    for row in ordered_rows(plan):
+        parent_ref = row.parent_ref
+        if parent_ref is None:
+            continue  # empty cell — the stored parent stays untouched
+        obj = instances[row.key]
+        if parent_ref.resolution == LINK_TO_DB:
+            obj.parent_id = parent_ref.db_id
+        else:
+            obj.parent_id = instances[parent_ref.target_key].id
+    await session.flush()
     return instances, replaced_images
 
 
@@ -212,6 +245,14 @@ async def _upsert_row(
     # columns plus a schema placeholder for the NOT NULL slot under a
     # custom calendar), not to setattr.
     route_insert_dates(obj, row.fields)
+
+    if row.bad_start_time is not None:
+        # Design Д3: the warning is printed on the apply pass (the report
+        # warning seat of the image pipeline), from the flag the pre-analysis
+        # left on the row — the event itself was imported without time.
+        report.warnings.append(
+            start_time_warning(row.sheet, row.first_row_number, row.bad_start_time)
+        )
 
     if row.entity_type == "event" and row.fields.get("event_type"):
         # The relationship (not the raw FK) is assigned: the entity may

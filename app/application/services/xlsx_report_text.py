@@ -7,6 +7,8 @@ the monolith produced — the import spec and the e2e assertions pin them.
 """
 from __future__ import annotations
 
+from app.domain.event_nesting import parent_refusal_message
+
 #  ── pre-analysis row problems ────────────────────────────────────────────
 
 #: RU captions of the pre-analysis date problems (design D4, task 2.4): the
@@ -34,6 +36,49 @@ def ambiguous_link_reference(label: str, name: str, sheet_name: str) -> str:
         f"колонка «{label}»: ссылка «{name}» разрешения "
         f"не имеет — в базе несколько сущностей (лист «{sheet_name}»), "
         "а в файле нет строки с таким именем"
+    )
+
+
+# ── pre-analysis «Родительское событие» problems (NRI-0027, designs Д4/Д5) ─
+
+
+def parent_problem_caption(name: str, row_number: int, code: str, parent_name: str) -> str:
+    """Row-skip caption for a parent link the common two-level judge refused:
+    the shared module's Russian refusal text — the very wording the event
+    card answers with (design Д5, no second copy here) — carrying the
+    offending event's name and its Excel row number. The parent name fills
+    the ``not_found`` slot of the shared text."""
+    return (
+        f"событие «{name}» (строка {row_number}): "
+        f"{parent_refusal_message(code, f'«{parent_name}»')}"
+    )
+
+
+def ambiguous_parent_reference(name: str, row_number: int, parent_name: str) -> str:
+    """Row-skip caption for a parent name the name index cannot resolve to
+    one event: the DB carries several events under the name and no live file
+    row provides it, so the file-priority branch (design Д4) could not win."""
+    return (
+        f"событие «{name}» (строка {row_number}): родитель «{parent_name}» "
+        "разрешения не имеет — в базе несколько событий с таким именем, "
+        "а в файле нет живой строки с этим именем"
+    )
+
+
+# ── apply-phase warning (NRI-0027, designs Д2/Д3) ─────────────────────────
+
+
+def start_time_warning(sheet: str, row_number: int, value: object) -> str:
+    """Report warning for a «Время начала» cell the grammar or the active
+    game calendar refused (spec «Колонка „Время начала“»): the sheet, the
+    row number and the original cell value. The row is never lost — the
+    event is imported without time; the text is emitted on the apply pass
+    (design Д3, where the report warnings live) from the flag the
+    pre-analysis left on the planned row."""
+    return (
+        f"Лист «{sheet}», строка {row_number}: время начала «{value}» "
+        "не разобрано или не помещается в игровой календарь — "
+        "событие импортировано без времени"
     )
 
 

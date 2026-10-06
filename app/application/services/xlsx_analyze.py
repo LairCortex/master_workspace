@@ -21,15 +21,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.services import xlsx_schema as schema
 from app.application.services.xlsx_report_text import (
     ambiguous_link_reference,
+    ambiguous_parent_reference,
     date_problem_caption,
+    parent_problem_caption,
 )
 from app.domain.date_era import era_key
+from app.domain.event_nesting import parent_refusal_code
 from app.domain.game_calendar import (
     GameCoord,
     MonthDay,
     current_calendar,
     shift_invalid,
 )
+from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.calendar_storage import (
     encode_coord,
 )
@@ -40,6 +44,10 @@ from app.infrastructure.repositories.name_index import query_lower_name_index
 LINK_TO_FILE = "file"
 LINK_TO_DB = "db"
 LINK_TO_GHOST = "ghost"
+
+# «Родительское событие» names one event — the parent column's target type
+# (NRI-0027, design Д4: the two-pass channel of the links, ghost branch off).
+PARENT_TARGET_TYPE = "event"
 
 
 # ── Import plan (rework-xlsx-import, design D2) ───────────────────────────
@@ -106,6 +114,20 @@ class PlannedLink:
     db_id: int | None = None
 
 
+@dataclass(frozen=True)
+class ParentRef:
+    """One resolved «Родительское событие» of a planned event row (NRI-0027,
+    design Д4): ``target_key`` is the (event, lower(name)) key the cell name
+    resolved to, ``resolution`` is ``LINK_TO_FILE`` (apply takes the id from
+    that plan row's instance once every entity exists) or ``LINK_TO_DB`` (the
+    index record's ``db_id``). A ghost parent is never invented, so this
+    reference has no ghost kind."""
+
+    target_key: tuple[str, str]
+    resolution: str  # LINK_TO_FILE | LINK_TO_DB
+    db_id: int | None = None
+
+
 @dataclass
 class PlannedRow:
     """A merged planned entity (one or more file rows of one type and name).
@@ -128,6 +150,14 @@ class PlannedRow:
     date_shifts: dict[str, DateShiftRow] = field(default_factory=dict)
     skipped: bool = False
     existing_id: int | None = None
+    # Resolved «Родительское событие» (NRI-0027, design Д4): None = the cell
+    # was empty (upsert keeps a stored parent) or the row is unresolved — an
+    # unresolved row is skipped anyway, so apply never reads a stale value.
+    parent_ref: ParentRef | None = None
+    # «Время начала» cell the grammar or the game calendar refused (design Д3):
+    # the original value kept for the report warning the apply pass prints;
+    # the ``start_time`` fields key is deliberately absent for such a cell.
+    bad_start_time: Any = None
 
     @property
     def name(self) -> str:
@@ -251,6 +281,7 @@ def _row_to_draft(
     """Parse one data row into a merge candidate, or a planned-skip issue."""
     fields: dict[str, Any] = {}
     date_shifts: dict[str, DateShiftRow] = {}
+    bad_start_time: Any = None
     for pos in sorted(resolved.scalars):
         col = resolved.scalars[pos]
         value = row[pos] if pos < len(row) else None
@@ -295,6 +326,24 @@ def _row_to_draft(
             if rating is not None:
                 fields["rating"] = rating
             continue
+        if col.key == "start_time":
+            # NRI-0027 (design Д3): the draft already carries the domain
+            # TimeOfDay the apply pass will write via the model's public
+            # property — time is a scalar, never a date slot.  A cell the
+            # grammar or the active calendar refuses is flagged for the report
+            # warning instead of becoming a row problem, and puts no key into
+            # fields — exactly the «пустая ячейка не затирает» semantics
+            # (spec «Колонка „Время начала“»).
+            if _empty_cell(value):
+                continue
+            minutes = schema.parse_cell_time(value)
+            if minutes is None:
+                bad_start_time = value
+            else:
+                fields["start_time"] = TimeOfDay.from_minutes(
+                    minutes, current_calendar().minutes_per_hour
+                )
+            continue
         if _empty_cell(value):
             continue  # non-empty values only (merge/upsert overlap rule)
         fields[col.key] = str(value).strip()
@@ -329,6 +378,7 @@ def _row_to_draft(
         fields=fields,
         links=links,
         date_shifts=date_shifts,
+        bad_start_time=bad_start_time,
     )
     return draft, None
 
@@ -366,6 +416,16 @@ def _parse_sheet(
         # Merge (type, lower(name)): later non-empty fields override, links
         # accumulate (order preserved, per-row dedup already applied).
         merged.fields.update(draft.fields)
+        # The «Время начала» slot follows the dates' merge style (design Д3):
+        # the last cell that wrote decides the warning — a valid value clears
+        # an earlier flag, a bad cell keeps/refreshes it.  A bad cell that
+        # lands on a slot another row already filled with a valid time warns
+        # about nothing: the event IS imported with time, and the warning
+        # text promises the opposite.
+        if "start_time" in draft.fields:
+            merged.bad_start_time = None
+        elif draft.bad_start_time is not None and "start_time" not in merged.fields:
+            merged.bad_start_time = draft.bad_start_time
         # A transferred date slot travels with its visible report row: the
         # winning contribution replaces the transfer (or clears it when the
         # new value needed no shift) — the report lists only actual transfers.
@@ -445,6 +505,13 @@ def _collect_wanted_names(plan: ImportPlan) -> dict[str, set[str]]:
         for refs in row.links.values():
             for ref in refs:
                 wanted.setdefault(ref.target_type, set()).add(ref.target_key[1])
+        parent_name = row.fields.get("parent_event")
+        if parent_name:
+            # Parent names ride the event index too (NRI-0027, design Д4):
+            # a parent is a live file row or a unique DB event, never a ghost.
+            wanted.setdefault(PARENT_TARGET_TYPE, set()).add(
+                str(parent_name).strip().lower()
+            )
     return wanted
 
 
@@ -544,17 +611,97 @@ def _resolve_row_links(plan: ImportPlan, row: PlannedRow) -> RowIssue | None:
     return None
 
 
+def _resolve_row_parent(
+    plan: ImportPlan, row: PlannedRow, live_at_pass_start: set[tuple[str, str]]
+) -> RowIssue | None:
+    """Resolve one event row's «Родительское событие» (NRI-0027, design Д4).
+
+    The links' two-pass channel minus the ghost branch: a unique LIVE file
+    row of the name wins (the merge engine keeps lower(name) unique across
+    the whole file, so file parents are unambiguous by construction), else a
+    unique DB record of the name index; an ambiguous DB name skips the row.
+    The looked-up verdict — found (or missing), declared a child, self — goes
+    through the one common two-level judge of ``app.domain.event_nesting``:
+    the card's very Russian refusals answer.  A parent declared a sub-event
+    by its own file cell opens a third level, and every cycle collapses into
+    exactly this verdict — walking the parent chain up one step finds a child,
+    and a DB parent says the same through its ``parent_id`` (design Д5).
+    Liveness is the chain's state at the start of the fixpoint pass: a cycle
+    participant skipped earlier in the same pass is still a live parent here,
+    so every participant hears «parent is a sub-event» rather than the
+    cascade's «not found» — the skip itself propagates on the next pass,
+    where a parent of a skipped row indeed falls (design Д4's risk row).
+    A ghost parent is never invented: an unresolved name is the row's problem.
+    """
+    parent_name = row.fields.get("parent_event")
+    if parent_name is None:
+        return None  # empty cell — the stored parent stays untouched
+    key = (PARENT_TARGET_TYPE, str(parent_name).strip().lower())
+    is_self = key == row.key
+    parent_found = False
+    parent_is_child = False
+    resolution: str = LINK_TO_FILE
+    db_id: int | None = None
+    if not is_self:
+        target = plan.entities.get(key)
+        if target is not None and target.key in live_at_pass_start:
+            parent_found = True
+            parent_is_child = "parent_event" in target.fields
+        else:
+            entry = plan.name_index.get(key)
+            if entry is not None and entry.is_ambiguous:
+                return RowIssue(
+                    row.sheet,
+                    row.first_row_number,
+                    ambiguous_parent_reference(
+                        row.name, row.first_row_number, str(parent_name)
+                    ),
+                )
+            if entry is not None and entry.is_unique:
+                model = entry.models[0]
+                parent_found = True
+                parent_is_child = model.parent_id is not None
+                resolution, db_id = LINK_TO_DB, model.id
+    code = parent_refusal_code(
+        parent_found=parent_found,
+        parent_is_child=parent_is_child,
+        is_self=is_self,
+    )
+    if code is not None:
+        return RowIssue(
+            row.sheet,
+            row.first_row_number,
+            parent_problem_caption(
+                row.name, row.first_row_number, code, str(parent_name)
+            ),
+        )
+    row.parent_ref = ParentRef(target_key=key, resolution=resolution, db_id=db_id)
+    return None
+
+
 def resolve_links(plan: ImportPlan) -> None:
-    """Resolve every link reference, iterating to a fixpoint: skipping a row
-    can remove it as a file-resolvable target and cascade its referrers to
-    the DB/ghost/ambiguous branches (the skip set only grows, so this ends).
-    Ghosts are finally grown from surviving rows only."""
+    """Resolve every link reference and every «Родительское событие»,
+    iterating to a fixpoint: skipping a row can remove it as a file-resolvable
+    target or live parent and cascade its referrers to the DB/ghost/ambiguous
+    branches — a skipped parent drags its children down the same way (design
+    Д4; the skip set only grows, so this ends).  Ghosts are finally grown
+    from surviving rows only, so a row dropped by its parent never grows a
+    ghost from its own link cells."""
     while True:
         new_skips: list[RowIssue] = []
+        # The parent channel judges the chain against the graph as it stood at
+        # the pass start (design Д5): a mid-pass skip must not re-voice a
+        # cycle partner's refusal as «not found»; the cascade still lands,
+        # one pass later, from the same growing skip set.
+        live_at_pass_start = {
+            row.key for row in plan.entities.values() if not row.skipped
+        }
         for row in list(plan.entities.values()):
             if row.skipped:
                 continue
             issue = _resolve_row_links(plan, row)
+            if issue is None:
+                issue = _resolve_row_parent(plan, row, live_at_pass_start)
             if issue is not None:
                 row.skipped = True
                 new_skips.append(issue)

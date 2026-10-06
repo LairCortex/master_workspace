@@ -8,7 +8,7 @@ Since piece C5 the date parser speaks in game-calendar coordinates: every
 positive case below compares against ``DateParse.ok(...)`` (task 1.1/1.2), while
 the None cases stay untouched as the regression ban on growing new forms.
 """
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 import pytest
 
@@ -121,6 +121,40 @@ def test_special_columns_placement():
         assert has_image == (sheet.entity_type in image_types)
         if has_image:
             assert sheet.column("image").label == "Изображение"
+
+
+def test_event_sheet_time_and_parent_columns_positions():
+    # NRI-0027 task 2.1 / design Д1: the «События» tuple is explicit — «Время
+    # начала» rides right after «Дата начала», «Родительское событие» right
+    # after «Тип»; the other four sheets never see the event-only columns.
+    event = schema.sheet_for("event")
+    assert [c.key for c in event.columns] == [
+        "name", "start_date", "start_time", "end_date", "characteristics",
+        "backstory", "rating", "event_type", "parent_event",
+    ]
+    start_time = event.column("start_time")
+    assert start_time.label == "Время начала"
+    assert not start_time.required and not start_time.special
+    parent = event.column("parent_event")
+    assert parent.label == "Родительское событие"
+    assert not parent.required and not parent.special
+    # Neither column is a legacy English header — no alias to answer to.
+    assert start_time.aliases == () and parent.aliases == ()
+    for sheet in schema.all_sheets():
+        if sheet.entity_type == "event":
+            continue
+        assert sheet.column("start_time") is None, sheet.sheet_name
+        assert sheet.column("parent_event") is None, sheet.sheet_name
+
+
+def test_new_event_headers_resolve_by_label():
+    # The pre-analysis finds the columns by header like every other column.
+    sheet = schema.sheet_for("event")
+    resolved = schema.resolve_headers(sheet, ["Имя", "Дата начала", "Время начала", "Родительское событие"])
+    assert resolved.position("start_time") == 2
+    assert resolved.position("parent_event") == 3
+    assert not resolved.unknown
+    assert schema.missing_required_headers(sheet, ["Имя", "Дата начала"]) == []
 
 
 def test_legacy_english_alias_columns_available_by_type():
@@ -509,6 +543,84 @@ def test_parse_rating_empty_is_none():
 def test_parse_rating_garbage_raises(bad):
     with pytest.raises(ValueError):
         schema.parse_cell_rating(bad)
+
+
+# ── NRI-0027 task 2.2: parse_cell_time (design Д2) ─────────────────────────
+
+# An 18-hour day of 40-minute hours: every bound and the storage unit of the
+# parse come from THIS calendar — the preset 24/60 must not leak in.
+_CUSTOM_DAY = CustomCalendar(CalendarSpec(
+    months=(MonthSpec("Зимостой", 30),),
+    week_names=("а", "б"),
+    day_hours=18,
+    minutes_per_hour=40,
+))
+
+
+def test_parse_time_text_is_minutes_of_the_day():
+    # Valid HH:MM → minutes from the start of the day in the preset's 60-minute
+    # unit (the active calendar of the autouse fixture; the explicit argument
+    # parses identically).
+    assert schema.parse_cell_time("19:00") == 19 * 60
+    assert schema.parse_cell_time("06:30") == 6 * 60 + 30
+    assert schema.parse_cell_time("19:00", StandardCalendar()) == 19 * 60
+    # Spec «Минуты вне шага 5 принимаются»: the step of 5 is a card nicety.
+    assert schema.parse_cell_time("14:37") == 14 * 60 + 37
+    # 1–2 digits per part, surrounding whitespace stripped.
+    assert schema.parse_cell_time("0:05") == 5
+    assert schema.parse_cell_time(" 6:5 ") == 6 * 60 + 5
+    assert schema.parse_cell_time("23:59") == 23 * 60 + 59  # the preset's last minute
+
+
+def test_parse_time_native_cell_drops_seconds():
+    # Spec «Нативная ячейка времени Excel»: 06:30:45 lands as 06:30.
+    assert schema.parse_cell_time(time(6, 30, 45)) == 6 * 60 + 30
+    assert schema.parse_cell_time(time(0, 0, 59)) == 0
+    assert schema.parse_cell_time(time(23, 59, 59)) == 23 * 60 + 59
+
+
+def test_parse_time_unreadable_is_none():
+    # Spec «Нечитаемое время»: None, never an exception — the caller warns.
+    assert schema.parse_cell_time("полдень") is None
+    assert schema.parse_cell_time("19:00:45") is None  # not the two-part shape
+    assert schema.parse_cell_time("1900") is None
+    assert schema.parse_cell_time("005:00") is None    # >2 digits is not HH:MM
+    assert schema.parse_cell_time("19.00") is None
+    assert schema.parse_cell_time("") is None
+    assert schema.parse_cell_time("   ") is None
+    assert schema.parse_cell_time(None) is None
+    assert schema.parse_cell_time(12345) is None
+    assert schema.parse_cell_time(True) is None
+    # A date/datetime cell is not a time cell (dates have their own column).
+    assert schema.parse_cell_time(datetime(2025, 12, 31, 10, 30)) is None
+    assert schema.parse_cell_time(date(2025, 12, 31)) is None
+
+
+def test_parse_time_out_of_active_calendar_is_none():
+    # Bounds come from the ACTIVE calendar (24/60 preset here) — hour ≥
+    # day_hours and minute ≥ minutes_per_hour refuse, the edges pass.
+    assert schema.parse_cell_time("24:00") is None
+    assert schema.parse_cell_time("99:00") is None
+    assert schema.parse_cell_time("10:60") is None
+    assert schema.parse_cell_time("23:60") is None
+    assert schema.parse_cell_time(time(23, 59)) == 23 * 60 + 59  # native bounds ride the same gate
+
+
+def test_parse_time_custom_calendar_bounds_and_unit():
+    # 18/40 game: the hour bound, the minute bound AND the minute unit are the
+    # calendar's — 24/60 never hardcoded (spec «Час не влезает в игровой
+    # календарь» answers None → the caller's warning).
+    assert schema.parse_cell_time("17:39", _CUSTOM_DAY) == 17 * 40 + 39
+    assert schema.parse_cell_time("17:40", _CUSTOM_DAY) is None  # minute ≥ 40
+    assert schema.parse_cell_time("18:00", _CUSTOM_DAY) is None  # hour ≥ 18
+    assert schema.parse_cell_time("20:00", _CUSTOM_DAY) is None
+    assert schema.parse_cell_time(time(17, 39, 59), _CUSTOM_DAY) == 17 * 40 + 39
+    # What the preset rejects the custom 18/40 world may accept and vice versa
+    # only within its own bounds: 20:00 fits the preset but not the game day,
+    # while minute 45 (60-unit legal) is gone for good in a 40-minute hour.
+    assert schema.parse_cell_time("20:00") == 20 * 60
+    assert schema.parse_cell_time("10:45", _CUSTOM_DAY) is None
+    assert schema.parse_cell_time("10:39", _CUSTOM_DAY) == 10 * 40 + 39
 
 
 def test_parse_link_cell_strips_and_skips_empty_segments():

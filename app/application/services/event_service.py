@@ -11,6 +11,7 @@ from app.application.services.mention_rewrite import rewrite_mentions
 from app.application.services.relation_sync import sync_related
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
+from app.domain.event_nesting import parent_refusal_code, parent_refusal_message
 from app.domain.options import EventOption, EventTypeOption
 from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.db.models import EventModel
@@ -218,18 +219,22 @@ class EventService:
     async def _guard_parent(self, parent_id: int, event_id: int | None = None) -> None:
         """Two-level nesting guard (NRI-0023, task 3.2, design Д1): the parent
         must exist, must itself be parentless (a sub-event never gets its own
-        children) and must not be the edited event.  Raises Russian ``ValueError``
-        — the wiring's save handler turns any exception into the one modal the
-        user sees («Не удалось сохранить событие: …»).  The UI list of parents
-        only ever offers main events; this guard is the write-time backstop
-        against any bypass."""
-        if event_id is not None and parent_id == event_id:
-            raise ValueError("событие не может быть родителем самого себя")
+        children) and must not be the edited event.  Since NRI-0027 (design Д5)
+        the rule and its Russian wordings live in ``app.domain.event_nesting``
+        — the same judge the xlsx pre-analysis consults, so the card and the
+        import refuse a bad parent with one and the same formulation.  Raises
+        Russian ``ValueError`` — the wiring's save handler turns any exception
+        into the one modal the user sees («Не удалось сохранить событие: …»).
+        The UI list of parents only ever offers main events; this guard is the
+        write-time backstop against any bypass."""
         parent = await self._event_repo.get_by_id(parent_id)
-        if parent is None:
-            raise ValueError(f"родительское событие {parent_id} не найдено")
-        if parent.parent_id is not None:
-            raise ValueError("родительское событие не может быть подсобытием")
+        code = parent_refusal_code(
+            parent_found=parent is not None,
+            parent_is_child=parent is not None and parent.parent_id is not None,
+            is_self=event_id is not None and parent_id == event_id,
+        )
+        if code is not None:
+            raise ValueError(parent_refusal_message(code, parent_id))
 
     async def create_event_with_relations(
         self,

@@ -135,9 +135,13 @@ class RemoteLlmProvider(BaseLlmProvider):
             return None
         if self._budget_probed:
             return self._output_budget
+        # No re-check inside the lock: on this single-loop model the path
+        # from the check above to the flag set below holds no suspension
+        # point (an uncontended ``asyncio.Lock`` acquire never yields), so a
+        # caller that read the flag False can only ever find the lock free —
+        # the check above already carries the whole single-probe guarantee
+        # the parallel-wave test pins.
         async with self._budget_lock:
-            if self._budget_probed:
-                return self._output_budget
             self._budget_probed = True
             limit = await self._probe_context_limit()
             if limit is not None:

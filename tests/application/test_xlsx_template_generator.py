@@ -18,7 +18,8 @@ problem row or transfer row.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date, datetime, time
 
 import pytest
 from openpyxl import Workbook
@@ -28,6 +29,7 @@ from app.application.services import xlsx_schema
 from app.application.services.xlsx_import_service import XlsxImportService
 from app.application.services.xlsx_template import (
     SAMPLE_ROWS,
+    _adjust_time_cell,
     build_template_workbook,
     template_headers,
     template_row_values,
@@ -43,6 +45,7 @@ from app.domain.game_calendar import (
     reset_current_calendar,
     set_current_calendar,
 )
+from app.domain.time_of_day import TimeOfDay
 from app.infrastructure.calendar_storage import (
     encode_coord,
 )
@@ -79,6 +82,36 @@ _CUSTOM = CustomCalendar(_CUSTOM_SPEC)
 _ONE_MONTH = CustomCalendar(
     CalendarSpec(months=(MonthSpec("Круг", 1),), week_names=("утро", "вечер"))
 )
+
+# NRI-0027 (design Д6): the fixed custom world shrunk to 18 hours of 40
+# minutes — the «Бал» sample time 19:00 no longer fits and must ship
+# clamped to the calendar's last hour (17:xx), «Дуэль»'s 06:00 stays whole.
+_SHORT_DAY = CustomCalendar(replace(_CUSTOM_SPEC, day_hours=18, minutes_per_hour=40))
+
+
+class TestTimeCellAdjustment:
+    """Design Д6 unit face of ``_adjust_time_cell``: hour/minute clamps under
+    the active calendar, carrier preservation, the preset identity."""
+
+    def test_preset_is_the_identity(self):
+        assert _adjust_time_cell("19:00", StandardCalendar()) == "19:00"
+        assert _adjust_time_cell(time(6, 0), StandardCalendar()) == time(6, 0)
+
+    def test_short_day_clamps_hour_and_minute_of_text(self):
+        assert _adjust_time_cell("19:00", _SHORT_DAY) == "17:00"
+        assert _adjust_time_cell("06:00", _SHORT_DAY) == "06:00"
+        short_hour = CustomCalendar(replace(_CUSTOM_SPEC, minutes_per_hour=20))
+        assert _adjust_time_cell("06:37", short_hour) == "06:19"
+
+    def test_native_time_cell_keeps_the_native_carrier(self):
+        clamped = _adjust_time_cell(time(19, 0), _SHORT_DAY)
+        assert isinstance(clamped, time)
+        assert clamped == time(17, 0)
+
+    def test_unreadable_sample_ships_unchanged(self):
+        # Rewriting a cell the reader cannot legibly read would be a guess;
+        # such a cell is an authoring bug, shipped as written.
+        assert _adjust_time_cell("полдень", _SHORT_DAY) == "полдень"
 
 
 @pytest.fixture(autouse=True)
@@ -119,21 +152,27 @@ class TestPresetAdjustmentIsIdentity:
 # (never binds), day → min over the corrected month's length — Травень(12)
 # clamps Заговор's and Иван's 15th, Медовик(21) clamps Дневник's 31st; the BC
 # row speaks the game wording, the signed ISO keeps its carrier, and the
-# declared intercalary day adds the «Ярмарка» row to «События».
+# declared intercalary day adds the «Ярмарка» row to «События».  Since
+# NRI-0027 the sheet carries «Время начала» (right of «Дата начала») and
+# «Родительское событие» (right of «Тип»); this calendar is a 24/60 one, so
+# the sample times pass _adjust_time_cell as the identity and «Дуэль» names
+# «Бал» as its parent (design Д6).
 _CUSTOM_GOLD: dict[str, list[list[object]]] = {
     "События": [
-        ["Имя", "Дата начала", "Дата конца", "Характеристики", "Предыстория",
-         "Рейтинг", "Тип", "Связь персонажами", "Связь организациями",
-         "Связь предметами", "Связь локациями"],
-        ["Бал", date(1820, 5, 1), "1820-05-02",
+        ["Имя", "Дата начала", "Время начала", "Дата конца", "Характеристики",
+         "Предыстория", "Рейтинг", "Тип", "Родительское событие",
+         "Связь персонажами", "Связь организациями", "Связь предметами",
+         "Связь локациями"],
+        ["Бал", date(1820, 5, 1), "19:00", "1820-05-02",
          "Зимний бал в особняке на соборной площади",
          "Танец, после которого старый город заговорил о Марии и Иване.",
-         4, "Праздник", "Иван; Мария", "Городская управа", "Дневник", "Особняк"],
-        ["Дуэль", "1815-01-10", None, "На рассвете, за старыми дубами",
-         None, None, "Дуэль", "Иван", None, None, "Поляна"],
-        ["Заговор", "12 Травень 44 г. до н.э.", "-0043-03-01",
+         4, "Праздник", None, "Иван; Мария", "Городская управа", "Дневник",
+         "Особняк"],
+        ["Дуэль", "1815-01-10", "06:00", None, "На рассвете, за старыми дубами",
+         None, None, "Дуэль", "Бал", "Иван", None, None, "Поляна"],
+        ["Заговор", "12 Травень 44 г. до н.э.", None, "-0043-03-01",
          "Сговор против Цезаря"],
-        ["Ярмарка", "Медожор 44", None, "Ярмарка в день между месяцами"],
+        ["Ярмарка", "Медожор 44", None, None, "Ярмарка в день между месяцами"],
     ],
     "Персонажи": [
         ["Имя", "Дата начала", "Дата конца", "Характеристики", "Предыстория",
@@ -208,11 +247,15 @@ class TestDegenerateCalendar:
         values = {sheet.sheet_name: _sheet_values(wb, sheet.sheet_name)
                   for sheet in xlsx_schema.all_sheets()}
         # native cell stays native, ISO text stays ISO — all on (year, 1, 1);
-        # the BC row takes the game wording of the single month «Круг».
+        # the BC row takes the game wording of the single month «Круг».  The
+        # «События» end date sits at index 3 since NRI-0027 inserted «Время
+        # начала» right after «Дата начала» (this calendar is 24/60, so the
+        # time cells keep the authored «HH:MM» text).
         assert values["События"][1][1] == date(1820, 1, 1)
-        assert values["События"][1][2] == "1820-01-01"
+        assert values["События"][1][2] == "19:00"
+        assert values["События"][1][3] == "1820-01-01"
         assert values["События"][3][1] == "01 Круг 44 г. до н.э."
-        assert values["События"][3][2] == "-0043-01-01"
+        assert values["События"][3][3] == "-0043-01-01"
         assert values["Персонажи"][1][1] == "1790-01-01"
         assert values["Персонажи"][2][1] == "1795-01-01"
         assert values["Локации"][1][1] == "1800-01-01"
@@ -322,12 +365,50 @@ _STANDARD_GOLD: dict[str, list[list[object]]] = {
 }
 
 
+# The two «События» columns NRI-0027 inserted into the otherwise unchanged
+# sheet — excluded from the cell-for-cell comparison below (their sample
+# values are pinned separately), exactly the spec's exception: «во всех
+# клетках, кроме колонок „Время начала“ и „Родительское событие“ листа
+# „События“ и их примерных значений».
+_NEW_EVENT_COLUMNS = ("Время начала", "Родительское событие")
+
+
+def _without_new_event_columns(rows: list[list[object]]) -> list[list[object]]:
+    """Same cell table with the two NRI-0027 «События» columns removed —
+    the shape the previous version's template had."""
+    drop = {pos for pos, label in enumerate(rows[0]) if label in _NEW_EVENT_COLUMNS}
+    assert drop == {2, 8}  # time right of «Дата начала», parent right of «Тип»
+    return [
+        [value for pos, value in enumerate(row) if pos not in drop]
+        for row in rows
+    ]
+
+
 class TestStandardGoldSnapshot:
     def test_standard_calendar_golden_cell_table(self):
+        # Spec «Стандартный пресет получает прежний шаблон» (NRI-0027 re-pin):
+        # cell-for-cell the previous template in every cell except the two
+        # new «События» columns and their sample values.
         wb = build_template_workbook(StandardCalendar())
         assert [s.sheet_name for s in xlsx_schema.all_sheets()] == list(_STANDARD_GOLD)
         for title, gold in _STANDARD_GOLD.items():
-            assert _trimmed(_sheet_values(wb, title)) == gold, title
+            actual = _trimmed(_sheet_values(wb, title))
+            if title == "События":
+                actual = _trimmed(_without_new_event_columns(actual))
+            assert actual == gold, title
+
+    def test_standard_template_new_cells_carry_their_sample_values(self):
+        # The other half of the re-pin: what the excluded cells really are —
+        # preset-adjusted (identity, 19:00/06:00 fit 24/60) time samples and
+        # «Дуэль» naming «Бал» as its parent.
+        values = _sheet_values(build_template_workbook(StandardCalendar()), "События")
+        assert values[0][:9] == [
+            "Имя", "Дата начала", "Время начала", "Дата конца",
+            "Характеристики", "Предыстория", "Рейтинг", "Тип",
+            "Родительское событие",
+        ]
+        assert values[1][2] == "19:00"  # Бал
+        assert values[2][2] == "06:00" and values[2][8] == "Бал"  # Дуэль
 
 
 # ── 3.3 — cleanliness invariant (spec «Шаблон импортируется в свою игру чисто») ──
@@ -338,7 +419,9 @@ def _svc() -> XlsxImportService:
 
 async def _assert_imports_into_itself_cleanly(wb: Workbook, calendar, session, tmp_path):
     """Analyze and apply ``wb`` as if the game owning ``calendar`` downloaded
-    and re-imported it: zero problems, zero ghosts, zero transfer rows."""
+    and re-imported it: zero problems, zero ghosts, zero transfer rows and
+    zero report warnings (since NRI-0027 the time warnings live in the apply
+    report — a template shipping a time its own calendar refuses fails here)."""
     path = tmp_path / "downloaded-template.xlsx"
     wb.save(path)
     set_current_calendar(calendar)
@@ -352,6 +435,7 @@ async def _assert_imports_into_itself_cleanly(wb: Workbook, calendar, session, t
     report = await _svc().apply_plan(plan, GameSessionUoW(session))
     assert report.skipped == []
     assert report.date_shifts == []  # not a single transfer row
+    assert report.warnings == []  # not a single warning
     return report
 
 
@@ -385,5 +469,29 @@ class TestTemplateCleanliness:
         assert events["Ярмарка"].start_coord == encode_coord(IntercalaryDay(44, 0))
         assert events["Заговор"].start_coord == encode_coord(MonthDay(44, 3, 12))
         assert bool(events["Заговор"].start_bc) is True
+
+    async def test_short_day_template_imports_into_short_day_game_cleanly(
+        self, tmp_path, async_session
+    ):
+        # NRI-0027 (design Д6): the 18-hours-of-40-minutes world re-imports
+        # its own template without a single problem or warning — the 19:00
+        # sample shipped clamped to that day's last hour, really landed as a
+        # time, and «Дуэль» came back as «Бал»'s child (the parent name
+        # resolved among the template's own rows).
+        report = await _assert_imports_into_itself_cleanly(
+            build_template_workbook(_SHORT_DAY), _SHORT_DAY,
+            async_session, tmp_path,
+        )
+        expected_entities = sum(len(rows) for rows in SAMPLE_ROWS.values()) + 1
+        assert report.created == expected_entities  # the intercalary row included
+
+        events = {
+            e.name: e
+            for e in (await async_session.execute(select(EventModel))).scalars()
+        }
+        assert events["Бал"].start_time == TimeOfDay(hour=17, minute=0)
+        assert events["Дуэль"].start_time == TimeOfDay(hour=6, minute=0)
+        assert events["Дуэль"].parent_id == events["Бал"].id
+        assert events["Бал"].parent_id is None
 
 
