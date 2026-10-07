@@ -6,4 +6,4 @@ the version the UI shows («О приложении → Версия X.Y.Z»); i
 (``nri_manager.spec``, ``docs/CHANGELOG.md``) stay release-time syncs.
 """
 
-__version__ = "0.18.1"
+__version__ = "0.19.0"
