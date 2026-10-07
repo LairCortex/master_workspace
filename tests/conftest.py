@@ -20,6 +20,19 @@ os.environ.setdefault("QT_SCREEN_SCALE_FACTORS", "1")
 os.environ.setdefault("QT_SCALE_FACTOR", "1")
 
 import asyncio
+import sys
+
+if sys.platform == "linux":
+    # Linux e2e starvation fix (PR-037, docs/CHANGELOG.md): the qasync pump
+    # (processEvents + sleep(0) + qWait) is CPU-hungry, and CPython
+    # switches the GIL only every 5 ms by default. On the 2-vCPU CI runner the
+    # aiosqlite worker thread could not win a hand-off inside one 5 ms slice,
+    # so a single DB hop stretched from <1 ms (macOS: no starvation) to
+    # 0.4–2.4 s — dialog flows blew the 30 s wait_for budget deterministically.
+    # Halving the switch interval to 0.5 ms restored container hop latency to
+    # <0.1 ms and the failing modules to macOS parity (45 s → 11.4 s). macOS
+    # keeps the interpreter default: nothing there is starved.
+    sys.setswitchinterval(0.0005)
 
 import pytest
 import pytest_asyncio

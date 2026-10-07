@@ -367,6 +367,18 @@ class TimelineWidget(IslandDialogMixin, QWidget):
         self._window_range = (start, end)
         self._root.setProperty("windowText", window_chip_text(start, end))
 
+    def _root_alive(self) -> bool:
+        """Whether the scene's root Item still exists (the engine's own
+        liveness idiom, qml/engine.py). A released island keeps answering
+        calls made from still-alive wiring tasks exactly as inertly as a
+        detached listener: the C++ root left with the scene, and every
+        property write or signal emit on its dead wrapper detonates the
+        caller (the Linux CI class: "QQuickItem already deleted" thrown into
+        the wiring's in-flight dialog task, which then lost its report)."""
+        import shiboken6
+
+        return shiboken6.isValid(self._root)
+
     def _sync_from_vm(self) -> None:
         """Reflect the ViewModel's chrome-facing window knob into the island.
 
@@ -374,6 +386,8 @@ class TimelineWidget(IslandDialogMixin, QWidget):
         just the caption mirror the chip reads (an external window reset —
         search picking an event outside the window — pulls the caption back
         together with the list, as before)."""
+        if not self._root_alive():
+            return
         window = self._view_knobs()
         if window is _UNREADABLE_KNOB:
             return
@@ -398,6 +412,8 @@ class TimelineWidget(IslandDialogMixin, QWidget):
         arriving from search while the row sits outside the window (the VM's
         ``select_event_by_id`` already reset it to «Все дни») must find the
         list re-projected before the highlight lands."""
+        if not self._root_alive():
+            return
         self._sync_from_vm()
         self._root.setProperty("selectedId", -1 if event_id is None else int(event_id))
         if event_id is not None:
@@ -405,6 +421,8 @@ class TimelineWidget(IslandDialogMixin, QWidget):
 
     def scroll_to_event(self, event_id: int) -> None:
         """Scroll the list just enough to reveal the event's row."""
+        if not self._root_alive():
+            return
         self._reveal(self._scroll_target(event_id))
 
     def _scroll_target(self, event_id: int) -> int:
@@ -440,10 +458,32 @@ class TimelineWidget(IslandDialogMixin, QWidget):
     # ── island lifecycle — IslandDialogMixin (release deferred per above) ──
 
     def _release_island(self) -> None:
+        # The chrome mirrors connect to the ViewModel's signals in
+        # ``__init__``; the same DEFECT-1 posture that detaches the «now»
+        # listener below requires every other subscription to retire with the
+        # island (repo norm: state listeners unsubscribe explicitly). A VM
+        # kept alive by the session must never wake this facade after its
+        # scene died: on the Linux CI runner the wake-ups demonstrably land
+        # after ``release_island`` and detonate on the destroyed root
+        # (``_set_window_caption`` — "QQuickItem already deleted" — into the
+        # wiring's in-flight task, which then loses the dialog report).
+        # Guarded like every other VM contact: a stand-in VM's signal
+        # look-alike carries neither connect state nor a real disconnect.
+        for signal_name, slot in (
+            ("events_changed", self._sync_from_vm),
+            ("nowScrollRequested", self._reveal),
+        ):
+            signal = getattr(self._vm, signal_name, None)
+            if signal is None:
+                continue
+            try:
+                signal.disconnect(slot)
+            except (TypeError, AttributeError, RuntimeError):
+                pass  # look-alike signal, or nothing was ever connected here
         # NRI-0021 (design Д2/Д6): the ViewModel follows the game's «now»
         # through the widget VM — the DEFECT-1 posture says the subscription
-        # never outlives the panel (the widget VM is a context property of
-        # the SEARCH island and may leave before this VM lives on the dying
+        # never outlives the panel (the widget VM is a context property of the
+        # SEARCH island and may leave before this VM lives on the dying
         # session's Python side). Guarded like every other VM contact: a
         # stand-in VM carries no detach knob.
         detach = getattr(self._vm, "detach_now_listener", None)

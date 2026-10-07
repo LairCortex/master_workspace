@@ -636,3 +636,56 @@ class TestAddMenu:
         fake_menu.decide = lambda menu: stray
         panel._root.addMenuRequested.emit(0.0, 0.0)
         assert types == [None]
+
+
+# ── release: no ViewModel subscription outlives the island ──────────────────
+
+
+class TestReleaseDetachesSubscriptions:
+    """DEFECT-1 posture pinned for the chrome mirrors (repo norm: state
+    listeners unsubscribe explicitly). The Linux CI e2e failure class rode
+    exactly this hole: a session task reached the panel AFTER its island was
+    released — ``events_changed`` woke ``_sync_from_vm``, the caption mirror
+    detonated on the destroyed root (RuntimeError "QQuickItem already
+    deleted" routed through sys.excepthook), and the aborted task lost the
+    dialog report its test then waited on for 30 s."""
+
+    def test_released_island_ignores_the_live_viewmodel(self, qtbot, root_qml, monkeypatch):
+        import sys
+
+        raised: list = []
+        monkeypatch.setattr(sys, "excepthook",
+                            lambda et, val, tb: raised.append(val))
+        vm = _real_vm(SPREAD)
+        panel = _island(qtbot, vm, root_qml)
+        panel.release_island()  # the scene (and the root's C++ side) is gone
+        QApplication.processEvents()
+        vm.window = (date(1200, 1, 1), date(1200, 2, 1))  # emits events_changed
+        vm.events_changed.emit()  # the mirror signal, straight from the VM
+        vm.nowScrollRequested.emit(0)  # the «Сейчас» scroll channel
+        assert raised == []
+
+    def test_release_stays_silent_for_look_alike_signals(self, qtbot, root_qml):
+        """Same detach path with the stand-in shapes the facade tolerates:
+        no signal at all (_StubVM) and a signal look-alike whose disconnect
+        is not even there to call (RefusingSignalVM) — releasing must not
+        crash on either."""
+        for vm in (_StubVM(), TestStandInKnobGuards.RefusingSignalVM()):
+            panel = _island(qtbot, vm, root_qml)
+            panel.release_island()
+        QApplication.processEvents()
+
+    def test_released_island_answers_external_calls_inertly(self, qtbot, root_qml):
+        """The other half of the Linux CI class: the wiring does not only
+        listen, it also CALLS the panel from its in-flight tasks
+        (``update_events``/``set_selected``/``scroll_to_event``). After the
+        scene died every such call used to detonate on the destroyed root
+        (RuntimeError thrown into the caller, report lost); the released
+        facade must answer the whole external contract inertly."""
+        vm = _real_vm(SPREAD)
+        panel = _island(qtbot, vm, root_qml)
+        panel.release_island()
+        QApplication.processEvents()
+        panel.update_events(vm.events)
+        panel.set_selected(vm.events[0].id)
+        panel.scroll_to_event(vm.events[0].id)

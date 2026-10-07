@@ -2,6 +2,23 @@
 
 ## [0.18.1] — 2026-10-07
 
+### Детерминированно красные Linux-e2e починены: GIL-интервал в тестовой среде + жизненный цикл лайфсейда таймлайна (PR-037; версии не трогаем)
+
+#### Исправлено (production: подписки и внешние вызовы не переживают released-остров)
+- **Фасад таймлайна принимал сигналы живого ViewModel и внешние вызовы после смерти острова (класс падения CI «RuntimeError: Internal C++ object (QQuickItem) already deleted» в `timeline_island.py`):** `_release_island` не отключал `events_changed → _sync_from_vm` и `nowScrollRequested → _reveal` — живой ViewModel будил фасад после смерти сцены, зеркало подписи окна взрывалось на уничтоженном root и уносило с собой невыведённый отчёт диалога, который тест ждал 30 с (норма репо «слушатели состояния отвязываются явно» была выполнена только для «now»-слушателя); теперь обе подписки снимаются в `_release_island` с той же толерантностью к stand-in-сигналам, что и connect — `app/presentation/views/timeline_island.py`
+- **Внешний контракт лайфсейда стал инертным после release:** прямой вызов `update_events`/`set_selected`/`scroll_to_event` из ещё живых задач wiring на released-острове кидал RuntimeError в вызывающего (та же CI-подпись, только через прямой вызов, а не сигнал); три точки входа и `_sync_from_vm` проверяют живость root идиомой движка `shiboken6.isValid` (`_root_alive`) и отвечают ничем — released-фасад ведёт себя как отвязанный слушатель на любом пути попадания — `app/presentation/views/timeline_island.py`
+- **Пины механизма:** новый класс `TestReleaseDetachesSubscriptions` — emit сигнала живым VM после release не будит фасад (через подменённый `sys.excepthook`, той же дорогой, какой шум ловил pytest-qt), release не падает на stand-in формах VM (нет сигнала / look-alike без disconnect), и весь внешний контракт после release инертен; красный механизм проверен снятием guard'а (`tests/presentation/test_timeline_island.py`)
+
+#### Изменено (тестовая среда: Linux-голодание GIL)
+- **`sys.setswitchinterval(0.0005)` на Linux в корне тестов (macOS — дефолт интерпретатора):** qasync-памп (processEvents + sleep(0) + qWait) прожигает CPU, а CPython переключает GIL раз в 5 мс; на 2-vCPU раннере CI рабочий поток aiosqlite не успевал выиграть hand-off за один срез, и один DB-hop раздувался с <1 мс до 0.4–2.4 с — потоки диалогов детерминированно выбивались из 30-секундного бюджета `wait_for` (замеры в контейнере ubuntu 24.04 с `--cpus=2`: 45 с → 11.4 с, паритет с macOS 10.2 с); причина правки — среда, а не продукт, поэтому прод-код интервал не трогает — `tests/conftest.py`
+
+#### Проверено
+- **Контейнер-репродукция (`--cpus=2`, те же system-библиотеки, что job `test`):** пять модулей CI-подписей (`test_e2e_event_types`, `test_e2e_crud`, `test_e2e_import`, `test_e2e_wiring_gaps`, `test_table_host_wiring`) зелёные поодиночке сериально (4.6–21.4 с) и вместе через `run_tests_isolated.py --no-cov -j 6` (5/5 за 22 с)
+- **Локальный гейт:** `ruff check app/ tests/` — All checks passed; `QT_QPA_PLATFORM=offscreen python run_tests_isolated.py` → **275/275 модулей зелёные, покрытие 100 %, exit 0** (391 с)
+- **Отброшенное решение:** перестановка teardown-фикстуры (drain задач до `window.close()`) — `Application.shutdown()` останавливает table-сервис, чьи aiohttp-задачи живут до shutdown, поэтому пред-close drain вешал бы table-тесты на 90-секундный таймаут фикстуры
+
+## [0.18.1] — 2026-10-07
+
 ### CI и локальная среда живут на одних версиях; гейт перед push стал измеримым (PR-036; версии не трогаем)
 
 #### Изменено
