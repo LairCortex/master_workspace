@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -82,6 +83,31 @@ def run_module(index: int, module: Path, cov_dir: Path | None, extra: list[str])
         except subprocess.TimeoutExpired:
             code = 124
     return module, code, time.monotonic() - started
+
+
+LOG_TAIL_LINES = 60
+
+
+def print_log_tail(module: Path, cov_dir: Path | None, limit: int = LOG_TAIL_LINES) -> None:
+    """Echo the tail of the module's most recent log (its serial-retry run).
+
+    CI reads stdout only: without this, a module failure surfaces as nothing
+    but an rc line while the pytest output sits in an un-fetched log file.
+    """
+    log_dir = cov_dir if cov_dir is not None else ROOT / "build"
+    pattern = re.compile(rf"\d+-{re.escape(module.stem)}\.log")
+    logs = [p for p in log_dir.glob(f"*-{module.stem}.log") if pattern.fullmatch(p.name)]
+    if not logs:
+        return
+    log = max(logs, key=lambda p: p.stat().st_mtime)
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    tail = lines[-limit:]
+    print(f"  --- last {len(tail)} of {len(lines)} log lines ({log.name}) ---")
+    for line in tail:
+        print(f"  | {line}")
 
 
 def main(argv: list[str]) -> int:
@@ -145,6 +171,7 @@ def main(argv: list[str]) -> int:
     for module, code, _ in failures:
         label = {139: "SEGFAULT", 1: "FAILED", 124: "TIMEOUT"}.get(code, f"rc={code}")
         print(f"  {label}: {module}")
+        print_log_tail(module, cov_dir)
 
     coverage_ok = True
     if cov_dir is not None:

@@ -520,7 +520,7 @@ class TestSheetStackContentGate:
         from PySide6.QtCore import QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
         from PySide6.QtTest import QTest
-        from PySide6.QtWidgets import QDialog, QLabel
+        from PySide6.QtWidgets import QLabel
 
         hits: list[str] = []
 

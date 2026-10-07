@@ -39,6 +39,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QAccessible, QColor
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtTest import QTest

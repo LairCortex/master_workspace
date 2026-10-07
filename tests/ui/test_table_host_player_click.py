@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QCheckBox
+from PySide6.QtWidgets import QApplication
 
 from app.domain.enums.field_type import FieldType
 from app.presentation.views.character_sheet.fill_dialog import CharacterSheetFillDialog

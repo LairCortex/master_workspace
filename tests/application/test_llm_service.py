@@ -24,7 +24,8 @@ class FakeProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         self._ready = False
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None,
+                       on_phase=None, with_thinking=False) -> str:
         self.calls.append((system_prompt, user_prompt, max_tokens, with_thinking))
         return f"result for: {user_prompt[:20]}"
 
@@ -46,7 +47,8 @@ class SlowProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None,
+                       on_phase=None, with_thinking=False) -> str:
         loop = asyncio.get_running_loop()
         marker = re.search(r"MARKER(\d+)", user_prompt)
         idx = int(marker.group(1)) if marker else 0
@@ -238,7 +240,8 @@ class HangingProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None,
+                       on_phase=None, with_thinking=False) -> str:
         marker = re.search(r"MARKER(\d+)", user_prompt)
         idx = int(marker.group(1)) if marker else 0
         self.reached.append(str(idx))
@@ -266,7 +269,8 @@ class PhasedHangProvider(BaseLlmProvider):
     async def unload_model(self) -> None:
         pass
 
-    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None, on_phase=None, with_thinking=False) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, max_tokens=None,
+                       on_phase=None, with_thinking=False) -> str:
         phase = self.phases.pop(0) if self.phases else "in_flight"
         if on_phase is not None:
             on_phase(phase)

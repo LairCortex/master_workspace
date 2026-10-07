@@ -10,7 +10,6 @@ task 3.3.)
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import Qt

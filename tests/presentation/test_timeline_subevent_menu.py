@@ -92,7 +92,7 @@ class TestFacadeRowContextMenu:
     pick lands on the ViewModel, a closed menu asks nothing."""
 
     def test_the_menu_carries_the_single_item_and_picks_the_parent(
-        self, qtbot, root_qml, fake_menu
+        self, qtbot, root_qml, fake_menu  # noqa: F811 — pytest injects the imported fixtures by name
     ):
         vm = _real_vm([_evt(1, date(1200, 1, 5))])
         panel = _island(qtbot, vm, root_qml)
@@ -109,7 +109,7 @@ class TestFacadeRowContextMenu:
         assert requests == [1]
 
     def test_closing_the_menu_without_a_pick_requests_nothing(
-        self, qtbot, root_qml, fake_menu
+        self, qtbot, root_qml, fake_menu  # noqa: F811 — pytest injects the imported fixtures by name
     ):
         vm = _real_vm([_evt(1, date(1200, 1, 5))])
         panel = _island(qtbot, vm, root_qml)
@@ -121,7 +121,7 @@ class TestFacadeRowContextMenu:
         assert FakeMenu.menus[-1].exec_calls == 1
         assert requests == []
 
-    def test_a_stand_in_vm_survives_the_pick(self, qtbot, root_qml, fake_menu):
+    def test_a_stand_in_vm_survives_the_pick(self, qtbot, root_qml, fake_menu):  # noqa: F811 — fixtures injected by name
         """The facade's stand-in tolerance (the mirror/slot guards of this
         panel): a VM without the channel simply does not carry the request."""
         panel = _island(qtbot, _StubVM(), root_qml)
@@ -138,7 +138,7 @@ class TestDelegateContextMenuGate:
     («ни у детей, ни у заглушек меню нет»)."""
 
     def test_a_main_row_with_children_reports_the_right_click(
-        self, qtbot, fake_menu
+        self, qtbot, fake_menu  # noqa: F811 — pytest injects the imported fixture by name
     ):
         parent = _tree_evt(1, date(1200, 1, 5), date(1200, 1, 9), name="Поход")
         child = _tree_evt(2, date(1200, 1, 6), name="Разведка", parent_id=1)
@@ -157,7 +157,7 @@ class TestDelegateContextMenuGate:
         # the one «Создать подсобытие» item (decide=None — nobody picks).
         assert [m.captions for m in FakeMenu.menus] == [[SUBEVENT_MENU_ITEM]]
 
-    def test_a_childless_main_row_reports_the_right_click(self, qtbot, fake_menu):
+    def test_a_childless_main_row_reports_the_right_click(self, qtbot, fake_menu):  # noqa: F811 — fixture injected by name
         parent = _tree_evt(1, date(1200, 1, 5), date(1200, 1, 9), name="Поход")
         other = _tree_evt(3, date(1200, 2, 1), name="Постороннее")
         vm = _real_vm([parent, other])
@@ -170,7 +170,7 @@ class TestDelegateContextMenuGate:
         assert [args[0] for args in requests] == [3]
         assert [m.captions for m in FakeMenu.menus] == [[SUBEVENT_MENU_ITEM]]
 
-    def test_a_subevent_row_never_requests_the_menu(self, qtbot, fake_menu):
+    def test_a_subevent_row_never_requests_the_menu(self, qtbot, fake_menu):  # noqa: F811 — fixture injected by name
         parent = _tree_evt(1, date(1200, 1, 5), date(1200, 1, 9), name="Поход")
         child = _tree_evt(2, date(1200, 1, 6), name="Разведка", parent_id=1)
         vm = _real_vm([parent, child])
@@ -184,7 +184,7 @@ class TestDelegateContextMenuGate:
         assert requests == []
         assert FakeMenu.menus == []  # «меню не создаётся вовсе»
 
-    async def test_a_stub_row_never_requests_the_menu(self, qtbot, fake_menu):
+    async def test_a_stub_row_never_requests_the_menu(self, qtbot, fake_menu):  # noqa: F811 — fixture injected by name
         """The window-only parent stub (spec «Окно фильтрации…»: the stub is
         no interaction target) stays silent under the right button too."""
         far_parent = _tree_evt(1, date(1200, 1, 1), date(1200, 1, 2), name="Поход")

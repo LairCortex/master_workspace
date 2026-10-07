@@ -21,11 +21,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install dependencies (from uv.lock)
         run: |
           sudo apt-get update
           sudo apt-get install -y libegl1 libxkbcommon0 libdbus-1-3
-          pip install -e ".[dev]"
+          pip install uv
+          uv sync --frozen --extra dev
+
+      # Pinned-version visibility: the log shows exactly what the lock resolved
+      - name: Show installed versions
+        run: uv pip freeze
 
       # Run 1 — line-coverage gate: fail_under comes from [tool.coverage.report]
       # in pyproject.toml (95 in PR1, 100 in PR2). One pytest process per test
@@ -35,14 +40,14 @@ jobs:
       - name: Run tests (line coverage gate)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python run_tests_isolated.py
+        run: uv run --no-sync python run_tests_isolated.py
 
       # Run 2 — branch coverage visibility: report-only, partial branches never
       # fail the build (--branch keeps the line gate off the branch metric).
       - name: Run tests (branch coverage, report only)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python run_tests_isolated.py --branch
+        run: uv run --no-sync python run_tests_isolated.py --branch
 
   # ── Lint (ruff, errors only: E + F) ─────────────────────────────────────
   lint:
@@ -54,11 +59,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install ruff (pinned in uv.lock, dev extra)
+        run: |
+          pip install uv
+          uv sync --frozen --extra dev
 
       - name: Run ruff
-        run: ruff check app/ tests/
+        run: uv run --no-sync ruff check app/ tests/
 
   # ── Resolve app version + guard tag vs pyproject match ───────────────────
   version:
@@ -119,11 +126,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1 libxkbcommon0 libdbus-1-3
 
-      - name: Install Python dependencies
-        run: pip install -e ".[build]"
+      - name: Install Python dependencies (from uv.lock)
+        run: |
+          pip install uv
+          uv sync --frozen --extra build
 
       - name: Build application
-        run: python build_app.py --clean
+        run: uv run --no-sync python build_app.py --clean
 
       - name: Sign macOS app bundle
         if: runner.os == 'macOS'

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from PySide6.QtWidgets import QApplication, QCheckBox, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.character_sheet_instance_service import (

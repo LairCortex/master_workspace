@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.18.1] — 2026-10-07
+
+### CI и локальная среда живут на одних версиях; гейт перед push стал измеримым (PR-036; версии не трогаем)
+
+#### Изменено
+- **Версии закреплены, дрейф CI против локальной среды закрыт (диагноз: CI красен с 2026-10-02, локаль зелена):** pyproject получил верхние границы `PySide6>=6.10.3,<6.11` (6.11 не квалифицирован) и `SQLAlchemy[asyncio]>=2.0,<2.1` (2.1.2+ заворачивает `MissingGreenlet` в `StatementError` и ломает пин `tests/presentation/test_pr032_flat_dialog_reads.py::test_missing_greenlet_is_the_red_mechanism`); добавлен `uv.lock`, разрезолванный ровно в зелёную локальную среду (PySide6 6.10.3, SQLAlchemy 2.0.46, pytest 9.0.2, ruff 0.16.4). Jobs `test`/`lint`/`build` ставят `uv sync --frozen` и запускают через `uv run --no-sync`, job `test` печатает `uv pip freeze`; ruff в CI берётся из лока, а не latest — `.github/workflows/build.yml`
+- **Провал модуля виден прямо в выводе CI:** `run_tests_isolated.py` дописывает хвост (60 строк) лога каждого окончательно проигравшего модуля в stdout — прежний вывод и exit-коды не менялись
+- **Гейт «готов к push» стал нормой:** в AGENTS.md вместо «линтер не настроен» — определение готовности из двух команд, зеркалищих CI (`ruff check app/ tests/` и `QT_QPA_PLATFORM=offscreen python run_tests_isolated.py`), и пункт о локальной команде `/check` (лок → линтер → полный набор; `.kilo/` git-игнорируется, носителем соглашения остаётся AGENTS.md)
+- **Три платформо-зависимые проверки переписаны на метрики самого виджета (падают только там, где срезан/размыт реальный контент, на любой ОС):** `test_sheet_list_buttons_keep_their_own_width_on_both_tabs` — кап тестового экрана больше не выдаётся за обрезку кнопки (сцена доводится до собственного `implicitSize`, прежний posture карточных пинов), проверка целости ряда «Показать всё» меряется на ширине, которую остров сам объявляет (`implicitWidth + 2×снятая с виджета маржа` вместо константы 3), плюс новый строгий пин «на дефолтном кадре ни одна кнопка не сжата ниже своей подписи»; пиксельный эталон disabled-глифа нормализован в источнике (`QFont.NoSubpixelAntialias` — Ubuntu рендерит LCD-субпиксельно, macOS — grayscale), сам допуск остался нулевым — `tests/presentation/test_island_dialog_sizing.py`, `tests/presentation/test_main_window_default_start.py` (переименован в `…_stands_whole_at_the_row_ask`), `tests/ui/test_theme_grab.py`
+
+#### Исправлено (гейт-долг, вскрытый CI-линтером)
+- **26 накопленных ошибок ruff сняты по существу, без массового глушения:** удалены неиспользуемые импорты (F401 ×5), перенесены длинные строки (E501 ×5, в `app/presentation/theme/compiler.py` — с построчной сверкой байт-в-байт вывода `compile_qss`/`compile_popup_qss`), две «мёртвые» переменные F841 возвращены в проверки (`opaque_before` — ассерт непрозрачности пары, `inset` — подставлен вместо трёх литеральных восьмёрок), снят костыль `QApplication = None`, F811 фикстур закрыты точечными noqa с причиной в конвенции репо, **скрытая дыра F821**: аннотация `item: QQuickItem` под `from __future__ import annotations` никогда не вычислялась и имя не существовало — теперь реальный импорт `PySide6.QtQuick.QQuickItem` — `tests/presentation/test_theme_icon_button.py` и ещё 11 тестовых файлов
+
+#### Проверено
+- **Локальный гейт:** `ruff check app/ tests/` — All checks passed; `QT_QPA_PLATFORM=offscreen python run_tests_isolated.py -j 8` → **275/275 модулей зелёные, покрытие 100 %, exit 0** (1325 с; один FLAKY-but-green `test_character_sheet_coverage.py` — штатный сериальный ретрай семейства PR-033)
+- **Linux-доказательство починки платформенных пинов:** контейнер ubuntu:24.04 (те же system-библиотеки CI, что job `test`) воспроизводил ровно CI-шные тексты падений (`749 <= 721` closeButton, `524.0 <= 517` snapshotShowAllButton, `columns 62-66 carry 18 pixel(s) off the ink line`) — после правок там же и в независимом Debian-контейнере **49/49 зелёные**; на macOS все три модуля зелёные в отдельных pytest-процессах
+- **Окружение из лока** (`uv venv` + экспорт `uv.lock`) поднимает ровно закреплённые версии и прогоняет зелёным модуль, убитый дрейфом SQLAlchemy 2.1.3
+
 ## [0.18.1] — 2026-10-06
 
 ### XLSX-импорт умеет подсобытия и время: колонки «Время начала» и «Родительское событие» листа «События» (change `nri-0027-xlsx-subevents-and-time`; версии не трогаем)

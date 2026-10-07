@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 
 from aiohttp.test_utils import TestClient, TestServer
-from PySide6.QtWidgets import QCheckBox
 
 from app.domain.enums.field_type import FieldType
 from app.infrastructure.table_host.http import create_table_host_app

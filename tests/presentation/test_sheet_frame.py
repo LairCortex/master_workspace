@@ -202,6 +202,7 @@ def test_scrim_is_the_palette_dim_crowning_the_whole_frame(qtbot):
     assert not scrim.isVisible()
 
     opaque_before = frame.grab().toImage().pixelColor(210, 150)
+    assert opaque_before.getRgb() != (0, 0, 0, 255)  # zero alpha: the canvas is whole
     frame.set_sheet_scrim_alpha(1.0)
     assert frame.sheet_scrim_alpha == 1.0
     assert scrim.isVisible()

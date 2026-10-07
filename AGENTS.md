@@ -8,6 +8,7 @@ PySide6 desktop app: RPG scenario manager. MVVM + qasync (all async code runs on
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"            # app + test deps
 pip install -e ".[build]"          # optional: PyInstaller
+uv sync --frozen --extra dev       # CI-identical install: exactly the versions pinned in uv.lock
 ```
 
 Python 3.11+ (CI and venv use 3.12). Tests must not require the network (LLM is tested with `httpx.MockTransport`).
@@ -33,7 +34,8 @@ QT_QPA_PLATFORM=offscreen python run_tests_isolated.py -j 8   # the full-suite g
 - `asyncio_mode = auto` in pyproject — do not add `@pytest.mark.asyncio`.
 - `qt_api = pyside6`; DB tests use in-memory aiosqlite fixtures (`async_engine`, `async_session`) in `tests/conftest.py`.
 - Linux CI/execution needs system libs: `libegl1 libxkbcommon0 libdbus-1-3`.
-- No linter, formatter, or type checker is configured — match surrounding code style, don't impose new tooling. Run tests before committing; that is the verification gate.
+- CI installs exactly the locked versions (`uv sync --frozen --extra dev` from `uv.lock`), so CI's `test`/`lint` jobs run the same versions as the green local `.venv`; the PySide6/SQLAlchemy upper bounds in pyproject keep the lock inside the qualified minors (6.10.x, 2.0.x).
+- The verification gate is exactly two commands and both must be green before a push, mirroring CI's `lint`/`test` jobs: `ruff check app/ tests/` and `QT_QPA_PLATFORM=offscreen python run_tests_isolated.py`. Ruff is configured (`[tool.ruff]` in pyproject, select E,F; the version is pinned in `uv.lock`, so local and CI run the identical ruff) — don't grow the rule set without proposing it in a change proposal. Green means both ran locally: "locally green, CI red" on an unrun lint is a process miss, not a CI defect.
 
 ## Design / UI-UX tasks — delegate to `ui-ux-designer`
 
@@ -145,3 +147,4 @@ Normative for every future change, including AI sessions (source: `docs/refactor
 ## Workflow conventions
 
 - OpenSpec is set up (`openspec/`, skills in `.kilocode/skills/`, workflows in `.kilocode/workflows/`): propose creates planning artifacts only (proposal/spec delta/design/tasks) and must not edit code; implementation starts in a separate apply step.
+- The gate above is codified as the local `/check` command (`.kilo/command/check.md`: `uv lock --check`, then `ruff check app/ tests/`, then the full isolated run, stopping at the first failure and reporting it verbatim). `.kilo/` is git-ignored, so this section is that convention's normative bearer — on a fresh machine the command gets recreated from it.

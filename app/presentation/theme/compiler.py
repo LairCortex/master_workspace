@@ -214,6 +214,13 @@ def compile_qss(tokens: Tokens, theme: str) -> str:
     # widgets (detail_panel cards) paints over it — there the card's own frame
     # separates the rows.
     alternate = accent_rgba(tokens, theme, 0.06)
+    # The checked radio indicator: an accent disk in a canvas well (NRI-0018
+    # Д8).  The gradient is precomputed so the QSS rule line stays short.
+    radio_dot = (
+        "qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, "
+        f"stop:0 {t['color.accent']}, stop:0.35 {t['color.accent']}, "
+        f"stop:0.4 {t['color.bg.canvas']})"
+    )
     return f"""
 QWidget[uiRole="chrome"], QMenuBar[uiRole="menu"] {{
     background: {t['color.bg.canvas']};
@@ -381,7 +388,7 @@ TableHostSeatCheck::indicator:checked {{
 }}
 QWidget[uiRole="chrome"] QRadioButton::indicator:checked {{
     border-color: {t['color.accent']};
-    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 {t['color.accent']}, stop:0.35 {t['color.accent']}, stop:0.4 {t['color.bg.canvas']});
+    background: {radio_dot};
 }}
 QWidget[uiRole="chrome"] QListWidget,
 QWidget[uiRole="chrome"] QTreeView,

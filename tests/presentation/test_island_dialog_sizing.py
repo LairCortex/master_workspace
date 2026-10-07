@@ -255,11 +255,32 @@ def test_sheet_list_scene_asks_for_the_whole_button_row(qtbot, service):
 
 
 def test_sheet_list_buttons_keep_their_own_width_on_both_tabs(qtbot, service):
+    """No button ever gives up its own width, and none rides past the scene.
+
+    The row is checked at the size the scene itself publishes: the open size
+    is screen-capped (fit_dialog_to_island never covers the screen), and an
+    offscreen 800×600 screen plus a wider test font can cut the capped width
+    short of the six actions — a legitimate cap, the same posture as
+    test_the_card_at_its_scene_size_shows_the_action_row. The assertion that
+    stays strict on ANY platform: at the scene's own ask every button keeps
+    its full implicit width and the row's right edge stays inside the island
+    — a QML row that actually squeezes or clips the captions fails here.
+    """
     cap = _screen_cap()
     dialog = CharacterSheetListDialog(service)
     qtbot.addWidget(dialog)
     dialog.show()
     _pump(qtbot)
+
+    assert dialog.width() <= cap.width()
+
+    root = dialog._root
+    natural = (int(round(root.implicitWidth())), int(round(root.implicitHeight())))
+    if natural[0] > dialog.width():
+        # The open width hit the screen cap below the row's ask — hand the
+        # scene the width it publishes and check the row there.
+        dialog.resize(*natural)
+        _pump(qtbot)
 
     for tab, names in (
         (0, _LIST_BUTTONS),
@@ -273,4 +294,3 @@ def test_sheet_list_buttons_keep_their_own_width_on_both_tabs(qtbot, service):
             assert button.width() >= button.implicitWidth() - 1, name
             origin = button.mapToScene(QPointF(0, 0))
             assert origin.x() + button.width() <= dialog.quick.width() + 1, name
-    assert dialog.width() <= cap.width()

@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
 from app.presentation import entity_icons
 from app.presentation.entity_icons import ENTITY_ICONS, icon_for

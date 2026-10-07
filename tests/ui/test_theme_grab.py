@@ -544,6 +544,7 @@ def test_disabled_chrome_icon_button_glyph_follows_the_muted_caption(
     («Открыть стол») is the one that keeps the accent fill with an accent.fg
     glyph.  The measured muted/canvas contrast clears WCAG AA from the very
     tokens the pixels answered."""
+    from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QPushButton, QWidget
 
     from app.presentation.views import lucide_icons
@@ -563,6 +564,16 @@ def test_disabled_chrome_icon_button_glyph_follows_the_muted_caption(
         # and «Открыть стол» as the one primary-role button of the row.
         caption = "Открыть стол" if primary else "Остановить"
         button = QPushButton(caption, root)
+        # Platform-neutral rasterization: an offscreen grab renders text with
+        # whatever AA the platform's fontconfig default picks — Ubuntu CI
+        # defaults to LCD subpixel, whose RGB chromatic fringes (#aadaa7,
+        # #1e2a68, …) land off every base→ink line, while macOS antialias is
+        # grayscale. The pin is about the ink COLOUR (engine Disabled token vs
+        # Qt auto-tint), not the AA mode, so both platforms render on the same
+        # grayscale footing; the line checks below stay strict on any OS.
+        font = button.font()
+        font.setStyleStrategy(font.styleStrategy() | QFont.NoSubpixelAntialias)
+        button.setFont(font)
         if primary:
             button.setProperty("uiRole", "primary")
         button.setIcon(
@@ -600,7 +611,7 @@ def test_disabled_chrome_icon_button_glyph_follows_the_muted_caption(
     # width is the 16 px icon box, and every pixel of it (and of every caption
     # cluster) must ride the canvas→fg.primary line — _ink_column_runs asserts
     # that while grouping.
-    enabled_runs = _ink_column_runs(enabled_image, canvas, fg, int(8 * scale))
+    enabled_runs = _ink_column_runs(enabled_image, canvas, fg, int(inset * scale))
     assert enabled_runs, (theme, "no fg.primary ink cluster on the enabled button")
     en_glyph_x0, en_glyph_x1, en_glyph_exact = enabled_runs[0]
     assert 12 * scale <= en_glyph_x1 - en_glyph_x0 + 1 <= 20 * scale, (
@@ -620,7 +631,7 @@ def test_disabled_chrome_icon_button_glyph_follows_the_muted_caption(
     assert primary_image.pixelColor(
         int(4 * p_scale), primary_image.height() // 2
     ) == accent, theme
-    primary_runs = _ink_column_runs(primary_image, accent, accent_fg, int(8 * p_scale))
+    primary_runs = _ink_column_runs(primary_image, accent, accent_fg, int(inset * p_scale))
     assert primary_runs, (theme, "no accent.fg ink cluster on the primary button")
     assert primary_runs[0][2] >= 10, (theme, primary_runs[0])
 
@@ -637,7 +648,7 @@ def test_disabled_chrome_icon_button_glyph_follows_the_muted_caption(
     # …and EVERY painted pixel inside the inset (glyph and caption alike) is a
     # blend on the single canvas→muted line, with both clusters carrying the
     # exact muted token: one tone for glyph and caption, no third tint.
-    d_inset = int(8 * d_scale)
+    d_inset = int(inset * d_scale)
     painted = 0
     for y in range(d_inset, image.height() - d_inset):
         for x in range(d_inset, image.width() - d_inset):

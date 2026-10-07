@@ -194,13 +194,12 @@ def _wait_visible_row(qtbot, widget, text: str, wheel: bool):
         lst = _list(widget)
         pos = lst.mapToScene(QPointF(10, 20))
         point = QPoint(int(pos.x()), int(pos.y()))
-        QApplication = None  # noqa: F811 — name kept local to avoid shadowing
-        from PySide6.QtWidgets import QApplication as _App
+        from PySide6.QtWidgets import QApplication
         event = QWheelEvent(
             QPointF(point), widget.mapToGlobal(point), QPoint(0, 0), QPoint(0, -240),
             Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
         )
-        _App.sendEvent(widget, event)
+        QApplication.sendEvent(widget, event)
         QTest.qWait(20)
 
     def settled():
