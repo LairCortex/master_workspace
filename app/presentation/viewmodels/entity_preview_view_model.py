@@ -65,7 +65,13 @@ PIN_STATE_LIMIT = "limit"
 
 
 class EntityPreviewViewModel(QObject):
-    """The column's card list; all composition rules live in the cards."""
+    """The column's card list; all composition rules live in the cards.
+
+    Since NRI-0028 the VM also owns the fullsize expansion (Д1–Д3): one card
+    may fill the column while the rest of the frame hides. The frames stay
+    whole (``show_slots`` is never filtered), ``panes`` answers the
+    filtration, and ``ApplicationWiring``, the storage and ``game_settings``
+    never learn of the mode — it is the column's own view state."""
 
     contentChanged = Signal()
     #: The preview's half of the one selection bus (design D2): a relation row
@@ -89,14 +95,25 @@ class EntityPreviewViewModel(QObject):
         # fix): a card built now is a different construction than its
         # same-pair predecessor, a reused card keeps the rev it was born with.
         self._rev_seq = 0
+        # NRI-0028 Д1: the one card expanded to fill the column, keyed by the
+        # slot identity the frames already speak — side plus pair, the same
+        # ``(pinned, type, id)`` triple as ``slotKey``/``_slot_card``. None
+        # while the column paints its usual equal division. Pure view state:
+        # the connector, the storage and the frames know nothing of it (Д2).
+        self._fullsize_key: tuple[bool, str, int] | None = None
         if now_vm is not None:
             now_vm.nowChanged.connect(self._on_now_changed)
 
     # ── QML-facing properties — the multi-view face (design Д2) ─────────────
 
     panes = Property(
-        "QVariant", lambda self: [card.pane() for card in self._cards],
-        notify=contentChanged,
+        "QVariant", lambda self: self._pane_dicts(), notify=contentChanged,
+    )
+    #: One card owns the whole column right now (NRI-0028 Д1). The island
+    #: hides the empty-live hint while this holds; ``panes`` answers the
+    #: filtered single card meanwhile.
+    fullsize = Property(
+        bool, lambda self: self._fullsize_key is not None, notify=contentChanged,
     )
     #: The live area has no card. With at least one pin the island paints the
     #: hint block below them; with no pins at all it is the whole-column empty
@@ -144,7 +161,13 @@ class EntityPreviewViewModel(QObject):
         rebuilds with a fresh rev and repaints from the top, its neighbours
         untouched. A frame answering an unchanged one (every slot reused,
         order intact) emits NOTHING: with no notify the QML scene — and every
-        pane's scroll — physically survives."""
+        pane's scroll — physically survives.
+
+        Fullsize relocation (NRI-0028 Д2): the frames stay whole, so the
+        expansion key is reconciled against each incoming frame — see
+        :meth:`_relocate_fullsize_key`."""
+        key_before = self._fullsize_key
+        self._fullsize_key = self._relocate_fullsize_key(key_before, pins, live)
         previous = {
             (card.pinned, card.entity_type, card.entity_id): card
             for card in self._cards
@@ -173,14 +196,64 @@ class EntityPreviewViewModel(QObject):
             cards.append(card)
         # Pin order is part of the frame: even an all-reused reshuffle moves
         # cards between slots and must repaint (and re-announce) the list.
-        changed = rebuilt or [
-            (card.pinned, card.entity_type, card.entity_id) for card in cards
-        ] != [
-            (card.pinned, card.entity_type, card.entity_id) for card in self._cards
-        ]
+        # A relocated/expunged expansion key changes what ``panes`` answers
+        # too (Д3), so it rides the same shared notify.
+        changed = (
+            rebuilt
+            or self._fullsize_key != key_before
+            or [
+                (card.pinned, card.entity_type, card.entity_id) for card in cards
+            ]
+            != [
+                (card.pinned, card.entity_type, card.entity_id) for card in self._cards
+            ]
+        )
         self._cards = cards
         if changed:
             self.contentChanged.emit()
+
+    def _relocate_fullsize_key(
+        self,
+        key: tuple[bool, str, int] | None,
+        pins: Sequence[tuple[str, Any]],
+        live: tuple[str, Any] | None,
+    ) -> tuple[bool, str, int] | None:
+        """The one relocation rule of the expansion key against an incoming
+        frame (NRI-0028 Д2): the key is in the frame — the mode stands; the
+        exact key is gone but the same ``(type, id)`` pair rides the OTHER
+        side of the frame — the key moves there (pinning the expanded live
+        card relocates the expansion onto its pinned copy, unpinning an
+        expanded pin with a live copy relocates symmetrically onto the live
+        one — the mode holds the ENTITY with its display side, and holding
+        the entity outranks following the slot); the key rode the LIVE side
+        and the frame still has a live side — the expansion follows the
+        selection with its new pair (spec «Живое раскрытие следует за
+        выбором»: a new selection replaces the expanded content, the mode
+        never dies on a mere selection change); otherwise the mode
+        extinguishes itself — unpin without a copy, deletion and an emptied
+        frame all die out through this final branch (a PINNED-side key never
+        follows the live slot)."""
+        if key is None:
+            return None
+        frame = [
+            (True, entity_type, int(getattr(entity, "id", 0) or 0))
+            for entity_type, entity in pins
+        ]
+        if live is not None:
+            frame.append(
+                (False, live[0], int(getattr(live[1], "id", 0) or 0))
+            )
+        if key in frame:
+            return key
+        pair = (key[1], key[2])
+        for side, entity_type, entity_id in frame:
+            if (entity_type, entity_id) == pair:
+                return (side, entity_type, entity_id)
+        if not key[0]:
+            for side, entity_type, entity_id in frame:
+                if not side:
+                    return (False, entity_type, entity_id)
+        return None
 
     def _slot_card(
         self,
@@ -242,8 +315,11 @@ class EntityPreviewViewModel(QObject):
 
     def clear(self) -> None:
         """Back to the self-explaining empty state (delete / new game / the
-        next start all funnel through here via the wiring)."""
+        next start all funnel through here via the wiring). The fullsize
+        expansion extinguishes always (NRI-0028 Д2): the mode is transient
+        per column session, neither a restart nor a game switch keeps it."""
         self._cards = []
+        self._fullsize_key = None
         self.contentChanged.emit()
 
     # ── QML-facing slots (the island's outgoing gestures) ──────────────────
@@ -279,6 +355,19 @@ class EntityPreviewViewModel(QObject):
         if self.pane_entity(entity_type, entity_id, pinned) is not None:
             self.imageRequested.emit(entity_type, entity_id, pinned)
 
+    @Slot(str, int, bool)
+    def requestFullsizeToggle(self, entity_type: str, entity_id: int, pinned: bool) -> None:
+        """The expand button of a pane was activated (NRI-0028 Д1): pressing
+        the key that is already expanded extinguishes it, pressing another
+        card's button moves the expansion there — only one card is ever
+        expanded. The island raises this only from a visible pane, so the key
+        always names a card of the current frame; the frame itself is never
+        touched, only ``panes`` filters (Д2). The repaint rides the shared
+        ``contentChanged`` like every other re-composition (Д3)."""
+        key = (pinned, entity_type, entity_id)
+        self._fullsize_key = None if self._fullsize_key == key else key
+        self.contentChanged.emit()
+
     # ── «now» following (NRI-0021 Д2/Д5 posture, one subscription for all) ──
 
     def detach_now_listener(self) -> None:
@@ -308,3 +397,38 @@ class EntityPreviewViewModel(QObject):
         if self._cards and not self._cards[-1].pinned:
             return self._cards[-1]
         return None
+
+    @staticmethod
+    def _slot_triple(card: EntityCardViewModel) -> tuple[bool, str, int]:
+        """The card's slot identity — the same ``(pinned, type, id)`` triple
+        ``_slot_card`` reuses cards by and the island's ``slotKey`` names."""
+        return (card.pinned, card.entity_type, card.entity_id)
+
+    def _pane_dicts(self) -> list[dict[str, Any]]:
+        """The ``panes`` value: the visible cards with the two fullsize flags
+        the band button needs. ``canFullsize`` is the Д3 threshold — the
+        FRAME holds two or more cards, hidden ones included, counted once
+        here so the island never counts; ``fullsize`` names which visible
+        card is the expanded one (Д4 maps it to the button's name/tooltip
+        pair and glyph). With no expansion every card of the frame shows."""
+        can_fullsize = len(self._cards) >= 2
+        return [
+            card.pane(
+                can_fullsize=can_fullsize,
+                fullsize=self._fullsize_key == self._slot_triple(card),
+            )
+            for card in self._visible_cards()
+        ]
+
+    def _visible_cards(self) -> list[EntityCardViewModel]:
+        """The frame as the island sees it (Д1/Д2): whole while no card is
+        expanded, only the expanded card otherwise — the rest of the frame
+        hides but never leaves ``_cards``, so the next frame reuses every
+        card of the frame exactly as if nothing had happened."""
+        if self._fullsize_key is None:
+            return self._cards
+        return [
+            card
+            for card in self._cards
+            if self._fullsize_key == self._slot_triple(card)
+        ]

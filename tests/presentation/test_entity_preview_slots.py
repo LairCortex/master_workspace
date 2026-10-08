@@ -637,3 +637,270 @@ def test_the_pin_order_is_part_of_the_frame():
     assert [pane["entityId"] for pane in vm.panes] == [2, 1]
     assert [pane["slotIndex"] for pane in vm.panes] == [0, 1]
     assert [(c.pinned, c.slot_index) for c in vm._cards] == [(True, 0), (True, 1)]
+
+
+# ── NRI-0028 task 1.1/1.2: the fullsize expansion in the column VM (Д1–Д3) ───
+#
+# One card at a time may own the whole column: ``requestFullsizeToggle``
+# expands the pressed card (``panes`` answers a filtered one, the frame in
+# ``_cards`` stays whole — Д2), the same key pressed again collapses, another
+# card's press moves the expansion. The repaint is the shared
+# ``contentChanged`` (Д3), and the pane dict carries the Д3 threshold flag
+# ``canFullsize`` (two-or-more frame cards, hidden ones included — the island
+# never counts) plus the per-pane ``fullsize`` state the band button names
+# itself from (Д4).
+
+def test_fullsize_toggle_expands_only_the_pressed_card():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=7))], ("location", _entity("location", id=8)))
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    vm.requestFullsizeToggle("location", 8, False)
+
+    assert bool(vm.fullsize) is True
+    assert changed == [1]
+    # The live card fills the column alone; the pin only hides — the frame
+    # (and every scroll memory riding it) is untouched (Д2).
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (False, 8, True)
+    ]
+    assert len(vm._cards) == 2
+
+
+def test_fullsize_a_second_press_on_the_same_key_collapses():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=7))], ("location", _entity("location", id=8)))
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    vm.requestFullsizeToggle("location", 8, False)
+    vm.requestFullsizeToggle("location", 8, False)
+
+    assert bool(vm.fullsize) is False
+    assert changed == [1, 1]
+    # Every card of the frame is back in its usual equal-share order.
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (True, 7, False),
+        (False, 8, False),
+    ]
+
+
+def test_fullsize_press_on_another_card_moves_the_expansion():
+    vm = EntityPreviewViewModel()
+    vm.show_slots(
+        [("character", _entity(id=7)), ("item", _entity("item", id=9, name="Меч"))],
+        ("location", _entity("location", id=8)),
+    )
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    vm.requestFullsizeToggle("location", 8, False)
+    vm.requestFullsizeToggle("item", 9, True)
+
+    assert bool(vm.fullsize) is True
+    assert changed == [1, 1]
+    # Only one card is ever expanded: the press on the second moved the
+    # expansion, the first pane is hidden again with its neighbours shown.
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (True, 9, True)
+    ]
+
+
+def test_the_can_fullsize_flag_tracks_the_frame_size():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([], ("character", _entity(id=7)))
+    # A single-card frame has nothing to hide behind the expansion — the
+    # button is not offered (spec «Две карточки — кнопка есть, одна — нет»).
+    assert [p["canFullsize"] for p in vm.panes] == [False]
+
+    vm.show_slots([("character", _entity(id=7))], ("location", _entity("location", id=8)))
+    assert [p["canFullsize"] for p in vm.panes] == [True, True]
+
+
+def test_the_can_fullsize_flag_counts_the_cards_hidden_by_expansion():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=7))], ("location", _entity("location", id=8)))
+    vm.requestFullsizeToggle("location", 8, False)
+
+    # The one visible pane still knows its frame holds two cards (spec
+    # «учитывая и скрытые раскрытием»): its own button stays live exactly to
+    # collapse the mode back.
+    assert [p["canFullsize"] for p in vm.panes] == [True]
+
+
+# ── NRI-0028 task 1.3: the key relocates with the frame (Д2) ─────────────────
+#
+# The expansion holds the ENTITY with its display side: a frame that no
+# longer carries the exact side+pair key moves it to the other side when the
+# same pair rides there (a pin of the expanded live card keeps the entity on
+# screen), and extinguishes the mode when the pair left the frame entirely.
+
+def test_fullsize_relocates_onto_the_pinned_copy_when_the_live_card_is_pinned():
+    vm = EntityPreviewViewModel()
+    live = _entity(id=9)
+    vm.show_slots([], ("character", live))
+    vm.requestFullsizeToggle("character", 9, False)
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    # The connector's answer to the pin: the pair now rides the pinned side,
+    # the live area is empty — the expansion follows the pair, not the side.
+    vm.show_slots([("character", _entity(id=9))], None)
+
+    assert bool(vm.fullsize) is True
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (True, 9, True)
+    ]
+    # The frame changed (the card moved sides), so the repaint rides along.
+    assert changed == [1]
+
+
+def test_fullsize_relocates_onto_the_live_copy_when_the_pinned_one_is_unpinned():
+    vm = EntityPreviewViewModel()
+    live = _entity(id=9)
+    vm.show_slots([("character", _entity(id=9))], ("character", live))
+    vm.requestFullsizeToggle("character", 9, True)
+    assert [p["pinned"] for p in vm.panes] == [True]
+
+    # Unpinning the expanded card WITH a live copy of the same pair: the
+    # expansion moves symmetrically onto the live copy (spec «Раскрытие
+    # держаться за сущность с её стороной показа», the grill Q6 trade).
+    vm.show_slots([], ("character", live))
+
+    assert bool(vm.fullsize) is True
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (False, 9, True)
+    ]
+
+
+# The live half of the same rule (spec «Раскрытый режим живёт карточкой, а не
+# половиной слота»): while the EXPANSION rides the live card a new selection
+# replaces its content — the mode follows the live slot and never dies on a
+# mere selection change (scenario «Живое раскрытие следует за выбором»). The
+# entity-with-a-copy relocation still outranks the follow (the mode holds the
+# entity first, grill Q6), and the PINNED side never follows the live slot —
+# unpinning an expanded pin still extinguishes even with some other card live.
+
+def test_fullsize_live_expansion_follows_a_new_selection():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=5))], ("character", _entity(id=9)))
+    vm.requestFullsizeToggle("character", 9, False)
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    # The user selects another entity: the connector answers with the same
+    # pins and a new live pair — the expanded live card shows the NEW entity,
+    # the neighbours stay hidden (the mode survives the selection).
+    vm.show_slots([("character", _entity(id=5))], ("character", _entity(id=12)))
+
+    assert bool(vm.fullsize) is True
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (False, 12, True)
+    ]
+    # The frame changed, so the repaint rides the shared notify (Д3).
+    assert changed == [1]
+
+
+def test_the_pinned_expansion_never_follows_the_live_slot():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=5)), ("character", _entity(id=9))], None)
+    vm.requestFullsizeToggle("character", 9, True)
+
+    # Unpinning the expanded pin while ANOTHER card arrives live: the pair
+    # rides nowhere, the follow belongs to the live side only — the mode
+    # extinguishes and the column returns to its usual division (spec
+    # scenario «Открепление раскрытой карточки гасит режим»).
+    vm.show_slots([("character", _entity(id=5))], ("character", _entity(id=12)))
+
+    assert bool(vm.fullsize) is False
+    assert [(p["pinned"], p["entityId"]) for p in vm.panes] == [
+        (True, 5),
+        (False, 12),
+    ]
+
+
+def test_a_pair_riding_the_other_side_outranks_following_the_selection():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=5))], ("character", _entity(id=9)))
+    vm.requestFullsizeToggle("character", 9, False)
+
+    # The expanded live pair was pinned while a NEW entity became the live
+    # card: holding the ENTITY outranks following the slot (grill Q6) — the
+    # expansion lands on the pinned copy, not on the fresh live pair.
+    vm.show_slots(
+        [("character", _entity(id=5)), ("character", _entity(id=9))],
+        ("character", _entity(id=12)),
+    )
+
+    assert bool(vm.fullsize) is True
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (True, 9, True)
+    ]
+
+
+def test_unpin_without_a_copy_extinguishes_fullsize():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=5)), ("character", _entity(id=9))], None)
+    vm.requestFullsizeToggle("character", 9, True)
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    # The expanded card was unpinned and the pair rides nowhere else: the
+    # mode dies by itself, the remaining card shows in the usual division.
+    vm.show_slots([("character", _entity(id=5))], None)
+
+    assert bool(vm.fullsize) is False
+    assert [p["entityId"] for p in vm.panes] == [5]
+    assert changed == [1]
+
+
+def test_the_expanded_pair_leaving_the_frame_extinguishes_fullsize():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=5))], ("character", _entity(id=9)))
+    vm.requestFullsizeToggle("character", 9, False)
+
+    # The shown entity was deleted: the connector answers without the pair
+    # anywhere — spec «Удаление показанной сущности гасит режим».
+    vm.show_slots([("character", _entity(id=5))], None)
+
+    assert bool(vm.fullsize) is False
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (True, 5, False)
+    ]
+
+
+def test_clear_extinguishes_fullsize():
+    vm = EntityPreviewViewModel()
+    vm.show_slots([("character", _entity(id=5))], ("character", _entity(id=9)))
+    vm.requestFullsizeToggle("character", 5, True)
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    # Game switch / close funnel through clear: the mode never survives it
+    # (spec «Режим не переживает перезапуск и смену игры»).
+    vm.clear()
+
+    assert bool(vm.fullsize) is False
+    assert vm.panes == []
+    assert changed == [1]
+
+
+def test_an_unchanged_frame_with_active_fullsize_announces_nothing():
+    vm = EntityPreviewViewModel()
+    a = _entity(id=5)
+    live = _entity(id=9)
+    vm.show_slots([("character", a)], ("character", live))
+    vm.requestFullsizeToggle("character", 9, False)
+    changed = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    # The frame and the key are whole, so the re-presented frame stays mute
+    # (Д3): the expanded pane — its rev, its scroll — physically survives.
+    vm.show_slots([("character", a)], ("character", live))
+
+    assert changed == []
+    assert bool(vm.fullsize) is True
+    assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
+        (False, 9, True)
+    ]

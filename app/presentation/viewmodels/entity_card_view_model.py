@@ -206,7 +206,7 @@ class EntityCardViewModel:
 
     # ── the pane contract for the island (design Д2/Д6) ─────────────────────
 
-    def pane(self) -> dict[str, Any]:
+    def pane(self, *, can_fullsize: bool, fullsize: bool) -> dict[str, Any]:
         """The card as one pane entry of the column VM's ``panes`` list. The
         identity pair rides along so a pane delegate can raise the pin and
         picture gestures by pair, never by a prunable index (design Д2);
@@ -216,13 +216,22 @@ class EntityCardViewModel:
         the capacity rule never leave the column VM. ``slotKey``/``rev`` are
         the slot identity behind the island's scroll memory (2026-10-03 fix):
         the key names the slot across frame rebuilds, the rev says whether
-        the card behind it is still the same construction."""
+        the card behind it is still the same construction.
+
+        The fullsize flags are authored by the column VM, never by the card
+        (NRI-0028 Д3/Д4): ``canFullsize`` is the frame-size threshold — two
+        or more cards in the FRAME, hidden ones included — that makes the
+        pane's expand button visible, and ``fullsize`` says THIS pane is the
+        expanded one, the state the button's fixed name/tooltip pair and
+        glyph follow. The island reads both and counts nothing itself."""
         return {
             "slotIndex": self.slot_index,
             "pinned": self.pinned,
             "pinState": self.pin_state,
             "slotKey": self.slot_key,
             "rev": self.rev,
+            "canFullsize": can_fullsize,
+            "fullsize": fullsize,
             "entityType": self.entity_type,
             "entityId": self.entity_id,
             "title": self.title,

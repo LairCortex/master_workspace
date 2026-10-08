@@ -1443,3 +1443,201 @@ def test_a_user_drag_of_a_pane_drops_the_waiting_restoration(qtbot):
     scroll.setProperty("contentHeight", 3000.0)
     qtbot.wait(50)
     assert float(scroll.property("contentY")) == pytest.approx(y_user, abs=1.0)
+
+
+# ── NRI-0028 task 2.1: the fullsize toggle in the pane band ──────────────────
+
+
+def _fullsize(widget, slot_index: int):
+    return find_item(widget.quick, f"previewFullsizeButton_{slot_index}")
+
+
+def test_the_fullsize_button_appears_only_with_a_second_card(qtbot):
+    # Design Д3/Д4: the threshold is the column VM's — the flag rides every
+    # pane dict, the island only paints it. A one-card frame shows no expand
+    # button at all; the first time the frame holds two cards, BOTH panes
+    # grow one, left of their pins.
+    lone = _slots(qtbot, [], ("character", _entity(id=1)))
+    assert bool(_fullsize(lone, 0).property("visible")) is False
+
+    widget = _slots(
+        qtbot, [("character", _entity(id=1))], ("character", _entity(id=2))
+    )
+    assert [bool(_fullsize(widget, i).property("visible")) for i in (0, 1)] == [
+        True,
+        True,
+    ]
+
+
+def test_the_fullsize_toggle_carries_its_state_as_name_tooltip_and_glyph(qtbot):
+    # The fixed pair of formulations states the button's very state (design
+    # Д6): collapsed reads «Показать на весь предпросмотр» with the maximize
+    # glyph, expanded reads «Показать все карточки» with minimize. The name
+    # doubles as the tooltip (limit ④), the Button seat and the EMPTY
+    # description are the island's standing contract (Д6: the vocabulary
+    # stays closed). Pressing the live pane's toggle expands exactly that
+    # card — its button is the only visible one and already wears the exit
+    # state while the card owns the whole column.
+    widget = _slots(
+        qtbot, [("character", _entity(id=1))], ("character", _entity(id=2))
+    )
+    for index in (0, 1):
+        button = _fullsize(widget, index)
+        iface = _accessible(button)
+        assert iface.role() == QAccessible.Role.Button, index
+        assert iface.text(QAccessible.Name) == "Показать на весь предпросмотр", index
+        assert iface.text(QAccessible.Description) == "", index
+        attached = qmlAttachedPropertiesObject(Nri, button, False)
+        assert attached is not None and attached.tooltip == "Показать на весь предпросмотр"
+        assert str(button.property("iconName")) == "maximize", index
+
+    widget.vm.requestFullsizeToggle("character", 2, False)
+    QApplication.processEvents()
+
+    assert len(_pane_items(widget)) == 1  # the frame collapsed onto one card
+    button = _fullsize(widget, 1)
+    iface = _accessible(button)
+    assert iface.text(QAccessible.Name) == "Показать все карточки"
+    assert iface.text(QAccessible.Description) == ""
+    attached = qmlAttachedPropertiesObject(Nri, button, False)
+    assert attached.tooltip == "Показать все карточки"
+    assert str(button.property("iconName")) == "minimize"
+
+
+def test_the_fullsize_press_is_one_toggle_by_pair(qtbot):
+    # The Press rides the component seat (the штатно Button action of
+    # ThemeIconButton — the same contract as the pin's), so an accessibility
+    # activation is one real click. One Press expands the pressed pair, the
+    # next Press on the same button extinguishes the mode; the pinned pane's
+    # button carries pinned=True through the toggle (design Д1).
+    widget = _slots(
+        qtbot, [("location", _entity("location", id=8))], ("character", _entity(id=9))
+    )
+
+    _press(_fullsize(widget, 1))
+    assert widget.vm.fullsize is True
+    assert widget.vm._fullsize_key == (False, "character", 9), (
+        "one Press must expand exactly the pressed pair, live side"
+    )
+    assert [p["entityId"] for p in widget.vm.panes] == [9]
+
+    _press(_fullsize(widget, 1))
+    assert widget.vm.fullsize is False
+    assert len(widget.vm.panes) == 2  # the frame reads whole again
+
+    _press(_fullsize(widget, 0))
+    assert widget.vm._fullsize_key == (True, "location", 8), (
+        "the pinned pane's Press must carry pinned=True by pair"
+    )
+
+
+def test_the_pane_title_keeps_clear_of_both_corner_buttons(qtbot):
+    # Design Д4 risk: two 32 px squares in the band — the caption reserves
+    # BOTH while the expand button exists, only the pin while a one-card
+    # frame hides it (the spec forbids the button there, so it must not
+    # eat caption width either).
+    widget = _slots(
+        qtbot, [("character", _entity(id=1))], ("character", _entity(id=2))
+    )
+    band = find_item(widget.quick, "previewPaneBand_0")
+    title = _pane_child(widget, 0, "previewPaneTitle")
+    xs = _token_px("space.xs")
+    two = float(_fullsize(widget, 0).property("width"))
+    pin_w = float(find_item(widget.quick, "previewPinButton_0").property("width"))
+    assert float(title.property("width")) == pytest.approx(
+        band.width() - pin_w - two - 2 * xs, abs=1.0
+    )
+
+    widget.show_slots([("character", _entity(id=1))], None)
+    QApplication.processEvents()
+    band = find_item(widget.quick, "previewPaneBand_0")
+    title = _pane_child(widget, 0, "previewPaneTitle")
+    assert bool(_fullsize(widget, 0).property("visible")) is False
+    assert float(title.property("width")) == pytest.approx(
+        band.width() - pin_w - xs, abs=1.0
+    )
+
+
+def test_the_empty_live_hint_hides_while_a_card_is_expanded(qtbot):
+    # Design Д4: while the mode is on the expanded card owns the whole
+    # column — the empty live area never claims a share of it, hint and all
+    # (the reader asked for «только она на всю высоту»).
+    widget = _slots(qtbot, [("character", _entity(id=1))], None)
+    assert bool(find_item(widget.quick, "previewCanvas").property("visible")) is True
+
+    _press(_fullsize(widget, 0))
+    assert bool(find_item(widget.quick, "previewCanvas").property("visible")) is False
+    assert len(_pane_items(widget)) == 1
+
+    _press(_fullsize(widget, 0))
+    assert bool(find_item(widget.quick, "previewCanvas").property("visible")) is True
+    assert len(_pane_items(widget)) == 1  # still the one-card frame
+
+
+# ── NRI-0028 task 2.2: the scroll memory widened onto the live half ──────────
+
+
+def test_pinned_and_live_scrolls_survive_the_fullsize_round_trip(qtbot):
+    # Design Д5: the live half rides the SAME memory now — writing happens
+    # at every pane's destruction, the rev gate stays untouched. Entering
+    # the mode rebuilds the live delegate like it always rebuilt the pinned
+    # ones: same construction, same rev, the offset lands back — and the
+    # exit restores the equal split with both readings whole.
+    widget = _slots(
+        qtbot,
+        [("character", _long_entity(1))],
+        ("character", _long_entity(2)),
+        size=(420, 700),
+    )
+    y0 = _scroll_pane_to(widget, 0, 150.0)
+    y1 = _scroll_pane_to(widget, 1, 120.0)
+    assert y0 > 0 and y1 > 0
+
+    widget.vm.requestFullsizeToggle("character", 2, False)
+    QApplication.processEvents()
+    assert len(_pane_items(widget)) == 1
+    assert float(_scroll_of_pane(widget, 1).property("contentY")) == pytest.approx(
+        y1, abs=1.0
+    )
+
+    widget.vm.requestFullsizeToggle("character", 2, False)
+    QApplication.processEvents()
+    assert float(_scroll_of_pane(widget, 0).property("contentY")) == pytest.approx(
+        y0, abs=1.0
+    )
+    assert float(_scroll_of_pane(widget, 1).property("contentY")) == pytest.approx(
+        y1, abs=1.0
+    )
+
+
+def test_a_fresh_live_selection_in_the_expanded_mode_opens_from_the_top(qtbot):
+    # Spec «Живое раскрытие следует за выбором» × the QA rule «живая карточка
+    # при новом выборе — всегда с начала»: while the live card is expanded
+    # and the reader clicks another entity, the expansion follows the live
+    # slot (design Д2 relocation), but the new construction carries a new
+    # rev — the gate refuses the old live memory and the card opens from
+    # the top. The untouched pin keeps reading.
+    pins = [("character", _long_entity(1))]
+    widget = _slots(qtbot, pins, ("character", _long_entity(2)), size=(420, 700))
+    y0 = _scroll_pane_to(widget, 0, 150.0)
+    y1 = _scroll_pane_to(widget, 1, 90.0)
+    assert y0 > 0 and y1 > 0
+
+    widget.vm.requestFullsizeToggle("character", 2, False)
+    QApplication.processEvents()
+
+    widget.show_slots(pins, ("character", _long_entity(3)))
+    QApplication.processEvents()
+
+    assert len(_pane_items(widget)) == 1  # still expanded, still the live slot
+    assert _name_of_pane(widget, 1) == "Сущ3"  # the expansion followed the choice
+    assert float(_scroll_of_pane(widget, 1).property("contentY")) == 0.0
+
+    widget.vm.requestFullsizeToggle("character", 3, False)
+    QApplication.processEvents()
+    assert float(_scroll_of_pane(widget, 0).property("contentY")) == pytest.approx(
+        y0, abs=1.0
+    )  # the pin never moved; the live card keeps its own reading
+    assert float(_scroll_of_pane(widget, 1).property("contentY")) == pytest.approx(
+        0.0, abs=1.0
+    )

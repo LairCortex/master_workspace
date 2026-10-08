@@ -259,7 +259,9 @@ def test_description_vocabulary_stays_the_frozen_map() -> None:
     # NRI-0025 design Д5: the quartet lives in the NAME slot, so the fixed
     # description map does NOT grow — equality on the whole map, not just
     # the absence of pin wordings (a retired wording leaving silently fails
-    # here too, mirroring rule 5's two-sided guard).
+    # here too, mirroring rule 5's two-sided guard). NRI-0028 design Д6 keeps
+    # the same rule for the fullsize duo below: its wordings stay out of the
+    # map, so this equality still pins the exact nine-word set.
     assert DESCRIPTION_VOCABULARY == frozenset({
         "Открывает игру",
         "Открывает карточку",
@@ -271,3 +273,40 @@ def test_description_vocabulary_stays_the_frozen_map() -> None:
         "Открывает событие",
         "Развернуть или свернуть раздел",
     })
+
+
+# ── NRI-0028 task 3.1: the fullsize toggle's duo of fixed wordings ────────────
+
+# The two formulations are design Д6's contract — the NAME states the
+# button's very state and doubles as the tooltip («Показать на весь
+# предпросмотр» collapsed / «Показать все карточки» expanded); they reach the
+# live audit register, so they are pinned here verbatim, in source, exactly
+# like the pin quartet above. The pane VM owns which half applies (the pane
+# dict's own fullsize flag); the island never derives the state itself.
+PREVIEW_FULLSIZE_DUO: tuple[str, ...] = (
+    "Показать на весь предпросмотр",
+    "Показать все карточки",
+)
+
+
+def test_the_preview_fullsize_names_are_the_pinned_duo() -> None:
+    text = (QML_ROOT / "EntityPreviewRoot.qml").read_text(encoding="utf-8")
+    # Each wording exists exactly once in the source: the fullsizeLabel
+    # ternary is the single author — the tree name, the Nri.tooltip
+    # declaration and the hover report all read that one property, so a third
+    # string (or a drift of one into the tooltip) fails here. The runtime face
+    # of the same duo is pinned per state in test_entity_preview_island.py.
+    for wording in PREVIEW_FULLSIZE_DUO:
+        assert text.count(f'"{wording}"') == 1, wording
+    assert "Accessible.name: fullsizeLabel" in text
+    assert "Nri.tooltip: fullsizeLabel" in text
+    # The toggle spells no description (the name already names the action,
+    # design Д6) — the hidden-meaning slot of the Button seat stays
+    # untouched, so the duo never reaches DESCRIPTION_VOCABULARY: neither by
+    # an annotation here (the slice between the button's id and its onClicked
+    # — the pin quartet's proven slice shape) nor by the frozen-map equality
+    # above growing to admit it.
+    assert "Accessible.description" not in text.split("id: fullsizeButton")[
+        1
+    ].split("onClicked")[0]
+    assert not set(PREVIEW_FULLSIZE_DUO) & DESCRIPTION_VOCABULARY

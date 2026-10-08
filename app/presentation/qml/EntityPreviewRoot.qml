@@ -16,11 +16,13 @@
 // Read-only for content by contract (spec entity-preview «Состав читаемого
 // предпросмотра»): no TextField, no edit gesture anywhere — the interactive
 // set is the picture (opens the viewer), the navigation channels (relation
-// rows via the library RowItem, mention anchors in the rich-text sections)
-// and since NRI-0025 the pane's pin button (the one new interactivity,
-// design Д5 — its four name/tooltip formulations are pinned by the
-// conventions guard). The VM answers every text already render-ready and
-// authors the pin state word; this file only paints and forwards gestures.
+// rows via the library RowItem, mention anchors in the rich-text sections),
+// since NRI-0025 the pane's pin button (its four name/tooltip formulations
+// are pinned by the conventions guard) and since NRI-0028 the pane's
+// fullsize toggle left of the pin (design Д4 — its fixed name/tooltip pair
+// states the button's very state). The VM answers every text already
+// render-ready and authors the pin state word plus both fullsize flags; this
+// file only paints and forwards gestures.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -80,17 +82,20 @@ Rectangle {
     // search and the middle column alike).
     readonly property string emptyHintText:
         "Выберите сущность — здесь появится её карточка"
-    // The scroll memory of the pinned slots (bug docs/qa/2026-10-03-preview-
-    // scroll-reset.md): the Repeater's model is a plain list without identity,
+    // The scroll memory of the slots (bug docs/qa/2026-10-03-preview-scroll-
+    // reset.md): the Repeater's model is a plain list without identity,
     // so every contentChanged recreates ALL delegates and a fresh Flickable
-    // starts at the top. Each destroyed pinned pane leaves its offset in this
-    // JS map under its slotKey (the pair plus the half — the card VM's
-    // identity), and the pane reborn under the same key sits back into it.
-    // The rev check is the invalidation: only a genuinely rebuilt card (a
-    // save refreshed its row, a pin transition, a limit word change) carries
-    // a new rev, so exactly the card whose content really moved repaints from
-    // the top while its neighbours keep reading. The live copy is never
-    // stored: a new selection always opens from the top (QA 2026-10-03).
+    // starts at the top. Each destroyed pane — pinned AND live halves since
+    // NRI-0028 Д5 — leaves its offset in this JS map under its slotKey (the
+    // pair plus the half — the card VM's identity), and the pane reborn
+    // under the same key sits back into it. The rev check is the
+    // invalidation for BOTH halves: only a genuinely rebuilt card (a save
+    // refreshed its row, a pin transition, a fresh live selection — a new
+    // construction always carries a new rev) refuses the remembered offset,
+    // so exactly the card whose content really moved repaints from the top
+    // while its neighbours keep reading. The live half's fresh-selection
+    // rule therefore survives for free: the new construction's rev never
+    // matches the old entry and the pane opens from the top (QA 2026-10-03).
     property var slotScrollMemory: ({})
 
     color: root.surfaceColor
@@ -147,17 +152,20 @@ Rectangle {
                 Layout.minimumHeight: 88
                 spacing: Tokens.px(root.islandTokens, "space.xs", 4)
 
-                // The memory's write side (2026-10-03 fix): the frame this
-                // pane was born in is gone — hand its scroll position to the
-                // pane reborn under the same slotKey, rev stamped so only the
-                // identical construction may sit back into it. Live panes
-                // keep no memory (a new selection opens from the top).
+                // The memory's write side (2026-10-03 fix, widened onto the
+                // live half by NRI-0028 Д5): the frame this pane was born in
+                // is gone — hand its scroll position to the pane reborn
+                // under the same slotKey, rev stamped so only the identical
+                // construction may sit back into it. The rev gate makes the
+                // live half safe for free: a fresh selection is a new
+                // construction with a new rev, so the «opens from the top»
+                // rule survives while a fullsize round trip (same rev) puts
+                // the live card back exactly where the reader left it.
                 Component.onDestruction: {
-                    if (previewPane.modelData.pinned)
-                        root.slotScrollMemory[previewPane.modelData.slotKey] = {
-                            rev: previewPane.modelData.rev,
-                            y: previewScroll.contentY,
-                        }
+                    root.slotScrollMemory[previewPane.modelData.slotKey] = {
+                        rev: previewPane.modelData.rev,
+                        y: previewScroll.contentY,
+                    }
                 }
 
                 // The card's own band — its ONLY headline line (delta
@@ -184,9 +192,55 @@ Rectangle {
                         text: previewPane.modelData.title
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
-                        // The pin square keeps the caption off its corner.
+                        // The corner buttons keep the caption off: the pin
+                        // always, the fullsize toggle while the frame has
+                        // more than one card to expand among (design Д4).
                         width: parent.width - pinButton.width
                             - Tokens.px(root.islandTokens, "space.xs", 4)
+                            - (fullsizeButton.visible
+                                ? fullsizeButton.width
+                                    + Tokens.px(root.islandTokens, "space.xs", 4)
+                                : 0)
+                    }
+
+                    // The fullsize toggle (NRI-0028 task 2.1, design Д4): the
+                    // same library ghost square, sitting LEFT of the pin —
+                    // the штатный Button seat carries the role AND the
+                    // accessibility Press, the NAME is this usage site's:
+                    // the fixed pair of formulations that state the button's
+                    // very state (design Д6 pins the duo under the
+                    // conventions guard; DESCRIPTION_VOCABULARY stays closed
+                    // — the name already names the action). Which name and
+                    // glyph apply is this pane's own `fullsize` flag, the
+                    // visibility is the frame's `canFullsize` flag (Д3) —
+                    // the island never counts cards or owns the mode here.
+                    ThemeIconButton {
+                        id: fullsizeButton
+                        objectName: "previewFullsizeButton_" + previewPane.modelData.slotIndex
+                        ghost: true
+                        visible: previewPane.modelData.canFullsize
+                        iconName: previewPane.modelData.fullsize ? "minimize" : "maximize"
+                        anchors.right: pinButton.left
+                        anchors.rightMargin: Tokens.px(root.islandTokens, "space.xs", 4)
+                        anchors.verticalCenter: parent.verticalCenter
+                        readonly property string fullsizeLabel: previewPane.modelData.fullsize
+                            ? "Показать все карточки"
+                            : "Показать на весь предпросмотр"
+                        Accessible.name: fullsizeLabel
+                        Nri.tooltip: fullsizeLabel
+                        HoverHandler {
+                            // The shim's documented glue, one-to-one with the
+                            // pin's bridge (design Д4).
+                            onHoveredChanged: tooltipBridge.tooltipRequested(
+                                hovered ? fullsizeButton.Nri.tooltip : "",
+                                point.scenePosition
+                            )
+                        }
+                        onClicked: entityPreviewVm.requestFullsizeToggle(
+                            previewPane.modelData.entityType,
+                            previewPane.modelData.entityId,
+                            previewPane.modelData.pinned
+                        )
                     }
 
                     // The pin (NRI-0025 task 4.2, design Д5): the library
@@ -607,7 +661,10 @@ Rectangle {
         // it shares the equal heights on the panes' own terms.
         CardPanel {
             objectName: "previewCanvas"
-            visible: entityPreviewVm.liveEmpty
+            // While the fullsize mode is on (design Д4), the expanded card
+            // owns the whole column — the empty live area never steals a
+            // share of it, so the hint hides for the life of the mode.
+            visible: entityPreviewVm.liveEmpty && !entityPreviewVm.fullsize
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: 88

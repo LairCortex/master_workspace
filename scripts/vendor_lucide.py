@@ -64,6 +64,9 @@ ICON_NAMES = (
     "link",
     "list",
     "map-pin",
+    # NRI-0028: the preview column's fullsize toggle (expand/collapse glyph pair).
+    "maximize",
+    "minimize",
     "minus",
     "mouse-pointer",
     "pencil",
