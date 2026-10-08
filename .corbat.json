@@ -1,0 +1,28 @@
+{
+  "profile": "pyside6-desktop",
+  "autoInject": true,
+  "rules": {
+    "always": [
+      "SOLID + KISS/YAGNI: one class = one responsibility; extend via properties/hooks; narrow abstractions; constructor injection only (concrete classes live only in app/main.py and wiring.py); composition over inheritance (sole exception IslandDialogMixin); build only what the requirement asks",
+      "One knowledge, one place; layers one-way (domain/application never import Qt/presentation; presentation never sees AsyncSession/ORM/commit); writes only via GameSessionUoW.transaction(); qasync event loop only — no nested loops, no .exec() in app/presentation/; no obj._x from another module; dialog results are frozen dataclasses",
+      "Design tokens rule the pixels: colors/spacing/radius/type come only from app/presentation/theme/tokens.json via ThemeRuntime/QmlPalette — no raw hex or palette() in chrome (test_no_chrome_hex), derived colors computed once in Python, never a second compiler in JS/CSS; a new color means a new token in BOTH themes, not a local gray",
+      "UI is assembled from nri.components; role+press+fixed wordings are component-owned, name is the usage site's; no widgets/QML hybrids and no second copy behind a flag — migrating an island deletes its widgets version entirely",
+      "Island contract: QML receives only thin sync viewmodels (properties, *Requested, set_*) + islandPalette — services and async stay in the Python facade/wiring; lists feed from flat Python-built models, no business rules re-implemented in JS; system popups stay native, tooltips go through the shim",
+      "Windows belong to exactly one class: the two screens / attached sheets (open_sheet + Qt.Sheet, ThemeSheetHeader or SheetFrame, never remember placement) / fixed exceptions; every visual rule gets an offscreen pytest pin, live-only findings go to docs/qa/ in the same change"
+    ],
+    "onNewFile": [
+      "Add a module docstring; type hints in signatures where the surrounding code uses them; match the surrounding style — no linter/formatter/type checker is configured, do not introduce new tooling",
+      "New per-game config goes to the key/value game_settings table through GameSettingsRepository, not a new file or schema change"
+    ],
+    "onTest": [
+      "asyncio_mode=auto — never add @pytest.mark.asyncio; DB tests use the async_engine/async_session in-memory fixtures from tests/conftest.py",
+      "No network in tests: LLM goes through httpx.MockTransport; GUI tests use QT_QPA_PLATFORM=offscreen",
+      "Every new/changed production line needs a test — coverage gate fail_under=100 is non-decreasing"
+    ],
+    "onRefactor": [
+      "Behavior, DB schema and file formats unchanged; cover uncovered code with tests first",
+      "Schema changes go into app/infrastructure/db/migrations.py (_MIGRATIONS), never alembic",
+      "Update AGENTS.md / docs/CHANGELOG.md / functional checklist in the same change"
+    ]
+  }
+}
