@@ -15,10 +15,15 @@ from PySide6.QtCore import QLibraryInfo
 
 block_cipher = None
 
-# Application icons (see app/resources/). The .icns carries the macOS grid
-# (rounded body + padding) and is what BUNDLE puts in the .app; the .ico is the
-# Windows exe icon; the flat png ships as data so a source checkout and Linux
-# get the same picture through QApplication.setWindowIcon.
+# Application icons (see app/resources/). The .icns is what BUNDLE puts in the
+# .app; the .ico is the Windows exe icon; the flat png ships as data so a source
+# checkout and Linux get the same picture through QApplication.setWindowIcon.
+# Every format is fully opaque to the canvas edge: since the 2026 macOS redesign
+# (verified live on macOS 27) a bundle icon with any transparent corner reads as
+# legacy and the system wraps it into a light plate, cropping the art; a fully
+# filled canvas is masked into the system squircle itself. The rounded card and
+# its glow stay INSIDE the artwork, and pre-2026 systems draw the opaque edge
+# unnoticed against dark Docks.
 ICON_DIR = os.path.join("app", "resources")
 EXE_ICON = os.path.join(ICON_DIR, "app_icon.ico") if sys.platform == "win32" else None
 BUNDLE_ICON = os.path.join(ICON_DIR, "app_icon.icns")
