@@ -117,7 +117,9 @@ def test_chip_click_emits_without_moving_caret(qtbot, qapp, runtime, tmp_path):
 
     click_item(widget, find_item(widget, "mentionChip_character_1"))
 
-    assert clicked == [("character", 1)]
+    # design Д4: the span id is textual end to end — the chip relays the
+    # stored digits as the string they are in storage
+    assert clicked == [("character", "1")]
     assert plain.property("cursorPosition") == 0
 
 
@@ -332,6 +334,7 @@ def test_chip_is_named_link_and_press_opens_the_mention(
 
     actions.doAction("Press")
 
-    # The expected activateMention: the host slot behind the mouse click ran.
-    assert clicked == [("character", 1)]
+    # The expected activateMention: the host slot behind the mouse click ran
+    # (textual id since design Д4 — the same digits as stored text).
+    assert clicked == [("character", "1")]
     assert widget.errors() == []

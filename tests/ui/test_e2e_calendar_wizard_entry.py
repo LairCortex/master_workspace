@@ -84,12 +84,20 @@ def _visible_wizard(window: MainWindow) -> CalendarWizardDialog | None:
 
 
 def _mark_as_pre_c4_game(db_path: Path) -> None:
-    """An existing ``game_settings`` table marks the file as created BEFORE
-    the C4 seeding (exact ui-suite convention of the calendar lifecycle
-    suite) — init_db then opens it as an old, keyless game."""
+    """An existing game_settings table alone NO LONGER marks the file as old
+    (add-dnd-module-foundation task 2.6 narrowed freshness to the domain
+    schema, so a «D&D» launcher seed still gets the calendar seed) — this
+    stand-in writes the settings table plus a domain marker (descriptions,
+    shaped as the real migration rebuilds it): a pre-C4 game by both readings
+    of the fact (exact ui-suite convention of the calendar lifecycle suite) —
+    init_db then opens it as an old, keyless game."""
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE game_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    conn.execute(
+        "CREATE TABLE descriptions ("
+        "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, characteristics TEXT, backstory TEXT)"
     )
     conn.commit()
     conn.close()

@@ -66,6 +66,9 @@ async def test_related_create_popup_hides_its_own_create_buttons(qtbot):
     # Every popup section: state False, island paints no «Создать нового».
     assert popup.vm.sections  # item cards do carry relation sections
     assert not any(state.canCreate for state in popup.vm.sections.values())
+    # add-dnd-game-face task 7.1: the sections sit on the «Связи» grouping
+    # tab now — the group is opened so visibility means what it meant before.
+    popup.vm.selectGroup(2)
     for attr in popup.vm.sections:
         hidden = find_items(popup.quick, f"entityRelated_{attr}CreateButton")
         assert hidden, f"no create button under {attr}"
@@ -92,6 +95,7 @@ async def test_plain_factory_card_keeps_the_create_buttons(qtbot):
     qtbot.addWidget(dialog)
     assert dialog.vm.sections
     assert all(state.canCreate for state in dialog.vm.sections.values())
+    dialog.vm.selectGroup(2)  # «Связи» tab — see the popup test above
     first_attr = entity_registry.related_refs_for_key("item")[0].attr
     create = find_item(dialog.quick, f"entityRelated_{first_attr}CreateButton")
     assert bool(create.property("visible")) is True

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from app.presentation.modules.protocol import ExternalCardSource
 from app.presentation.viewmodels.entity_preview_view_model import MAX_PINNED_CARDS
 from app.presentation.wiring import ApplicationWiring
 
@@ -255,3 +256,248 @@ async def test_a_transition_pushes_one_frame_even_with_the_panel_echo():
     # echo-swallow posture of ``_show_in_preview``).
     assert await wiring._show_in_preview("character", 2) is True
     assert list(wiring._window.entity_preview) == [([], ("character", 2))]
+
+
+# ── add-dnd-game-face task 3.4: the external live seat ──────────────────────
+
+
+class _ExtFrames(list):
+    """The same frame recorder, lenient to an external row (protocol Д3
+    cards carry a string source_id on the pair, no int id on the record)."""
+
+    def show_slots(self, pins, live) -> None:
+        def label(record):
+            # kernel rows stamp with their int id, protocol cards with name
+            return getattr(record, "id", None) or getattr(record, "name", None)
+
+        self.append(
+            (
+                [(t, label(e)) for t, e in pins],
+                None if live is None else (live[0], label(live[1])),
+            )
+        )
+
+
+_UNSET = object()
+
+
+def _ExtCard(name="Везучесть"):
+    """The protocol's frozen card record, as a source hands it (task 6.1:
+    the seat stamps it with ``replace``, so the real dataclass — not a duck —
+    is what every external path must survive)."""
+    return ExternalCardSource(name=name, origin="SRD 5.1")
+
+
+class _ExtSource:
+    """Duck of ExternalEntitySource with exactly what the live seat, the
+    mention door and the restore's warm-up read."""
+
+    def __init__(
+        self, key="dd_feat", card=None, visible=True, resolve=_UNSET, log=None
+    ) -> None:
+        self.type_descriptors = [SimpleNamespace(key=key)]
+        self.visible = visible
+        self._card = card
+        self._resolve = card if resolve is _UNSET else resolve
+        self._log = log
+        self.card_calls: list[tuple[str, str]] = []
+        self.resolve_calls: list[tuple[str, str]] = []
+        self.warm_calls = 0
+
+    async def warm(self):
+        self.warm_calls += 1
+        if self._log is not None:
+            self._log.append("warm")
+
+    def card_source(self, key, source_id):
+        self.card_calls.append((key, source_id))
+        if self._log is not None:
+            self._log.append("card")
+        return self._card
+
+    def resolve_mention(self, key, source_id):
+        self.resolve_calls.append((key, source_id))
+        return self._resolve
+
+
+def _make_external_wiring(
+    *sources, pins_service: _PinsService | None = None
+) -> tuple[ApplicationWiring, _ExtFrames]:
+    frames = _ExtFrames()
+    app = SimpleNamespace(_image_store=None, _get_entity_service=lambda et: None)
+    wiring = ApplicationWiring(
+        app,
+        SimpleNamespace(entity_preview=frames, detail_panel=_DetailPanel()),
+        None, None, None, None, None,
+        SimpleNamespace(lock=asyncio.Lock()),
+        external_sources=sources,
+        preview_pins_service=pins_service,
+    )
+    return wiring, frames
+
+
+async def test_external_seat_fills_the_live_area_and_next_pair_evicts():
+    """Spec global-search «клик по внешней строке… (только предпросмотр)»:
+    the source's card record is seated as live and reaches the frame; the
+    detail panel is NOT touched (no entity, no event); the replaced external
+    pair leaves the row cache (the kernel eviction rule, verbatim); re-click
+    of the live pair answers True pushing NOTHING (kernel no-op rule)."""
+    first, second = _ExtCard("Везучесть"), _ExtCard("Бдительность")
+    source = _ExtSource(card=first)
+    wiring, frames = _make_external_wiring(source)
+
+    assert await wiring._show_external_in_preview("dd_feat", "srd/lucky") is True
+    assert wiring._preview_live == ("dd_feat", "srd/lucky")
+    seated = wiring._preview_rows[("dd_feat", "srd/lucky")]
+    # task 6.1: the cache row is the source's record STAMPED with its pair id
+    assert seated.name == first.name and seated.source_id == "srd/lucky"
+    pins, live = frames[-1]
+    assert pins == [] and live == ("dd_feat", "Везучесть")
+
+    source._card = second
+    assert await wiring._show_external_in_preview("dd_feat", "srd/alert") is True
+    assert ("dd_feat", "srd/lucky") not in wiring._preview_rows
+    assert len(frames) == 2
+
+    before = len(frames)
+    assert await wiring._show_external_in_preview("dd_feat", "srd/alert") is True
+    assert len(frames) == before
+    assert source.card_calls == [("dd_feat", "srd/lucky"), ("dd_feat", "srd/alert")]
+
+
+async def test_external_seat_misses_move_nothing():
+    """Every miss posture answers False pushing no frame: a key no source
+    provides, an invisible source (the reference toggle off — never even
+    asked for a card), and a record the visible source cannot assemble."""
+    invisible = _ExtSource(key="dd_feat", card=_ExtCard(), visible=False)
+    provider = _ExtSource(key="dd_feat", card=None)
+    wiring, frames = _make_external_wiring(invisible, provider)
+
+    assert await wiring._show_external_in_preview("dd_spell", "srd/x") is False
+    assert await wiring._show_external_in_preview("dd_feat", "srd/lucky") is False
+    assert invisible.card_calls == []
+    assert wiring._preview_live is None
+    wiring._preview_rows.clear()
+    assert list(frames) == []
+
+
+async def test_external_seat_survives_a_kernel_live_pair_eviction():
+    """One live pointer serves both kinds: a kernel selection replaces an
+    external live pair (cache entry evicted with it), and the external card
+    record — not any wrapper — is what the frame carries."""
+    card = _ExtCard()
+    source = _ExtSource(card=card)
+    wiring, frames = _make_external_wiring(source)
+    await wiring._show_external_in_preview("dd_feat", "srd/lucky")
+
+    service_rows = {5: _Entity(5)}
+    wiring._app = SimpleNamespace(
+        _image_store=None,
+        _get_entity_service=lambda et: _EntityService(service_rows),
+    )
+    assert await wiring._show_in_preview("character", 5) is True
+    assert wiring._preview_live == ("character", 5)
+    assert ("dd_feat", "srd/lucky") not in wiring._preview_rows
+    pins, live = frames[-1]
+    assert live == ("character", 5)
+
+
+# ── add-dnd-game-face task 5.2: the activated external chip ─────────────────
+
+
+async def test_open_external_mention_seats_the_resolved_record():
+    """Spec mentions «Активация внешнего чипа»: resolve_mention is the door;
+    a resolved record takes the live seat (read-only — the edit dialog is
+    opened for NOTHING from this path, the seat itself was pinned in 3.4),
+    and the composite string id reaches the source whole."""
+    card = _ExtCard()
+    source = _ExtSource(card=card)
+    wiring, frames = _make_external_wiring(source)
+
+    assert await wiring.open_external_mention("dd_feat", "srd51/Darkvision") is True
+    assert source.resolve_calls == [("dd_feat", "srd51/Darkvision")]
+    assert wiring._preview_live == ("dd_feat", "srd51/Darkvision")
+    pins, live = frames[-1]
+    assert pins == [] and live == ("dd_feat", "Везучесть")
+
+
+async def test_open_external_mention_misses_report_to_the_caller():
+    """False — and NOTHING moves — for every unavailable posture: a key no
+    source provides, a hidden source (its set switched off — the chip
+    «доживает до отключения датасета» and is not even consulted), and a
+    record the visible source cannot reassemble (resolve answers None even
+    though the same object would answer a card). The caller owns the one
+    «Упоминание не найдено» channel; the connector just refuses."""
+    invisible = _ExtSource(card=_ExtCard(), visible=False)
+    vanished = _ExtSource(key="dd_feat", card=_ExtCard(), resolve=None)
+    wiring, frames = _make_external_wiring(invisible, vanished)
+
+    assert await wiring.open_external_mention("dd_spell", "srd/x") is False
+    assert await wiring.open_external_mention("dd_feat", "srd51/Darkvision") is False
+    assert invisible.resolve_calls == []
+    assert vanished.resolve_calls == [("dd_feat", "srd51/Darkvision")]
+    assert wiring._preview_live is None
+    assert list(frames) == []
+
+
+# ── add-dnd-game-face tasks 6.1/6.2: stamped seats, warm-up, string pins ─────
+
+
+async def test_show_external_card_is_the_public_door():
+    """Task 6.3's door for the module's reference sheet: the same seat, the
+    same miss posture — True once the live area shows the pair (a repeated
+    click is the no-op True), False leaves everything where it was."""
+    source = _ExtSource(card=_ExtCard("Огненные руки"))
+    wiring, frames = _make_external_wiring(source)
+
+    assert await wiring.show_external_card("dd_feat", "srd/hands") is True
+    assert wiring._preview_live == ("dd_feat", "srd/hands")
+    before = len(frames)
+    assert await wiring.show_external_card("dd_feat", "srd/hands") is True
+    assert len(frames) == before
+    assert await wiring.show_external_card("dd_spell", "srd/x") is False
+    assert wiring._preview_live == ("dd_feat", "srd/hands")
+
+
+async def test_restore_warms_sources_before_reading_the_sync_door():
+    """Task 6.2, design Д5: the pin restore calls the SYNC card door before
+    any surface performed an async read, so every source is warmed FIRST —
+    the protocol orders warm→card, and a restored external pin seats the
+    source's record stamped with its pair id (6.1's rule, same as a click)."""
+    log: list[str] = []
+    source = _ExtSource(card=_ExtCard("Везучесть"), log=log)
+    pins = _PinsService([("dd_feat", "srd/lucky")])
+    wiring, frames = _make_external_wiring(source, pins_service=pins)
+
+    await wiring.restore_preview_pins()
+
+    assert log == ["warm", "card"]
+    assert source.warm_calls == 1
+    assert wiring._preview_pins == [("dd_feat", "srd/lucky")]
+    restored = wiring._preview_rows[("dd_feat", "srd/lucky")]
+    assert restored.name == "Везучесть" and restored.source_id == "srd/lucky"
+    stored_pins, live = frames[-1]
+    assert stored_pins == [("dd_feat", "Везучесть")] and live is None
+    assert pins.saves == []  # restore never rewrites storage (design Д3)
+
+
+async def test_restore_drops_unresolvable_external_pairs_silently():
+    """Spec «Отключённый источник тихо убирает закрепление»: an invisible
+    source is not even consulted for a card, a key no source provides and a
+    record the provider cannot assemble drop out the same way; every source
+    was still warmed (the warm-up is unconditional), storage is untouched."""
+    off = _ExtSource(card=_ExtCard())  # visible=False? no — separate below
+    off.visible = False
+    empty = _ExtSource(key="dd_feat", card=None)
+    pins = _PinsService(
+        [("dd_feat", "srd/lucky"), ("dd_spell", "srd/x")]
+    )
+    wiring, frames = _make_external_wiring(off, empty, pins_service=pins)
+
+    await wiring.restore_preview_pins()
+
+    assert off.card_calls == []  # hidden source never asked
+    assert pins.saves == []
+    assert wiring._preview_pins == []
+    stored_pins, live = frames[-1]
+    assert stored_pins == [] and live is None

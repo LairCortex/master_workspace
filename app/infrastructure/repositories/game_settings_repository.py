@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -69,6 +69,79 @@ CURRENT_DATE_KEY = "current_date"
 #: pair is dropped silently at restore by the connector (spec «Закрепления
 #: хранятся в настройках игры и переживают перезапуск»).
 PREVIEW_PINS_KEY = "preview_pins"
+
+#: Key of the D&D-module flag (add-dnd-module-foundation, design Д1): a JSON
+#: object ``{"enabled": <bool>, "version": <int>}`` whose ``version`` is the
+#: module data-format version that wrote it (a module version, not an app
+#: version — it lives slower than releases). The key is seeded nowhere: its
+#: absence is the ordinary game. The composition point ``app/main.py`` reads
+#: it through :func:`decode_dnd_module_flag` BEFORE composing any module
+#: (spec «Признак модуля определяет состав»); the module's own service (the
+#: lifecycle group) writes it through this very registry, so the single
+#: transaction finish point holds. The row is never rewritten on a read: a
+#: damaged value reads as «module off» with the one journal entry and stays
+#: byte-identical for the next explicit write.
+DND_MODULE_KEY = "dnd_module"
+
+#: Key of the D&D datasets a game connects to (add-dnd-module-foundation,
+#: task 3.4, design Д4): a JSON array of dataset-id strings — ``["srd51",
+#: "my-pack"]`` — the ids pointing at the GLOBAL dataset storage
+#: (``~/.nri_manager/datasets/``), never at game rows: connecting a set
+#: writes only this row, disconnecting removes only the link. The key is
+#: seeded nowhere (its absence is «no sets connected»), and a damaged value
+#: reads as the empty list with the one journal entry, the row staying
+#: byte-identical for the next explicit connect/disconnect (the absent-value
+#: discipline of the other typed keys). An id whose file has since left the
+#: storage is NOT silently dropped here — the module shows it as missing
+#: (spec «Пропавший набор помечен»).
+DND_DATASETS_KEY = "dnd_datasets"
+
+#: Key of the game's «показывать справочные записи в поиске» toggle
+#: (add-dnd-game-face task 3.3, spec dnd-reference-records «Справочные
+#: сущности участвуют в поиске под одним переключателем»): a JSON boolean —
+#: ``true``/``false`` — seeded NOWHERE, so the key's absence is the spec's
+#: default «показывать» (the reference is discovered on the module's first
+#: enable). A damaged value reads as the same default WITH the one journal
+#: entry the codec logs and stays byte-identical for the checkbox's next
+#: explicit write; the row is never rewritten on a read (the absent-value
+#: discipline of the other typed keys).
+DND_SEARCH_SHOW_REFERENCE_KEY = "dnd_search_show_reference"
+
+#: Key of the D&D grimoires a game connects to (add-dnd-game-face, task 4.2,
+#: design Д6; spec dnd-grimoire-import «Игра подключает гримуары списком,
+#: отключение обратимо»): a JSON array of grimoire-id strings — ``["my-spells",
+#: "tina-grimoire"]`` — the ids pointing at the GLOBAL grimoire storage
+#: (``~/.nri_manager/grimoires/``), never at game rows: connecting a grimoire
+#: writes only this row, disconnecting removes only the link and the file
+#: stays. Seeded nowhere (its absence is «no grimoires connected»); a damaged
+#: value reads as the empty list with the one journal entry the codec logs and
+#: stays byte-identical for the next explicit write (the absent-value
+#: discipline of the other typed keys). Whether an id still has a file is the
+#: module's reading rule (spec «Пропавший файл помечен» — the id is never
+#: dropped silently), not the codec's.
+DND_GRIMOIRES_KEY = "dnd_grimoires"
+
+#: The module data-format version THIS application writes into the flag
+#: (add-dnd-module-foundation tasks 2.1/2.6, design Д1). The number lives in
+#: the kernel's key registry — not inside ``app/dd`` — because the ordinary
+#: kernel reads it twice: the composition compares it with the stored version
+#: (a game written by a newer module opens ordinary with a warning), and the
+#: synchronous launcher seeds it when the master picks the «D&D» system at
+#: creation (game_manager may not import the module package, guard
+#: tests/test_dd_module_isolation.py). ``app/dd`` re-exports it under its own
+#: name; bumping THIS constant is the single edit a module data-format
+#: change makes in the kernel.
+DND_MODULE_DATA_VERSION = 1
+
+
+def encode_dnd_module_flag(enabled: bool, version: int) -> str:
+    """JSON body of design Д1: ``{"enabled": <bool>, "version": <int>}`` — the
+    exact shape :func:`decode_dnd_module_flag` reads back. The counterpart of
+    the codec lives here so every writer (the module's settings service, the
+    launcher's synchronous creation seed) shares one format; like the other
+    encoders this one never re-validates invented semantics beyond types —
+    callers pass booleans and positive integers by construction."""
+    return json.dumps({"enabled": bool(enabled), "version": int(version)})
 
 
 class GameSettingsRepository:
@@ -256,24 +329,36 @@ def _preview_pins_corrupt(reason: str, raw: str) -> None:
     )
 
 
-def _encode_preview_pins(pins: Sequence[tuple[str, int]]) -> str:
+#: One stored pin id: integer for a kernel entity, non-empty text (including
+#: the composite «источник/запись») for a registered external entity
+#: (add-dnd-game-face task 6.2, spec preview-pins «числовой — для сущностей
+#: ядра, строковый … для зарегистрированных внешних сущностей»).
+PinId = int | str
+
+
+def _encode_preview_pins(pins: Sequence[tuple[str, PinId]]) -> str:
     """JSON body of design Д3: ``[{"t": <type>, "i": <id>}]`` — the array
     order IS the pin order (spec «порядок сохраняется»).  The pairs arrive
     from the connector, whose types are entity strings by construction; the
     encoder never re-validates them (same division of labour as
-    :func:`_encode_current_date` — no stored pair is invented here)."""
+    :func:`_encode_current_date` — no stored pair is invented here).  Since
+    task 6.2 an ``i`` rides either an int (kernel row) or a str (external
+    source id); JSON carries both shapes natively."""
     return json.dumps([{"t": t, "i": i} for t, i in pins], ensure_ascii=False)
 
 
-def _decode_preview_pins(raw: str) -> list[tuple[str, int]]:
+def _decode_preview_pins(raw: str) -> list[tuple[str, PinId]]:
     """Read the stored array back, pair order preserved.
 
     All-or-nothing like the «now» codec: anything unreadable — unparsable
     JSON, a non-array body, an entry that is not an object, a ``t`` that is
-    not text or an ``i`` that is not an integer — logs the one warning naming
-    the reason and answers the EMPTY list (task 1.1: «битый JSON читается как
-    пустой список с записью в журнал»); the damaged row is never rewritten
-    here.  Whether a structurally fine pair still names an existing entity is
+    not text, or an ``i`` that is neither an integer nor non-empty text —
+    logs the one warning naming the reason and answers the EMPTY list
+    (task 1.1: «битый JSON читается как пустой список с записью в журнал»);
+    the damaged row is never rewritten here.  Since task 6.2 the ``i`` half
+    accepts BOTH id shapes (int for the kernel, str for a registered external
+    source id — an empty string names no record and stays corruption).
+    Whether a structurally fine pair still names an existing entity is
     the connector's restore rule (design Д3: unavailable pairs are dropped at
     read of the game open), not the codec's — a foreign type text reads back
     exactly as stored.
@@ -288,7 +373,7 @@ def _decode_preview_pins(raw: str) -> list[tuple[str, int]]:
             f"must be a JSON array, got {type(data).__name__}", raw
         )
         return []
-    pins: list[tuple[str, int]] = []
+    pins: list[tuple[str, PinId]] = []
     for entry in data:
         if not isinstance(entry, dict):
             _preview_pins_corrupt(f"entry {entry!r} is not a JSON object", raw)
@@ -298,10 +383,17 @@ def _decode_preview_pins(raw: str) -> list[tuple[str, int]]:
             _preview_pins_corrupt(f"type {type_raw!r} is not text", raw)
             return []
         id_raw = entry.get("i")
-        if isinstance(id_raw, bool) or not isinstance(id_raw, int):
-            _preview_pins_corrupt(f"id {id_raw!r} is not an integer", raw)
+        if isinstance(id_raw, bool):
+            _preview_pins_corrupt(f"id {id_raw!r} is not an id", raw)
             return []
-        pins.append((type_raw, id_raw))
+        if isinstance(id_raw, int):
+            pins.append((type_raw, id_raw))
+            continue
+        if isinstance(id_raw, str) and id_raw:
+            pins.append((type_raw, id_raw))
+            continue
+        _preview_pins_corrupt(f"id {id_raw!r} is neither an integer nor text", raw)
+        return []
     return pins
 
 
@@ -323,14 +415,279 @@ class PreviewPinsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._settings = GameSettingsRepository(session)
 
-    async def load(self) -> list[tuple[str, int]]:
+    async def load(self) -> list[tuple[str, PinId]]:
         """The stored pins in pin order — empty for "absent or unreadable"."""
         raw = await self._settings.get(PREVIEW_PINS_KEY)
         if raw is None:
             return []
         return _decode_preview_pins(raw)
 
-    async def save(self, pins: Sequence[tuple[str, int]]) -> None:
+    async def save(self, pins: Sequence[tuple[str, PinId]]) -> None:
         """Store the full list as the game's pins, overwriting any previous
         (even corrupted) value; the array order carries the pin order."""
         await self._settings.upsert(PREVIEW_PINS_KEY, _encode_preview_pins(pins))
+
+
+# ── Typed D&D-module flag (add-dnd-module-foundation task 1.2, design Д1) ──
+
+
+@dataclass(frozen=True)
+class DndModuleFlag:
+    """The decoded stored D&D flag: whether the module is on for this game
+    and which module data-format version wrote it.  Pure data — every
+    reading rule ("absent", "corrupted", "ahead of the supported version")
+    lives in :func:`decode_dnd_module_flag` and the composition decision,
+    never here."""
+
+    enabled: bool
+    version: int
+
+
+def _dnd_module_corrupt(reason: str, raw: str) -> None:
+    """Log one corruption the way the other typed keys phrase it: a damaged
+    flag reads as «module off» with a journal entry and life by the absence
+    rule (spec «Испорченный признак открывает игру как обычную»); the row
+    itself is left byte-identical for the next explicit write."""
+    _LOGGER.warning(
+        "Ignoring corrupted %s setting (%s): %r", DND_MODULE_KEY, reason, raw
+    )
+
+
+def decode_dnd_module_flag(raw: str) -> DndModuleFlag | None:
+    """Read the stored flag body, ``None`` for anything unreadable.
+
+    All-or-nothing like the other typed codecs: anything unreadable —
+    unparsable JSON, a non-object body, a missing or non-boolean
+    ``enabled``, a missing/non-integer/boolean/non-positive ``version`` —
+    logs the one warning naming the reason and answers ``None``; the caller
+    then lives by the absence rule (design Д1: «нечитаемое значение
+    трактуется как модуль выключен»), and the row is never rewritten here.
+    Unknown extra keys pass untouched: the format grows additively, a newer
+    writer must not turn a readable game into a corrupted one.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        _dnd_module_corrupt("not parseable JSON", raw)
+        return None
+    if not isinstance(data, dict):
+        _dnd_module_corrupt(
+            f"must be a JSON object, got {type(data).__name__}", raw
+        )
+        return None
+    enabled = data.get("enabled")
+    if not isinstance(enabled, bool):
+        _dnd_module_corrupt(f"enabled flag {enabled!r} is not a boolean", raw)
+        return None
+    version = data.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        _dnd_module_corrupt(
+            f"module version {version!r} is not a positive integer", raw
+        )
+        return None
+    return DndModuleFlag(enabled=enabled, version=version)
+
+
+# ── Typed D&D dataset connections (add-dnd-module-foundation task 3.4) ───────
+
+
+def _dnd_datasets_corrupt(reason: str, raw: str) -> None:
+    """Log one corruption the way the other typed keys phrase it: a damaged
+    connection list reads as empty with a journal entry and life by the
+    absence rule; the row itself stays byte-identical for the next explicit
+    connect/disconnect to overwrite (no background repair)."""
+    _LOGGER.warning(
+        "Ignoring corrupted %s setting (%s): %r", DND_DATASETS_KEY, reason, raw
+    )
+
+
+def _encode_dnd_datasets(dataset_ids: Sequence[str]) -> str:
+    """JSON array of dataset ids — the array order IS the connection order
+    the screens show. The ids are storage names the module validated; this
+    encoder, like the other ones, never re-invents them."""
+    return _encode_id_list(dataset_ids)
+
+
+def _encode_id_list(identifiers: Sequence[str]) -> str:
+    """The one JSON-array-of-text body the id-list keys share (the dataset
+    connections and, since add-dnd-game-face task 4.2, the grimoire
+    connections): the array order IS the order the screens show."""
+    return json.dumps(list(identifiers), ensure_ascii=False)
+
+
+def _decode_dnd_datasets(raw: str) -> list[str]:
+    """Read the stored array back, id order preserved, all-or-nothing like
+    the preview-pins codec: anything unreadable — unparsable JSON, a
+    non-array body, an entry that is not text — logs the one warning naming
+    the reason and answers the EMPTY list; the damaged row is never
+    rewritten here."""
+    return _decode_id_list(raw, _dnd_datasets_corrupt)
+
+
+def _decode_id_list(raw: str, corrupt: Callable[[str, str], None]) -> list[str]:
+    """The one array-of-text reading rule the id-list keys share; every
+    rejection goes to the caller's ``corrupt(reason, raw)`` logger, so each
+    key keeps naming itself in the journal while the grammar lives once."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        corrupt("not parseable JSON", raw)
+        return []
+    if not isinstance(data, list):
+        corrupt(f"must be a JSON array, got {type(data).__name__}", raw)
+        return []
+    ids: list[str] = []
+    for entry in data:
+        if not isinstance(entry, str):
+            corrupt(f"entry {entry!r} is not text", raw)
+            return []
+        ids.append(entry)
+    return ids
+
+
+class DndDatasetsRepository:
+    """Typed storage access for the per-game ``dnd_datasets`` key.
+
+    The same typed-wrapper pattern as :class:`PreviewPinsRepository`: a thin
+    face over the shared :class:`GameSettingsRepository` trio, owning the
+    JSON ``["<dataset id>", …]`` format.  An absent key is the normal «no
+    sets connected» state and reads as the empty list without a warning; a
+    damaged value reads empty WITH the one journal entry the codec logs, the
+    row staying byte-identical for the next explicit write.  Whether an id
+    still has a file in the global storage is the module's reading rule
+    (spec «Пропавший набор помечен» — it never deletes ids silently), not the
+    codec's.  Like the trio, this repository never commits — the caller owns
+    the transaction (the module service's unit of work).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._settings = GameSettingsRepository(session)
+
+    async def load(self) -> list[str]:
+        """The connected dataset ids in stored order — empty for «absent or
+        unreadable»."""
+        raw = await self._settings.get(DND_DATASETS_KEY)
+        if raw is None:
+            return []
+        return _decode_dnd_datasets(raw)
+
+    async def save(self, dataset_ids: Sequence[str]) -> None:
+        """Store the full list as the game's connections, overwriting any
+        previous (even corrupted) value; the array order is kept."""
+        await self._settings.upsert(
+            DND_DATASETS_KEY, _encode_dnd_datasets(dataset_ids)
+        )
+
+
+# ── Typed D&D reference-search toggle (add-dnd-game-face task 3.3) ───────────
+
+
+def _dnd_search_show_reference_corrupt(reason: str, raw: str) -> None:
+    """Log one corruption the way the other typed keys phrase it: a damaged
+    value reads as the default «показывать» with a journal entry and life by
+    the absence rule (the spec's default is visible, so the fallback for an
+    unreadable row is the same answer as for a missing one); the row stays
+    byte-identical for the checkbox's next explicit write."""
+    _LOGGER.warning(
+        "Ignoring corrupted %s setting (%s): %r",
+        DND_SEARCH_SHOW_REFERENCE_KEY,
+        reason,
+        raw,
+    )
+
+
+def decode_dnd_search_show_reference(raw: str | None) -> bool:
+    """Read the stored boolean; ``True`` for «absent, unreadable or true».
+
+    The spec default is «показывать» (task 3.3), so both the missing key
+    (``raw is None``) and anything unreadable — unparsable JSON, a non-boolean
+    body — answer ``True``; only the damaged readings earn the one journal
+    entry, the row is never rewritten here."""
+    if raw is None:
+        return True
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        _dnd_search_show_reference_corrupt("not parseable JSON", raw)
+        return True
+    if not isinstance(data, bool):
+        _dnd_search_show_reference_corrupt(
+            f"must be a JSON boolean, got {type(data).__name__}", raw
+        )
+        return True
+    return data
+
+
+class DndSearchShowReferenceRepository:
+    """Typed storage access for the per-game ``dnd_search_show_reference`` key.
+
+    The same typed-wrapper pattern as :class:`DndDatasetsRepository`: a thin
+    face over the shared :class:`GameSettingsRepository` trio owning the JSON
+    boolean body. Absent or damaged reads as the spec default «показывать»
+    (the damaged half through :func:`decode_dnd_search_show_reference`, which
+    also logs the journal entry); the module's own visibility service writes
+    through it. Like the trio, this repository never commits — the caller owns
+    the transaction (the module service's unit of work).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._settings = GameSettingsRepository(session)
+
+    async def load(self) -> bool:
+        """The stored flag — ``True`` for «absent, damaged or true»."""
+        raw = await self._settings.get(DND_SEARCH_SHOW_REFERENCE_KEY)
+        return decode_dnd_search_show_reference(raw)
+
+    async def save(self, enabled: bool) -> None:
+        """Store the boolean, overwriting any previous (even corrupted) value."""
+        await self._settings.upsert(
+            DND_SEARCH_SHOW_REFERENCE_KEY, json.dumps(bool(enabled))
+        )
+
+
+# ── Typed D&D grimoire connections (add-dnd-game-face task 4.2) ─────────────
+
+
+def _dnd_grimoires_corrupt(reason: str, raw: str) -> None:
+    """Log one corruption the way the other typed keys phrase it: a damaged
+    grimoire list reads as empty with a journal entry and life by the absence
+    rule; the row itself stays byte-identical for the next explicit
+    connect/disconnect to overwrite (no background repair)."""
+    _LOGGER.warning(
+        "Ignoring corrupted %s setting (%s): %r", DND_GRIMOIRES_KEY, reason, raw
+    )
+
+
+class DndGrimoiresRepository:
+    """Typed storage access for the per-game ``dnd_grimoires`` key.
+
+    The same typed-wrapper pattern as :class:`DndDatasetsRepository` (and the
+    very array-of-text grammar it shares through :func:`_decode_id_list`): a
+    thin face over the shared :class:`GameSettingsRepository` trio owning the
+    JSON ``["<grimoire id>", …]`` format. An absent key is the normal «no
+    grimoires connected» state and reads as the empty list without a warning;
+    a damaged value reads empty WITH the one journal entry the codec logs, the
+    row staying byte-identical for the next explicit write. Whether an id
+    still has a file in the global grimoire storage is the module's reading
+    rule (spec «Пропавший файл помечен» — the id is never dropped silently),
+    not the codec's. Like the trio, this repository never commits — the caller
+    owns the transaction (the module service's unit of work).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._settings = GameSettingsRepository(session)
+
+    async def load(self) -> list[str]:
+        """The connected grimoire ids in stored order — empty for «absent or
+        unreadable»."""
+        raw = await self._settings.get(DND_GRIMOIRES_KEY)
+        if raw is None:
+            return []
+        return _decode_id_list(raw, _dnd_grimoires_corrupt)
+
+    async def save(self, grimoire_ids: Sequence[str]) -> None:
+        """Store the full list as the game's connections, overwriting any
+        previous (even corrupted) value; the array order is kept."""
+        await self._settings.upsert(
+            DND_GRIMOIRES_KEY, _encode_id_list(grimoire_ids)
+        )

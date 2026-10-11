@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any, Coroutine
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -82,6 +84,7 @@ class ApplicationWiring(QObject):
         current_date_service: CurrentDateService | None = None,
         now_date_vm=None,
         preview_pins_service: PreviewPinsService | None = None,
+        external_sources: Sequence[Any] = (),
     ) -> None:
         super().__init__()
         self._app = app
@@ -91,6 +94,12 @@ class ApplicationWiring(QObject):
         self._search_vm = search_vm
         self._event_dialog_vm = event_dialog_vm
         self._event_service = event_service
+        # add-dnd-game-face (design Д1): the external entity sources from the
+        # composition root. This connector is the single carrier to the
+        # per-dialog collaborators — every dialog it builds reads the CURRENT
+        # list, so a module joined to the live composition only needs the
+        # in-place set below, never a rebuilt connector.
+        self._external_sources: tuple[Any, ...] = tuple(external_sources)
         # NRI-0021 (task 2.3, design Д2): the game's «now» holder loaded by
         # the composition root at game open; the connector is its presentation
         # carrier — the date widget's view model and the derived surfaces
@@ -163,12 +172,28 @@ class ApplicationWiring(QObject):
         # pair (pins ∪ live): frames are assembled from it so a pinned card
         # is never re-loaded behind the user's back — only pin, restore,
         # delete and the pair's own card save touch these entries.
-        self._preview_pins: list[tuple[str, int]] = []
-        self._preview_live: tuple[str, int] | None = None
-        self._preview_rows: dict[tuple[str, int], Any] = {}
+        # add-dnd-game-face task 6.2: a pair's id half is an int for a
+        # kernel row and a non-empty str (the composite «источник/запись»)
+        # for a registered external record — the codec, the pin transitions
+        # and the frame assembly all read both shapes through one rule.
+        self._preview_pins: list[tuple[str, Any]] = []
+        self._preview_live: tuple[str, Any] | None = None
+        self._preview_rows: dict[tuple[str, Any], Any] = {}
         # Unified five-sheet import (rework 4.3): writes through the session/
         # ORM in apply_plan, only the image ingest pipeline is a dependency.
         self._xlsx_import = XlsxImportService(image_store=app._image_store)
+
+    @property
+    def external_sources(self) -> tuple[Any, ...]:
+        """The external entity sources the composition handed this connector
+        (add-dnd-game-face, design Д1); empty without a module."""
+        return self._external_sources
+
+    def set_external_sources(self, sources: Sequence[Any]) -> None:
+        """Re-hand-out for a module joined to the LIVE composition: dialogs
+        are built per opening from the CURRENT list, so updating the carrier
+        here is enough for every dialog opened afterwards."""
+        self._external_sources = tuple(sources)
 
     def _spawn(self, coro: Coroutine) -> asyncio.Task:
         """Schedule ``coro`` as a task serialized against the shared session.
@@ -528,6 +553,10 @@ class ApplicationWiring(QObject):
             dialog = EventDialog(
                 event_dialog_vm, parent=window, theme=self._app._theme,
                 now_vm=self._now_date_vm,
+                external_sources=self._external_sources,
+                # add-dnd-game-face task 7.2: the module-tab factories receive
+                # the connector (CardTabSpec.factory(wiring, source_id)).
+                wiring=self,
             )
             if prefill_parent is not None:
                 dialog.prefill_parent(prefill_parent)
@@ -645,6 +674,9 @@ class ApplicationWiring(QObject):
                 dialog = EventDialog(
                     event_dialog_vm, parent=window, theme=self._app._theme,
                     now_vm=self._now_date_vm,
+                    external_sources=self._external_sources,
+                    # add-dnd-game-face task 7.2 (see the create dialog above).
+                    wiring=self,
                 )
                 await self._load_available_into_dialog(dialog)
                 # Types before populate: the selector gets the game's set, then
@@ -668,6 +700,27 @@ class ApplicationWiring(QObject):
                         # The unit of work already rolled back; the timeline was
                         # reloaded for the modal. The detail panel stays on the
                         # previous state — an "updated" version does not exist.
+                        dialog.finish_saving(False)
+                        return
+                    # add-dnd-game-face task 11.1 (design Д10): the module tabs
+                    # stage their edits and are written by this common Save —
+                    # HERE, after the kernel fields landed and before anything
+                    # reloads. A refusal (the domain gate's Russian text) or a
+                    # failed write keeps the card OPEN for the fix; the kernel
+                    # half IS saved, so the timeline reloads before the modal
+                    # (the consistent-state-under-the-modal posture of every
+                    # other save handler). The wording names no domain — the
+                    # kernel does not know which module the section is from.
+                    try:
+                        for save_tab in dialog.external_tab_saves():
+                            await save_tab()
+                    except Exception as exc:  # noqa: BLE001 — the modal names it
+                        await self._reload_timeline()
+                        QMessageBox.critical(
+                            window,
+                            "Ошибка",
+                            f"Не удалось сохранить раздел модуля: {exc}",
+                        )
                         dialog.finish_saving(False)
                         return
                     await self._reload_timeline()
@@ -735,23 +788,58 @@ class ApplicationWiring(QObject):
         self._window.entity_preview.entity_requested.connect(
             lambda t, i: self._spawn(self._on_preview_entity_requested(t, i))
         )
+        # add-dnd-game-face (task 5.2, design Д4): a mention link of a
+        # registered external type — the string-id twin of the bus above,
+        # the read-only live seat of task 3.4 verbatim. The middle column
+        # never learns of it (an external record owns no kernel row); an
+        # unavailable record is the seat's own silent miss — the same
+        # posture the anchor bus keeps for a dead kernel mention (the
+        # «Упоминание не найдено» box belongs to the chip channel of the
+        # dialogs, pinned in tests/ui/test_e2e_mentions.py).
+        self._window.entity_preview.external_entity_requested.connect(
+            lambda k, s: self._spawn(self._show_external_in_preview(k, s))
+        )
         # The pin channel (NRI-0025 design Д3): the pair plus the card's
         # current pinned state; the connector owns the transition limit and
         # the storage, then answers with the next frame.
         self._window.entity_preview.pin_toggle_requested.connect(
             lambda t, i, p: self._spawn(self._on_preview_pin_toggled(t, i, p))
         )
+        # add-dnd-game-face (task 6.2): the string-id twin — an external
+        # pane's pin press, served by the same rules and the same storage.
+        self._window.entity_preview.external_pin_toggle_requested.connect(
+            lambda k, s, p: self._spawn(self._on_preview_pin_toggled(k, s, p))
+        )
 
     async def restore_preview_pins(self) -> None:
         """Read the saved pins at game open (NRI-0025 task 5.2, design Д3;
         the composition root calls this right after the connector connected,
         while no user signal can race it). A pair that no longer resolves —
-        unknown type, deleted row — is silently dropped from the RESTORED
+        unknown type, deleted row, external record whose source is switched
+        off or gone (add-dnd-game-face task 6.2, spec «Отключённый источник
+        тихо убирает закрепление») — is silently dropped from the RESTORED
         list and storage is NOT rewritten (the next pin/unpin persists the
-        clean list; no background repair writes)."""
+        clean list; no background repair writes).
+
+        String ids are the external half of the codec (spec «числовой — для
+        сущностей ядра, строковый … для зарегистрированных внешних»): the
+        sources are warmed FIRST — the restore is the one flow calling the
+        SYNC doors before any surface performed an async read, and an
+        un-warmed cache would honestly answer every external pin dead.
+        The restored record is the source's card, stamped with its pair id
+        exactly like the live seat of ``_show_external_in_preview``."""
         if self._preview_pins_service is None:
             return
+        for source in self._external_sources:
+            await source.warm()
         for entity_type, entity_id in await self._preview_pins_service.get_pins():
+            if isinstance(entity_id, str):
+                card = self._external_card_for(entity_type, entity_id)
+                if card is None:
+                    continue
+                self._preview_pins.append((entity_type, entity_id))
+                self._preview_rows[(entity_type, entity_id)] = card
+                continue
             entity_service = self._app._get_entity_service(entity_type)
             if entity_service is None:
                 continue
@@ -761,6 +849,24 @@ class ApplicationWiring(QObject):
             self._preview_pins.append((entity_type, entity_id))
             self._preview_rows[(entity_type, entity_id)] = entity
         self._push_preview_frame()
+
+    def _external_card_for(self, key: str, source_id: str) -> Any:
+        """The stamped, read-only card of one external pair (the seat record
+        every external path caches), ``None`` when no visible source knows
+        the key or cannot assemble the record. ``source_id`` is written into
+        the record here (protocol field, task 6.1/6.2): the frame pair the
+        slot identity, pin gestures and scroll memory key by rides the card
+        itself, so the column assembles pane dicts without a side map."""
+        for source in self._external_sources:
+            if not source.visible:
+                continue
+            if not any(desc.key == key for desc in source.type_descriptors):
+                continue
+            card = source.card_source(key, source_id)
+            if card is None:
+                return None
+            return replace(card, source_id=source_id)
+        return None
 
     def _push_preview_frame(self) -> None:
         """The facade's single write channel (design Д1): the full frame
@@ -783,9 +889,13 @@ class ApplicationWiring(QObject):
         await self._preview_pins_service.save_pins(self._preview_pins)
 
     async def _on_preview_pin_toggled(
-        self, entity_type: str, entity_id: int, pinned: bool
+        self, entity_type: str, entity_id: Any, pinned: bool
     ) -> None:
         """The pin channel's rule set (NRI-0025 task 5.1, design Д3/Д4).
+        Since task 6.2 the id half may also be a composite external string
+        (the connector's ``external_pin_toggle_requested`` twin feeds the
+        very same rules): the pair is opaque here — membership, order, the
+        cap and the storage all work on (type, id) whatever the id shape.
         Pinning seats the LIVE pair (a press on any other pair is stale and
         silently rejected), adds it at the end of the order, clears the live
         area — the card visually stays put because the very next frame shows
@@ -842,6 +952,70 @@ class ApplicationWiring(QObject):
             self._preview_rows.pop(previous, None)
         self._push_preview_frame()
         return True
+
+    async def _show_external_in_preview(self, key: str, source_id: str) -> bool:
+        """Seat one EXTERNAL record in the column's live area (add-dnd-game-
+        face task 3.4, spec global-search «клик по внешней строке ведёт себя
+        как клик по сущности (только предпросмотр)»): the string-id mirror of
+        :meth:`_show_in_preview` — no kernel entity service is asked (a
+        string id never reaches it), the detail panel and the timeline stay
+        untouched, and the card is what the SOURCE assembles: the row put
+        into the slot cache is the source's ``card_source`` record stamped
+        with its pair id (task 6.1: ``_external_card_for`` writes the
+        ``source_id`` field, and the column renders the record whole through
+        the shared slot machinery). The pair already live answers True
+        without a frame — the kernel no-op rule verbatim («Повторный выбор
+        ничего не делает»). A key no visible source provides and a record
+        the source cannot assemble answer False WITHOUT a frame — the row
+        click was then a miss: nothing moves, the same posture as a vanished
+        kernel row."""
+        if self._preview_live == (key, source_id):
+            return True
+        card = self._external_card_for(key, source_id)
+        if card is None:
+            return False
+        previous = self._preview_live
+        self._preview_live = (key, source_id)
+        self._preview_rows[(key, source_id)] = card
+        # The replaced live row leaves the cache unless a pinned copy still
+        # paints that pair — the kernel rule, verbatim (an external pair
+        # joins ``_preview_pins`` from task 6.2 on, so the membership check
+        # is load-bearing here exactly as it is for a kernel row).
+        if previous is not None and previous not in self._preview_pins:
+            self._preview_rows.pop(previous, None)
+        self._push_preview_frame()
+        return True
+
+    async def show_external_card(self, key: str, source_id: str) -> bool:
+        """Public door of the external live seat (add-dnd-game-face task 6.3):
+        the module's reference sheet routes a row click here — the same
+        posture the search row took in task 3.4 (read-only card in the live
+        area, the middle column and the scale untouched). True when the live
+        area shows the pair afterwards; False when no visible source can
+        assemble it — the click was a miss, nothing moves."""
+        return await self._show_external_in_preview(key, source_id)
+
+    async def open_external_mention(self, key: str, source_id: str) -> bool:
+        """An activated EXTERNAL mention chip (add-dnd-game-face task 5.2,
+        design Д4): the source's ``resolve_mention`` is the door — it answers
+        the card for a connected record and ``None`` for a chip whose set
+        was switched off or whose record vanished (spec «Чип доживает до
+        отключения датасета»). Resolved — the record takes the live seat of
+        task 3.4 (read-only card, the edit dialog opens for NOTHING under no
+        gesture, spec «Клик по внешней записи»); unavailable — False, and
+        the caller reports through the one «Упоминание не найдено» channel
+        the composition root already keeps for dead kernel mentions. The
+        descriptor must be the source's own — a foreign key never rides an
+        unrelated provider."""
+        for source in self._external_sources:
+            if not source.visible:
+                continue
+            if not any(desc.key == key for desc in source.type_descriptors):
+                continue
+            if source.resolve_mention(key, source_id) is None:
+                return False
+            return await self._show_external_in_preview(key, source_id)
+        return False
 
     async def _on_preview_entity_requested(self, entity_type: str, entity_id: int) -> None:
         if not await self._show_in_preview(entity_type, entity_id):
@@ -944,6 +1118,15 @@ class ApplicationWiring(QObject):
 
         window.search_bar.result_activated.connect(
             lambda t, i: self._spawn(on_search_result_activated(t, i))
+        )
+
+        # External result rows (add-dnd-game-face task 3.4, spec «только
+        # предпросмотр»): the VM already merged both gestures of a read-only
+        # record onto this one string-id channel — the handler is the live
+        # preview seat, the entity path of the single click without any of
+        # the edit semantics.
+        window.search_bar.external_result_selected.connect(
+            lambda k, s: self._spawn(self._show_external_in_preview(k, s))
         )
 
     def _connect_snapshot(self) -> None:
@@ -1181,6 +1364,13 @@ class ApplicationWiring(QObject):
         await self._timeline_vm.load_events()
         self._timeline_update_events()
 
+    async def reload_timeline(self) -> None:
+        """The public reload door for the module façade (add-dnd-game-face
+        task 11.2): detaching a source that painted ladder marks must repaint
+        the ladder at once, and only the connector owns the reload mechanics —
+        the module never reaches into the timeline viewmodel."""
+        await self._reload_timeline()
+
     # ── Helper: load available entities and set them on dialog sections ──
     async def _load_available_into_dialog(self, dialog) -> None:
         """Load all entities from DB and set them as available for linking.
@@ -1242,6 +1432,12 @@ class ApplicationWiring(QObject):
             # widget VM for its read-only age line.
             now_vm=self._now_date_vm,
             related_create_enabled=related_create_enabled,
+            # add-dnd-game-face (design Д1): the carrier's CURRENT source list
+            # reaches every card this factory builds.
+            external_sources=self._external_sources,
+            # add-dnd-game-face task 7.2: the module-tab factories receive
+            # the connector (CardTabSpec.factory(wiring, source_id)).
+            wiring=self,
         )
         if entity is not None:
             dialog.populate(entity)

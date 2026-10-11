@@ -418,7 +418,8 @@ async def test_switch_destroys_the_old_main_window_not_just_hides_it(
 
 
 async def test_switch_game_creating_a_new_game_opens_window_and_wizard(
-    qapp, llm_client, tmp_games_dir, tmp_llm_config, dialog_input, wait_for,
+    qapp, llm_client, tmp_games_dir, tmp_llm_config, dialog_input, dialog_item,
+    wait_for,
 ):
     """User repro 2026-10-02: inside a running game «Сменить игру…» → «Новая
     игра» → the fresh game must rebuild the main window AND raise its
@@ -444,9 +445,11 @@ async def test_switch_game_creating_a_new_game_opens_window_and_wizard(
         await wait_for(lambda: bool(window.findChildren(GameSwitchSheet)))
         sheet = _visible_switch_sheet(window)
 
-        # The real «Новая игра» controller path: createRequested → QInputDialog
-        # (stubbed) → VM create → gameSelected on the fresh path (spec
-        # game-launcher «Новая игра открывается сразу»).
+        # The real «Новая игра» controller path: createRequested → the system
+        # picker (task 2.6 — «Обычная», stubbed) → QInputDialog (stubbed) →
+        # VM create → gameSelected on the fresh path (spec game-launcher
+        # «Новая игра открывается сразу»).
+        dialog_item["answer"] = ("Обычная", True)
         dialog_input["answer"] = ("Гамлет", True)
         sheet.content.vm.createRequested.emit("")
 
@@ -484,7 +487,7 @@ async def test_switch_game_creating_a_new_game_opens_window_and_wizard(
 
 
 def test_switch_game_to_new_game_survives_the_windowless_moment_on_qasync_loop(
-    qapp, tmp_games_dir, tmp_llm_config, dialog_input,
+    qapp, tmp_games_dir, tmp_llm_config, dialog_input, dialog_item,
 ):
     """Regression 2026-10-02: the «Сменить игру…» → «Новая игра» flow MUST
     rebuild on a REAL qasync loop — the only posture that can die.
@@ -549,6 +552,7 @@ def test_switch_game_to_new_game_survives_the_windowless_moment_on_qasync_loop(
         sheet = next(
             s for s in window.findChildren(GameSwitchSheet) if s.isVisible()
         )
+        dialog_item["answer"] = ("Обычная", True)
         dialog_input["answer"] = ("Гамлет", True)
         sheet.content.vm.createRequested.emit("")
 

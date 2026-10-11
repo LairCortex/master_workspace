@@ -883,3 +883,60 @@ class TestTreelessSampleIsWordForWordTheOldFlatList:
             _event(9, date(1200, 3, 5), None, "второе"),
         ]
         assert build_rows(events, expanded={404, 9}) == build_rows(events)
+
+
+# ── external marks (add-dnd-game-face task 11.2) ───────────────────────────
+
+
+class TestExternalMarks:
+    """build_rows carries the sources' data tokens onto the rows (spec
+    event-timeline «Пометки строк от внешних источников»). The core only
+    copies tokens by event id — what a token paints is the delegate's, who
+    wears it is the ViewModel's and the source's. Without the parameter (or
+    with an empty mapping) every row is the old one: the zero-mark default
+    is the byte-identity pin for the whole mark-free world."""
+
+    def test_no_marks_means_the_old_list(self):
+        events = [_event(1, date(1200, 1, 5), None, "Совет")]
+        unmarked = build_rows(events)
+        assert [row.marks for row in unmarked] == [()]
+        assert build_rows(events, marks_by_event={}) == unmarked
+
+    def test_a_listed_event_picks_its_tokens_up(self):
+        events = [
+            _event(1, date(1200, 1, 5), None, "Совет"),
+            _event(2, date(1200, 1, 6), None, "Пир"),
+        ]
+        rows = build_rows(events, marks_by_event={2: ["encounter"]})
+        assert [row.marks for row in rows] == [(), ("encounter",)]
+        # The row otherwise stays word-for-word what it was.
+        assert rows[1].caption == build_rows(events)[1].caption
+
+    def test_marks_are_copied_by_id_including_children(self):
+        parent = _event(1, date(1200, 1, 5), date(1200, 1, 9), "Родитель")
+        child = _event(2, date(1200, 1, 6), None, "Ребёнок", parent_id=1)
+        rows = build_rows(
+            [parent, child], expanded={1}, marks_by_event={2: ("encounter",)}
+        )
+        assert [(r.event_id, r.marks) for r in rows] == [
+            (1, ()), (2, ("encounter",)),
+        ]
+
+    def test_a_stub_never_wears_marks(self):
+        """A stub explains with a bare name — the token belongs to the
+        hidden parent's row, the stub paints nothing."""
+        parent = _event(1, date(1199, 1, 1), date(1199, 2, 1), "Родитель")
+        child = _event(2, date(1200, 1, 6), None, "Ребёнок", parent_id=1)
+        rows = build_rows(
+            [parent, child],
+            window=(date(1200, 1, 1), date(1200, 12, 31)),
+            marks_by_event={1: ("encounter",), 2: ("encounter",)},
+        )
+        assert [(r.kind, r.marks) for r in rows] == [
+            (ROW_STUB, ()), (ROW_EVENT, ("encounter",)),
+        ]
+
+    def test_an_id_outside_the_sample_is_harmless(self):
+        events = [_event(1, date(1200, 1, 5), None, "Совет")]
+        rows = build_rows(events, marks_by_event={999: ("encounter",)})
+        assert rows[0].marks == ()

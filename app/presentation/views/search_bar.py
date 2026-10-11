@@ -26,6 +26,11 @@ class SearchBar(IslandDialogMixin, QWidget):
     # NRI-0022 (task 6.2): the double-click edit gesture (entity card / event
     # editor); the wiring keeps the two gesture channels apart.
     result_activated = Signal(str, int)  # (entity_type, entity_id) — double click
+    # add-dnd-game-face (task 3.4): the one channel of an EXTERNAL result
+    # row — its id is a string (design Д4), which the int channels cannot
+    # carry, and the record is read-only, so both result gestures of its row
+    # mean the same thing: live preview (spec «только предпросмотр»).
+    external_result_selected = Signal(str, str)  # (type key, source_id)
 
     def __init__(
         self,
@@ -58,6 +63,7 @@ class SearchBar(IslandDialogMixin, QWidget):
         self._vm.searchRequested.connect(self.search_requested)
         self._vm.resultSelected.connect(self.result_selected)
         self._vm.resultActivated.connect(self.result_activated)
+        self._vm.externalResultSelected.connect(self.external_result_selected)
 
         # A QQuickWidget in SizeRootObjectToView never reports the scene's
         # implicit height as a size hint, so the results list laid out below

@@ -22,7 +22,11 @@ from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.island import IslandDialogMixin, QML_IMPORT_PATH
 from app.presentation.qml.tooltip_shim import install_island_tooltips
 from app.presentation.theme import get_default_theme
-from app.presentation.utils.image_utils import load_entity_original, load_entity_preview
+from app.presentation.utils.image_utils import (
+    load_entity_original,
+    load_entity_preview,
+    load_original,
+)
 from app.presentation.viewmodels.entity_preview_view_model import (
     EntityPreviewViewModel,
 )
@@ -38,10 +42,17 @@ class EntityPreviewWidget(IslandDialogMixin, QWidget):
     #: an activated relation row or mention anchor — the wiring loads it
     #: through the entity service and answers back with the next frame.
     entity_requested = Signal(str, int)
+    #: add-dnd-game-face (design Д4): the same activation for an external
+    #: pair (type key, string source id) — a mention link of a registered
+    #: external type; the connector seats the read-only card in the live area.
+    external_entity_requested = Signal(str, str)
     #: NRI-0025 task 2.2 (design Д2/Д3): a pane's pin was activated — the pair
     #: plus the card's current pinned state; the connector owns the slot rules
     #: (limit, order, storage) and answers with the next ``show_slots`` frame.
     pin_toggle_requested = Signal(str, int, bool)
+    #: add-dnd-game-face (task 6.2): the pin channel's string-id twin — an
+    #: external pane presses here; the connector's one handler serves both.
+    external_pin_toggle_requested = Signal(str, str, bool)
     #: NRI-0024 (task 2.5, design Д7): child-sheet show channel — the picture
     #: builds its viewer (this column holds the shown entities) and the
     #: connector shows it through the one ``open_sheet`` path, the same sheet
@@ -53,6 +64,7 @@ class EntityPreviewWidget(IslandDialogMixin, QWidget):
         parent: QWidget | None = None,
         theme=None,
         now_date_vm=None,
+        external_sources: Sequence[Any] = (),
     ) -> None:
         super().__init__(parent)
         self._theme = theme if theme is not None else get_default_theme()
@@ -60,7 +72,14 @@ class EntityPreviewWidget(IslandDialogMixin, QWidget):
         # only (the island context stays minimal — previewVm + palette, spec
         # qml-shell); the age line counts against it and follows its moves —
         # since NRI-0025 one subscription repaints every card of the column.
-        self.vm = EntityPreviewViewModel(now_vm=now_date_vm, parent=self)
+        # add-dnd-game-face (design Д1): the composition's external sources
+        # join the same way — the VM stores them for the external-card slice
+        # (group 6), empty by default keeps the column pre-change.
+        self.vm = EntityPreviewViewModel(
+            now_vm=now_date_vm,
+            parent=self,
+            external_sources=external_sources,
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -73,8 +92,14 @@ class EntityPreviewWidget(IslandDialogMixin, QWidget):
         layout.addWidget(self.quick)
 
         self.vm.entityRequested.connect(self.entity_requested)
+        self.vm.externalEntityRequested.connect(self.external_entity_requested)
         self.vm.pinToggleRequested.connect(self.pin_toggle_requested)
+        # add-dnd-game-face (task 6.2): the pin's string-id twin relays as-is.
+        self.vm.externalPinToggleRequested.connect(self.external_pin_toggle_requested)
         self.vm.imageRequested.connect(self._open_image_viewer)
+        # Task 6.1: an external pane's picture builds its viewer from the
+        # record's own file, not from an ORM image_ref.
+        self.vm.externalImageRequested.connect(self._open_external_image_viewer)
 
     def island_source(self) -> str:
         return ROOT_QML
@@ -127,6 +152,23 @@ class EntityPreviewWidget(IslandDialogMixin, QWidget):
         preview = load_entity_preview(entity, slot_size=4096)
         viewer = ImageViewerDialog(
             original, preview, parent=self, theme=self._theme
+        )
+        self.sheet_requested.emit(viewer)
+
+    def _open_external_image_viewer(
+        self, key: str, source_id: str, pinned: bool
+    ) -> None:
+        # Task 6.1 (spec «приборная отделка только для чтения»): the external
+        # pane's picture opens the same viewer sheet, built from the record's
+        # own absolute file path — no kernel image store, no preview sidecar;
+        # a file that vanished between frame and press degrades inside
+        # ImageViewerDialog exactly like the kernel posture, and a pane that
+        # stopped being shown opens nothing.
+        card = self.vm.pane_entity(key, source_id, pinned)
+        if card is None or not card.picture_path:
+            return
+        viewer = ImageViewerDialog(
+            load_original(card.picture_path), None, parent=self, theme=self._theme
         )
         self.sheet_requested.emit(viewer)
 

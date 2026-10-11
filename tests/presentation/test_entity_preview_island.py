@@ -1641,3 +1641,109 @@ def test_a_fresh_live_selection_in_the_expanded_mode_opens_from_the_top(qtbot):
     assert float(_scroll_of_pane(widget, 1).property("contentY")) == pytest.approx(
         0.0, abs=1.0
     )
+
+
+# ── add-dnd-game-face task 6.1: внешняя панель на острове ────────────────────
+
+
+def _registered_dd_feat():
+    """Одна внешняя регистрация на тест (реестр — состояние процесса)."""
+    from app.domain import entity_registry as reg
+
+    saved = dict(reg._EXTERNAL)
+
+    def restore() -> None:
+        reg._EXTERNAL.clear()
+        reg._EXTERNAL.update(saved)
+
+    reg.register_external(
+        (
+            reg.ExternalTypeDescriptor(
+                key="dd_feat",
+                label="Черта",
+                plural_label="Черты",
+                icon_key="crosshair",
+                reference=True,
+            ),
+        )
+    )
+    return restore
+
+
+def test_external_pane_paints_the_origin_line(qtbot):
+    """Спека entity-preview «строку источника»: внешняя панель показывает
+    «Источник: …» строкой под именем, ядро — не рисует её вовсе (render
+    bit-for-bit); заголовок панели — тип, карточка остаётся read-only."""
+    from app.presentation.modules.protocol import ExternalCardSource, ExternalTextBlock
+
+    restore = _registered_dd_feat()
+    try:
+        card = ExternalCardSource(
+            name="Везучесть",
+            origin="SRD 5.1 (2014)",
+            blocks=(ExternalTextBlock("Текст", "Один раз спасает"),),
+            source_id="srd51/lucky",
+        )
+        widget = _preview(qtbot, "dd_feat", card)
+        assert [i.property("visible") for i in find_items(widget.quick, "previewOrigin")] == [True]
+        assert (
+            find_item(widget.quick, "previewOrigin").property("text")
+            == "Источник: SRD 5.1 (2014)"
+        )
+        title = find_item(widget.quick, "previewPaneTitle")
+        assert title.property("text") == "Карточка: Черта"
+        # контролов правки остров не печатает: внешняя панель — приборная
+        # отделка (никаких полей/кнопок записи в дереве видимой панели)
+        kernel = _preview(qtbot, "character", _entity())
+        assert [
+            i.property("visible") for i in find_items(kernel.quick, "previewOrigin")
+        ] == [False]
+    finally:
+        restore()
+
+
+def test_external_picture_opens_viewer_from_the_record_path(qtbot, monkeypatch):
+    """Картинка внешней панели открывает тот же лист-просмотр, собранный из
+    пути самой записи (без ядрового image-store); панель без картинки и
+    пропавшая пара не открывают ничего."""
+    from app.presentation.modules.protocol import ExternalCardSource
+
+    calls: list = []
+
+    class _Recorder:
+        def __init__(self, original, preview, parent=None, theme=None):
+            calls.append((original, preview, parent, theme))
+
+    monkeypatch.setattr(preview_module, "ImageViewerDialog", _Recorder)
+    monkeypatch.setattr(
+        preview_module, "load_original", lambda path: ("original", path)
+    )
+    restore = _registered_dd_feat()
+    try:
+        with_picture = ExternalCardSource(
+            name="а", origin="", picture_path="/nowhere/a.png", source_id="srd/a"
+        )
+        without = ExternalCardSource(name="б", origin="", source_id="srd/b")
+        widget = EntityPreviewWidget(now_date_vm=None)
+        qtbot.addWidget(widget)
+        widget.show_slots(
+            [("dd_feat", with_picture)], ("dd_feat", without)
+        )
+        widget.show()
+        QApplication.processEvents()
+        requested: list = []
+        widget.sheet_requested.connect(requested.append)
+
+        widget.vm.requestImageFor("dd_feat", "srd/a", True)  # пин-панель
+        assert len(calls) == 1 and len(requested) == 1
+        original, preview, parent, theme = calls[0]
+        assert original == ("original", "/nowhere/a.png")  # путь самой записи
+        assert preview is None and parent is widget
+        assert theme is widget._theme  # тема фасада — та же, что носит остров
+        assert requested and requested[0] is not None
+
+        widget.vm.requestImageFor("dd_feat", "srd/b", False)  # панель без файла
+        widget.vm.requestImageFor("dd_feat", "srd/gone", True)  # нет такой пары
+        assert len(calls) == 1 and len(requested) == 1
+    finally:
+        restore()

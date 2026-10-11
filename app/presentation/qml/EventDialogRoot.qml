@@ -14,6 +14,8 @@ Rectangle {
         Tokens.resolveTokens(typeof islandPalette !== "undefined" ? islandPalette : null)
     readonly property color surfaceColor:
         Tokens.token(islandTokens, "color.bg.surface", "white")
+    readonly property color accentColor:
+        Tokens.token(islandTokens, "color.accent", "black")
 
     // NRI-0014 task 4.2 (E1): the sheet's visible title line. The dialog
     // threads its windowTitle in (the windowTitleChanged feed in
@@ -35,6 +37,19 @@ Rectangle {
     // wireframe's own strip on top (the wireframe recomputed with the header,
     // task 4.2 — the pixel grab contract keeps the surface token at the edge).
     implicitHeight: 620 + eventSheetHeader.implicitHeight
+
+    // add-dnd-game-face task 7.1 (design Д10, spec entity-card-tabs): the
+    // fields are laid out over grouping tabs — «Обзор» carries the short
+    // fields, «Тексты» the mention pair, «Связи» the whole relations strip
+    // as it was. The group composition and order are the VM's single
+    // declaration (card_tab_groups); a key the kernel does not know renders
+    // the empty placeholder page the module widget is overlaid on (7.2).
+    function componentFor(key) {
+        if (key === "overview") return overviewPage
+        if (key === "texts") return textsPage
+        if (key === "relations") return relationsPage
+        return modulePage
+    }
 
     ThemeSheetHeader {
         id: eventSheetHeader
@@ -67,13 +82,107 @@ Rectangle {
         anchors.margins: Tokens.px(root.islandTokens, "space.md", 16)
         spacing: Tokens.px(root.islandTokens, "space.sm", 8)
 
+        // The grouping strip (design reference 2026-10-10): under the header,
+        // never scrolled, caption-only tabs in equal shares — the icon stays
+        // the relations strip's own identity. A single tab hides the strip
+        // (the kernel strip is always ≥ 2, so in practice it is always up;
+        // the rule is the design's).
+        ThemeTabBar {
+            id: groupTabs
+            objectName: "eventGroupTabs"
+            Layout.fillWidth: true
+            visible: eventDialogVm.groups.length > 1
+            currentIndex: eventDialogVm.activeGroup
+            onCurrentIndexChanged: if (currentIndex !== eventDialogVm.activeGroup)
+                eventDialogVm.selectGroup(currentIndex)
+            Repeater {
+                model: eventDialogVm.groups
+                ThemeTabButton {
+                    objectName: "eventGroupTab_" + modelData.key
+                    text: modelData.title
+                }
+            }
+        }
+        // A tab tap writes currentIndex imperatively (breaking the binding),
+        // so the reveal path (the VM opening the offended tab) re-seats the
+        // strip through this channel — one value, two writers, no echo (the
+        // guarded slot ignores an index the state already holds).
+        Connections {
+            target: eventDialogVm
+            function onActiveGroupChanged() {
+                groupTabs.currentIndex = eventDialogVm.activeGroup
+            }
+        }
+
+        StackLayout {
+            id: eventGroupBody
+            objectName: "eventGroupBody"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            currentIndex: eventDialogVm.activeGroup
+
+            // The body slot the module-tab overlay is placed over (task 7.2):
+            // published in root coordinates on every geometry move; the card
+            // facade maps it to window pixels.
+            function publishBodyRect() {
+                const point = mapToItem(root, 0, 0)
+                eventDialogVm.reportBodyRect(point.x, point.y, width, height)
+            }
+            Component.onCompleted: publishBodyRect()
+            onXChanged: publishBodyRect()
+            onYChanged: publishBodyRect()
+            onWidthChanged: publishBodyRect()
+            onHeightChanged: publishBodyRect()
+
+            Repeater {
+                model: eventDialogVm.groups
+                Loader {
+                    objectName: "eventGroupPage_" + modelData.key
+                    sourceComponent: root.componentFor(modelData.key)
+                }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Item { Layout.fillWidth: true }
+            ThemeButton {
+                id: saveButton
+                objectName: "eventSaveButton"
+                text: "Сохранить"
+                // Lucide icon pass 2026-09-30: the save chip shared with the
+                // entity-card and sheet save buttons.
+                iconName: "save"
+                accentBackground: true
+                enabled: eventDialogVm.valid
+                onClicked: eventDialogVm.requestSave()
+            }
+            ThemeButton {
+                objectName: "eventCancelButton"
+                text: "Отмена"
+                enabled: !eventDialogVm.saving
+                onClicked: eventDialogVm.requestCancel()
+            }
+        }
+    }
+
+    // ── The group pages (chrome above, one visible group at a time) ─────────
+
+    Component {
+        id: overviewPage
         GridLayout {
             columns: 3
             columnSpacing: Tokens.px(root.islandTokens, "space.sm", 8)
             rowSpacing: Tokens.px(root.islandTokens, "space.xs", 4)
-            Layout.fillWidth: true
 
-            TitleText { text: "Название: *" }
+            TitleText {
+                objectName: "eventNameLabel"
+                text: "Название: *"
+                // The reveal mark (task 7.1): the field a refused save
+                // pointed at prints in the accent until the next attempt.
+                color: eventDialogVm.invalidatedField === "name"
+                    ? root.accentColor : fgColor
+            }
             ThemeField {
                 objectName: "eventNameField"
                 Layout.fillWidth: true
@@ -246,8 +355,23 @@ Rectangle {
                 onActivated: eventDialogVm.selectParent(index)
             }
             Item { implicitWidth: 24 }
+        }
+    }
 
-            TitleText { text: "Характеристики: *" }
+    Component {
+        id: textsPage
+        GridLayout {
+            columns: 3
+            columnSpacing: Tokens.px(root.islandTokens, "space.sm", 8)
+            rowSpacing: Tokens.px(root.islandTokens, "space.xs", 4)
+
+            TitleText {
+                objectName: "eventCharacteristicsLabel"
+                text: "Характеристики: *"
+                // The reveal mark (task 7.1): «both texts empty» points here.
+                color: eventDialogVm.invalidatedField === "characteristics"
+                    ? root.accentColor : fgColor
+            }
             MentionField {
                 objectName: "eventCharacteristicsField"
                 Layout.fillWidth: true
@@ -283,68 +407,62 @@ Rectangle {
                 Accessible.name: "Сгенерировать: " + fieldLabel
             }
         }
+    }
 
-        ThemeTabBar {
-            id: tabs
-            objectName: "eventRelatedTabs"
-            Layout.fillWidth: true
-            // The registry-order glyphs of the four relation tabs (the same
-            // captions order), from the one type→icon map (Lucide pass
-            // 2026-09-30). The sheet sizes itself to its content, so the
-            // bar never squeezes these captions below their iconed natural.
-            ThemeTabButton { text: "Организации"; iconName: eventDialogVm.relatedTabIcons[0] }
-            ThemeTabButton { text: "Персонажи"; iconName: eventDialogVm.relatedTabIcons[1] }
-            ThemeTabButton { text: "Предметы"; iconName: eventDialogVm.relatedTabIcons[2] }
-            ThemeTabButton { text: "Локации"; iconName: eventDialogVm.relatedTabIcons[3] }
+    Component {
+        id: relationsPage
+        ColumnLayout {
+            spacing: Tokens.px(root.islandTokens, "space.sm", 8)
+
+            ThemeTabBar {
+                id: tabs
+                objectName: "eventRelatedTabs"
+                Layout.fillWidth: true
+                // The registry-order glyphs of the four relation tabs (the same
+                // captions order), from the one type→icon map (Lucide pass
+                // 2026-09-30). The sheet sizes itself to its content, so the
+                // bar never squeezes these captions below their iconed natural.
+                ThemeTabButton { text: "Организации"; iconName: eventDialogVm.relatedTabIcons[0] }
+                ThemeTabButton { text: "Персонажи"; iconName: eventDialogVm.relatedTabIcons[1] }
+                ThemeTabButton { text: "Предметы"; iconName: eventDialogVm.relatedTabIcons[2] }
+                ThemeTabButton { text: "Локации"; iconName: eventDialogVm.relatedTabIcons[3] }
+            }
+
+            StackLayout {
+                currentIndex: tabs.currentIndex
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+
+                RelatedSection {
+                    objectName: "organizationsRelatedSection"
+                    objectPrefix: "organizationsRelated"
+                    section: eventDialogVm.organizationsSection
+                }
+                RelatedSection {
+                    objectName: "charactersRelatedSection"
+                    objectPrefix: "charactersRelated"
+                    section: eventDialogVm.charactersSection
+                }
+                RelatedSection {
+                    objectName: "itemsRelatedSection"
+                    objectPrefix: "itemsRelated"
+                    section: eventDialogVm.itemsSection
+                }
+                RelatedSection {
+                    objectName: "locationsRelatedSection"
+                    objectPrefix: "locationsRelated"
+                    section: eventDialogVm.locationsSection
+                }
+            }
         }
+    }
 
-        StackLayout {
-            currentIndex: tabs.currentIndex
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            RelatedSection {
-                objectName: "organizationsRelatedSection"
-                objectPrefix: "organizationsRelated"
-                section: eventDialogVm.organizationsSection
-            }
-            RelatedSection {
-                objectName: "charactersRelatedSection"
-                objectPrefix: "charactersRelated"
-                section: eventDialogVm.charactersSection
-            }
-            RelatedSection {
-                objectName: "itemsRelatedSection"
-                objectPrefix: "itemsRelated"
-                section: eventDialogVm.itemsSection
-            }
-            RelatedSection {
-                objectName: "locationsRelatedSection"
-                objectPrefix: "locationsRelated"
-                section: eventDialogVm.locationsSection
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
-            ThemeButton {
-                id: saveButton
-                objectName: "eventSaveButton"
-                text: "Сохранить"
-                // Lucide icon pass 2026-09-30: the save chip shared with the
-                // entity-card and sheet save buttons.
-                iconName: "save"
-                accentBackground: true
-                enabled: eventDialogVm.valid
-                onClicked: eventDialogVm.requestSave()
-            }
-            ThemeButton {
-                objectName: "eventCancelButton"
-                text: "Отмена"
-                enabled: !eventDialogVm.saving
-                onClicked: eventDialogVm.requestCancel()
-            }
+    // The module-tab placeholder (task 7.2): the kernel only reserves the
+    // body slot — the module widget the dialog hosts is overlaid on it.
+    Component {
+        id: modulePage
+        Item {
+            objectName: "eventModulePage"
         }
     }
 

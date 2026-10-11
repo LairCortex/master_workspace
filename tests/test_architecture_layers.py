@@ -39,6 +39,14 @@
    контракт снял механизм «живое окно вместо второго»; однократность листов
    даёт гейт открывающих пунктов по стеку (design Д2), упоминания имени в
    прозе легальны — тот же закон AST, что у R5/R6.
+
+add-dnd-module-foundation (task 1.3): правила 1/2/4/5 распространены на
+внутренние слои встроенного модуля ``app/dd/`` — ядро модуля
+(``application``/``domain``) не видит ``app.presentation`` и не трогает
+сессию/ORM/транзакцию, его ``presentation`` не видит сессию/ORM и не знает
+конкретного провайдера; ``app/dd/infrastructure`` — как инфраструктура ядра.
+Граница «кто вообще имеет право импортировать ``app.dd``» — отдельный guard
+``tests/test_dd_module_isolation.py``.
 """
 from __future__ import annotations
 
@@ -51,14 +59,36 @@ from app.domain.enums.entity_type import EntityType
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APP_ROOT = REPO_ROOT / "app"
 
-#: откуда запрещён импорт presentation (прикладной и доменный слои)
-LAYER_GUARD_DIRS = (APP_ROOT / "application", APP_ROOT / "domain")
-#: где запрещены сессия/ORM/завершение транзакции
-DB_GUARD_DIR = APP_ROOT / "presentation"
-#: где запрещены словари тип→модель/репозиторий в обход реестра
-REGISTRY_GUARD_DIRS = (APP_ROOT / "application", APP_ROOT / "domain")
-#: откуда запрещён импорт конкретного LLM-провайдера (R5)
-PROVIDER_GUARD_DIRS = (APP_ROOT / "presentation",)
+#: откуда запрещён импорт presentation (прикладной и доменный слои; с
+#: add-dnd-module-foundation task 1.3 — и ядро модуля app/dd/{application,
+#: domain}: внутренний слой модуля не видит ни UI ядра, ни UI самого модуля
+#: (последний — в guard tests/test_dd_module_isolation.py по тому же AST))
+LAYER_GUARD_DIRS = (
+    APP_ROOT / "application",
+    APP_ROOT / "domain",
+    APP_ROOT / "dd" / "application",
+    APP_ROOT / "dd" / "domain",
+)
+#: где запрещены сессия/ORM/завершение транзакции (add-dnd-module-foundation:
+#: представление и ядро модуля — те же границы, что у ядра; app/dd/
+#: infrastructure, как и инфраструктура ядра, сессию видеть вправе)
+DB_GUARD_DIRS = (
+    APP_ROOT / "presentation",
+    APP_ROOT / "dd" / "presentation",
+    APP_ROOT / "dd" / "application",
+    APP_ROOT / "dd" / "domain",
+)
+#: где запрещены словари тип→модель/репозиторий в обход реестра (и ядро модуля —
+#: тот же реестр EntityType, add-dnd-module-foundation task 1.3)
+REGISTRY_GUARD_DIRS = (
+    APP_ROOT / "application",
+    APP_ROOT / "domain",
+    APP_ROOT / "dd" / "application",
+    APP_ROOT / "dd" / "domain",
+)
+#: откуда запрещён импорт конкретного LLM-провайдера (R5; представление
+#: модуля — под тем же правилом, фабрика одна в main.py)
+PROVIDER_GUARD_DIRS = (APP_ROOT / "presentation", APP_ROOT / "dd" / "presentation")
 #: где запрещены литералы статусов LLM вне источника (R6)
 LITERAL_GUARD_DIRS = (APP_ROOT,)
 #: корень тестов — второй корень скана R7 (nri-0024 task 1.3)
@@ -80,6 +110,10 @@ CONCRETE_PROVIDER_MODULE = "app.infrastructure.llm.remote_provider"
 LLM_STATUS_SOURCE = APP_ROOT / "application" / "services" / "llm_status.py"
 #: текстовые значения статусов — выводятся из самого перечисления (R6)
 LLM_STATUS_VALUES = frozenset(member.value for member in LlmStatus)
+#: единственная дверь регистрации внешних типов (R8, add-dnd-game-face design Д2)
+EXTERNAL_REGISTRATION_FUNC = "register_external"
+#: вызов легален ровно в точке сборки — нигде больше в app/ (R8)
+EXTERNAL_REGISTRATION_ALLOWED_FILE = APP_ROOT / "main.py"
 
 
 def _collect_py_files(roots: tuple[Path, ...]) -> list[Path]:
@@ -178,12 +212,24 @@ def _imports_retired_registry(module: str | None, alias_name: str) -> bool:
     )
 
 
+def _calls_external_registration(func: ast.expr) -> str | None:
+    """Любая форма вызова ``register_external`` (R8): по атрибуту модуля
+    (``entity_registry.register_external(…)``) и по прямому имени (``from
+    app.domain.entity_registry import register_external`` затем вызов).
+    Определение функции и проза — не узлы вызова (тот же закон AST)."""
+    if isinstance(func, ast.Attribute) and func.attr == EXTERNAL_REGISTRATION_FUNC:
+        return EXTERNAL_REGISTRATION_FUNC
+    if isinstance(func, ast.Name) and func.id == EXTERNAL_REGISTRATION_FUNC:
+        return EXTERNAL_REGISTRATION_FUNC
+    return None
+
+
 def _violations_in_tree(
     tree: ast.AST, path: Path, *,
     check_layers: bool = False, check_db: bool = False,
     check_private: bool = False, check_dicts: bool = False,
     check_provider: bool = False, check_status: bool = False,
-    check_retired_registry: bool = False,
+    check_retired_registry: bool = False, check_registration: bool = False,
 ) -> list[tuple[Path, int, str]]:
     violations: list[tuple[Path, int, str]] = []
     own_parts = _package_parts(path)
@@ -267,13 +313,31 @@ def _violations_in_tree(
                         "трёхклассовым контрактом, однократность листов даёт "
                         "гейт открывающих пунктов по стеку (nri-0024, task 1.3)",
                     ))
-        elif check_db and isinstance(node, ast.Call):
+        elif isinstance(node, ast.Call):
             func = node.func
-            if isinstance(func, ast.Attribute) and func.attr in ("commit", "rollback"):
+            if (
+                check_db
+                and isinstance(func, ast.Attribute)
+                and func.attr in ("commit", "rollback")
+            ):
                 violations.append((
                     path, node.lineno,
                     f"вызов «.{func.attr}()» в слое представления запрещён "
                     "(транзакцию завершает единица работы, design D4/D7)",
+                ))
+            # R8: внешние типы входят в реестр через одну дверь, и открывает
+            # её только точка сборки (add-dnd-game-face, design Д2)
+            if (
+                check_registration
+                and _calls_external_registration(func) is not None
+                and path != EXTERNAL_REGISTRATION_ALLOWED_FILE
+            ):
+                violations.append((
+                    path, node.lineno,
+                    "вызов «register_external()» вне точки сборки запрещён: "
+                    "регистрацией типов внешних источников распоряжается "
+                    "единственная точка composition — app/main.py "
+                    "(add-dnd-game-face, design Д2)",
                 ))
         elif check_dicts and isinstance(node, ast.Dict):
             violation = _parallel_type_dict(node)
@@ -371,7 +435,7 @@ def test_repo_tree_respects_layer_direction():
 
 
 def test_repo_tree_keeps_db_out_of_presentation():
-    violations = _scan_tree((DB_GUARD_DIR,), check_db=True)
+    violations = _scan_tree(DB_GUARD_DIRS, check_db=True)
     assert not violations, (
         "сессия/ORM/завершение транзакции вернулись в представление "
         "(единица работы — GameSessionUoW):\n" + _format_violations(violations)
@@ -474,6 +538,62 @@ def test_repo_tree_has_no_retired_menu_window_registry():
         "импорт упразднённого реестра окон меню вернулся в дерево:\n"
         + _format_violations(violations)
     )
+
+
+def test_repo_tree_registers_external_types_only_at_the_composition_point():
+    """R8: дверь ``register_external`` открывает только точка сборки (design Д2,
+    add-dnd-game-face): ни один другой файл app/ — ни слой модуля, ни сервис,
+    ни представление — не регистрирует внешние типы в обход composition."""
+    violations = _scan_tree((APP_ROOT,), check_registration=True)
+    assert not violations, (
+        "register_external снова зовут не из точки сборки (design Д2):\n"
+        + _format_violations(violations)
+    )
+    # sanity: дверь живая — main.py действительно её открывает; тот же код под
+    # чужим путём ловится (правило не висит на пустоте, прецедент R6)
+    main_src = EXTERNAL_REGISTRATION_ALLOWED_FILE.read_text(encoding="utf-8")
+    assert "register_external(" in main_src, (
+        "app/main.py перестал регистрировать внешние типы — либо дверь "
+        "закрыли вместе с механизмом, либо guard пора снимать"
+    )
+    shifted = EXTERNAL_REGISTRATION_ALLOWED_FILE.with_name(
+        "not_the_composition.py"
+    )
+    assert _scan_source(main_src, shifted, check_registration=True), (
+        "правило R8 потеряло зубы"
+    )
+
+
+def test_external_registration_call_forms_report_file_and_line():
+    """R8 на snippets: обе формы вызова (атрибут модуля и прямое имя) ловятся
+    с файлом и строкой; вызов в самой точке сборки и проза — легальны."""
+    cases = {
+        "from app.domain import entity_registry\nentity_registry.register_external([])\n": True,
+        "from app.domain.entity_registry import register_external\nregister_external([])\n": True,
+        "def f():\n    reg.register_external(batch)\n": True,
+        # определение двери (сам реестр) — не вызов
+        "def register_external(descriptors):\n    pass\n": False,
+        # проза и строки — не узлы вызова
+        'NOTE = "register_external"\n': False,
+        "OTHER = \"calls register_external() only in main\"\n": False,
+    }
+    for source, should_hit in cases.items():
+        violations = _scan_source(
+            source, Path("app/application/services/x.py"), check_registration=True
+        )
+        if should_hit:
+            assert len(violations) == 1, source
+            path, lineno, text = violations[0]
+            assert "register_external" in text, source
+        else:
+            assert not violations, source
+    # та же запрещённая форма в самой точке сборки легальна
+    legal = _scan_source(
+        "entity_registry.register_external([])\n",
+        EXTERNAL_REGISTRATION_ALLOWED_FILE,
+        check_registration=True,
+    )
+    assert legal == []
 
 
 # --------------------------------------------------------------------------
@@ -694,6 +814,27 @@ def test_planted_status_literal_falls_the_literal_guard(tmp_path, monkeypatch):
     assert len(violations) == 1
     path, lineno, _ = violations[0]
     assert path == target and lineno == 1
+
+
+def test_planted_registration_call_falls_the_composition_guard(tmp_path, monkeypatch):
+    """Подложный нарушитель R8 (обход двери): сервис сам зовёт register_external
+    — обход единственной точки регистрации ловится деревом с файлом и строкой."""
+    services = tmp_path / "application" / "services"
+    services.mkdir(parents=True)
+    target = services / "bad_service.py"
+    target.write_text(
+        "from app.domain import entity_registry\n"
+        "\n"
+        "def enable_types():\n"
+        "    entity_registry.register_external([])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("tests.test_architecture_layers.REPO_ROOT", tmp_path)
+    violations = _scan_tree((tmp_path,), check_registration=True)
+    assert len(violations) == 1
+    path, lineno, text = violations[0]
+    assert path == target and lineno == 4
+    assert "register_external" in text and "main.py" in text
 
 
 # --------------------------------------------------------------------------

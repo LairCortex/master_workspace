@@ -30,7 +30,14 @@ def icon_for(entity_type: str | EntityType) -> str:
     """The Lucide name of an entity type, by enum or by registry key.
 
     Strict like the registry itself: a key outside it is a programming error
-    (``KeyError``), never a silently missing glyph."""
+    (``KeyError``), never a silently missing glyph. Registered EXTERNAL
+    types (add-dnd-game-face, design Д2) answer their descriptor's
+    ``icon_key`` — the same glyphs.js contract the kernel map's values carry;
+    with the external section empty the answer is the pre-change one."""
+    if not isinstance(entity_type, EntityType):
+        external = entity_registry.external_descriptor(entity_type)
+        if external is not None:
+            return external.icon_key
     etype = (
         entity_type
         if isinstance(entity_type, EntityType)

@@ -1,17 +1,24 @@
 """Thin QObject bridge for the QML MentionField component."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
-from PySide6.QtCore import Property, QPoint, QObject, Signal, Slot
+from PySide6.QtCore import Property, QEvent, QPoint, QObject, Signal, Slot
 from PySide6.QtWidgets import QWidget
 
-from app.domain.mentions import parse, strip_brackets
+from app.domain.mentions import format_marker, parse, strip_brackets
 from app.presentation.views.mention_popup import _MentionPopup
 
 
 class MentionFieldHost(QObject):
-    """Own storage/display mapping and the shared native completion popup."""
+    """Own storage/display mapping and the shared native completion popup.
+
+    add-dnd-game-face (design Д4): the host speaks STRING mention ids — the
+    grammar is textual, kernel rows carry their digits as text and external
+    records their composite source ids. Numeric callers (the popup's kernel
+    rows) cross this boundary as text; the kernel services receive their
+    ints back at the composition edge (``main._on_mention_clicked``)."""
 
     storageChanged = Signal()
     displayChanged = Signal()
@@ -19,9 +26,15 @@ class MentionFieldHost(QObject):
     popupVisibleChanged = Signal()
     modifiedChanged = Signal()
     searchRequested = Signal(str)
-    mentionClicked = Signal(str, int)
+    # (type key, stored id as text) — str keeps an external composite id
+    # ("srd51/Darkvision") intact end to end
+    mentionClicked = Signal(str, str)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        external_sources: Sequence[Any] = (),
+    ) -> None:
         super().__init__(parent)
         self._storage = ""
         self._display = ""
@@ -36,6 +49,17 @@ class MentionFieldHost(QObject):
         self._popup: _MentionPopup | None = None
         self._caret_point = QPoint()
         self._known_displays: dict[str, str] = {"": ""}
+        # add-dnd-game-face (design Д1): the external entity sources from the
+        # composition, carried to every field that can hold a mention. The
+        # @-candidate merge itself arrives with the mention slice (group 5);
+        # until then the host only stores what it was handed — empty default
+        # keeps every existing host exactly as before.
+        self._external_sources: tuple[Any, ...] = tuple(external_sources)
+
+    @property
+    def external_sources(self) -> tuple[Any, ...]:
+        """The sources the composition handed to this field's dialog."""
+        return self._external_sources
 
     def _get_storage(self) -> str:
         return self._storage
@@ -77,6 +101,28 @@ class MentionFieldHost(QObject):
         self._widget = widget
         if self.parent() is None:
             self.setParent(widget)
+        # add-dnd-game-face (task 12.5, zombie window of the acceptance
+        # 2026-10-11): the popup is a top-level Tool window parented to the
+        # island widget. Hiding/closing the host sheet does NOT propagate to
+        # child top-level windows, so the candidate list survived its sheet.
+        # The island widget itself DOES receive the Hide event when its
+        # window goes away (verified for the sheet's QDialog reject/close and
+        # for an explicit island hide) — the filter rides that event to take
+        # the popup down with the field the reader can no longer see.
+        widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:
+        """The one thing the host watches: its own Hide (12.5) — every other
+        event passes to the widget untouched."""
+        if watched is self._widget and event.type() == QEvent.Type.Hide:
+            self._on_host_hidden()
+        return super().eventFilter(watched, event)
+
+    def _on_host_hidden(self) -> None:
+        """The host went invisible: the popup goes with it and the pending
+        ``@`` query is cancelled — the host outliving its field must not
+        insert into a document nobody is looking at."""
+        self.cancelMention()
 
     def _apply_storage(self, value: str, *, reset_modified: bool) -> None:
         old_storage = self._storage
@@ -241,11 +287,20 @@ class MentionFieldHost(QObject):
         elif self._popup_visible:
             self._hide_popup()
 
-    @Slot(str, int, str)
-    def insertMention(self, entity_type: str, entity_id: int, name: str) -> None:
+    @Slot(str, "QVariant", str)
+    def insertMention(
+        self, entity_type: str, entity_id: int | str, name: str
+    ) -> None:
+        """Insert the chip for one candidate at the pending ``@`` query.
+
+        ``entity_id`` crosses the boundary as text (design Д4): the popup's
+        kernel rows carry ints, external rows their composite source ids —
+        both are stored through the domain grammar, the host formats nothing
+        itself and invents no second marker syntax (spec «Views SHALL
+        импортировать грамматику»)."""
         if self._mention_start < 0:
             return
-        marker = f"@[{strip_brackets(name)}]({entity_type}:{entity_id}) "
+        marker = format_marker(entity_type, str(entity_id), name) + " "
         start = self._display_to_storage(self._mention_start)
         end = self._display_to_storage(self._cursor)
         self._apply_storage(
@@ -281,7 +336,10 @@ class MentionFieldHost(QObject):
         return self._popup
 
     def _insert_result(self, result: dict) -> None:
-        self.insertMention(result["type"], int(result["id"]), result["name"])
+        # The id rides the candidate row as stored (kernel int or external
+        # string, design Д4); insertMention textualises it — an int() here
+        # would destroy a composite external id.
+        self.insertMention(result["type"], result["id"], result["name"])
 
     @Slot()
     def popupDown(self) -> None:
@@ -321,9 +379,11 @@ class MentionFieldHost(QObject):
         self._popup_visible = visible
         self.popupVisibleChanged.emit()
 
-    @Slot(str, int)
-    def activateMention(self, entity_type: str, entity_id: int) -> None:
-        self.mentionClicked.emit(entity_type, entity_id)
+    @Slot(str, "QVariant")
+    def activateMention(self, entity_type: str, entity_id: int | str) -> None:
+        # QML hands back the span's stored id — a string since design Д4;
+        # the kernel converts its digits back to int at the composition edge.
+        self.mentionClicked.emit(entity_type, str(entity_id))
 
     @Slot(float, float, float)
     def setCaretRect(self, x: float, y: float, height: float) -> None:

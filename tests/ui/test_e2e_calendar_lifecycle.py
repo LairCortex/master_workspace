@@ -74,11 +74,24 @@ async def _make_custom_game_db(db_path: Path) -> None:
 
 def _mark_as_pre_c4_game(db_path: Path) -> None:
     """Write the ``game_settings`` table into a blank file, so init_db reads
-    this file as an old game (its schema predates the C4 seeding) instead of
-    a new game born pre-seeded with the calendar keys."""
+    this file as an old game instead of a new game born pre-seeded with the
+    calendar keys.
+
+    add-dnd-module-foundation (task 2.6) narrowed the freshness fact to the
+    DOMAIN schema (a «D&D» launcher seed pre-creates game_settings on a brand
+    -new game and must still get the calendar seed), so this stand-in adds a
+    domain marker table: it is then a pre-C4 game by BOTH readings — the old
+    broad one and the new narrow one — and its intent stops being a
+    settings-table accident."""
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE game_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    conn.execute(
+        # AUTOINCREMENT — как в настоящей схеме (migrations._migrate_nullable_end_dates
+        # пересоздаёт descriptions именно так); «NOT NULL» без неё не сходится.
+        "CREATE TABLE descriptions ("
+        "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, characteristics TEXT, backstory TEXT)"
     )
     conn.commit()
     conn.close()

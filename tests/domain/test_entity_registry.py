@@ -199,3 +199,120 @@ def test_llm_fields_match_the_migrated_field_config():
         "item": ("name", "characteristics", "backstory"),
         "location": ("name", "characteristics", "backstory", "tasks"),
     }
+
+
+# ── external type section (add-dnd-game-face, design Д2) ──────────────────
+#
+# The module-level _EXTERNAL dict is process state the composition root owns;
+# these tests register into it, so the autouse fixture below hands every test
+# back the kernel-only shape it found — the section can never leak from one
+# test into another (the same isolation discipline the active-calendar tests
+# keep for the other piece of process state).
+
+
+@pytest.fixture(autouse=True)
+def restore_external_section():
+    saved = dict(reg._EXTERNAL)
+    yield
+    reg._EXTERNAL.clear()
+    reg._EXTERNAL.update(saved)
+
+
+def _spell(**over):
+    base = dict(
+        key="spell", label="Заклинание", plural_label="Заклинания",
+        icon_key="sparkles",
+    )
+    base.update(over)
+    return reg.ExternalTypeDescriptor(**base)
+
+
+def _race(**over):
+    base = dict(
+        key="race", label="Раса", plural_label="Расы", icon_key="paw-print",
+        searchable=False, mentionable=False,
+    )
+    base.update(over)
+    return reg.ExternalTypeDescriptor(**base)
+
+
+def test_empty_external_section_is_the_pre_change_registry():
+    """Zero registrations = the byte-for-byte kernel registry the whole suite
+    predates: kernel resolves to the enum, the search scope IS SEARCH_TYPES,
+    labels fall back to the raw key, unknown keys still raise."""
+    assert reg.external_types() == ()
+    assert reg.search_types() == reg.SEARCH_TYPES
+    assert all(t in reg.SEARCH_TYPES for t in reg.search_types())
+    assert reg.resolve("character") is EntityType.CHARACTER
+    assert reg.resolve("no_such_type") is None
+    assert reg.display_label("no_such_type") == "no_such_type"
+    with pytest.raises(KeyError):
+        reg.related_refs_for_key("no_such_type")
+
+
+def test_register_external_is_idempotent_and_replaces_wholesale():
+    """Registering the same batch twice is a no-op; a new batch replaces the
+    section (a stale type of a previous game must not survive, design Д2);
+    registering () returns the kernel-only shape."""
+    batch = (_spell(), _race())
+    reg.register_external(batch)
+    assert reg.external_types() == batch
+    reg.register_external(batch)
+    assert reg.external_types() == batch
+    reg.register_external((_race(),))
+    assert reg.external_types() == (_race(),)
+    assert reg.external_descriptor("spell") is None
+    reg.register_external(())
+    assert reg.external_types() == ()
+
+
+@pytest.mark.parametrize(
+    "batch, reason",
+    [
+        ((_spell(key=""),), "non-empty key"),
+        ((_spell(key="character"),), "collides with a kernel entity type"),
+        ((_spell(), _spell()), "duplicate external key"),
+    ],
+)
+def test_register_external_refuses_malformed_batches(batch, reason):
+    """The one door guards its shape: an empty key, a kernel-shadowing key and
+    an in-batch duplicate all raise ValueError, and a refused batch leaves the
+    section exactly as it was."""
+    reg.register_external((_race(),))
+    with pytest.raises(ValueError, match=reason):
+        reg.register_external(batch)
+    assert reg.external_types() == (_race(),)
+
+
+def test_registered_external_types_answer_with_one_signature_everywhere():
+    """Task 2.1 «внешние описатели подписями совпадают во всех поверхностях»:
+    resolve, the search union, the display label and the relation lookup all
+    read the SAME descriptor — one registration, consistent answers."""
+    spell, race = _spell(), _race()
+    reg.register_external((spell, race))
+
+    # resolve: kernel keys still the enum, external keys the descriptor
+    assert reg.resolve("spell") is spell
+    assert reg.resolve("race") is race
+    assert reg.resolve("character") is EntityType.CHARACTER
+    # search union: kernel first, externals in registration order, the
+    # non-searchable type absent (race.searchable is False)
+    assert reg.search_types() == reg.SEARCH_TYPES + (spell,)
+    # the singular caption reads from the same record
+    assert reg.display_label("spell") == "Заклинание"
+    # external cards own no kernel M2M sets — the KeyError closes with none
+    assert reg.related_refs_for_key("spell") == ()
+    # the read API hands out the very instances registered
+    assert reg.external_descriptor("race") is race
+    assert reg.external_types() == (spell, race)
+
+
+def test_external_descriptor_flags_are_plain_data():
+    """The participation flags are data the later surfaces read; the registry
+    itself only stores them (defaults: searchable/mentionable/pinnable on,
+    reference off)."""
+    default = _spell()
+    assert (default.searchable, default.mentionable, default.pinnable,
+            default.reference) == (True, True, True, False)
+    lookup = _spell(key="condition", reference=True, pinnable=False)
+    assert (lookup.reference, lookup.pinnable) == (True, False)

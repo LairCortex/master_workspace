@@ -29,11 +29,21 @@ from app.infrastructure.db.database import create_engine
 from app.infrastructure.db.models import GameSettingsModel
 from app.infrastructure.repositories.game_settings_repository import (
     CURRENT_DATE_KEY,
+    DND_DATASETS_KEY,
+    DND_GRIMOIRES_KEY,
+    DND_MODULE_KEY,
+    DND_SEARCH_SHOW_REFERENCE_KEY,
     PREVIEW_PINS_KEY,
     CurrentDateRepository,
     CurrentDateValue,
+    DndDatasetsRepository,
+    DndGrimoiresRepository,
+    DndModuleFlag,
+    DndSearchShowReferenceRepository,
+    decode_dnd_search_show_reference,
     GameSettingsRepository,
     PreviewPinsRepository,
+    decode_dnd_module_flag,
 )
 from app.infrastructure.repositories.llm_settings_repository import (
     FIELD_PROMPTS_KEY,
@@ -404,6 +414,32 @@ class TestPreviewPinsRepository:
         assert len(rows) == 1
         assert await repo.load() == [("item", 2), ("location", 3)]
 
+    async def test_string_ids_round_trip(self, async_session):
+        # add-dnd-game-face task 6.2 (spec preview-pins delta): the external
+        # half of the codec — a record id is a STRING («srd51/cleric»), the
+        # kernel half stays numeric; save→load carries both shapes whole.
+        repo = PreviewPinsRepository(async_session)
+        await repo.save([("dd_feat", "srd51/lucky"), ("dd_spell", "srd51/fire-ball")])
+        assert await self._stored_text(async_session) == (
+            '[{"t": "dd_feat", "i": "srd51/lucky"},'
+            ' {"t": "dd_spell", "i": "srd51/fire-ball"}]'
+        )
+        assert await repo.load() == [
+            ("dd_feat", "srd51/lucky"),
+            ("dd_spell", "srd51/fire-ball"),
+        ]
+
+    async def test_mixed_kernel_and_external_pairs_round_trip(self, async_session):
+        # One list, both id species — the order of the pins is significant
+        # (the column restores in it), the codec preserves it verbatim.
+        repo = PreviewPinsRepository(async_session)
+        await repo.save([("character", 1), ("dd_class", "srd51/cleric"), ("item", 2)])
+        assert await repo.load() == [
+            ("character", 1),
+            ("dd_class", "srd51/cleric"),
+            ("item", 2),
+        ]
+
     async def test_unknown_type_text_reads_back_untouched(
         self, async_session, caplog
     ):
@@ -432,9 +468,9 @@ class TestPreviewPinsRepository:
             '[{"t": 5, "i": 1}]',           # type is not text
             '[{"t": null, "i": 1}]',        # neither is null
             '[{"t": "character"}]',         # id missing
-            '[{"t": "character", "i": "3"}]',    # id is not an integer
             '[{"t": "character", "i": true}]',   # bool is never the id
             '[{"t": "character", "i": 1.5}]',    # neither is a float
+            '[{"t": "dd_feat", "i": ""}]',       # empty text names no record
             '[{"t": "character", "i": 1}, {}]',  # a broken later entry spoils all
         ],
     )
@@ -468,3 +504,274 @@ class TestPreviewPinsRepository:
             await _write_then_fail()
         assert await PreviewPinsRepository(async_session).load() == []
         assert await self._stored_text(async_session) is None
+
+
+# ── add-dnd-module-foundation task 1.2: the typed D&D-module flag codec ─────
+
+
+class TestDndModuleFlagCodec:
+    """Pure-decoder pins for ``dnd_module``: valid bodies decode, everything
+    unreadable logs the one journal warning and answers ``None`` (the caller
+    then lives by the absence rule, design Д1). The row itself is the
+    composition point's business — the codec never touches storage."""
+
+    def test_valid_enabled_flag_decodes(self):
+        assert decode_dnd_module_flag(
+            '{"enabled": true, "version": 1}'
+        ) == DndModuleFlag(enabled=True, version=1)
+
+    def test_valid_disabled_flag_decodes(self):
+        # A stored «off» is a readable value, not corruption — the lifecycle
+        # service (group 2) re-reads exactly this state to switch the module.
+        assert decode_dnd_module_flag(
+            '{"enabled": false, "version": 2}'
+        ) == DndModuleFlag(enabled=False, version=2)
+
+    def test_unknown_extra_keys_pass_untouched(self):
+        # The format grows additively (design Д1): a newer writer's extra
+        # keys must not turn a readable game into a corrupted one.
+        assert decode_dnd_module_flag(
+            '{"enabled": true, "future": {"a": 1}, "version": 3}'
+        ) == DndModuleFlag(enabled=True, version=3)
+
+    @pytest.mark.parametrize(
+        "raw, reason_needle",
+        [
+            ("not json at all", "not parseable JSON"),
+            ("5", "JSON object, got int"),
+            ('["enabled"]', "JSON object, got list"),
+            ("{}", "enabled flag None is not a boolean"),
+            ('{"version": 1}', "enabled flag None is not a boolean"),
+            ('{"enabled": "true", "version": 1}', "not a boolean"),
+            ('{"enabled": 1, "version": 1}', "not a boolean"),
+            ('{"enabled": true}', "version None is not a positive integer"),
+            ('{"enabled": true, "version": "2"}', "not a positive integer"),
+            ('{"enabled": true, "version": true}', "not a positive integer"),
+            ('{"enabled": true, "version": 0}', "not a positive integer"),
+            ('{"enabled": true, "version": -3}', "not a positive integer"),
+            ('{"enabled": true, "version": 1.5}', "not a positive integer"),
+        ],
+    )
+    def test_corrupted_value_reads_none_with_one_warning(self, caplog, raw, reason_needle):
+        with caplog.at_level(logging.WARNING):
+            assert decode_dnd_module_flag(raw) is None
+        warnings = [r for r in caplog.records if DND_MODULE_KEY in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+        assert reason_needle in warnings[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "raw",
+        ['{"enabled": true, "version": 1}', '{"enabled": false, "version": 1}'],
+    )
+    def test_readable_values_log_nothing(self, caplog, raw):
+        with caplog.at_level(logging.WARNING):
+            assert decode_dnd_module_flag(raw) is not None
+        assert not caplog.records
+
+
+# ── add-dnd-module-foundation task 3.4: the per-game dataset connection list ─
+
+
+class TestDndDatasetsRepository:
+    """Typed wrapper for the ``dnd_datasets`` key (design Д4: порядок массива
+    — порядок подключений). Отсутствие ключа — обычное «наборов не
+    подключено» без журнала; испорченное значение читается пустым СПИСКОМ и с
+    одной записью в журнал, строка остаётся байт-в-байт до явной записи."""
+
+    async def test_absent_key_reads_empty_list_without_warning(
+        self, async_session: AsyncSession, caplog
+    ):
+        with caplog.at_level(logging.WARNING):
+            assert await DndDatasetsRepository(async_session).load() == []
+        assert not caplog.records
+
+    async def test_save_stores_json_array_order_kept(
+        self, async_session: AsyncSession
+    ):
+        repo = DndDatasetsRepository(async_session)
+        await repo.save(["srd52", "srd51", "my-pack"])
+        raw = await GameSettingsRepository(async_session).get(DND_DATASETS_KEY)
+        assert raw == '["srd52", "srd51", "my-pack"]'
+        assert await repo.load() == ["srd52", "srd51", "my-pack"]
+
+    async def test_save_empty_list_roundtrips(self, async_session: AsyncSession):
+        repo = DndDatasetsRepository(async_session)
+        await repo.save([])
+        assert await repo.load() == []
+
+    @pytest.mark.parametrize(
+        "raw, reason_needle",
+        [
+            ("не json", "not parseable JSON"),
+            ('{"a": 1}', "must be a JSON array, got dict"),
+            ('"srd51"', "must be a JSON array, got str"),
+            ("[1]", "entry 1 is not text"),
+            ('["ok", null]', "entry None is not text"),
+            ('[["nested"]]', "entry ['nested'] is not text"),
+        ],
+    )
+    async def test_corrupted_value_reads_empty_with_one_warning(
+        self, async_session: AsyncSession, caplog, raw, reason_needle
+    ):
+        await GameSettingsRepository(async_session).upsert(DND_DATASETS_KEY, raw)
+        with caplog.at_level(logging.WARNING):
+            assert await DndDatasetsRepository(async_session).load() == []
+        warnings = [r for r in caplog.records if DND_DATASETS_KEY in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+        assert reason_needle in warnings[0].getMessage()
+
+    async def test_corrupted_row_survives_until_explicit_write(
+        self, async_session: AsyncSession
+    ):
+        """Никакого фонового ремонта: чтение не трогает строку, первый явный
+        save перезаписывает её чистым списком (дисциплина preview_pins)."""
+        settings = GameSettingsRepository(async_session)
+        await settings.upsert(DND_DATASETS_KEY, "{битый")
+        repo = DndDatasetsRepository(async_session)
+        assert await repo.load() == []
+        assert await settings.get(DND_DATASETS_KEY) == "{битый"
+        await repo.save(["srd51"])
+        assert await settings.get(DND_DATASETS_KEY) == '["srd51"]'
+
+
+class TestDndGrimoiresRepository:
+    """Типизированная обёртка ключа ``dnd_grimoires`` (add-dnd-game-face,
+    task 4.2): тот же массив текстовых id и та же грамматика, что у
+    ``dnd_datasets`` — кодек один на оба ключа, а журнал называет каждый ключ
+    сам. Отсутствие ключа — «гримуары не подключены» без записи в журнал;
+    испорченное значение читается пустым списком с одной записью, строка
+    дожидается явной записи."""
+
+    async def test_absent_key_reads_empty_list_without_warning(
+        self, async_session: AsyncSession, caplog
+    ):
+        with caplog.at_level(logging.WARNING):
+            assert await DndGrimoiresRepository(async_session).load() == []
+        assert not caplog.records
+
+    async def test_save_stores_json_array_order_kept(
+        self, async_session: AsyncSession
+    ):
+        repo = DndGrimoiresRepository(async_session)
+        await repo.save(["tina-grimoire", "world-items"])
+        raw = await GameSettingsRepository(async_session).get(DND_GRIMOIRES_KEY)
+        assert raw == '["tina-grimoire", "world-items"]'
+        assert await repo.load() == ["tina-grimoire", "world-items"]
+
+    async def test_save_empty_list_roundtrips(self, async_session: AsyncSession):
+        repo = DndGrimoiresRepository(async_session)
+        await repo.save([])
+        assert await repo.load() == []
+
+    async def test_non_ascii_id_survives_unescaped(self, async_session: AsyncSession):
+        """Кириллический id (мастер назвал файл сам) пишется как текст, а не
+        \\u-последовательностью — тот же codec, что у списков наборов."""
+        repo = DndGrimoiresRepository(async_session)
+        await repo.save(["гримуар-тины"])
+        raw = await GameSettingsRepository(async_session).get(DND_GRIMOIRES_KEY)
+        assert raw == '["гримуар-тины"]'
+        assert await repo.load() == ["гримуар-тины"]
+
+    @pytest.mark.parametrize(
+        "raw, reason_needle",
+        [
+            ("не json", "not parseable JSON"),
+            ('{"a": 1}', "must be a JSON array, got dict"),
+            ("[1]", "entry 1 is not text"),
+            ('["ok", 2]', "entry 2 is not text"),
+        ],
+    )
+    async def test_corrupted_value_reads_empty_with_one_warning(
+        self, async_session: AsyncSession, caplog, raw, reason_needle
+    ):
+        await GameSettingsRepository(async_session).upsert(DND_GRIMOIRES_KEY, raw)
+        with caplog.at_level(logging.WARNING):
+            assert await DndGrimoiresRepository(async_session).load() == []
+        warnings = [r for r in caplog.records if DND_GRIMOIRES_KEY in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+        assert reason_needle in warnings[0].getMessage()
+        # соседний ключ со своей грамматикой не при чём: журнал называет этот
+        assert DND_DATASETS_KEY not in warnings[0].getMessage()
+
+    async def test_corrupted_row_survives_until_explicit_write(
+        self, async_session: AsyncSession
+    ):
+        settings = GameSettingsRepository(async_session)
+        await settings.upsert(DND_GRIMOIRES_KEY, "{битый")
+        repo = DndGrimoiresRepository(async_session)
+        assert await repo.load() == []
+        assert await settings.get(DND_GRIMOIRES_KEY) == "{битый"
+        await repo.save(["tina-grimoire"])
+        assert await settings.get(DND_GRIMOIRES_KEY) == '["tina-grimoire"]'
+
+
+class TestDndSearchShowReferenceRepository:
+    """add-dnd-game-face task 3.3: the reference-search toggle key — the
+    spec default «показывать» for the absent AND the damaged row alike, one
+    journal entry per damaged read, explicit write replaces any body."""
+
+    async def test_absent_key_reads_show_default(
+        self, async_session: AsyncSession
+    ):
+        assert await DndSearchShowReferenceRepository(async_session).load() is True
+
+    async def test_roundtrip_true_and_false(self, async_session: AsyncSession):
+        repo = DndSearchShowReferenceRepository(async_session)
+        settings = GameSettingsRepository(async_session)
+        await repo.save(False)
+        assert await settings.get(DND_SEARCH_SHOW_REFERENCE_KEY) == "false"
+        assert await repo.load() is False
+        await repo.save(True)
+        assert await settings.get(DND_SEARCH_SHOW_REFERENCE_KEY) == "true"
+        assert await repo.load() is True
+
+    @pytest.mark.parametrize(
+        ("raw", "reason_needle"),
+        [
+            ("{битый", "not parseable JSON"),
+            ('"true"', "must be a JSON boolean, got str"),
+            ("1", "must be a JSON boolean, got int"),
+            ("null", "must be a JSON boolean, got NoneType"),
+        ],
+    )
+    async def test_damaged_row_reads_show_with_one_warning(
+        self, async_session: AsyncSession, caplog, raw, reason_needle
+    ):
+        await GameSettingsRepository(async_session).upsert(
+            DND_SEARCH_SHOW_REFERENCE_KEY, raw
+        )
+        with caplog.at_level(logging.WARNING):
+            assert await DndSearchShowReferenceRepository(async_session).load() is True
+        warnings = [
+            r
+            for r in caplog.records
+            if DND_SEARCH_SHOW_REFERENCE_KEY in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert reason_needle in warnings[0].getMessage()
+
+    def test_absent_raw_decodes_silently_show(self, caplog):
+        """The pure codec half: ``None`` is the absent row — the default
+        answer, no journal noise (only damaged bodies earn the entry)."""
+        with caplog.at_level(logging.WARNING):
+            assert decode_dnd_search_show_reference(None) is True
+        assert not [
+            r for r in caplog.records if DND_SEARCH_SHOW_REFERENCE_KEY in r.getMessage()
+        ]
+
+    async def test_corrupted_row_survives_until_explicit_write(
+        self, async_session: AsyncSession
+    ):
+        """No background repair (the dnd_datasets discipline): reading a
+        damaged row answers the default but leaves the bytes untouched; the
+        first explicit save rewrites the row with a clean boolean."""
+        settings = GameSettingsRepository(async_session)
+        await settings.upsert(DND_SEARCH_SHOW_REFERENCE_KEY, "5")
+        repo = DndSearchShowReferenceRepository(async_session)
+        assert await repo.load() is True
+        assert await settings.get(DND_SEARCH_SHOW_REFERENCE_KEY) == "5"
+        await repo.save(False)
+        assert await settings.get(DND_SEARCH_SHOW_REFERENCE_KEY) == "false"

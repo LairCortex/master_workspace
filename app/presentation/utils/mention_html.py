@@ -45,16 +45,23 @@ def build_mention_html(text: str) -> str:
     return "".join(parts)
 
 
-def parse_mention_link(link: str) -> tuple[str, int] | None:
+def parse_mention_link(link: str) -> tuple[str, int | str] | None:
     """An activated href -> ``(type key, id)``, or ``None`` for any other link.
 
-    Strict on both halves: the type must be a registry key and the id an int —
-    a stale hand-written or truncated href navigates nowhere instead of
-    emitting a half-parsed selection (the same posture the registry keeps for
-    unknown type keys)."""
+    Strict on both halves: the type must be a registry key; a kernel key
+    keeps the numeric half numeric, a REGISTERED external key (add-dnd-game-
+    face design Д4) keeps its string/composite source id as text — the pair
+    ``dd_feat/srd51/Darkvision`` is one id, not a path to split further
+    (``partition`` cuts at the first slash, the tail rides whole). A link
+    whose type the registry does not know, or whose kernel half is not an
+    int, navigates nowhere instead of emitting a half-parsed selection (the
+    same posture the registry keeps for unknown type keys)."""
     if not link or not link.startswith(MENTION_LINK_SCHEME):
         return None
     type_key, _, raw_id = link[len(MENTION_LINK_SCHEME):].partition("/")
+    external = entity_registry.external_descriptor(type_key)
+    if external is not None:
+        return (type_key, raw_id) if raw_id else None
     if entity_registry.resolve(type_key) is None:
         return None
     try:

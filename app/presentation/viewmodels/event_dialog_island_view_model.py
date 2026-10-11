@@ -1,6 +1,7 @@
 """Synchronous state and wiring proxies for the event-dialog QML island."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from typing import Any, Callable
 
@@ -19,6 +20,7 @@ from app.domain.game_calendar import (
     current_calendar,
 )
 from app.domain.time_of_day import TimeOfDay
+from app.presentation.card_tab_groups import kernel_card_groups
 from app.presentation.entity_icons import icon_for
 from app.presentation.utils.date_utils import (
     format_duration_words,
@@ -28,6 +30,7 @@ from app.presentation.utils.date_utils import (
     worst_case_date_caption,
 )
 from app.presentation.utils.time_options import minute_options
+from app.presentation.viewmodels.card_tab_view_model import CardTabsMixin
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 
 #: Caption of the read-only elapsed line of the event dialog (NRI-0021
@@ -154,7 +157,11 @@ class RelatedSectionState(QObject):
 
 class MentionEditProxy(QObject):
     mention_search_requested = Signal(str)
-    mention_clicked = Signal(str, int)
+    # add-dnd-game-face (design Д4): mention ids are textual end to end —
+    # kernel digits arrive as the string of the same number, an external
+    # composite id («srd51/Darkvision») survives the relay untouched. The
+    # kernel converts back to int at the composition edge (main.py).
+    mention_clicked = Signal(str, str)
 
     def __init__(self, host: MentionFieldHost, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -379,7 +386,7 @@ class EntityGenerateProxy(AiStateHolder):
             self.batch_requested.emit()
 
 
-class EventDialogIslandViewModel(QObject):
+class EventDialogIslandViewModel(CardTabsMixin):
     stateChanged = Signal()
     #: Derived-surface fan-out (NRI-0021 task 4.4): re-raised when the
     #: read-only «С начала» line must be re-read (start edited or «now» moved).
@@ -393,9 +400,14 @@ class EventDialogIslandViewModel(QObject):
         owner=None,
         parent: QObject | None = None,
         now: tuple[GameCoord, bool] | None = None,
+        external_sources: Sequence[Any] = (),
     ) -> None:
         super().__init__(parent)
         self._owner = owner
+        # add-dnd-game-face (design Д1): carried verbatim to every mention
+        # host of this dialog (the dialog's constructor got it from the
+        # connector, the connector from the composition root).
+        self._external_sources: tuple[Any, ...] = tuple(external_sources)
         self._name = ""
         # Date bridges carry (GameCoord, era) pairs (piece C3a, designs D4/D6,
         # since task 5.2).  NRI-0021 task 6.1 (spec «Дата „сейчас“ — дефолт
@@ -441,8 +453,12 @@ class EventDialogIslandViewModel(QObject):
         self._saving = False
         self._types: list[Any] = []
         self._selected_type_index = 0
-        self.characteristicsHost = MentionFieldHost(self)
-        self.backstoryHost = MentionFieldHost(self)
+        self.characteristicsHost = MentionFieldHost(
+            self, external_sources=self._external_sources
+        )
+        self.backstoryHost = MentionFieldHost(
+            self, external_sources=self._external_sources
+        )
         self.characteristicsEdit = MentionEditProxy(self.characteristicsHost, self)
         self.backstoryEdit = MentionEditProxy(self.backstoryHost, self)
         self.characteristicsHost.storageChanged.connect(self.stateChanged)
@@ -476,6 +492,10 @@ class EventDialogIslandViewModel(QObject):
         self.characters = self.sections["characters"]
         self.items = self.sections["items"]
         self.locations = self.sections["locations"]
+        # add-dnd-game-face (task 7.1, design Д10): the dialog always carries
+        # the relations strip, so the kernel group is the full «Обзор · Тексты
+        # · Связи» trio; module tabs join later through set_external_groups.
+        self._init_card_tabs(kernel_card_groups(has_relations=True))
 
     characteristicsMentionHost = Property(
         QObject, lambda self: self.characteristicsHost, constant=True
@@ -833,7 +853,36 @@ class EventDialogIslandViewModel(QObject):
     @Slot()
     def requestSave(self) -> None:  # noqa: N802
         if self.valid:
+            self.clear_invalidated_field()
             self.saveRequested.emit()
+            return
+        # add-dnd-game-face task 7.1 (spec «Ошибка указывает дорогу»): a save
+        # refused over a field hidden in another tab opens that tab and marks
+        # the field. The order mirrors the validity rule above — name, then
+        # the chronological end, then the empty text pair. A refusal caused
+        # by the save lock or an in-flight save names no field (it is not a
+        # field problem).
+        offender = self._first_invalid_field()
+        if offender is not None:
+            self.reveal_field(offender)
+
+    def _first_invalid_field(self) -> str | None:
+        """The first field violating ``valid`` (None when the refusal comes
+        from the save lock or an in-flight save — the field gates hold)."""
+        if not self._name.strip():
+            return "name"
+        if not (
+            self._no_end
+            or era_key(self._end_date, self._end_bc)
+            >= era_key(self._start_date, self._start_bc)
+        ):
+            return "end_date"
+        if not (
+            self.characteristicsHost.storage.strip()
+            or self.backstoryHost.storage.strip()
+        ):
+            return "characteristics"
+        return None
 
     @Slot()
     def requestCancel(self) -> None:  # noqa: N802

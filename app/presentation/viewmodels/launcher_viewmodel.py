@@ -89,6 +89,9 @@ class LauncherViewModel(QObject):
                 "name": info["name"],
                 "modifiedLabel": info["modified"].strftime(MODIFIED_LABEL_FORMAT),
                 "path": info["path"],
+                # Task 2.7: the «D&D» badge on the row; a catalog entry
+                # without the key (older fakes) reads ordinary.
+                "dnd": bool(info.get("dnd", False)),
             }
             for info in infos
         ]
@@ -98,10 +101,13 @@ class LauncherViewModel(QObject):
         if shrunk or self._selected_index >= len(games):
             self.set_selected(-1)
 
-    def create(self, name: str) -> str:
+    def create(self, name: str, *, dnd: bool = False) -> str:
         """Create a game (name trimmed); ``ValueError``/``FileExistsError``
-        propagate without touching VM state. Returns the new game's path."""
-        path = game_manager.create_game(name.strip())
+        propagate without touching VM state. ``dnd`` (task 2.6) is the
+        launcher's system choice — forwarded verbatim to the catalog, which
+        seeds (or does not seed) the module flag. Returns the new game's
+        path."""
+        path = game_manager.create_game(name.strip(), dnd=dnd)
         self.refresh()
         return str(path)
 

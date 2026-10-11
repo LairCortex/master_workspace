@@ -1,0 +1,1267 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://longstoryshort.app/schema/v1/dataset-background.json",
+  "title": "DatasetBackground",
+  "$comment": "Схема описывает ФОРМУ датасета. Она НЕ проверяет правила, которые ловит datasetLint (проза у trait с params, pairId в никуда, невычислимый expr, битые ссылки classId/raceId/featId, дубли id). Валидный по схеме датасет всё ещё может молча ничего не делать — гоняйте линт.",
+  "definitions": {
+    "DatasetBackground": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "$ref": "#/definitions/DatasetLabel"
+        },
+        "grants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Grant"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "grants"
+      ],
+      "additionalProperties": false
+    },
+    "DatasetLabel": {
+      "type": "string",
+      "description": "Human-readable label. Single-language — локали вынесены в отдельные датасеты."
+    },
+    "Grant": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/AsiFixedGrant"
+        },
+        {
+          "$ref": "#/definitions/AsiFlexibleGrant"
+        },
+        {
+          "$ref": "#/definitions/AsiPoolGrant"
+        },
+        {
+          "$ref": "#/definitions/BonusGrant"
+        },
+        {
+          "$ref": "#/definitions/FeatGrant"
+        },
+        {
+          "$ref": "#/definitions/SkillFixedGrant"
+        },
+        {
+          "$ref": "#/definitions/SkillChoiceGrant"
+        },
+        {
+          "$ref": "#/definitions/ExpertiseChoiceGrant"
+        },
+        {
+          "$ref": "#/definitions/ToolFixedGrant"
+        },
+        {
+          "$ref": "#/definitions/ToolChoiceGrant"
+        },
+        {
+          "$ref": "#/definitions/LanguageFixedGrant"
+        },
+        {
+          "$ref": "#/definitions/LanguageChoiceGrant"
+        },
+        {
+          "$ref": "#/definitions/SpeedGrant"
+        },
+        {
+          "$ref": "#/definitions/SavingThrowGrant"
+        },
+        {
+          "$ref": "#/definitions/TraitGrant"
+        },
+        {
+          "$ref": "#/definitions/ArmorProfGrant"
+        },
+        {
+          "$ref": "#/definitions/WeaponProfGrant"
+        },
+        {
+          "$ref": "#/definitions/SpellcastingGrant"
+        },
+        {
+          "$ref": "#/definitions/HpDieGrant"
+        },
+        {
+          "$ref": "#/definitions/ResourceGrant"
+        },
+        {
+          "$ref": "#/definitions/EquipmentFixedGrant"
+        },
+        {
+          "$ref": "#/definitions/EquipmentChoiceGrant"
+        },
+        {
+          "$ref": "#/definitions/GoldGrant"
+        },
+        {
+          "$ref": "#/definitions/GoldDiceGrant"
+        },
+        {
+          "$ref": "#/definitions/PickOneGrant"
+        },
+        {
+          "$ref": "#/definitions/SizeGrant"
+        },
+        {
+          "$ref": "#/definitions/SpellFixedGrant"
+        },
+        {
+          "$ref": "#/definitions/SpellChoiceGrant"
+        }
+      ]
+    },
+    "AsiFixedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "asi-fixed"
+        },
+        "values": {
+          "type": "object",
+          "properties": {
+            "str": {
+              "type": "number"
+            },
+            "dex": {
+              "type": "number"
+            },
+            "con": {
+              "type": "number"
+            },
+            "int": {
+              "type": "number"
+            },
+            "wis": {
+              "type": "number"
+            },
+            "cha": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "type",
+        "values"
+      ],
+      "additionalProperties": false,
+      "description": "Fixed ability score increases: e.g. Hill Dwarf +2 CON +1 WIS (SRD 2014)"
+    },
+    "AsiFlexibleGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "asi-flexible"
+        },
+        "sets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "number"
+              },
+              "amount": {
+                "type": "number"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/StatKey"
+                }
+              }
+            },
+            "required": [
+              "count",
+              "amount"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "distinct": {
+          "type": "boolean",
+          "description": "If true (default), each set must target a different stat"
+        }
+      },
+      "required": [
+        "type",
+        "sets"
+      ],
+      "additionalProperties": false,
+      "description": "Flexible ASI: player assigns points freely. Each \"set\" is one allocation: { count: 1, amount: 2 } = one stat gets +2. Multiple sets can be combined: Tasha's variant human has [{ count: 1, amount: 2 }, { count: 1, amount: 1 }]. Optional `options` restricts which stats are eligible."
+    },
+    "StatKey": {
+      "type": "string",
+      "enum": [
+        "str",
+        "dex",
+        "con",
+        "int",
+        "wis",
+        "cha"
+      ],
+      "description": "The six D&D 5e ability scores, in canonical sheet order."
+    },
+    "AsiPoolGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "asi-pool"
+        },
+        "total": {
+          "type": "number",
+          "description": "Total points to distribute"
+        },
+        "max": {
+          "type": "number",
+          "description": "Max points per single stat"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StatKey"
+          },
+          "description": "Eligible stats for distribution"
+        }
+      },
+      "required": [
+        "type",
+        "total",
+        "max",
+        "options"
+      ],
+      "additionalProperties": false,
+      "description": "Pool-based ASI: distribute `total` points among `options`, max `max` per stat. Used by 2024 backgrounds: 3 points, cap 2, across 3 eligible ability scores. Valid distributions for total=3, max=2: [2,1,0] or [1,1,1] across options."
+    },
+    "BonusGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "bonus"
+        },
+        "target": {
+          "$ref": "#/definitions/BonusTarget"
+        },
+        "mode": {
+          "$ref": "#/definitions/BonusMode",
+          "description": "Stack operation; default 'add' (a plain modifier)."
+        },
+        "value": {
+          "type": "number",
+          "description": "Exactly one of value | expr."
+        },
+        "expr": {
+          "type": "string",
+          "description": "Formula string, e.g. \"[CHA]\", \"[LVL]*2\", \"[PROF]\"."
+        },
+        "label": {
+          "$ref": "#/definitions/DatasetLabel"
+        }
+      },
+      "required": [
+        "type",
+        "target",
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "Generic numeric effect on any bonus target. The linchpin that lets classes, subclasses and feats declare modifiers/set-base/locks without bespoke grant types. Projected 1:1 into a `data.bonuses[]` entry by the applier registry. See docs/plans/wizard-bonuses-architecture.md §2.2."
+    },
+    "BonusTarget": {
+      "description": "Куда бьёт числовой бонус. Перечислены только ЖИВЫЕ таргеты — те, что лист действительно читает.",
+      "$comment": "Injected from bonusTargets.ts. Declared but unread families are omitted on purpose (a bonus there is a silent no-op): stat.modifier, stat.check, hp.temp, vitality.darkvision, speed.other, attack.kind, damage.weapon, damage.spell, proficiency, carry.",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "ac",
+            "hp.max",
+            "initiative",
+            "pactSlot.1",
+            "pactSlot.2",
+            "pactSlot.3",
+            "pactSlot.4",
+            "pactSlot.5",
+            "pactSlot.6",
+            "pactSlot.7",
+            "pactSlot.8",
+            "pactSlot.9",
+            "passive.insight",
+            "passive.investigation",
+            "passive.perception",
+            "prof.armor-heavy",
+            "prof.armor-label",
+            "prof.armor-light",
+            "prof.armor-medium",
+            "prof.save.cha",
+            "prof.save.con",
+            "prof.save.cor",
+            "prof.save.dex",
+            "prof.save.int",
+            "prof.save.str",
+            "prof.save.wis",
+            "prof.skill.acrobatics",
+            "prof.skill.animal handling",
+            "prof.skill.arcana",
+            "prof.skill.athletics",
+            "prof.skill.deception",
+            "prof.skill.history",
+            "prof.skill.insight",
+            "prof.skill.intimidation",
+            "prof.skill.investigation",
+            "prof.skill.medicine",
+            "prof.skill.nature",
+            "prof.skill.perception",
+            "prof.skill.performance",
+            "prof.skill.persuasion",
+            "prof.skill.religion",
+            "prof.skill.riddle",
+            "prof.skill.shadow-lore",
+            "prof.skill.sleight of hand",
+            "prof.skill.stealth",
+            "prof.skill.survival",
+            "prof.weapon-martial",
+            "prof.weapon-other",
+            "prof.weapon-simple",
+            "save.cha",
+            "save.con",
+            "save.cor",
+            "save.dex",
+            "save.int",
+            "save.str",
+            "save.wis",
+            "shield",
+            "skill.acrobatics",
+            "skill.animal handling",
+            "skill.arcana",
+            "skill.athletics",
+            "skill.deception",
+            "skill.history",
+            "skill.insight",
+            "skill.intimidation",
+            "skill.investigation",
+            "skill.medicine",
+            "skill.nature",
+            "skill.perception",
+            "skill.performance",
+            "skill.persuasion",
+            "skill.religion",
+            "skill.riddle",
+            "skill.shadow-lore",
+            "skill.sleight of hand",
+            "skill.stealth",
+            "skill.survival",
+            "speed.walk",
+            "spellAttack",
+            "spellDC",
+            "spellSlot.1",
+            "spellSlot.2",
+            "spellSlot.3",
+            "spellSlot.4",
+            "spellSlot.5",
+            "spellSlot.6",
+            "spellSlot.7",
+            "spellSlot.8",
+            "spellSlot.9",
+            "stat.cha.score",
+            "stat.con.score",
+            "stat.dex.score",
+            "stat.int.score",
+            "stat.sha.score",
+            "stat.str.score",
+            "stat.wis.score"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^weapon\\..+\\.attack$",
+          "description": "Открытое семейство «weapon.attack» — ключ приходит из данных персонажа."
+        },
+        {
+          "type": "string",
+          "pattern": "^weapon\\..+\\.damage$",
+          "description": "Открытое семейство «weapon.damage» — ключ приходит из данных персонажа."
+        }
+      ]
+    },
+    "BonusMode": {
+      "type": "string",
+      "enum": [
+        "add",
+        "set",
+        "upgrade",
+        "downgrade",
+        "multiply"
+      ],
+      "description": "Layer operation. Replaces the legacy `kind` field."
+    },
+    "FeatGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "feat"
+        },
+        "featId": {
+          "type": "string",
+          "description": "Feat id — resolved against merged dataset feats"
+        },
+        "category": {
+          "$ref": "#/definitions/FeatCategory"
+        }
+      },
+      "required": [
+        "type",
+        "featId"
+      ],
+      "additionalProperties": false,
+      "description": "Reference to a feat entity from any active dataset's `feats` collection. `category` is a hint for UI filtering (2024 backgrounds grant 'origin' feats, ASI choices grant 'general', fighting styles are their own thing, etc.)."
+    },
+    "FeatCategory": {
+      "type": "string",
+      "enum": [
+        "origin",
+        "general",
+        "fighting-style",
+        "epic-boon",
+        "invocation"
+      ]
+    },
+    "SkillFixedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "skill-fixed"
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "acrobatics",
+              "animal handling",
+              "arcana",
+              "athletics",
+              "deception",
+              "history",
+              "insight",
+              "intimidation",
+              "investigation",
+              "medicine",
+              "nature",
+              "perception",
+              "performance",
+              "persuasion",
+              "religion",
+              "sleight of hand",
+              "stealth",
+              "survival",
+              "riddle",
+              "shadow-lore"
+            ]
+          }
+        }
+      },
+      "required": [
+        "type",
+        "skills"
+      ],
+      "additionalProperties": false
+    },
+    "SkillChoiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "skill-choice"
+        },
+        "count": {
+          "type": "number"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "acrobatics",
+                  "animal handling",
+                  "arcana",
+                  "athletics",
+                  "deception",
+                  "history",
+                  "insight",
+                  "intimidation",
+                  "investigation",
+                  "medicine",
+                  "nature",
+                  "perception",
+                  "performance",
+                  "persuasion",
+                  "religion",
+                  "sleight of hand",
+                  "stealth",
+                  "survival",
+                  "riddle",
+                  "shadow-lore"
+                ]
+              }
+            },
+            {
+              "type": "string",
+              "const": "any"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "count",
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "ExpertiseChoiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "expertise-choice"
+        },
+        "count": {
+          "type": "number"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "acrobatics",
+                  "animal handling",
+                  "arcana",
+                  "athletics",
+                  "deception",
+                  "history",
+                  "insight",
+                  "intimidation",
+                  "investigation",
+                  "medicine",
+                  "nature",
+                  "perception",
+                  "performance",
+                  "persuasion",
+                  "religion",
+                  "sleight of hand",
+                  "stealth",
+                  "survival",
+                  "riddle",
+                  "shadow-lore"
+                ]
+              }
+            },
+            {
+              "type": "string",
+              "const": "proficient"
+            }
+          ],
+          "description": "Which skills the slots may be spent on. `'proficient'` (the default) is the SRD rule — any skill the character is proficient in, resolved across ALL sources at pick time. An explicit list narrows it further; proficiency is still required on top (expertise without proficiency isn't a thing)."
+        }
+      },
+      "required": [
+        "type",
+        "count"
+      ],
+      "additionalProperties": false,
+      "description": "«Экспертиза» — the proficiency ordinal raised to 2, doubling the bonus for a skill the character is ALREADY proficient in (Rogue lvl 1, Bard lvl 3, Cleric of Knowledge lvl 1).\n\nThere is deliberately no `expertise-fixed` twin: a named expertise is already expressible as `{ type: 'bonus', target: 'prof.skill.<key>', mode: 'upgrade', value: 2 }` — the same layer this grant's picks project into. Only the CHOICE needs a type of its own, because a picker has to know how many slots to offer."
+    },
+    "ToolFixedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "tool-fixed"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "tools"
+      ],
+      "additionalProperties": false
+    },
+    "ToolChoiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "tool-choice"
+        },
+        "count": {
+          "type": "number"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "count",
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "LanguageFixedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "language-fixed"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "languages"
+      ],
+      "additionalProperties": false
+    },
+    "LanguageChoiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "language-choice"
+        },
+        "count": {
+          "type": "number"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "count"
+      ],
+      "additionalProperties": false
+    },
+    "SpeedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "speed"
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "SavingThrowGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "saving-throw"
+        },
+        "stats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/StatKey"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "stats"
+      ],
+      "additionalProperties": false
+    },
+    "TraitGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "trait"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Numeric parameters for traits that have mechanical values, e.g. darkvision range"
+        },
+        "description": {
+          "type": "string",
+          "description": "Body text for the trait's Spoiler block. SRD traits take their body from the curated `TRAIT_DESCRIPTIONS` map instead (keyed by `id`) — that map wins when both exist, since it's proofread against the source."
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "ArmorProfGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "armor-prof"
+        },
+        "armors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ArmorProfKey"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "armors"
+      ],
+      "additionalProperties": false
+    },
+    "ArmorProfKey": {
+      "type": "string",
+      "enum": [
+        "armor-light",
+        "armor-medium",
+        "armor-heavy",
+        "armor-label"
+      ]
+    },
+    "WeaponProfGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "weapon-prof"
+        },
+        "weapons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/WeaponProfKey"
+          },
+          "description": "Checkbox keys — direct mapping to data.prof['weapon-*']"
+        },
+        "specific": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Named weapon proficiencies that go into the free-text field"
+        }
+      },
+      "required": [
+        "type",
+        "weapons"
+      ],
+      "additionalProperties": false
+    },
+    "WeaponProfKey": {
+      "type": "string",
+      "enum": [
+        "weapon-simple",
+        "weapon-martial",
+        "weapon-other"
+      ]
+    },
+    "SpellcastingGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "spellcasting"
+        },
+        "ability": {
+          "type": "string",
+          "enum": [
+            "int",
+            "wis",
+            "cha"
+          ]
+        },
+        "casterType": {
+          "type": "string",
+          "enum": [
+            "memory",
+            "list",
+            "book"
+          ]
+        },
+        "progression": {
+          "$ref": "#/definitions/CasterProgression"
+        },
+        "slotsByLevel": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "Собственная таблица ячеек, когда ни одно из четырёх семейств не подходит. Индекс = уровень персонажа (1–20), нулевой элемент — заглушка; строка — девять чисел по кругам 1…9. Строка короче девяти дополняется нулями, уровень выше последней строки значит «ячеек нет», а не «как на последней».\n\nПриоритетнее `progression` в ЧИСЛАХ, но не отменяет его: тип продолжает говорить, в какой пул едут ячейки (`pact` — свой пул на листе) и как класс складывается в мультиклассе. Без типа таблица едет в обычный пул.\n\nЗаводить это поле для класса, чья таблица совпадает с одной из встроенных, не надо: скопированные 20×9 чисел — ровно то место, где они разойдутся с правилами при следующей правке."
+        },
+        "spellList": {
+          "type": "string",
+          "description": "Which class's spell list this caster draws from, when different from its own class id — e.g. an Eldritch Knight-shaped subclass: `classId: 'fighter'` but `spellList: 'wizard'`. Defaults to the caster's own class id when absent. See docs/plans/spellcasting-model.md §5 — replaces the old hardcoded `+'wizard'` fighter/rogue special case (removed in Фаза 0) with an honest per-source declaration."
+        },
+        "cantripsByLevel": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Заговоры: своя таблица по уровням у каждого класса. Индекс = уровень персонажа, нулевой элемент — заглушка."
+        },
+        "knownByLevel": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "«Известные» (бард, чародей, колдун, следопыт 2014) и вся 2024, где формула «мод + уровень» отменена в пользу явной колонки. Индекс = уровень персонажа, нулевой элемент — заглушка. Приоритетнее `preparedFormula`: если класс объявил оба, таблица — более конкретное утверждение."
+        },
+        "preparedFormula": {
+          "type": "string",
+          "enum": [
+            "mod+level",
+            "mod+half-level",
+            "mod+half-level-up"
+          ],
+          "description": "Подготовленные там, где 2014 считает их формулой (жрец, друид, паладин, волшебник): модификатор заклинательной характеристики плюс уровень класса, минимум одно. Выводится из листа, таблиц не требует.\n\nПоловина уровня округляется ВНИЗ (`mod+half-level`, паладин и следопыт) или ВВЕРХ (`mod+half-level-up`, изобретатель) — это два разных правила, и расходятся они уже на 1 уровне."
+        },
+        "bookAtFirst": {
+          "type": "number",
+          "description": "Книга волшебника: сколько заклинаний в ней на 1-м уровне и сколько прибавляется за каждый следующий. Отдельный лимит от подготовленных — это два разных счёта на одном персонаже, и показать надо оба."
+        },
+        "bookPerLevel": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "ability",
+        "casterType"
+      ],
+      "additionalProperties": false,
+      "description": "How the entity casts. `casterType` mirrors the sheet's spell-management model (`memory` = knows spells, `list` = prepares from the full list, `book` = keeps a spellbook) — the same vocabulary the sheet renders tabs from, see Spells.tsx. `progression` is the slot/circle table the class advances on; it drives which spell circles the wizard offers at a given level (see utils/spellProgression.ts)."
+    },
+    "CasterProgression": {
+      "type": "string",
+      "enum": [
+        "full",
+        "half",
+        "third",
+        "pact"
+      ],
+      "description": "Slot-table families: full (bard/cleric/…), half (paladin/ranger), third (Arcane Trickster/Eldritch Knight), pact (warlock — Pact Magic + Arcanum)."
+    },
+    "HpDieGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "hp-die"
+        },
+        "die": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "die"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "resource"
+        },
+        "id": {
+          "type": "string",
+          "description": "Stable id within the source; the node/record id is `${source}:${id}`. Convention: the id of the `trait` that grants the pool (`bardic-inspiration`, `wild-shape`), so the counter and its Spoiler block are visibly one feature."
+        },
+        "pairId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Which described feature this counter belongs to — the `trait.id` whose Spoiler block it is placed next to on the sheet. Defaults to `id`, which is why the convention above exists; set it explicitly when the two can't match:  - the resource id is frozen for compatibility (`sorcery-points` ↔ trait    `font-of-magic`);  - one feature hands out several counters (`mystic-arcanum-6..9` ↔ trait    `mystic-arcanum`). `null` says there is deliberately no described feature to sit next to (the goliath's Giant Ancestry pool — its benefits are described on the lineages, under their own ids). A pairId that matches nothing is not an error either, just lonely: the counter lands with the source's other counters, and `lintDataset` warns (rule `resource-pair`)."
+        },
+        "name": {
+          "$ref": "#/definitions/DatasetLabel"
+        },
+        "max": {
+          "type": "number",
+          "description": "Exactly one of max | maxExpr."
+        },
+        "maxExpr": {
+          "type": "string",
+          "description": "Formula over the sheet's expression vars, e.g. `[LVL]`, `[CHA]`."
+        },
+        "isShortRest": {
+          "type": "boolean",
+          "description": "Which rest refills the pool."
+        },
+        "isLongRest": {
+          "type": "boolean"
+        },
+        "shortRestRegain": {
+          "type": "string",
+          "description": "How much a SHORT rest gives back, as a formula over the same vars (`1`, `[PROF]`, `ceil([LVL]/2)`). Absent ⇒ a short rest refills the pool completely. Only meaningful together with `isShortRest`.\n\nThis exists for the SRD 5.2 pattern «regain one expended use on a Short Rest, all of them on a Long Rest» (Second Wind, Channel Divinity, Wild Shape). Without it those pools had to lie in one direction or the other. A formula rather than a number because the same shape shows up scaled — a partial refill worth half the character's level, say."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free-text note for the counter's tooltip (the «i» on the widget). For the rule the counter itself can't express — a 7-day cooldown, \"one per turn\", what a spent point buys."
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "name"
+      ],
+      "additionalProperties": false,
+      "description": "A spendable class resource — ki points, rage uses, sorcery points (audit A6). Projected into a source-tagged Resource node plus its `data.resources` record, which the sheet already renders, restores on rest and ships to Vortex.\n\nExactly one of `max` | `maxExpr`, mirroring `BonusGrant`:  - `maxExpr` for pools that track a formula — ki is `[LVL]`, and staying an    expression is what keeps it retroactive on level-up;  - `max` for the irregular tables (rage 2/3/4/5/6). Those need no table syntax:    `leveledGrants` is already a step function, so a bucket per step re-grants    the same `id` with a bigger `max`."
+    },
+    "EquipmentFixedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "equipment-fixed"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "items"
+      ],
+      "additionalProperties": false,
+      "description": "Fixed equipment items, no choice involved"
+    },
+    "EquipmentChoiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "equipment-choice"
+        },
+        "id": {
+          "type": "string",
+          "description": "Stable key for the player's pick; falls back to the option contents."
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "type",
+        "options"
+      ],
+      "additionalProperties": false,
+      "description": "Equipment choice: player picks one \"bundle\" from options. Each option is an array of item strings. Example: [['Longsword', 'Shield'], ['Two shortswords']]\n\nThe pick is persisted in `choices.equipment.equipmentPicks`, keyed by `equipmentChoiceKey(grant)` — `id` when the author gave one, otherwise the joined option contents. A content key means a class holding four unnamed choices (the SRD shape) needs no ids, and an edit to a choice's contents invalidates the stale pick instead of silently re-pointing it at a different bundle. Authors who intend a choice to keep its pick across content edits give it an `id`. See utils/equipmentChoices.ts."
+    },
+    "GoldGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "gold"
+        },
+        "amount": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "amount"
+      ],
+      "additionalProperties": false
+    },
+    "GoldDiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "gold-dice"
+        },
+        "dice": {
+          "type": "string",
+          "description": "e.g. \"5d4*10\""
+        }
+      },
+      "required": [
+        "type",
+        "dice"
+      ],
+      "additionalProperties": false
+    },
+    "PickOneGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "pick-one"
+        },
+        "id": {
+          "type": "string",
+          "description": "Стабильный id развилки (для именованных подвыборок)"
+        },
+        "label": {
+          "$ref": "#/definitions/DatasetLabel",
+          "description": "Заголовок промпта; для свободной развилки обычно не нужен"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Стабильный id опции — обязателен, если задан id у грана"
+              },
+              "label": {
+                "$ref": "#/definitions/DatasetLabel"
+              },
+              "grants": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/Grant"
+                }
+              }
+            },
+            "required": [
+              "label",
+              "grants"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "type",
+        "options"
+      ],
+      "additionalProperties": false,
+      "description": "Mutual-exclusion choice between packages of grants. Player picks exactly one option; all its grants are applied.\n\nTwo shapes in one grant:  - Без `id` и без `options[].id` — свободная развилка вроде «снаряжение ИЛИ    золото». UI отрисует её как toggle/табы.  - С `id` и стабильными `options[].id` — именованная подвыборка    (Драконье происхождение, Эльфийская линия, Дьявольское наследие). Такой    выбор можно сослаться на конкретную опцию по id и отрисовать как список    вариантов внутри сущности."
+    },
+    "SizeGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "size"
+        },
+        "value": {
+          "$ref": "#/definitions/SizeKey"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "additionalProperties": false,
+      "description": "The species/lineage's size category. A scalar, never a \"list = choice\" shape (unlike other grants): a size CHOICE (Custom Lineage, Svirfneblin-style «pick your size») is expressed by putting this grant inside a NAMED `pick-one`'s `options[].grants`, not by a variant field here. Deliberately outside the numeric bonus channel (`size` is categorical, `BonusGrant.value` is strictly `number`) — written straight to `data.info.size.value` by `StepOrigin`'s write-once appliers, same idiom as `hp-die`. See docs/plans/wizard-race-size.md §4."
+    },
+    "SizeKey": {
+      "type": "string",
+      "enum": [
+        "small",
+        "medium",
+        "large"
+      ]
+    },
+    "SpellFixedGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "spell-fixed"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "ability": {
+          "$ref": "#/definitions/StatKey",
+          "description": "Чем кастуется. Уезжает в `spellsInfo.abilities` на персонаже — в модель заклинания это положить нельзя, коллекция дедуплицируется по хэшу между игроками (§5). Отсутствует ⇒ наследует листовую."
+        },
+        "uses": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number"
+            },
+            "countExpr": {
+              "type": "string",
+              "description": "Формула над теми же переменными листа, что `ResourceGrant.maxExpr`. Не гипотетическая гибкость: SRD 5.2 сажает «Разговор с животными» лесного гнома на бонус владения, то есть 2 на 1-м уровне и 6 на 17-м, и плоским числом это не выражается вовсе."
+            },
+            "per": {
+              "type": "string",
+              "enum": [
+                "long-rest",
+                "short-rest"
+              ]
+            },
+            "shortRestRegain": {
+              "type": "string",
+              "description": "Сколько возвращает КОРОТКИЙ отдых, формулой над теми же переменными (`1`, `[PROF]`). Отсутствует ⇒ короткий отдых восстанавливает пул целиком. Осмысленно только при `per: 'short-rest'`.\n\nТо же поле и та же семантика, что `ResourceGrant.shortRestRegain`, — и это не совпадение: счётчик заклинания И ЕСТЬ Ресурс (§3), просто заведённый другим каналом. Без него шаблон «одно применение на коротком, все на длинном» приходилось врать в одну из сторон."
+            }
+          },
+          "required": [
+            "per"
+          ],
+          "additionalProperties": false,
+          "description": "Свой счётчик применений: «раз в длинный отдых, без ячейки». Заводится тем же каналом, что и грант `resource`, и привязывается к заклинанию через `spellsInfo.charges` — новой сущности не появляется (§3). Отсутствует ⇒ платить можно только ячейками.\n\nРовно одно из `count` | `countExpr`, как `max` | `maxExpr` у гранта `resource`: это тот же счётчик, и разойтись в форме им незачем."
+        },
+        "withSlots": {
+          "type": "boolean",
+          "description": "Можно ли сверх счётчика тратить ячейки. 2024 — да (стандартный гибрид), 2014 — почти всегда нет. Отсутствует ⇒ **да**: это поведение по умолчанию у обычного заклинания на листе, и грант должен запрещать явно, а не разрешать явно."
+        },
+        "alwaysPrepared": {
+          "type": "boolean",
+          "const": true,
+          "description": "Вне лимита подготовленных.\n\nТип литеральный намеренно. Бакет `granted` **уже** значит «всегда подготовлено» (spellcasting-model.md §6), поэтому `true` только называет вслух то, что и так происходит, а `false` сегодня не выразим: чтобы выданное заклинание ело лимит, запись в бакете должна нести флаг, то есть форма `GrantedSpell` на бэке перестаёт быть `{id, source}`. Реального случая под это нет — доменные, клятвенные и видовые заклинания всегда вне лимита, — и схема не меняется под гипотезу. `false` ловит линт."
+        }
+      },
+      "required": [
+        "type",
+        "slug"
+      ],
+      "additionalProperties": false,
+      "description": "A named, always-prepared spell — domain spells (cleric), oath spells (paladin), lineage spell traits, «Магическое подмастерье»-style feats. See docs/plans/spellcasting-model.md §6. Referenced by `slug` (Фаза 1, `SpellsModel.slug`), not a hardcoded per-environment id — resolved at reconcile time (`spellFixedGrants.ts` gathers these, `spellGrantResolver.ts` resolves the slug against `GET /spells/by-slug`, SRD-only).\n\nProjects into the `granted` bucket (`character.model.ts` `Spells.granted`) — a separate bucket from `prepared`/`book` on purpose: it doesn't eat the player's prepared-spells budget and carries provenance, so the reconciler can retract it when its source goes away (switching subclass), which a plain `prepared` entry couldn't survive without misrepresenting it as the player's own choice (§2.2 invariant)."
+    },
+    "SpellChoiceGrant": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "spell-choice"
+        },
+        "count": {
+          "type": "number",
+          "description": "Сколько заклинаний взять."
+        },
+        "circle": {
+          "type": "number",
+          "description": "Какого круга; 0 — заговоры."
+        },
+        "spellList": {
+          "type": "string",
+          "description": "Из чьего списка. Тот же словарь id, что `spellList` у `spellcasting` (spellcasting-model.md §5) — id класса, а не собственный словарь: список заклинаний класса уже есть, и второй способ его назвать разошёлся бы с первым на первом же UGC-классе."
+        },
+        "ability": {
+          "$ref": "#/definitions/StatKey",
+          "description": "Отсутствует ⇒ наследует листовую характеристику."
+        },
+        "uses": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "number"
+            },
+            "countExpr": {
+              "type": "string"
+            },
+            "per": {
+              "type": "string",
+              "enum": [
+                "long-rest",
+                "short-rest"
+              ]
+            },
+            "shortRestRegain": {
+              "type": "string",
+              "description": "См. `SpellFixedGrant.uses.shortRestRegain`."
+            }
+          },
+          "required": [
+            "per"
+          ],
+          "additionalProperties": false,
+          "description": "Отсутствует ⇒ платить можно только ячейками."
+        },
+        "withSlots": {
+          "type": "boolean",
+          "description": "Отсутствует ⇒ **да**, как у обычного заклинания на листе."
+        },
+        "alwaysPrepared": {
+          "type": "boolean",
+          "const": true,
+          "description": "Только `true` — см. `SpellFixedGrant.alwaysPrepared`."
+        }
+      },
+      "required": [
+        "type",
+        "count",
+        "circle",
+        "spellList"
+      ],
+      "additionalProperties": false,
+      "description": "N заклинаний заданного круга, которые игрок выбирает сам из чужого списка — Магический подмастерье, и всё, что устроено как он. См. docs/plans/spell-casting-modes.md §8.\n\n**`spell-fixed` это не покрывает по устройству.** Тот — именная ссылка на конкретное заклинание; здесь источник называет не заклинание, а **множество, из которого игрок берёт N штук**. Поля выдачи при этом те же самые (§7): что с выданным заклинанием делать на листе, от способа выдачи не зависит.\n\nПриземляется в тот же бакет `granted`, что и `spell-fixed`, с тем же провенансом: смена предыстории уносит и черту, и её выбор. Сам выбор игрока живёт в `choices[<qualifiedId источника>].spells` — канал, который заклинания уже возит для классовых пиков."
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "#/definitions/DatasetBackground"
+    }
+  ]
+}

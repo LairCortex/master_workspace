@@ -1,6 +1,7 @@
 """Event creation/edit dialog: QML island in the stable QDialog facade."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable
 
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
+from app.presentation.card_tab_host import CardTabHost
 from app.presentation.dialog_results import (
     EventCreateResult,
     EventDialogResult,
@@ -228,7 +230,10 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
 
     saved = Signal(object)  # EventCreateResult | EventEditResult (dialog_results)
     create_related_requested = Signal(str, str)
-    mention_clicked = Signal(str, int)
+    # (type key, stored id as text) — str keeps an external composite id
+    # intact (add-dnd-game-face design Д4; kernel ids arrive as the string of
+    # the number and the composition edge converts them back to int)
+    mention_clicked = Signal(str, str)
     #: NRI-0024 (task 2.5, design Д7): child-sheet show channel — the related
     #: picker is built here (its list is this dialog's section state) and the
     #: connector shows it through the one ``open_sheet`` path, so it stacks
@@ -241,6 +246,8 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         parent: QWidget | None = None,
         theme=None,
         now_vm=None,
+        external_sources: Sequence[Any] = (),
+        wiring: Any = None,
     ) -> None:
         super().__init__(parent)
         self._vm = event_dialog_vm
@@ -261,6 +268,9 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             # the new-dialog date bounds default to the game's «now»; the edit
             # flow's populate() overwrites them with the saved dates.
             now=(now_vm.coord, now_vm.is_bc) if now_vm is not None else None,
+            # add-dnd-game-face (design Д1): the composition's external sources
+            # reach every mention host of this dialog.
+            external_sources=external_sources,
         )
         # NRI-0021 task 4.4 (design Д2/Д5): the read-only «С начала» line
         # follows the game's «now» while this dialog is open — same carrier
@@ -293,6 +303,20 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.vm.saveRequested.connect(self._on_save)
         self.vm.cancelRequested.connect(self._on_cancel_clicked)
         self.vm.datePopupRequested.connect(self._open_date_popup)
+
+        # add-dnd-game-face task 7.2 (design Д10): the external sources' extra
+        # tabs ride the grouping strip's tail. The host collects them at
+        # populate() (a fresh card has no record yet, so it shows the kernel
+        # groups alone), overlays the module widget on the body slot the QML
+        # page publishes, and releases every tab's subscriptions when this
+        # island releases (the norm «a released island answers NOTHING»).
+        self._card_tabs = CardTabHost(
+            self,
+            self.vm,
+            external_sources,
+            wiring,
+            target_key=EntityType.EVENT.value,
+        )
 
         # NRI-0014 task 4.2 (E1): the scene only exists from here, so replay
         # the window title the constructor set before the island loaded. The
@@ -410,6 +434,11 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             self.vm.backstoryHost.storage = getattr(description, "backstory", "") or ""
         for attr in _REL_ATTRS:
             self._sections[attr].set_entities(list(getattr(event, attr, []) or []))
+        # Task 7.2: the record is known from here — the external sources may
+        # now declare their extra tabs for exactly this event.
+        self._card_tabs.refresh(
+            str(self._event_id) if self._event_id is not None else None
+        )
 
     def set_event_types(self, types, current_type_id: int | None = None) -> None:
         if current_type_id is not None:
@@ -479,6 +508,17 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
 
     def get_mention_edits(self):
         return [self.vm.characteristicsEdit, self.vm.backstoryEdit]
+
+    def external_tab_saves(self) -> tuple:
+        """The module tabs' staged writes (add-dnd-game-face task 11.1,
+        design Д10): the connector awaits these coroutines inside its locked
+        save task, after the kernel event fields were written and before the
+        timeline reloads. Which tabs stage and how is the host's bookkeeping
+        (CardTabHost.save_hooks); the dialog only forwards — the connector
+        never reaches into the host's private dict. A refusal raised by a tab
+        keeps the card open with its own Russian text (the connector reports
+        it and lifts the saving state)."""
+        return self._card_tabs.save_hooks()
 
     # The AI proxy surface (get_ai_buttons/get_entity_button/set_save_locked/
     # set_close_guard/_is_generation_active) is provided by
@@ -587,6 +627,10 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.vm.stateChanged.emit()
 
     def _release_island(self) -> None:
+        # add-dnd-game-face task 7.2: the module tabs leave first — their own
+        # subscriptions retire through release_tab while the island still
+        # answers, then the island teardown proceeds (no listener survives).
+        self._card_tabs.release()
         # NRI-0021 task 4.4: the «now» subscription leaves with the dialog
         # (DEFECT-1 posture — no listener survives its window).
         if self._now_vm is not None:

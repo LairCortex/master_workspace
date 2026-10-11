@@ -81,11 +81,13 @@ class TestRoleContract:
         the ladder's kind/day/count roles retired with the ladder; ``detail``
         is the row's description line) plus the NRI-0023 tree scalars the
         delegate paints (kind/depth/hasChildren/expanded plus the task 11.1
-        isLastSibling closing the branch)."""
+        isLastSibling closing the branch) plus the add-dnd-game-face task
+        11.2 ``marks`` — the delivered data tokens the delegate interprets."""
         names = set(TimelineRowModel().roleNames().values())
         assert names == {
             b"eventId", b"caption", b"detail", b"tokenKey", b"flags",
             b"kind", b"depth", b"hasChildren", b"expanded", b"isLastSibling",
+            b"marks",
         }
 
 
@@ -175,6 +177,7 @@ class TestGetConvenience:
         assert set(row) == {
             "eventId", "caption", "detail", "tokenKey", "flags",
             "kind", "depth", "hasChildren", "expanded", "isLastSibling",
+            "marks",
         }
         assert row["eventId"] == 7
         assert row["caption"] == "01 Март 1200 — ∞ · Слух"
@@ -185,6 +188,9 @@ class TestGetConvenience:
             "event", 0, False, False
         )
         assert row["isLastSibling"] is False
+        # add-dnd-game-face task 11.2: a mark-free world delivers the empty
+        # list — the zero-token row is byte-identical to the old one.
+        assert row["marks"] == []
 
     def test_get_misses_answer_empty(self):
         model = _model_of(build_rows([
@@ -305,6 +311,7 @@ class TestRebuildAndEmpty:
         assert set(type(entry).__slots__) == {
             "event_id", "caption", "detail", "token_key", "flags",
             "kind", "depth", "has_children", "expanded", "is_last_sibling",
+            "marks",
         }
         assert entry.detail == "лес растёт"
         assert not hasattr(entry, "__dict__")
@@ -465,3 +472,89 @@ class TestTreeDelivery:
         # no chevron on a stub whatever this slot says).
         assert _field(model, 0, model.EXPANDED_ROLE) is False
         assert _field(model, 1, model.EXPANDED_ROLE) is False
+
+
+class TestMarksDelivery:
+    """add-dnd-game-face task 11.2 (spec event-timeline «Пометки строк от
+    внешних источников»): the mark is a moving scalar — saving an encounter
+    repaints its ring through a scoped ``dataChanged``, never a model reset,
+    whether or not the sample's membership moved in the same reload (the
+    aligned tail is walked for its marks too)."""
+
+    FIRST = _Event(1, date(1200, 1, 5), None, "Совет")
+    SECOND = _Event(2, date(1200, 1, 6), None, "Пир")
+    THIRD = _Event(3, date(1200, 1, 7), None, "Осада")
+
+    def _spies(self, model):
+        resets: list = []
+        changes: list = []
+        model.modelReset.connect(lambda: resets.append(1))
+        model.dataChanged.connect(
+            lambda top, bottom, roles=None: changes.append(
+                (top.row(), bottom.row(), list(roles or []))
+            )
+        )
+        return resets, changes
+
+    def test_marks_role_delivers_the_tokens_as_a_list(self):
+        rows = build_rows(
+            [self.FIRST, self.SECOND], marks_by_event={2: ("encounter",)}
+        )
+        model = _model_of(rows)
+        delivered = _field(model, 1, model.MARKS_ROLE)
+        assert delivered == ["encounter"]
+        assert isinstance(delivered, list)
+        # The tuple behind it is the model's private immutable record; every
+        # read hands out a fresh copy (a QML delegate may keep the array).
+        assert model.entries[1].marks == ("encounter",)
+        assert _field(model, 1, model.MARKS_ROLE) is not delivered
+        assert _field(model, 0, model.MARKS_ROLE) == []
+
+    def test_get_delivers_the_marks_too(self):
+        rows = build_rows([self.FIRST], marks_by_event={1: ("encounter",)})
+        model = _model_of(rows)
+        assert model.get(0)["marks"] == ["encounter"]
+
+    def test_a_saved_mark_mid_list_is_a_scoped_repaint_not_a_reset(self):
+        model = _model_of(build_rows([self.FIRST, self.SECOND, self.THIRD]))
+        resets, changes = self._spies(model)
+
+        model.rebuild(build_rows(
+            [self.FIRST, self.SECOND, self.THIRD],
+            marks_by_event={2: ("encounter",)},
+        ))
+
+        assert resets == []  # the reading position survives the save
+        assert changes == [(1, 1, [model.MARKS_ROLE])]
+        assert _field(model, 1, model.MARKS_ROLE) == ["encounter"]
+        # Clearing the mark rides the same scoped channel.
+        changes.clear()
+        model.rebuild(build_rows([self.FIRST, self.SECOND, self.THIRD]))
+        assert resets == []
+        assert changes == [(1, 1, [model.MARKS_ROLE])]
+        assert _field(model, 1, model.MARKS_ROLE) == []
+
+    def test_a_mark_riding_a_membership_removal_reaches_the_aligned_tail(self):
+        """The tail alignment ignores marks (they are a moving scalar), so a
+        saved encounter on a row that stays at the END of the list while
+        another row leaves must still repaint — the tail walk of
+        :meth:`TimelineRowModel._sync_open_state` is exactly for this (an
+        encounter saved in the same reload that dropped an event from the
+        sample; a row whose tree scalars genuinely moved stays the honest
+        reset it always was)."""
+        four = _Event(4, date(1200, 1, 8), None, "Турнир")
+        model = _model_of(build_rows(
+            [self.FIRST, self.SECOND, self.THIRD, four]
+        ))
+        resets, changes = self._spies(model)
+
+        # Reload after a save: the SECOND event left the sample (deleted or
+        # outside the window), and the surviving LAST row gained its ring.
+        model.rebuild(build_rows(
+            [self.FIRST, self.THIRD, four], marks_by_event={4: ("encounter",)}
+        ))
+
+        assert resets == []
+        assert changes == [(2, 2, [model.MARKS_ROLE])]
+        assert _field(model, 2, model.MARKS_ROLE) == ["encounter"]
+        assert [e.event_id for e in model.entries] == [1, 3, 4]

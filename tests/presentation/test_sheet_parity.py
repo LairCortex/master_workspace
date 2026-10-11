@@ -124,13 +124,30 @@ def _title_texts(widget):
     ]
 
 
+def _open_field_group(dialog, field_object_name: str) -> None:
+    """add-dnd-game-face task 7.1: the fields live on grouping-tab pages and
+    the pages overlap in one body rect — the row probe measures what the
+    reader sees, so the tab hosting the field is opened first. The mention
+    texts (characteristics, backstory, the type's extra fields) sit on
+    «Тексты», everything else on «Обзор» — the kernel map's own division."""
+    if any(part in field_object_name for part in ("Characteristics", "Backstory", "ExtraField")):
+        dialog.vm.selectGroup(1)  # «Тексты»
+    else:
+        dialog.vm.selectGroup(0)  # «Обзор»
+
+
 def _row_label(widget, field_object_name: str) -> str:
     """The TitleText caption painting the row of ``field_object_name``: a
-    caption vertically centered on the field and fully to its left."""
+    caption vertically centered on the field and fully to its left.
+    add-dnd-game-face task 7.1: the grouping-tab pages are all built and
+    overlap in the same body rect — only the VISIBLE captions can paint the
+    reader's row, so hidden pages' captions are out of the candidate set."""
     field = find_item(widget, field_object_name)
     fx, fy, fw, fh = _scene_rect(field)
     candidates = []
     for title in _title_texts(widget):
+        if not title.property("visible"):
+            continue
         tx, ty, tw, th = _scene_rect(title)
         center_y = ty + th / 2
         if fy - 3 <= center_y <= fy + fh + 3 and tx + tw <= fx + 1:
@@ -188,6 +205,7 @@ def test_event_sheet_captions_carry_the_shared_form(qtbot):
         label for _field, label in EVENT_SHEET_LABELS
     } | EVENT_SHEET_EXTRA_CAPTIONS
     for field_name, expected in EVENT_SHEET_LABELS:
+        _open_field_group(dialog, field_name)
         assert _row_label(dialog.quick, field_name) == expected
     # E2: every caption ends with the colon; the «*» marks exactly the
     # mandatory fields — no required caption is bare.
@@ -203,6 +221,7 @@ def test_card_sheet_captions_carry_the_shared_form(qtbot):
 
     assert _caption_set(dialog.quick) == {label for _field, label in CARD_SHEET_LABELS}
     for field_name, expected in CARD_SHEET_LABELS:
+        _open_field_group(dialog, field_name)
         assert _row_label(dialog.quick, field_name) == expected
     for caption in _caption_set(dialog.quick):
         assert caption.endswith(":") or caption.endswith(": *")

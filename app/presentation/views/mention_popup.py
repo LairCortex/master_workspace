@@ -55,7 +55,23 @@ class _MentionPopup(QWidget):
         self._list.clear()
         for result in results[:15]:
             icon = _ICON_BY_TYPE.get(entity_registry.resolve(result["type"]), "")
-            item = QListWidgetItem(f'{icon}  {result["name"]}')
+            # add-dnd-game-face (task 5.2, spec dnd-reference-records «кандидаты
+            # зарегистрированных внешних источников (с пометкой типа)»): a
+            # kernel row reads exactly as before (the glyphs above are its
+            # only sign); an external row is signed with its type label and —
+            # when the source names it — the origin, the same «[источник]»
+            # shape the search list gave external rows in task 3.4, so two
+            # same-named records of two sets stay two distinguishable rows.
+            external = entity_registry.external_descriptor(result["type"])
+            if external is None:
+                text = result["name"]
+            else:
+                label = external.label
+                origin = result.get("origin") or ""
+                if origin:
+                    label = f"{label} · {origin}"
+                text = f"{result['name']}  ({label})"
+            item = QListWidgetItem(f"{icon}  {text}")
             item.setData(Qt.ItemDataRole.UserRole, result)
             self._list.addItem(item)
         if self._list.count() == 0:

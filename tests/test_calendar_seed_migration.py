@@ -142,3 +142,41 @@ async def test_repeated_init_db_does_not_reseed_or_overwrite(tmp_path):
         assert first[CALENDAR_SETTINGS_KEY] != after[CALENDAR_SETTINGS_KEY]
     finally:
         await engine.dispose()
+
+
+async def test_dnd_seeded_launch_is_still_fresh_for_the_calendar(tmp_path):
+    """add-dnd-module-foundation task 2.6: «D&D»-игра приходит на первый
+    opening с одной предсозданной таблицей game_settings (синхронный сид
+    лаунчера). Посев календаря обязан всё равно случиться — факт «свежая
+    база» читает доменную схему, а game_settings одна не считает базой
+    схематизированной; сид модуля при этом остаётся целым."""
+    db_path = tmp_path / "dnd.db"
+    db_path.touch()  # the launcher's blank file
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE game_settings "
+        "(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+    )
+    conn.execute(
+        "INSERT INTO game_settings VALUES ('dnd_module', "
+        "'{\"enabled\": true, \"version\": 1}')"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite+aiosqlite:///{db_path}")
+    try:
+        await init_db(engine)
+        rows = await _settings_rows(engine)
+        # календарный посев случился, несмотря на предсозданную таблицу
+        assert rows[CALENDAR_SETTINGS_KEY] == EXPECTED_SEED[CALENDAR_SETTINGS_KEY]
+        assert rows[CALENDAR_WIZARD_SEEN_KEY] == CALENDAR_WIZARD_SEEN_NO
+        # и сид модуля уцелел
+        assert rows["dnd_module"] == '{"enabled": true, "version": 1}'
+        # второй заход — не повторный посев
+        await init_db(engine)
+        assert len(await _settings_rows(engine)) == 3
+    finally:
+        await engine.dispose()

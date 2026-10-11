@@ -112,6 +112,15 @@ Item {
     // last), false on top-level rows and on stubs. The trunk angle is painted
     // from this flag; the delegate never re-derives the order (file contract).
     required property bool isLastSibling
+    // add-dnd-game-face (task 11.2, spec event-timeline «Пометки строк от
+    // внешних источников»): the delivered data tokens (``["encounter"]``) —
+    // this file is their ONLY interpreter: it decides that the ``"encounter"``
+    // token paints the accent ring around the type square (design-задача 1.1
+    // §4, эталон docs/qa/references/2026-10-10-dnd-tabs-ladder-marks-*.png).
+    // The token arrives as a plain string; no caption, no domain word here —
+    // an unknown token paints nothing, the row is byte-identical to the old
+    // one (empty marks = zero new pixels).
+    required property var marks
 
     // ── island-owned state fed by the root's binding (D2) ───────────────────
     property bool selectedRow: false      // the washed row of selectedId
@@ -133,6 +142,11 @@ Item {
     // a stub never discloses («шеврон неактивен»), a childless parent has
     // nothing to open (spec «Пустой родитель без шеврона»).
     readonly property bool chevronRow: !stubRow && hasChildren
+    // The one mark the ladder paints today (task 11.2): a plain membership
+    // test on the delivered tokens — the rule of WHO has the mark lives in
+    // the module's source, this file only knows what the token LOOKS like.
+    readonly property bool encounterMark: !!(row.marks
+        && row.marks.indexOf && row.marks.indexOf("encounter") >= 0)
     // The caption line's vertical center in row coordinates — the one height
     // the mark, the elbow, the chevron glyph and both connector ends share
     // (the live audit pinned the elbow↔mark coincidence; tasks 11.1/11.2).
@@ -371,6 +385,28 @@ Item {
             ? row.accentFgColor
             : Tokens.token(row.islandTokens,
                            row.tokenKey ? String(row.tokenKey) : "", row.mutedColor)
+    }
+
+    // The «encounter» mark ring (add-dnd-game-face task 11.2, design-задача
+    // 1.1 §4 + эталон docs/qa/references/2026-10-10-dnd-tabs-ladder-marks-*.png):
+    // a hollow 12×12 accent square with a 1 px border, radius 0 (a square,
+    // like the mark inside it), centred on the SAME caption line and the same
+    // x-street as the type square — a 2 px halo around the 8 px mark
+    // (x = textLeftPad + contentShift − 2, the mark's own seat minus the
+    // halo). Over the selection wash the border flips to ``color.accent.fg``
+    // like every other row glyph does (spec «Дерево не грязнит акцент на
+    // залировке»); the enclosed type mark keeps its own chart colour. A row
+    // without the token paints NOTHING here — the zero-pixel rule.
+    Rectangle {
+        objectName: "rowEncounterRing"
+        visible: row.encounterMark
+        x: row.textLeftPad + row.contentShift - 2
+        width: 12
+        height: 12
+        anchors.verticalCenter: rowText.verticalCenter
+        color: "transparent"
+        border.width: 1
+        border.color: row.selectedRow ? row.accentFgColor : row.accentColor
     }
 
     // The caption line. Selected rows flip to accent.fg while washed. Parent

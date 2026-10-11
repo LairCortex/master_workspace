@@ -74,6 +74,96 @@ class TestListGames:
         assert result[0]["name"] == "OldGame"
         assert result[0]["path"].endswith("OldGame.db")
 
+    # -- бейдж D&D в каталоге (add-dnd-module-foundation task 2.6/2.7) ------
+
+    def test_ordinary_game_reads_flag_absent(self, games_dir):
+        create_game("Обычная")
+        result = list_games()
+        assert result[0]["dnd"] is False
+
+    def test_dnd_creation_seeds_the_flag_and_catalog_reads_it(self, games_dir):
+        """Пикер «D&D» на создании: файл рождается с строкой признака
+        (синхронный сид, ключ + текущая версия формата), каталог читает её
+        штатным кодеком — тот же закон чтения, что у composition."""
+        import json
+
+        from app.infrastructure.repositories.game_settings_repository import (
+            DND_MODULE_DATA_VERSION,
+            DND_MODULE_KEY,
+        )
+
+        db_path = create_game("Подземелье", dnd=True)
+        import sqlite3
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT value FROM game_settings WHERE key = ?",
+                (DND_MODULE_KEY,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert json.loads(row[0]) == {
+            "enabled": True,
+            "version": DND_MODULE_DATA_VERSION,
+        }
+        result = list_games()
+        assert result[0]["name"] == "Подземелье"
+        assert result[0]["dnd"] is True
+
+    def test_dnd_badge_survives_disabled_flag_and_empty_file(self, games_dir):
+        """Выключенный признак — бейджа нет; пустой (тронутый, но без схем)
+        файл — не авария, а обычная игра; битый признак читается как
+        отсутствие (кодек), строка не трогается."""
+        import json
+        import sqlite3
+
+        from app.infrastructure.repositories.game_settings_repository import (
+            DND_MODULE_KEY,
+        )
+
+        # off-flag game (rows pre-exist like after the disable flow)
+        db_path = create_game("Выключенное", dnd=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "UPDATE game_settings SET value = ? WHERE key = ?",
+            (json.dumps({"enabled": False, "version": 1}), DND_MODULE_KEY),
+        )
+        conn.commit()
+        conn.close()
+        # corrupt row on the flat legacy file
+        games_dir.mkdir(parents=True, exist_ok=True)
+        legacy = games_dir / "Битое.db"
+        conn = sqlite3.connect(str(legacy))
+        conn.execute(
+            "CREATE TABLE game_settings "
+            "(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+        )
+        conn.execute(
+            "INSERT INTO game_settings VALUES (?, ?)",
+            (DND_MODULE_KEY, "не JSON"),
+        )
+        conn.commit()
+        conn.close()
+        # untouched empty flat file
+        (games_dir / "Пустое.db").touch()
+
+        by_name = {g["name"]: g["dnd"] for g in list_games()}
+        assert by_name == {
+            "Выключенное": False,
+            "Битое": False,  # corrupt reads ordinary, badge does not lie
+            "Пустое": False,  # no tables yet — ordinary, no crash
+        }
+        # the read never rewrites the damaged row
+        conn = sqlite3.connect(str(legacy))
+        try:
+            raw = conn.execute(
+                "SELECT value FROM game_settings WHERE key = ?", (DND_MODULE_KEY,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert raw == "не JSON"
+
     def test_ignores_directories_without_game_db(self, games_dir):
         games_dir.mkdir(parents=True)
         (games_dir / "Empty").mkdir()

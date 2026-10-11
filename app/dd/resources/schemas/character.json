@@ -1,0 +1,158 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://longstoryshort.app/schema/v2/character.json",
+  "title": "Long Story Short — документ персонажа (wizard export v2)",
+  "$comment": "Схема описывает ФОРМУ конверта экспорта персонажа и разобранного документа data. Живой экспорт несёт служебные ключи (createdAt, wizardStep, choices) и устаревшие каналы бонусов (bonusesSkills, bonusesStats) — они легальны здесь, а предупреждения о них доменные (CHAR_*, add-dnd-game-face Д7). Проверка версии — гейт вне схемы (CHARACTER_FORMAT_VERSION).",
+  "type": "object",
+  "required": ["jsonType", "version", "data"],
+  "properties": {
+    "jsonType": {
+      "enum": ["character"],
+      "description": "Тип документа в wizard-экспорте LSS"
+    },
+    "version": {
+      "type": "string",
+      "description": "Ревизия формата; гейт сравнивает с CHARACTER_FORMAT_VERSION до схемы"
+    },
+    "createdAt": {
+      "type": "string",
+      "description": "Служебная метка живого экспорта (warning-проверка CHAR_SERVICE_KEYS)"
+    },
+    "data": {
+      "description": "Документ персонажа; живой экспорт несёт его JSON-строкой, конвейер проверяет схему уже по разобранному объекту (не разобран — доменная ошибка CHAR_DATA)",
+      "$ref": "#/definitions/CharacterDocument"
+    }
+  },
+  "definitions": {
+    "CharacterRef": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "description": "Slug записи датасета (парный идентификатор)" },
+        "name": { "type": "string", "description": "Снимок имени из файла — честный ответ, когда источник не подключён" }
+      }
+    },
+    "StatEntry": {
+      "type": "object",
+      "properties": {
+        "value": { "type": "integer", "minimum": 1, "maximum": 30 },
+        "save": { "description": "Владение спасброском (булево proficiency или числовой модификатор)", "type": ["boolean", "integer"] }
+      }
+    },
+    "SkillEntry": {
+      "type": "object",
+      "properties": {
+        "proficient": { "type": "boolean" }
+      }
+    },
+    "BonusEntry": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string" },
+        "formula": { "type": "string" },
+        "value": { "type": ["integer", "string"] }
+      }
+    },
+    "WeaponEntry": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "attackFormula": { "type": "string" },
+        "damageFormula": { "type": "string" }
+      }
+    },
+    "ResourceEntry": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "value": { "type": "integer" },
+        "max": { "type": "integer" }
+      }
+    },
+    "SlotEntry": {
+      "type": "object",
+      "required": ["level"],
+      "properties": {
+        "level": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "value": { "type": "integer", "minimum": 0 },
+        "max": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "SpellsSection": {
+      "type": "object",
+      "properties": {
+        "slots": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SlotEntry" }
+        }
+      }
+    },
+    "CharacterDocument": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "avatar": { "type": "string" },
+        "level": { "type": "integer", "minimum": 1, "maximum": 20 },
+        "info": {
+          "type": "object",
+          "properties": {
+            "race": { "$ref": "#/definitions/CharacterRef" },
+            "subrace": { "$ref": "#/definitions/CharacterRef" },
+            "charClass": { "$ref": "#/definitions/CharacterRef" },
+            "subclass": { "$ref": "#/definitions/CharacterRef" },
+            "background": { "$ref": "#/definitions/CharacterRef" }
+          }
+        },
+        "stats": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/StatEntry" }
+        },
+        "skills": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/SkillEntry" }
+        },
+        "bonuses": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/BonusEntry" }
+        },
+        "bonusesSkills": {
+          "description": "Устаревший канал бонусов живого экспорта (warning CHAR_DEPRECATED_BONUSES)",
+          "type": "object"
+        },
+        "bonusesStats": {
+          "description": "Устаревший канал бонусов живого экспорта (warning CHAR_DEPRECATED_BONUSES)",
+          "type": "object"
+        },
+        "weaponsList": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/WeaponEntry" }
+        },
+        "resources": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ResourceEntry" }
+        },
+        "coins": {
+          "type": "object",
+          "additionalProperties": { "type": "integer" }
+        },
+        "spells": { "$ref": "#/definitions/SpellsSection" },
+        "wizardStep": {
+          "description": "Служебный ключ живого экспорта (warning CHAR_SERVICE_KEYS)",
+          "type": ["string", "integer", "object"]
+        },
+        "choices": {
+          "description": "Служебный ключ живого экспорта (warning CHAR_SERVICE_KEYS)",
+          "type": "object"
+        },
+        "blocks": {
+          "description": "Именованные текстовые блоки: документ форматированного редактора или готовый текст",
+          "type": "object",
+          "additionalProperties": { "type": ["string", "object", "array"] }
+        }
+      }
+    }
+  }
+}

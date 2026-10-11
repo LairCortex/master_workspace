@@ -62,6 +62,13 @@ ROOT_QML = str(Path(QML_IMPORT_PATH) / "LauncherRoot.qml")
 #: tests/presentation/test_launcher_action_row_width.py).
 LAUNCHER_MIN_SIZE = QSize(600, 400)
 
+#: add-dnd-module-foundation task 2.6 (spec game-launcher «Выбор системы при
+#: создании игры»): the two systems, «Обычная» first = the default. The
+#: strings are the picker's whole vocabulary.
+DD_SYSTEM_CHOICES = ("Обычная", "D&D")
+#: Index in :data:`DD_SYSTEM_CHOICES` that means «create as a D&D game».
+DD_SYSTEM_DND_INDEX = 1
+
 
 class GameLauncherContent(IslandDialogMixin, QWidget):
     """The launcher screen: island + controller, host-agnostic.
@@ -85,9 +92,20 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
     def island_source(self) -> str:
         return ROOT_QML
 
-    def __init__(self, parent: QWidget | None = None, *, theme: ThemeRuntime) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        theme: ThemeRuntime,
+        dnd_choice_available: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._theme = theme
+        # add-dnd-module-foundation task 2.6: whether the «Обычная/D&D» system
+        # picker runs before the name dialog. The composition root answers
+        # from the app profile (design Д11: in a profile without the module
+        # the choice НЕ SHALL существовать — creation is ordinary silently).
+        self._dnd_choice_available = dnd_choice_available
 
         # View model + palette live for the content's whole life and are its
         # children — a context property is a raw pointer, so dropping the
@@ -177,17 +195,46 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
         self.gameSelected.emit(path)
 
     def _on_create_requested(self, _name: str) -> None:
+        # Task 2.6: the system picker runs FIRST (spec «…перед диалогом
+        # названия игра SHALL предлагать выбрать систему…») — its cancel is
+        # the whole cancel, the name dialog is never reached. With the
+        # profile without the module there is no choice at all (Д11).
+        dnd = self._ask_new_game_system()
+        if dnd is None:
+            return  # picker cancelled: no-op (spec)
         name, ok = QInputDialog.getText(self, "Новая игра", "Название игры:")
         if not ok or not name.strip():
             return  # empty or cancelled: no-op (spec)
         try:
-            path = self.vm.create(name)  # trims; raises FileExistsError on clash
+            # trims; raises FileExistsError on clash; seeds the module flag
+            # only when the master picked «D&D» (spec: «Обычная» never
+            # writes the key)
+            path = self.vm.create(name, dnd=dnd)
         except FileExistsError:
             QMessageBox.warning(self, "Ошибка", f"Игра '{name.strip()}' уже существует.")
             return  # launcher stays open, list unchanged
         # Success: the fresh game is already re-listed (VM refreshed) and opens
         # through the same selection signal immediately (spec game-launcher).
         self._on_open_requested(path)
+
+    def _ask_new_game_system(self) -> bool | None:
+        """The «Обычная/D&D» system choice of a new game. Returns True for
+        «D&D», False for «Обычная» — silently so when the profile offers no
+        module — and ``None`` when the master cancelled the picker (the
+        creation is then not just ordinary: it does not happen at all)."""
+        if not self._dnd_choice_available:
+            return False
+        system, ok = QInputDialog.getItem(
+            self,
+            "Новая игра",
+            "Система игры:",
+            list(DD_SYSTEM_CHOICES),
+            0,  # «Обычная» preselected (spec game-launcher)
+            False,  # editable=False: the vocabulary is closed
+        )
+        if not ok:
+            return None
+        return system == DD_SYSTEM_CHOICES[DD_SYSTEM_DND_INDEX]
 
     def _on_delete_requested(self, index: int) -> None:
         game = self.vm.games[index]
@@ -252,7 +299,13 @@ class GameLauncherDialog(QDialog):
 
     game_selected = Signal(str)  # db file path
 
-    def __init__(self, parent: QWidget | None = None, *, theme: ThemeRuntime) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        theme: ThemeRuntime,
+        dnd_choice_available: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Master Workspace — Выбор игры")
         # 600 step of the ui-layout-grid scale for the Lucide action row (F1);
@@ -260,7 +313,9 @@ class GameLauncherDialog(QDialog):
         self.setMinimumSize(LAUNCHER_MIN_SIZE)
         self._selected_path: str | None = None
 
-        self._content = GameLauncherContent(self, theme=theme)
+        self._content = GameLauncherContent(
+            self, theme=theme, dnd_choice_available=dnd_choice_available
+        )
         layout = QVBoxLayout(self)
         # The content must reach the dialog edges: a default layout margin
         # would show the OS palette as a frame around the QML surface (spec
@@ -330,7 +385,13 @@ class GameSwitchSheet(SheetFrame):
     #: connects the switch flow to either host unchanged).
     game_selected = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None, *, theme: ThemeRuntime) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        theme: ThemeRuntime,
+        dnd_choice_available: bool = False,
+    ) -> None:
         # One windowTitle-threaded value: SheetFrame puts the same caption
         # into the header label and the title slot (spec «текст,
         # соответствующий windowTitle»).
@@ -338,7 +399,9 @@ class GameSwitchSheet(SheetFrame):
         self.setMinimumSize(self.DEFAULT_SIZE)
         self.resize(self.DEFAULT_SIZE)
 
-        self.content = GameLauncherContent(self, theme=theme)
+        self.content = GameLauncherContent(
+            self, theme=theme, dnd_choice_available=dnd_choice_available
+        )
         self.add_content(self.content)
         self.content.gameSelected.connect(self.game_selected.emit)
         # D1 (NRI-0016): the content's theme subscription leaves with the

@@ -43,12 +43,18 @@ class FakeCatalog:
         self.calls.append(("list_games",))
         return [dict(e) for e in self.entries]
 
-    def create_game(self, name: str) -> Path:
-        self.calls.append(("create_game", name))
+    def create_game(self, name: str, *, dnd: bool = False) -> Path:
+        # The task 2.6 keyword rides the fake too; recorded in the call tuple
+        # so tests can pin the forwarding (VM never invents or drops it).
+        self.calls.append(("create_game", name, dnd))
         if any(e["name"] == name for e in self.entries):
             raise FileExistsError(f"Game '{name}' already exists")
         path = f"/games/{name}/game.db"
-        self.entries.append(GameInfo(name=name, path=path, modified=self._next_modified()))
+        self.entries.append(
+            GameInfo(
+                name=name, path=path, modified=self._next_modified(), dnd=dnd
+            )
+        )
         return Path(path)
 
     def delete_game(self, path: str) -> None:
@@ -101,8 +107,28 @@ def test_refresh_fills_games_with_name_label_path(catalog, vm):
             "name": "Погоня",
             "modifiedLabel": BASE_TIME.strftime("%Y-%m-%d %H:%M"),
             "path": "/games/Погоня/game.db",
+            # Task 2.7: the badge role is always published; an entry without
+            # the key (this one) reads ordinary.
+            "dnd": False,
         }
     ]
+
+
+def test_refresh_publishes_the_dnd_badge_role(catalog, vm):
+    """add-dnd-module-foundation task 2.7: the row dict carries ``dnd`` from
+    the catalog fact — the QML delegate reads exactly this role."""
+    catalog.entries.append(
+        GameInfo(
+            name="Подземелье", path="/games/Подземелье/game.db",
+            modified=BASE_TIME, dnd=True,
+        )
+    )
+    catalog.entries.append(
+        GameInfo(name="Погоня", path="/games/Погоня/game.db", modified=BASE_TIME)
+    )
+    vm.refresh()
+    by_name = {g["name"]: g["dnd"] for g in vm.games}
+    assert by_name == {"Подземелье": True, "Погоня": False}
 
 
 def test_refresh_sorts_by_modification_time_newest_first(catalog, vm):
@@ -126,9 +152,19 @@ def test_refresh_emits_games_changed(catalog, vm, qtbot):
 def test_create_trims_name_and_refreshes(catalog, vm, qtbot):
     with qtbot.waitSignal(vm.gamesChanged, timeout=1000):
         path = vm.create(" Погоня ")
-    assert ("create_game", "Погоня") in catalog.calls  # trimmed before the catalog call
+    # ordinary by default: the flag keyword reaches the catalog as False
+    assert ("create_game", "Погоня", False) in catalog.calls  # trimmed first
     assert path == "/games/Погоня/game.db"
     assert [g["name"] for g in vm.games] == ["Погоня"]
+
+
+def test_create_forwards_the_dnd_choice(catalog, vm):
+    """add-dnd-module-foundation task 2.6: the launcher's system choice is
+    forwarded verbatim — the VM neither invents nor drops the flag."""
+    path = vm.create("Подземелье", dnd=True)
+    assert ("create_game", "Подземелье", True) in catalog.calls
+    assert path == "/games/Подземелье/game.db"
+    assert vm.games[0]["dnd"] is True
 
 
 def test_create_collision_raises_and_state_unchanged(catalog, vm):

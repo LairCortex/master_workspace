@@ -182,10 +182,19 @@ async def _database_is_fresh(conn) -> bool:
     a database, so "fresh" covers exactly the games whose schema this version
     creates (spec «Новая игра рождается с посевом»); a game that already has
     tables was built by some earlier version and must stay keyless.
+
+    Exception (add-dnd-module-foundation task 2.6): a game created as «D&D»
+    arrives with ONE table pre-written — the launcher synchronously seeds the
+    ``dnd_module`` flag into ``game_settings`` before the first open, and
+    that seed must not read as "already schematized" or the calendar seeding
+    would skip the brand-new game. The fact asked here is about the DOMAIN
+    schema, so ``game_settings`` alone still counts as fresh; a real game
+    always carries the entity tables alongside its settings keys.
     """
     rows = (
         await conn.exec_driver_sql(
-            "SELECT name FROM sqlite_master WHERE type='table' LIMIT 1"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name <> 'game_settings' LIMIT 1"
         )
     ).fetchall()
     return not rows

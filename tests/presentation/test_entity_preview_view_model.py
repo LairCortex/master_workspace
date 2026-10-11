@@ -20,12 +20,14 @@ tests live in ``test_entity_preview_slots.py``; the QML half is pinned in
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import date
 from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QObject, Qt, Signal
 
+from app.domain import entity_registry as reg
 from app.domain.game_calendar import InvalidGameDateError
 from app.presentation.viewmodels import entity_card_view_model as card_module
 from app.presentation.viewmodels.entity_preview_view_model import (
@@ -429,3 +431,108 @@ class TestGestures:
         # The shown content is untouched by a dead href (task 4.5 posture;
         # the wiring resolves the deleted-target half in group 5).
         assert _pane(vm)["nameText"] == "Банн"
+
+    def test_an_external_href_rides_the_string_id_channel(self):
+        """add-dnd-game-face task 5.2 (design Д4): a generated anchor of a
+        REGISTERED external type carries a composite source id — the whole
+        tail after the type is one string id (never int-parsed, never split
+        at later slashes) and rides ``externalEntityRequested``, the same
+        channel a search-row click took in task 3.4. Kernel hrefs keep the
+        int channel; an href under an unregistered key stays a no-op."""
+        saved = dict(reg._EXTERNAL)
+        reg.register_external((reg.ExternalTypeDescriptor(
+            key="dd_feat", label="Черта", plural_label="Черты",
+            icon_key="crosshair", reference=True,
+        ),))
+        try:
+            vm = EntityPreviewViewModel()
+            _show(vm, "character", _entity())
+            kernel, external = [], []
+            vm.entityRequested.connect(lambda *a: kernel.append(a))
+            vm.externalEntityRequested.connect(lambda *a: external.append(a))
+
+            vm.requestLink("nri://dd_feat/srd51/Darkvision")
+            assert external == [("dd_feat", "srd51/Darkvision")]
+            assert kernel == []
+
+            vm.requestLink("nri://organization/2")
+            assert kernel == [("organization", 2)]
+            assert external == [("dd_feat", "srd51/Darkvision")]
+
+            # an id-less external href navigates nothing (generator can emit
+            # none; a hand-typed fragment must not seat an empty record)
+            vm.requestLink("nri://dd_feat/")
+            assert external == [("dd_feat", "srd51/Darkvision")]
+        finally:
+            reg._EXTERNAL.clear()
+            reg._EXTERNAL.update(saved)
+
+
+# ── add-dnd-game-face tasks 6.1/6.2: the string-id twins ─────────────────────
+
+
+@contextlib.contextmanager
+def _registered_external(key: str = "dd_feat"):
+    """Одна внешняя регистрация на тест (реестр — состояние процесса; тот же
+    save/restore, что у external-href теста)."""
+    saved = dict(reg._EXTERNAL)
+    reg.register_external(
+        (
+            reg.ExternalTypeDescriptor(
+                key=key,
+                label="Черта",
+                plural_label="Черты",
+                icon_key="crosshair",
+                reference=True,
+            ),
+        )
+    )
+    try:
+        yield
+    finally:
+        reg._EXTERNAL.clear()
+        reg._EXTERNAL.update(saved)
+
+
+def _ext_card(name: str = "Везучесть", source_id: str = "srd/lucky"):
+    from app.presentation.modules.protocol import ExternalCardSource
+
+    return ExternalCardSource(
+        name=name, origin="SRD 5.1", blocks=(), relations=(), source_id=source_id
+    )
+
+
+def test_set_external_sources_rehands_the_face():
+    """add-dnd-game-face task 2.2: живой attach отдаёт колонке источники на
+    месте — лицо отдаёт ровно отданный кортеж."""
+    vm = EntityPreviewViewModel()
+    assert vm.external_sources == ()
+    marker = object()
+    vm.set_external_sources((marker,))
+    assert vm.external_sources == (marker,)
+
+
+def test_string_pairs_ride_the_external_twins():
+    """Tasks 6.1/6.2 (design Д4): строковый id пары — внешний близнец каждого
+    канала: строка-пресс связи, пин и картинка уходят в external-сигналы,
+    int-канал ядра не сжимает пару; картинка по паре вне панели — молчание."""
+    with _registered_external():
+        vm = EntityPreviewViewModel()
+        vm.show_slots([("dd_feat", _ext_card())], None)
+        entity, pin, image = [], [], []
+        vm.externalEntityRequested.connect(lambda *a: entity.append(a))
+        vm.externalPinToggleRequested.connect(lambda *a: pin.append(a))
+        vm.externalImageRequested.connect(lambda *a: image.append(a))
+
+        vm.requestEntity("dd_feat", "srd/lucky")
+        assert entity == [("dd_feat", "srd/lucky")]
+        vm.requestPinToggle("dd_feat", "srd/lucky", True)
+        assert pin == [("dd_feat", "srd/lucky", True)]
+        vm.requestImageFor("dd_feat", "srd/lucky", True)
+        assert image == [("dd_feat", "srd/lucky", True)]
+        # панель с картинкой найдена по паре; пропавшая пара — no-op (spec
+        # «прежняя панель»/молчаливое отсутствие, та же дисциплина, что у ядра)
+        vm.requestImageFor("dd_feat", "srd/gone", True)
+        assert image == [("dd_feat", "srd/lucky", True)]
+        # int-половина жестов остаётся ядром (сигналы близнецы молчат)
+        assert vm.panes[0]["entityId"] == "srd/lucky"

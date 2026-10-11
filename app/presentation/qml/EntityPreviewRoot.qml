@@ -510,6 +510,23 @@ Rectangle {
                                         wrapMode: Text.WordWrap
                                     }
 
+                                    // The origin line of an EXTERNAL card
+                                    // (add-dnd-game-face task 6.1, spec
+                                    // entity-preview «строку источника»): the
+                                    // VM authors the whole «Источник: …»
+                                    // sentence, a kernel card answers the
+                                    // empty string and the line hides — the
+                                    // kernel render stays bit-for-bit.
+                                    Text {
+                                        objectName: "previewOrigin"
+                                        Layout.fillWidth: true
+                                        text: previewPane.modelData.originText
+                                        visible: text !== ""
+                                        color: root.secondaryText
+                                        font.pixelSize: root.bodyFontPixelSize
+                                        wrapMode: Text.WordWrap
+                                    }
+
                                     Text {
                                         objectName: "previewRating"
                                         Layout.fillWidth: true

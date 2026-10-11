@@ -20,6 +20,15 @@ from app.infrastructure.db.models import (
 from app.infrastructure.images.paths import original_path, preview_path
 from app.infrastructure.images.store import ImageStore
 
+# The module-referrer door tests below need ``dd_monster`` in the test schema:
+# importing the model registers its table on the shared kernel Base BEFORE the
+# async_engine fixture's create_all runs (add-dnd-game-face task 10.1). Tests
+# are outside the runtime module-profile bar — importing app.dd from a test is
+# how the door is exercised from the kernel side. The NAME is used by the door
+# tests; the side effect (the table on Base) is the reason the import is
+# module-level, so it runs before every fixture — hence the load-bearing noqa.
+from app.dd.infrastructure.db.dd_models import DdMonsterModel  # noqa: E402,F401
+
 
 @pytest.fixture(scope="session")
 def qapp():
@@ -496,3 +505,80 @@ class TestItemOwnership:
         assert await async_session.get(ImageModel, image_id) is None
         await async_session.refresh(item)
         assert item.image_id is None
+
+
+# ── the module-referrer door (add-dnd-game-face task 10.1, design Д6) ─────
+# The kernel's closed referrer list is exactly the NRI-0022 bug's fence; a
+# game-system module joins it only through add_referring_model, which the
+# composition root calls. These tests pin the door's three promises: absent
+# tables never register, a registered table rides EVERY scan (refcount and
+# nulling alike), and a picture the monster still shows is not collectible.
+
+
+class TestModuleReferrerDoor:
+    @pytest.mark.asyncio
+    async def test_absent_table_skipped_registration_dedups(
+        self, qapp, async_session: AsyncSession, image_dir
+    ):
+        """Presence-gated + idempotent: a model whose table this file never
+        got stays out (no OperationalError on the scan), the same model
+        registered twice rides once."""
+        from sqlalchemy import Column, Integer, MetaData, Table
+
+        class _NeverCreated:
+            # The door reads only ``model.__table__.name`` — a bare Table on
+            # a private MetaData is exactly «a table this file never got».
+            __table__ = Table(
+                "module_table_never_created",
+                MetaData(),
+                Column("id", Integer, primary_key=True),
+                Column("image_id", Integer),
+            )
+
+        store = ImageStore(async_session, image_dir)
+        await store.add_referring_model(_NeverCreated)
+        assert store._module_ref_models == []
+        await store.add_referring_model(DdMonsterModel)
+        await store.add_referring_model(DdMonsterModel)
+        assert store._module_ref_models == [DdMonsterModel]
+
+    @pytest.mark.asyncio
+    async def test_registered_table_counts_and_nulls_like_kernel(
+        self, qapp, async_session: AsyncSession, image_dir
+    ):
+        """Without the registration a monster's picture is invisible (the
+        NRI-0022 class, one floor down); after it the refcount sees the row
+        and the reference-nulling clears it exactly like a kernel entity."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        monster = DdMonsterModel(name="Гоблин", image_id=image_id)
+        async_session.add(monster)
+        await async_session.flush()
+        assert await store.refcount(image_id) == 0  # the bug, unfixed
+        await store.add_referring_model(DdMonsterModel)
+        assert await store.refcount(image_id) == 1  # the door, fixed
+        await store._null_references(image_id)
+        await async_session.flush()
+        assert monster.image_id is None
+
+    @pytest.mark.asyncio
+    async def test_startup_gc_keeps_monster_picture_after_registration(
+        self, qapp, async_session: AsyncSession, image_dir
+    ):
+        """The end-to-end promise: the boot scan with the module's table
+        registered leaves a picture referenced only by a monster (and its
+        files) exactly where they were."""
+        store = ImageStore(async_session, image_dir)
+        image_id = await store.store(_png_bytes())
+        async_session.add(DdMonsterModel(name="Гоблин", image_id=image_id))
+        await async_session.commit()
+        row = await async_session.get(ImageModel, image_id)
+        original = original_path(image_dir, row.sha256, row.ext)
+        preview = preview_path(image_dir, row.sha256)
+        assert original.exists()
+        await store.add_referring_model(DdMonsterModel)
+        await store.startup_gc()
+        await async_session.commit()
+        assert await async_session.get(ImageModel, image_id) is not None
+        assert original.exists()
+        assert preview.exists()

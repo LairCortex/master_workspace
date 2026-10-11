@@ -40,12 +40,25 @@ from typing import Any
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.presentation.utils.mention_html import parse_mention_link
+from app.presentation.modules.protocol import ExternalCardSource
 from app.presentation.viewmodels.entity_card_view_model import (
     EntityCardViewModel,
     content_fingerprint,
 )
 
 __all__ = ["MAX_PINNED_CARDS", "EntityPreviewViewModel"]
+
+
+def slot_id_of(entity: Any) -> Any:
+    """The id half of a frame pair (add-dnd-game-face task 6.1/6.2): the
+    stamped ``source_id`` of an external card record (a string forever, design
+    Д4), the int row id of a kernel entity. The ONE reader of the id half —
+    slot reuse, frame equality, fullsize keys and the pin gestures all go
+    through it, so a string pair cannot be squashed by an ``int()`` cast on
+    any one of those paths."""
+    if isinstance(entity, ExternalCardSource):
+        return entity.source_id
+    return int(getattr(entity, "id", 0) or 0)
 
 #: The pin-capacity of the column (spec preview-pins «до трёх закреплённых»).
 #: The ONE owner of the number and of the live card's pin state (checkpoint
@@ -78,17 +91,41 @@ class EntityPreviewViewModel(QObject):
     #: or a mention link was activated — the wiring loads and shows that entity
     #: and tries the middle-column highlight; the preview never loads itself.
     entityRequested = Signal(str, int)
+    #: The same gesture for an EXTERNAL pair (add-dnd-game-face design Д4,
+    #: the search bar's task-3.4 precedent): the mention link carried a
+    #: string/composite source id — it rides its own str channel so the
+    #: kernel int channel never squashes it; the connector seats the read-
+    #: only card in the live area. Since task 6.1 the external relation rows
+    #: of an external card raise the very same channel via requestEntity.
+    externalEntityRequested = Signal(str, str)
     #: The pin of a pane was activated (NRI-0025 design Д2/Д3): the pair plus
     #: the card's current pinned state — the connector toggles accordingly and
     #: answers with a fresh frame. By pair, never by index.
     pinToggleRequested = Signal(str, int, bool)
+    #: The pin channel's string-id twin (add-dnd-game-face task 6.2): an
+    #: external pane presses here, so the kernel int signal never squashes
+    #: a composite source id; the connector's one handler serves both.
+    externalPinToggleRequested = Signal(str, str, bool)
     #: The picture of a pane was activated; the pane identifies itself so the
     #: facade builds the viewer from THAT card's entity (task 2.2).
     imageRequested = Signal(str, int, bool)
+    #: …and its external twin (task 6.1): the picture of an external card,
+    #: built by the facade from the record's own ``picture_path``.
+    externalImageRequested = Signal(str, str, bool)
 
-    def __init__(self, now_vm=None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        now_vm=None,
+        parent: QObject | None = None,
+        external_sources: Sequence[Any] = (),
+    ) -> None:
         super().__init__(parent)
         self._now_vm = now_vm
+        # add-dnd-game-face (design Д1): the external entity sources from the
+        # composition root, stored whole. The kernel builds only kernel cards
+        # today; the external-card slice (group 6) assembles ExternalCardSource
+        # records through them. Empty by default — the pre-change column.
+        self._external_sources: tuple[Any, ...] = tuple(external_sources)
         self._cards: list[EntityCardViewModel] = []
         # The construction stamp feeding every card's ``rev`` (the island's
         # scroll memory validates a remembered offset against it — 2026-10-03
@@ -100,11 +137,22 @@ class EntityPreviewViewModel(QObject):
         # ``(pinned, type, id)`` triple as ``slotKey``/``_slot_card``. None
         # while the column paints its usual equal division. Pure view state:
         # the connector, the storage and the frames know nothing of it (Д2).
-        self._fullsize_key: tuple[bool, str, int] | None = None
+        self._fullsize_key: tuple[bool, str, Any] | None = None
         if now_vm is not None:
             now_vm.nowChanged.connect(self._on_now_changed)
 
     # ── QML-facing properties — the multi-view face (design Д2) ─────────────
+
+    @property
+    def external_sources(self) -> tuple[Any, ...]:
+        """The sources the composition handed to this column."""
+        return self._external_sources
+
+    def set_external_sources(self, sources: Sequence[Any]) -> None:
+        """Re-hand-out for a module joined to the LIVE composition — the same
+        in-place update the connector and the search service accept; frames
+        are rebuilt from the fresh list when the group 6 cards appear."""
+        self._external_sources = tuple(sources)
 
     panes = Property(
         "QVariant", lambda self: self._pane_dicts(), notify=contentChanged,
@@ -123,10 +171,12 @@ class EntityPreviewViewModel(QObject):
 
     # ── Python-side reads (the facade builds the viewer from these) ────────
 
-    def pane_entity(self, entity_type: str, entity_id: int, pinned: bool) -> Any:
+    def pane_entity(self, entity_type: str, entity_id: Any, pinned: bool) -> Any:
         """The loaded entity behind one pane (``None`` when no such pane is
         shown) — the facade's viewer build reads the requesting pane through
-        here, so a duplicate pair answers per its pinned flag (task 2.2)."""
+        here, so a duplicate pair answers per its pinned flag (task 2.2).
+        Since task 6.1 an external pane answers its ``ExternalCardSource``
+        record and its id half is the composite source string."""
         for card in self._cards:
             if (
                 card.pinned == pinned
@@ -174,7 +224,7 @@ class EntityPreviewViewModel(QObject):
         }
         cards: list[EntityCardViewModel] = []
         rebuilt = False
-        pinned_pairs: set[tuple[str, int]] = set()
+        pinned_pairs: set[tuple[str, Any]] = set()
         for index, (entity_type, entity) in enumerate(pins):
             card, reused = self._slot_card(
                 previous, True, entity_type, entity, index, PIN_STATE_UNPIN
@@ -183,7 +233,7 @@ class EntityPreviewViewModel(QObject):
             pinned_pairs.add((entity_type, card.entity_id))
             cards.append(card)
         if live is not None:
-            live_pair = (live[0], int(getattr(live[1], "id", 0) or 0))
+            live_pair = (live[0], slot_id_of(live[1]))
             card, reused = self._slot_card(
                 previous,
                 False,
@@ -214,10 +264,10 @@ class EntityPreviewViewModel(QObject):
 
     def _relocate_fullsize_key(
         self,
-        key: tuple[bool, str, int] | None,
+        key: tuple[bool, str, Any] | None,
         pins: Sequence[tuple[str, Any]],
         live: tuple[str, Any] | None,
-    ) -> tuple[bool, str, int] | None:
+    ) -> tuple[bool, str, Any] | None:
         """The one relocation rule of the expansion key against an incoming
         frame (NRI-0028 Д2): the key is in the frame — the mode stands; the
         exact key is gone but the same ``(type, id)`` pair rides the OTHER
@@ -235,14 +285,9 @@ class EntityPreviewViewModel(QObject):
         follows the live slot)."""
         if key is None:
             return None
-        frame = [
-            (True, entity_type, int(getattr(entity, "id", 0) or 0))
-            for entity_type, entity in pins
-        ]
+        frame = [(True, entity_type, slot_id_of(entity)) for entity_type, entity in pins]
         if live is not None:
-            frame.append(
-                (False, live[0], int(getattr(live[1], "id", 0) or 0))
-            )
+            frame.append((False, live[0], slot_id_of(live[1])))
         if key in frame:
             return key
         pair = (key[1], key[2])
@@ -257,7 +302,7 @@ class EntityPreviewViewModel(QObject):
 
     def _slot_card(
         self,
-        previous: dict[tuple[bool, str, int], EntityCardViewModel],
+        previous: dict[tuple[bool, str, Any], EntityCardViewModel],
         pinned: bool,
         entity_type: str,
         entity: Any,
@@ -273,7 +318,7 @@ class EntityPreviewViewModel(QObject):
         (pinned by the e2e save tests), so the very same object can arrive
         with new values — the fingerprint of the rendered fields is what
         separates a real edit from a re-presentation."""
-        pair = (entity_type, int(getattr(entity, "id", 0) or 0))
+        pair = (entity_type, slot_id_of(entity))
         card = previous.get((pinned,) + pair)
         if (
             card is not None
@@ -299,7 +344,7 @@ class EntityPreviewViewModel(QObject):
 
     @staticmethod
     def _live_pin_state(
-        live_pair: tuple[str, int], pinned_pairs: set[tuple[str, int]]
+        live_pair: tuple[str, Any], pinned_pairs: set[tuple[str, Any]]
     ) -> str:
         """The live pane's pin state — the whole four-name decision minus the
         pinned half (a pinned card's pin always acts, ``PIN_STATE_UNPIN``).
@@ -324,39 +369,63 @@ class EntityPreviewViewModel(QObject):
 
     # ── QML-facing slots (the island's outgoing gestures) ──────────────────
 
-    @Slot(str, int)
-    def requestEntity(self, entity_type: str, entity_id: int) -> None:
+    @Slot(str, "QVariant")
+    def requestEntity(self, entity_type: str, entity_id: Any) -> None:
         """A relation row was activated (mouse click or accessibility Press —
         the library row runs both through this one slot). Which pane raised
-        it is the connector's live-area rule, not the payload's."""
-        self.entityRequested.emit(entity_type, entity_id)
+        it is the connector's live-area rule, not the payload's. The id half
+        decides the channel (task 6.1, design Д4): a str is a composite
+        external source id and rides the string twin of the bus, an int is a
+        kernel row — the same split :meth:`requestLink` performs for mention
+        hrefs, so the kernel int channel never squashes an external pair."""
+        if isinstance(entity_id, str):
+            self.externalEntityRequested.emit(entity_type, entity_id)
+        else:
+            self.entityRequested.emit(entity_type, int(entity_id))
 
     @Slot(str)
     def requestLink(self, link: str) -> None:
         """``onLinkActivated`` receiver: a generated mention anchor navigates;
         any other href (external URL, stale fragment) is a silent no-op, so a
-        broken mention of a deleted entity can never break the preview."""
+        broken mention of a deleted entity can never break the preview. An
+        href of a registered external type (design Д4) rides the string-id
+        channel — the connector answers it with the read-only card in the
+        live area, the same channel a search-row click took in task 3.4."""
         target = parse_mention_link(link)
         if target is None:
             return
-        self.entityRequested.emit(target[0], target[1])
+        if isinstance(target[1], str):
+            self.externalEntityRequested.emit(target[0], target[1])
+        else:
+            self.entityRequested.emit(target[0], target[1])
 
-    @Slot(str, int, bool)
-    def requestPinToggle(self, entity_type: str, entity_id: int, pinned: bool) -> None:
+    @Slot(str, "QVariant", bool)
+    def requestPinToggle(self, entity_type: str, entity_id: Any, pinned: bool) -> None:
         """The pane's pin was activated; ``pinned`` is the card's CURRENT
         state and the connector toggles it (design Д2: by pair, the index
-        would go stale between press and answer)."""
-        self.pinToggleRequested.emit(entity_type, entity_id, pinned)
+        would go stale between press and answer). The id half decides the
+        signal (task 6.2): a string pair rides the external twin, the kernel
+        int signal stays typed exactly as before."""
+        if isinstance(entity_id, str):
+            self.externalPinToggleRequested.emit(entity_type, entity_id, pinned)
+        else:
+            self.pinToggleRequested.emit(entity_type, int(entity_id), pinned)
 
-    @Slot(str, int, bool)
-    def requestImageFor(self, entity_type: str, entity_id: int, pinned: bool) -> None:
+    @Slot(str, "QVariant", bool)
+    def requestImageFor(self, entity_type: str, entity_id: Any, pinned: bool) -> None:
         """A pane's picture was activated (the group-4 delegate names itself);
-        a pair that is not in a matching pane is a silent no-op."""
-        if self.pane_entity(entity_type, entity_id, pinned) is not None:
-            self.imageRequested.emit(entity_type, entity_id, pinned)
+        a pair that is not in a matching pane is a silent no-op. Task 6.1:
+        an external pane's picture rides the external twin so the facade can
+        build the viewer from the record's own file path."""
+        if self.pane_entity(entity_type, entity_id, pinned) is None:
+            return
+        if isinstance(entity_id, str):
+            self.externalImageRequested.emit(entity_type, entity_id, pinned)
+        else:
+            self.imageRequested.emit(entity_type, int(entity_id), pinned)
 
-    @Slot(str, int, bool)
-    def requestFullsizeToggle(self, entity_type: str, entity_id: int, pinned: bool) -> None:
+    @Slot(str, "QVariant", bool)
+    def requestFullsizeToggle(self, entity_type: str, entity_id: Any, pinned: bool) -> None:
         """The expand button of a pane was activated (NRI-0028 Д1): pressing
         the key that is already expanded extinguishes it, pressing another
         card's button moves the expansion there — only one card is ever
@@ -399,7 +468,7 @@ class EntityPreviewViewModel(QObject):
         return None
 
     @staticmethod
-    def _slot_triple(card: EntityCardViewModel) -> tuple[bool, str, int]:
+    def _slot_triple(card: EntityCardViewModel) -> tuple[bool, str, Any]:
         """The card's slot identity — the same ``(pinned, type, id)`` triple
         ``_slot_card`` reuses cards by and the island's ``slotKey`` names."""
         return (card.pinned, card.entity_type, card.entity_id)

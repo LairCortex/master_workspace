@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.domain import entity_registry as _reg
 from app.presentation.utils.mention_html import (
     MENTION_LINK_SCHEME,
     build_mention_html,
@@ -68,3 +69,42 @@ class TestParseMentionLink:
     )
     def test_foreign_or_broken_hrefs_navigate_nothing(self, link):
         assert parse_mention_link(link) is None
+
+
+class TestExternalHrefs:
+    """add-dnd-game-face task 5.2 (design Д4): the generator and the reader
+    stay one pair for external types too — the composite source id rides the
+    href whole, and the reader hands it back as text (never int-parsed,
+    never cut at later slashes)."""
+
+    @pytest.fixture
+    def feat_registered(self):
+        saved = dict(_reg._EXTERNAL)
+        _reg._EXTERNAL.clear()
+        _reg.register_external((_reg.ExternalTypeDescriptor(
+            key="dd_feat", label="Черта", plural_label="Черты",
+            icon_key="crosshair", reference=True,
+        ),))
+        yield
+        _reg._EXTERNAL.clear()
+        _reg._EXTERNAL.update(saved)
+
+    def test_external_marker_anchor_keeps_the_composite_id(self, feat_registered):
+        html = build_mention_html("до @[Тёмное зрение](dd_feat:srd51/Darkvision) п")
+        assert html == (
+            f"до <a href=\"{MENTION_LINK_SCHEME}dd_feat/srd51/Darkvision\">"
+            "Тёмное зрение</a> п"
+        )
+
+    def test_generated_external_anchor_reads_back_as_text(self, feat_registered):
+        html = build_mention_html("@[Т](dd_feat:srd51/Darkvision)")
+        href = html.split('href="')[1].split('"')[0]
+        assert parse_mention_link(href) == ("dd_feat", "srd51/Darkvision")
+
+    def test_unregistered_external_shape_navigates_nothing(self):
+        # without the registration the bytes are nobody's record — the href
+        # is inert (the section is the whole door, kernel posture kept)
+        assert parse_mention_link("nri://dd_feat/srd51/Darkvision") is None
+
+    def test_external_href_without_an_id_is_nothing(self, feat_registered):
+        assert parse_mention_link("nri://dd_feat/") is None

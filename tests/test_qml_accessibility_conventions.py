@@ -168,12 +168,14 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
 
     card = copy / "EntityCardRoot.qml"
     card_text = card.read_text(encoding="utf-8")
+    # add-dnd-game-face task 7.1: the checkbox sank one nesting level deeper
+    # (it lives on the «Обзор» tab page now) — the anchors carry that depth.
     broken_checkbox = card_text.replace(
-        '                                objectName: "entityNoEndCheck"\n'
-        '                                text: "Бессрочно"\n',
-        '                                objectName: "entityNoEndCheck"\n'
-        '                                text: "Бессрочно"\n'
-        '                                Accessible.name: ""\n',
+        '                                        objectName: "entityNoEndCheck"\n'
+        '                                        text: "Бессрочно"\n',
+        '                                        objectName: "entityNoEndCheck"\n'
+        '                                        text: "Бессрочно"\n'
+        '                                        Accessible.name: ""\n',
         1,
     )
     assert broken_checkbox != card_text, "injection anchor moved — fix the probe"
@@ -183,8 +185,8 @@ def test_guard_cuts_a_violation_injected_into_a_copy_of_the_real_tree(
     # working onClicked wiring is rewound to the OBS-2 onToggled shape — the
     # exact regression Д15 forbids.
     rewound = broken_checkbox.replace(
-        '                                onClicked: entityCardVm.setNoEnd(!entityCardVm.noEnd)\n',
-        '                                onToggled: entityCardVm.setNoEnd(checked)\n',
+        '                                        onClicked: entityCardVm.setNoEnd(!entityCardVm.noEnd)\n',
+        '                                        onToggled: entityCardVm.setNoEnd(checked)\n',
         1,
     )
     assert rewound != broken_checkbox, "injection anchor moved — fix the probe"

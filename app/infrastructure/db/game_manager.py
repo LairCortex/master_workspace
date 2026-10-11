@@ -10,25 +10,72 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sqlite3
 import sys
 import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from app import __version__
 from app.infrastructure.images.paths import PREVIEW_SUFFIX
+from app.infrastructure.repositories.game_settings_repository import (
+    DND_MODULE_DATA_VERSION,
+    DND_MODULE_KEY,
+    decode_dnd_module_flag,
+    encode_dnd_module_flag,
+)
 
 
 class GameInfo(TypedDict):
     name: str
     path: str
     modified: datetime
+    #: True when the game's ``dnd_module`` flag reads enabled (task 2.7) —
+    #: the launcher row paints the «D&D» badge from it. NotRequired: the
+    #: catalog fakes predating the badge construct the dict without the key
+    #: and read as ordinary.
+    dnd: NotRequired[bool]
 
 
 _DB_NAME = "game.db"
 _IMAGES_DIR_NAME = "images"
+
+#: DDL of the settings table for the launcher's synchronous seed read/write —
+#: the same shape the ORM model creates; the launcher runs before any engine
+#: or session exists, so this stays the one hand-written copy of the shape,
+#: used ONLY against a brand-new game file (init_db owns every real schema).
+_GAME_SETTINGS_DDL = (
+    "CREATE TABLE IF NOT EXISTS game_settings "
+    "(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')"
+)
+
+
+def _read_dnd_enabled(db_path: Path) -> bool:
+    """Synchronous read of the game's D&D flag for the catalog (task 2.7,
+    design Д8): one short ``sqlite3`` query per file, all reading rules of
+    the штатный codec (a damaged value logs its reason and reads ordinary,
+    an absent row or a not-yet-schematized database reads ordinary too).
+    The catalog is a preview; the authoritative read stays in the game-open
+    composition — this one only paints the badge. One try covers connect and
+    query alike: an unopenable or not-yet-schematized file (an empty game
+    touched but never opened) is simply an ordinary game here."""
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT value FROM game_settings WHERE key = ?", (DND_MODULE_KEY,)
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+    if row is None:
+        return False
+    flag = decode_dnd_module_flag(row[0])
+    return flag is not None and flag.enabled
 
 
 def _resolve_games_dir() -> Path:
@@ -75,6 +122,7 @@ def list_games() -> list[GameInfo]:
                     name=entry.name,
                     path=str(db_path),
                     modified=datetime.fromtimestamp(stat.st_mtime),
+                    dnd=_read_dnd_enabled(db_path),
                 ))
         elif entry.is_file() and entry.suffix == ".db":
             stat = entry.stat()
@@ -82,15 +130,23 @@ def list_games() -> list[GameInfo]:
                 name=entry.stem,
                 path=str(entry),
                 modified=datetime.fromtimestamp(stat.st_mtime),
+                dnd=_read_dnd_enabled(entry),
             ))
     return games
 
 
-def create_game(name: str) -> Path:
+def create_game(name: str, *, dnd: bool = False) -> Path:
     """Create a new game catalog directory and return the path to its ``game.db``.
 
     The database file is created empty — tables are initialized by
-    ``Application.start()``.
+    ``Application.start()``. With ``dnd=True`` (task 2.6, design Д8) the
+    creation additionally seeds the ``dnd_module`` flag with the current
+    module data-format version: the launcher is synchronous and pre-session,
+    so the seed goes through a short ``sqlite3`` write of the штатный codec's
+    body; ordinary games never see the key (spec game-launcher «при «Обычная»
+    ключ модуля НЕ SHALL записываться»). The pre-created settings table does
+    not stop the calendar seeding on first open — ``init_db``'s freshness
+    fact ignores it (see ``migrations._database_is_fresh``).
     """
     safe_name = name.strip()
     if not safe_name:
@@ -103,6 +159,20 @@ def create_game(name: str) -> Path:
     (game_dir / _IMAGES_DIR_NAME).mkdir()
     db_path = game_dir / _DB_NAME
     db_path.touch()
+    if dnd:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(_GAME_SETTINGS_DDL)
+            conn.execute(
+                "INSERT INTO game_settings (key, value) VALUES (?, ?)",
+                (
+                    DND_MODULE_KEY,
+                    encode_dnd_module_flag(True, DND_MODULE_DATA_VERSION),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
     return db_path
 
 

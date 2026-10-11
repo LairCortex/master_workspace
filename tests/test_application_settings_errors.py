@@ -85,11 +85,16 @@ class _FinishedSignalFake:
         self.handlers.append(handler)
 
 
-def _install_modal_trap(monkeypatch):
-    """Swap ``app.main.QMessageBox`` for a trap (PR-010): the static modal
+def _install_modal_trap(monkeypatch, target: str = "app.main.QMessageBox"):
+    """Swap a module's ``QMessageBox`` for a trap (PR-010): the static modal
     variants and any ``exec``/``exec_`` raise immediately — reintroducing a
     blocking show on the startup contour turns the test red at the exact
-    call — while the allowed non-nesting ``show()`` only records the box."""
+    call — while the allowed non-nesting ``show()`` only records the box.
+
+    ``target`` (add-dnd-module-lifecycle): the trap is generic — the live
+    enable/disable flows also need it on ``app.dd.module.QMessageBox``, and
+    each flow compares its answer against the ``StandardButton`` of ITS
+    QMessageBox, so one class per patched module answers both."""
 
     def _blocking(name: str):
         def _hit(*args, **kwargs):
@@ -101,12 +106,44 @@ def _install_modal_trap(monkeypatch):
 
         return _hit
 
+    class _TrapButton:
+        """Мини-флаг под ``QMessageBox.StandardButton``: значения — unique
+        экземпляры с ``|`` (продуктивный код складывает Да|Нет), сравнение —
+        идентичность, ``repr`` печатает имя кнопки."""
+
+        __slots__ = ("name", "bits")
+
+        def __init__(self, name, bits=0):
+            self.name = name
+            self.bits = bits
+
+        def __or__(self, other):
+            return _TrapButton(f"{self.name}|{other.name}", self.bits | other.bits)
+
+        def __eq__(self, other):
+            return self is other
+
+        def __hash__(self):
+            return id(self)
+
+        def __repr__(self):
+            return f"<TrapButton {self.name}>"
+
     class TrapMessageBox:
         class Icon:
             Warning = "warning"
+            # add-dnd-module-foundation (task 2.2/2.3): the live enable/disable
+            # confirmations ask a Yes/No question — the trap speaks its verbs.
+            Question = "question"
+            Critical = "critical"
+            # task 5.2: the datasets sheet prints successes and harmless
+            # notices with the information icon — the trap names it too.
+            Information = "information"
 
         class StandardButton:
-            Ok = "ok"
+            Ok = _TrapButton("Ok")
+            Yes = _TrapButton("Yes")
+            No = _TrapButton("No")
 
         def __init__(self, parent=None):
             self.parent = parent
@@ -114,6 +151,7 @@ def _install_modal_trap(monkeypatch):
             self.title = None
             self.text = None
             self.buttons = None
+            self.default_button = None
             self.shown_via = None
             self.finished = _FinishedSignalFake()
 
@@ -129,6 +167,9 @@ def _install_modal_trap(monkeypatch):
         def setStandardButtons(self, buttons):
             self.buttons = buttons
 
+        def setDefaultButton(self, button):
+            self.default_button = button
+
         def show(self):
             self.shown_via = "show"
             created.append(self)
@@ -141,7 +182,7 @@ def _install_modal_trap(monkeypatch):
         question = staticmethod(_blocking("QMessageBox.question"))
 
     created: list[TrapMessageBox] = []
-    monkeypatch.setattr("app.main.QMessageBox", TrapMessageBox)
+    monkeypatch.setattr(target, TrapMessageBox)
     return created
 
 

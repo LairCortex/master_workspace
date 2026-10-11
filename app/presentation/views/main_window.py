@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+from collections.abc import Sequence
+from typing import Any
 
 from PySide6.QtCore import QEvent, Signal
 from PySide6.QtGui import QAction
@@ -13,6 +15,7 @@ from PySide6.QtWidgets import (
 from app import __version__
 from app.infrastructure.paths import NRI_MANAGER_DIR
 from app.presentation.theme.catalog import attach_theme, set_role
+from app.presentation.utils.caption_utils import button_caption
 from app.presentation.views.detail_panel import DetailPanel
 from app.presentation.views.entity_preview import EntityPreviewWidget
 from app.presentation.views.search_bar import SearchBar
@@ -67,6 +70,14 @@ class MainWindow(QMainWindow):
     # NRI-0024 task 1.3 retired the open-window registry, task 2.4 moved the
     # content into the sheet family).
     world_snapshot_requested = Signal()
+    # add-dnd-module-foundation (task 2.2, design Д9): the kernel's game-system
+    # entry «Включить D&D-модуль…» lives in the «Игра» group — the item is a
+    # штатный kernel action, the composition root answers with the
+    # confirmation and the live attach (the kernel itself imports the module
+    # nowhere else). The action always exists; its visibility is the
+    # composition's answer to the game's flag and the build profile (spec
+    # dnd-module-lifecycle «Профиль сборки без модуля»).
+    enable_dd_module_requested = Signal()
 
     def __init__(
         self,
@@ -78,6 +89,8 @@ class MainWindow(QMainWindow):
         parent: QWidget | None = None,
         theme=None,
         now_date_vm=None,
+        external_sources: Sequence[Any] = (),
+        dd_module_enable_offer: bool = False,
     ) -> None:
         super().__init__(parent)
         self._base_title = "Master Workspace"
@@ -120,6 +133,28 @@ class MainWindow(QMainWindow):
             self.world_snapshot_requested.emit
         )
         file_menu.addAction(self.world_snapshot_action)
+
+        # Игра — the kernel's game-system group (add-dnd-module-foundation,
+        # task 2.2, design Д9): «Включить D&D-модуль…» is the only entry the
+        # kernel contributes today. The action exists in every composition
+        # (the same class answers every game); whether it is reachable is the
+        # composition root's read of the flag and the profile — the offer
+        # flag seeds the visibility, the enable/disable flows move it later
+        # (set_enable_dd_module_visible), so the menu bar never gets rebuilt.
+        game_menu = menu_bar.addMenu("Игра")
+        # The '&' is doubled so the menu prints the literal «D&D»: the menu
+        # family eats a single '&' as a mnemonic marker (live audit 2026-10-10
+        # caught «Включить DD-модуль…»).
+        self.enable_dd_module_action = QAction(
+            button_caption("Включить D&D-модуль…"), self
+        )
+        self.enable_dd_module_action.setObjectName("enableDndModuleAction")
+        self.enable_dd_module_action.triggered.connect(
+            self.enable_dd_module_requested.emit
+        )
+        game_menu.addAction(self.enable_dd_module_action)
+        self._game_menu = game_menu
+        self.set_enable_dd_module_visible(dd_module_enable_offer)
 
         # Чар-листы
         char_sheets_menu = menu_bar.addMenu("Чар-листы")
@@ -284,7 +319,10 @@ class MainWindow(QMainWindow):
         # one), so the all-tabs-whole threshold retired as the pane floor —
         # every pane keeps one shared usability minimum instead.
         self.entity_preview = EntityPreviewWidget(
-            theme=self._theme, now_date_vm=now_date_vm
+            theme=self._theme, now_date_vm=now_date_vm,
+            # add-dnd-game-face (design Д1): the preview column receives the
+            # composition's external sources (empty without a module).
+            external_sources=external_sources,
         )
         self.timeline_widget.setMinimumWidth(PANE_MIN_WIDTH)
         self.detail_panel.setMinimumWidth(PANE_MIN_WIDTH)
@@ -328,6 +366,21 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{self._base_title} — {name}")
         else:
             self.setWindowTitle(self._base_title)
+
+    def set_enable_dd_module_visible(self, visible: bool) -> None:
+        """Show or hide the kernel's «Включить D&D-модуль…» entry together
+        with its «Игра» group (add-dnd-module-foundation tasks 2.2/2.3).
+
+        Three callers, one mechanism: the composition root seeds the state at
+        window build (offer only for ordinary games in a module-capable
+        profile), the enable flow hides the entry once the module is attached
+        (an attached module answers with its own «Выключить…»), and the
+        disable flow brings it back so the re-enable stays reachable in the
+        same session. The group itself disappears with its only entry — no
+        empty menu is ever printed (spec «У обычной игры группа модуля… НЕ
+        SHALL существовать» reads here for the kernel half)."""
+        self.enable_dd_module_action.setVisible(visible)
+        self._game_menu.menuAction().setVisible(visible)
 
     def attach_table_cluster(self, cluster: QWidget) -> None:
         """Give the live table cluster its row in the content column (the

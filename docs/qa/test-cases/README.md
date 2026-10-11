@@ -6,7 +6,7 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
 
 ## Файлы набора
 
-Итог: **46 спецификации, 1167 кейсов, 118 зафиксированных пробелов, 133 строки «Живая проверка»**
+Итог: **49 спецификаций, 1228 кейсов, 124 зафиксированных пробела, 133 строки «Живая проверка»** (+`13-dnd-module-foundation.md` от 2026-10-09: +3 новые спеки, +61 кейс, +6 пробелов; +`14-dnd-game-face.md` от 2026-10-10: +8 новых спек, +79 кейсов, +7 пробелов; дельты game-launcher/main-window/architecture-integrity/ui-testing/mentions/global-search/preview-pins/entity-preview/event-timeline в счётчик спецификаций не входят)
 (процедуры живого подтверждения, перенесённые из 33 аудитов `docs/qa/*.md`; +TC-IMGD-013,
 +TC-CALW-034, +TC-CALW-035, +TC-CALW-036, +TC-CALW-037 и +TC-RELC-019 от 2026-10-06).
 
@@ -24,6 +24,8 @@ QA-аудитов (`docs/qa/*.md`). Норма поведения — тольк
 | `10-theme-shell-components-lang.md` | ui-theme (THME), qml-shell (SHEL), qml-components (CMPS), ui-widget-catalog (WCAT), interface-language (LANG) | 189 | 15 |
 | `11-accessibility.md` | qml-accessibility (A11Y) | 35 | 7 |
 | `12-app-system.md` | app-logging (LOGG), app-version (VERS), save-error-reporting (SAVE), architecture-integrity (ARIN), ui-testing (UITT) | 75 | 9 |
+| `13-dnd-module-foundation.md` | dnd-module-lifecycle (DNDL), dnd-dataset-library (DNLB), dnd-dataset-validator (DNDV) + дельты game-launcher (LNCHD), main-window (MAIND), architecture-integrity (ARIND), ui-testing (UITTD) | 61 | 6 |
+| `14-dnd-game-face.md` | external-entity-sources (EXTS), entity-card-tabs (CTAB), dnd-reference-records (DREF), dnd-character-extension (DCEX), dnd-character-import (DCIM), dnd-bestiary (DBES), dnd-encounters (DENC), dnd-grimoire-import (DGRI) + дельты mentions (MENTD), global-search (SRCHD), preview-pins (PINSD), entity-preview (PREVD), event-timeline (TLND), main-window (MAIND, продолжение), architecture-integrity (ARIND, продолжение) | 79 | 7 |
 | `app-map.md` | карта приложения: классы окон, флоу F01–F22, точки UI/UX-проверок, граф экранов | — | — |
 
 ## Что всплыло при сверке (сквозные расхождения)

@@ -58,6 +58,17 @@ FILE_DIALOG_SITES = frozenset({
     ("app/presentation/views/entity_card_dialog.py", "_on_pick_image"),
     ("app/presentation/views/character_sheet/editor_dialog.py", "export_pdf"),
     ("app/presentation/views/character_sheet/editor_dialog.py", "_pick_image"),
+    # add-dnd-module-foundation task 5.1: файл-импорт датасета на листе модуля
+    ("app/dd/presentation/datasets_sheet.py", "_on_import_clicked"),
+    # add-dnd-game-face task 9.4: два файла-входа импорта персонажа —
+    # создание из меню модуля и «Перезаписать…»/«Сохранить исходный…» на табе
+    ("app/dd/module.py", "_on_character_import_requested"),
+    ("app/dd/presentation/character_tab_frames.py", "_on_overwrite_clicked"),
+    ("app/dd/presentation/character_tab_frames.py", "_on_save_raw_clicked"),
+    # add-dnd-game-face task 10.1: выбор картинки на карточке монстра
+    ("app/dd/presentation/monster_card_sheet.py", "_on_pick_image"),
+    # add-dnd-game-face task 4.5: импорт файла гримуара на листе «Гримуары…»
+    ("app/dd/presentation/grimoires_sheet.py", "_on_import_clicked"),
 })
 FILE_DIALOG_STATICS = frozenset({
     "getOpenFileName",

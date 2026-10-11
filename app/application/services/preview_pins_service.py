@@ -22,6 +22,7 @@ from collections.abc import Sequence
 
 from app.infrastructure.db.uow import GameSessionUoW
 from app.infrastructure.repositories.game_settings_repository import (
+    PinId,
     PreviewPinsRepository,
 )
 
@@ -33,11 +34,13 @@ class PreviewPinsService:
     def __init__(self, uow: GameSessionUoW) -> None:
         self._uow = uow
 
-    async def get_pins(self) -> list[tuple[str, int]]:
-        """The saved pins in pin order — empty when nothing is pinned yet."""
+    async def get_pins(self) -> list[tuple[str, PinId]]:
+        """The saved pins in pin order — empty when nothing is pinned yet.
+        Since add-dnd-game-face task 6.2 an id rides either an int (kernel
+        row) or a str (external source id); the codec is the reader."""
         return await PreviewPinsRepository(self._uow.session).load()
 
-    async def save_pins(self, pins: Sequence[tuple[str, int]]) -> None:
+    async def save_pins(self, pins: Sequence[tuple[str, PinId]]) -> None:
         """Persist the full pin list: one transaction, one upsert (Д3).
 
         Any error rolls the write back and re-raises — a connector state

@@ -76,11 +76,15 @@ class FakeCatalog:
     def list_games(self) -> list[GameInfo]:
         return [dict(e) for e in self.entries]
 
-    def create_game(self, name: str) -> str:
+    def create_game(self, name: str, *, dnd: bool = False) -> str:
         if any(e["name"] == name for e in self.entries):
             raise FileExistsError(f"Game '{name}' already exists")
         path = f"/games/{name}/game.db"
-        self.entries.append(GameInfo(name=name, path=path, modified=self._next_modified()))
+        self.entries.append(
+            GameInfo(
+                name=name, path=path, modified=self._next_modified(), dnd=dnd
+            )
+        )
         return path
 
     def delete_game(self, path: str) -> None:
@@ -338,6 +342,33 @@ def test_game_rows_follow_vm_without_any_qml_changes(qtbot, catalog, vm, palette
 
     vm.remove("/games/Дар/game.db")  # row disappears again
     assert len(rows(widget)) == 1
+
+
+def test_dnd_game_row_carries_the_badge_in_its_name(qtbot, catalog, vm, palette):
+    """add-dnd-module-foundation task 2.7 (design Д8): the «D&D» badge is a
+    suffix of the row's text — it therefore reaches the accessibility name
+    through the text the component already exposes (no new a11y contract,
+    no new coordinate limit); ordinary rows stay byte-for-byte the old text."""
+    catalog.entries.append(
+        GameInfo(
+            name="Подземелье", path="/games/Подземелье/game.db",
+            modified=BASE_TIME, dnd=True,
+        )
+    )
+    catalog.entries.append(
+        GameInfo(name="Погоня", path="/games/Погоня/game.db", modified=BASE_TIME)
+    )
+    vm.refresh()
+    widget = load_island(qtbot, vm=vm, palette=palette)
+    stamp = BASE_TIME.strftime(LABEL_FORMAT)
+    assert row_texts(widget) == [
+        f"Подземелье · D&D ({stamp})",  # бейдж до даты, имя целиком в тексте
+        f"Погоня ({stamp})",            # обычная игра — без изменений
+    ]
+    # имя доступности строки — тот же контент (RowItem names by its text)
+    for row, text in zip(rows(widget), row_texts(widget)):
+        iface = QAccessible.queryAccessibleInterface(row)
+        assert iface.text(QAccessible.Name) == text
 
 
 def test_game_rows_carry_the_open_game_description(qtbot, catalog, vm, palette):

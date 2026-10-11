@@ -308,3 +308,47 @@ def test_late_height_sync_is_inert_after_the_release(qtbot, tmp_path):
     qtbot.waitUntil(lambda: bar.quick.rootObject() is None, timeout=2000)
     bar._sync_island_height()
     assert bar.height() == height_before
+
+
+# ── add-dnd-game-face task 3.4: the external row's channel ──────────────────
+
+
+async def test_external_row_click_rides_the_string_channel(qtbot, tmp_path):
+    """A published external row is an ordinary result row in the scene —
+    the double-click hold releases it through ``external_result_selected``
+    (string source id, design Д4) and the int channel stays silent."""
+    from app.domain import entity_registry
+
+    saved = dict(entity_registry._EXTERNAL)
+    try:
+        entity_registry.register_external(
+            [
+                entity_registry.ExternalTypeDescriptor(
+                    key="dd_feat", label="Черта", plural_label="Черты",
+                    icon_key="scroll",
+                )
+            ]
+        )
+
+        class _Hit:
+            source_id = "srd/lucky"
+            name = "Везучесть"
+            origin = "SRD 5.1"
+
+        vm = _vm({"dd_feat": [_Hit()]})
+        bar = _bar(qtbot, tmp_path, vm)
+        selected = track(bar.result_selected)
+        externals = track(bar.external_result_selected)
+        find_item(bar.quick, "searchInput").setProperty("text", "вез")
+
+        await vm.search("вез")
+        qtbot.waitUntil(lambda: len(island_rows(bar.quick, "searchResultRow")) == 1)
+        click_item(bar.quick, find_item(bar.quick, "searchResultRow"))
+        qtbot.waitUntil(
+            lambda: externals == [("dd_feat", "srd/lucky")],
+            timeout=vm.doubleClickIntervalMs + 1500,
+        )
+        assert selected == []
+    finally:
+        entity_registry._EXTERNAL.clear()
+        entity_registry._EXTERNAL.update(saved)

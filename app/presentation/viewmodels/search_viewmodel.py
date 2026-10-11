@@ -32,6 +32,15 @@ class SearchViewModel(QObject):
     # entity's card or the event editor. ``resultSelected`` stayed the single
     # left-click channel (its meaning moved to the full path in the wiring).
     resultActivated = Signal(str, int)
+    # add-dnd-game-face (task 3.4, design Д4): an EXTERNAL result row's id is
+    # a string (the composite «источник/запись» — a dataset record's identity
+    # in the source's namespace), which the int-payload kernel channel cannot
+    # carry. Both result gestures of an external row ride this one channel:
+    # the single click and the activation alike mean «live preview» (spec
+    # global-search «клик по ней ведёт себя как клик по сущности (только
+    # предпросмотр)» — an external record is read-only, so the edit gesture
+    # has nothing to open).
+    externalResultSelected = Signal(str, str)  # (type key, source_id)
 
     def __init__(self, search_service, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -114,7 +123,7 @@ class SearchViewModel(QObject):
         self._stop_debounce()
         self._emit_search()
 
-    def _clickable_target(self, index: int) -> tuple[str, int] | None:
+    def _clickable_target(self, index: int) -> tuple[str, Any] | None:
         """(type, id) behind one list index; ``None`` for an out-of-range
         index and for the non-clickable rows (section headers, the no-match
         line) — the single guard both result gestures share (NRI-0022)."""
@@ -125,6 +134,15 @@ class SearchViewModel(QObject):
             return None
         return (row["type"], row["id"])
 
+    def _emit_result(self, target: tuple[str, Any]) -> None:
+        """One result row's activation on the channel its id fits: kernel
+        pairs (int ids) ride the original channels, external pairs (string
+        source ids) ride ``externalResultSelected`` (task 3.4)."""
+        if isinstance(target[1], str):
+            self.externalResultSelected.emit(target[0], target[1])
+        else:
+            self.resultSelected.emit(*target)
+
     @Slot(int)
     def select(self, index: int) -> None:  # noqa: N802
         """Single left click on a result row (its meaning — the full path —
@@ -132,18 +150,23 @@ class SearchViewModel(QObject):
         target = self._clickable_target(index)
         if target is None:
             return
-        self.resultSelected.emit(*target)
+        self._emit_result(target)
         self._set_list_visible(False)
 
     @Slot(int)
     def activate(self, index: int) -> None:  # noqa: N802
         """Double click on a result row (NRI-0022 task 6.2): the edit gesture
         — the wiring opens the entity card or the event editor; the list
-        collapses the same way."""
+        collapses the same way. An external row is read-only, so its second
+        gesture rides the live-preview channel like its first one (task 3.4);
+        the second activation of the same pair is the wiring's no-op."""
         target = self._clickable_target(index)
         if target is None:
             return
-        self.resultActivated.emit(*target)
+        if isinstance(target[1], str):
+            self.externalResultSelected.emit(target[0], target[1])
+        else:
+            self.resultActivated.emit(*target)
         self._set_list_visible(False)
 
     async def search(self, query: str, event_names: Mapping[int, str] | None = None) -> None:
@@ -170,7 +193,9 @@ class SearchViewModel(QObject):
         text: str,
         *,
         entity_type: str = "",
-        entity_id: int | None = None,
+        # widened by add-dnd-game-face task 3.4: an external row carries the
+        # record's string source_id (design Д4), a kernel row its int id
+        entity_id: int | str | None = None,
         date_text: str = "",
         clickable: bool = False,
         icon_name: str = "",
@@ -194,6 +219,35 @@ class SearchViewModel(QObject):
             # registry (wave 3, finding A4), keeping the tolerant fallback
             # for keys outside the registry
             desc = entity_registry.by_collection(type_key)
+            external = entity_registry.external_descriptor(type_key)
+            if external is not None:
+                # add-dnd-game-face (task 3.4, spec global-search «внешняя
+                # группа подписана именем своего типа»): the caption, payload
+                # type and glyph come from the registered descriptor, the row
+                # carries the record's string source_id and (when the source
+                # names it) the origin label — two same-named records from
+                # two datasets read as two rows of one group, each signed
+                # with its source (spec dnd-reference-records «каждая
+                # подписана набором-источником»).
+                rows.append(
+                    self._row(
+                        "sectionHeader",
+                        f"— {external.plural_label} ({len(entities)}) —",
+                        icon_name=icon_for(external.key),
+                    )
+                )
+                for hit in entities:
+                    text = f"{hit.name}  [{hit.origin}]" if hit.origin else hit.name
+                    rows.append(
+                        self._row(
+                            "result",
+                            text,
+                            entity_type=external.key,
+                            entity_id=hit.source_id,
+                            clickable=bool(hit.source_id),
+                        )
+                    )
+                continue
             label = desc.plural_label if desc else type_key
             entity_type = desc.key if desc else type_key
             rows.append(

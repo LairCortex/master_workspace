@@ -129,7 +129,14 @@ Rectangle {
                     height: implicitHeight
                     textObjectName: "gameRowText"
                     // Spec row format: «имя (дата_изменения)» — roles from the VM.
-                    text: modelData.name + " (" + modelData.modifiedLabel + ")"
+                    // add-dnd-module-foundation task 2.7 (design Д8): a game
+                    // with the module flag reads «имя · D&D (дата)» — the
+                    // suffix is part of the row's name, so the badge reaches
+                    // the accessibility tree through the text the component
+                    // already exposes (no new a11y contract, no new limit).
+                    text: modelData.name
+                          + (modelData.dnd ? " · D&D" : "")
+                          + " (" + modelData.modifiedLabel + ")"
                     selected: vm.selectedIndex === index
                     // NRI-0017 task 4.1 (design map): the press opens the game —
                     // the row's name is its content, so the hidden meaning of

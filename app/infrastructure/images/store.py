@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QImageReader
-from sqlalchemy import func, select, update
+from sqlalchemy import func, inspect, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +48,54 @@ class ImageStore:
     def __init__(self, session: AsyncSession, image_dir: Path | str) -> None:
         self._session = session
         self._image_dir = Path(image_dir)
+        # Module referrer models handed in by the composition root (task
+        # 10.1): tables OUTSIDE the kernel's closed set whose ``image_id``
+        # column references ``images``. The kernel names no module here —
+        # the door below is the mechanism, the composition decides who
+        # registers it. A registered model joins every refcount scan and
+        # every reference nulling exactly like the kernel entities; an
+        # absent module table never reaches the list (the door checks
+        # presence on this file), so the kernel schema's absence is not an
+        # OperationalError and the scan stays the pre-module query.
+        self._module_ref_models: list = []
+
+    # ── referrer registration (module door, design Д6 image_id→images) ───
+
+    async def add_referring_model(self, model) -> None:
+        """Register one additional referrer ``model`` whose ``image_id``
+        column references ``images.id`` — the composition-root door for a
+        game-system module's own tables (add-dnd-game-face task 10.1:
+        a monster's picture would otherwise be GC'd while the monster still
+        shows it, the exact NRI-0022 bug the closed list exists to prevent).
+
+        Presence-gated on THIS file: a game whose tables the module never
+        created (an ordinary game, a module-less profile that never
+        composes here) keeps the scan byte-for-byte the kernel query — the
+        door silently skips absent tables instead of letting a missing-table
+        OperationalError reach the GC path. Idempotent: registering the same
+        model twice (enable after re-open) appends it once."""
+        if any(registered is model for registered in self._module_ref_models):
+            return
+        table_name = model.__table__.name
+        # Reflection rides the SESSION's own connection, not an engine-level
+        # checkout: on a single-connection database (aiosqlite :memory:) an
+        # engine-level Inspector returns the shared connection and its return
+        # path rolls the connection back — silently discarding the caller's
+        # not-yet-committed work. The session's connection is borrowed for a
+        # read-only PRAGMA and never returned to a pool, so a door called
+        # between, or even inside, a transaction stays side-effect-free.
+        present = await self._session.run_sync(
+            lambda sync_session: inspect(sync_session.connection()).has_table(
+                table_name
+            )
+        )
+        if present:
+            self._module_ref_models.append(model)
+
+    def _referrer_models(self) -> tuple:
+        """Everything that can reference an image: the kernel's closed set
+        plus whatever this game's composition registered."""
+        return _REFERRING_MODELS + tuple(self._module_ref_models)
 
     # ── Ingest ────────────────────────────────────────────────────────────
 
@@ -167,10 +215,11 @@ class ImageStore:
         return total
 
     async def refcount(self, image_id: int) -> int:
-        """Count every referrer of ``image_id``: entities plus sheet-page
-        image fields plus instance values."""
+        """Count every referrer of ``image_id``: entities (kernel and the
+        composition-registered module tables alike) plus sheet-page image
+        fields plus instance values."""
         total = 0
-        for model in _REFERRING_MODELS:
+        for model in self._referrer_models():
             result = await self._session.execute(
                 select(func.count()).select_from(model).where(model.image_id == image_id)
             )
@@ -256,9 +305,10 @@ class ImageStore:
 
     async def _null_references(self, image_id: int) -> None:
         """Clear every reference to ``image_id``: entity FKs (SET NULL via
-        UPDATE) and sheet-page image fields inside the ``pages`` JSON
+        UPDATE — kernel tables and the registered module tables) and
+        sheet-page image fields inside the ``pages`` JSON
         (design D6) — so nothing dangles after the row is dropped."""
-        for model in _REFERRING_MODELS:
+        for model in self._referrer_models():
             await self._session.execute(
                 update(model).where(model.image_id == image_id).values(image_id=None)
             )

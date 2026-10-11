@@ -55,6 +55,10 @@ def test_related_tabs_carry_the_one_map_glyphs(qtbot):
 
     dialog = EventDialog(None)
     qtbot.addWidget(dialog)
+    # add-dnd-game-face task 7.1: the relations strip moved onto its «Связи»
+    # grouping tab — opening that group is what makes the strip (and its
+    # glyphs) visible; the group order is the kernel declaration.
+    dialog.vm.selectGroup(2)
     expected = [
         (caption, icon_for(ref.entity_type))
         for caption, ref in zip(

@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 
@@ -65,6 +68,7 @@ from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from app.presentation.viewmodels.event_dialog_viewmodel import EventDialogViewModel
 from app.presentation.viewmodels.llm_viewmodel import LlmViewModel
 
+from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
 from app.domain.game_calendar import (
     reset_current_calendar,
@@ -103,6 +107,196 @@ from app.infrastructure.repositories.character_sheet_instance_repository import 
 from app.infrastructure.repositories.llm_settings_repository import (
     LlmSettingsRepository,
 )
+from app.infrastructure.repositories.game_settings_repository import (
+    DND_MODULE_DATA_VERSION,
+    DND_MODULE_KEY,
+    DndModuleFlag,
+    GameSettingsRepository,
+    decode_dnd_module_flag,
+)
+from app.presentation.modules.protocol import (
+    GameSystemModule,
+    NoopGameSystemModule,
+)
+
+# ── D&D-module composition seam (add-dnd-module-foundation, tasks 1.2/1.4) ──
+#
+# ``app/main.py`` is the ONLY kernel file that may import ``app.dd`` (spec
+# architecture-integrity; guard tests/test_dd_module_isolation.py). The
+# import stays lazy and behind the game's public flag so the profile without
+# the module never loads the package (design Д11).
+
+#: The one read point of the accept/emergency profile switch (design Д11):
+#: with ``NRI_DISABLE_DD_MODULE=1`` the composition never imports ``app/dd``
+#: at all; a D&D game then opens as ordinary with a warning, its data intact.
+#: No user-facing switch exists — the profile is for the two-profile gate.
+DD_MODULE_PROFILE_DISABLE_ENV = "NRI_DISABLE_DD_MODULE"
+
+#: Shared headline of the «module asked, composition cannot give it» warnings
+#: (profile without the module and a version ahead of the supported one ride
+#: the same path — design Д11/Д2).
+DD_MODULE_UNAVAILABLE_TITLE = "D&D-модуль"
+
+DD_MODULE_PROFILE_WARNING = (
+    "D&D-модуль недоступен в этом профиле приложения. Игра открыта как "
+    "обычная; признак и данные модуля не изменены."
+)
+DD_MODULE_VERSION_WARNING = (
+    "Игра создана более новой версией D&D-модуля, чем поддерживает это "
+    "приложение. Игра открыта как обычная; признак и данные модуля не "
+    "изменены."
+)
+# add-dnd-module-foundation (task 2.3): the flag exists but reads «off» —
+# the only fact the product has that module data may sit in this game. The
+# row is present because someone once switched the module on; the next open
+# must say so instead of silently hiding the screens (spec «Выключение модуля
+# с сохранением данных», scenario «Выключенный модуль предупреждает»). A key
+# that never existed is the ordinary game and stays silent (task 1.2).
+DD_MODULE_OFF_WARNING = (
+    "D&D-модуль в этой игре выключен. Данные модуля сохранены и скрыты; "
+    "включить модуль можно пунктом «Включить D&D-модуль…» в меню «Игра»."
+)
+#: Confirmation caption/body of the live enable (task 2.2): the master must
+#: read that the operation is additive — the game's own data is not touched.
+DD_MODULE_ENABLE_BODY = (
+    "Включить D&D-модуль для этой игры? Операция аддитивна: данные игры не "
+    "меняются, добавляются только экраны и данные модуля."
+)
+
+
+def _dd_module_disabled_by_profile() -> bool:
+    """True when the process runs in the profile without the module."""
+    return os.environ.get(DD_MODULE_PROFILE_DISABLE_ENV, "") == "1"
+
+
+def _external_type_descriptors(
+    sources: Sequence[Any],
+) -> list[entity_registry.ExternalTypeDescriptor]:
+    """Flatten the type descriptors the external sources contribute.
+
+    add-dnd-game-face (design Д2): the registry is filled from the sources'
+    own ``type_descriptors`` — the composition names no external type itself,
+    it only moves what the sources declare (in source order, which is the
+    order the search groups derive in)."""
+    return [desc for source in sources for desc in source.type_descriptors]
+
+
+def _compose_game_system_module(
+    flag: DndModuleFlag | None,
+    uow: GameSessionUoW | None = None,
+    datasets_service_factory: Callable[[], object] | None = None,
+    datasets_screen_factory: Callable[[object], tuple] | None = None,
+) -> tuple[GameSystemModule, str | None]:
+    """Assemble the game-system composition from the game's public flag.
+
+    Returns the module (concrete or the no-op default) and, when the game's
+    stored flag says something the composition will not act on, the warning
+    body for the deferred show on the started window. Three «asked vs. given»
+    pairs now read here (tasks 1.2/1.4/2.3): the profile without the module
+    (design Д11), a flag version ahead of the supported one (task 2.5), and
+    the flag stored «off» while the row itself proves the game once had the
+    module (the «данные скрыты» warning). A corrupted flag arrives as ``None``
+    — the repository codec already logged the journal entry the spec demands
+    and the row stays byte-identical (spec «Испорченный признак открывает игру
+    как обычную»), so here it is simply the ordinary composition, silent.
+
+    ``uow`` is handed to the concrete module's settings service — the disable
+    flow's single finish point is the SAME unit every other write of this
+    game shares (design Д1). Unit callers without a game session may omit it
+    and get a module whose flows are inert by construction.
+
+    ``datasets_service_factory`` (task 3.3) is called only on the branch that
+    composes the concrete module — the global dataset library (storage + the
+    LSS client over the shared HTTP client) is a collaborator the module can
+    ask for its official-SRD bootstrap at attach; the stub branches must not
+    build network machinery for a game the module will not serve.
+
+    ``datasets_screen_factory`` (group 5) turns the composed library into the
+    «Датасеты D&D…» screen stack (connections + import services + the theme
+    + — since add-dnd-game-face tasks 3.2/3.3 — the reference-toggle holder
+    and the module's external entity sources); like the library factory it
+    runs only on the concrete branch, and the module prints no datasets entry
+    without it (a composition of the pure flag tests stays screen-less by
+    construction).
+    """
+    if flag is None:
+        return NoopGameSystemModule(), None
+    if _dd_module_disabled_by_profile():
+        # The module package is NOT imported on this branch (design Д11).
+        # A stored «off» in this profile warns about nothing the profile
+        # could give back — the module-unavailable warning is only for the
+        # game that asked for the module.
+        return (
+            NoopGameSystemModule(),
+            DD_MODULE_PROFILE_WARNING if flag.enabled else None,
+        )
+    if flag.enabled:
+        if flag.version > DND_MODULE_DATA_VERSION:
+            logging.getLogger("app.main").warning(
+                "D&D flag version %s is ahead of the supported %s; opening as ordinary",
+                flag.version,
+                DND_MODULE_DATA_VERSION,
+            )
+            return NoopGameSystemModule(), DD_MODULE_VERSION_WARNING
+        from app.dd.application.module_settings_service import ModuleSettingsService
+        from app.dd.module import DndModule
+
+        settings_service = (
+            ModuleSettingsService(uow) if uow is not None else None
+        )
+        datasets_service = (
+            datasets_service_factory() if datasets_service_factory is not None else None
+        )
+        screen = (
+            datasets_screen_factory(datasets_service)
+            if datasets_screen_factory is not None and datasets_service is not None
+            else None
+        )
+        (
+            connections_service,
+            import_service,
+            theme,
+            reference_visibility,
+            reference_sources,
+            character_import,
+            monster_service,
+            grimoires,
+        ) = screen if screen is not None else (
+            None,
+            None,
+            None,
+            None,
+            (),
+            None,
+            None,
+            None,
+        )
+        (grimoire_storage, grimoire_connections, grimoire_import) = (
+            grimoires
+            if grimoires is not None
+            else (None, None, None)
+        )
+        return (
+            DndModule(
+                settings_service,
+                datasets_service,
+                connections_service,
+                import_service,
+                theme,
+                reference_visibility,
+                reference_sources,
+                character_import=character_import,
+                monster_service=monster_service,
+                grimoire_storage=grimoire_storage,
+                grimoire_connections=grimoire_connections,
+                grimoire_import=grimoire_import,
+            ),
+            None,
+        )
+    # The row exists and reads «off»: module data may sit in this game, and
+    # the next open says so instead of hiding the screens in silence (task 2.3).
+    return NoopGameSystemModule(), DD_MODULE_OFF_WARNING
+
 
 class Application:
     """Wires up DI and manages the application lifecycle."""
@@ -172,6 +366,30 @@ class Application:
         # loop — the live ref keeps it out of Qt's garbage between
         # scheduling and show.
         self._calendar_warning: QMessageBox | None = None
+        # add-dnd-module-foundation (tasks 1.1–1.4): the per-game game-system
+        # composition — the D&D façade for games whose flag is enabled and
+        # supported, the no-op stub for every other game. Built by
+        # _build_main_window from the public flag, attached once the wiring
+        # exists, detached in shutdown (the game switch rebuilds it through
+        # the same factory).
+        self._game_system_module: GameSystemModule = NoopGameSystemModule()
+        # add-dnd-game-face (task 2.2, design Д1): the external entity sources
+        # read off the composed module at game open (empty for the stub). The
+        # registry learns their types through the one register_external door;
+        # the list itself rides to the search service, the connector and the
+        # preview column. Re-read when a module joins the LIVE composition.
+        self._external_sources: tuple[Any, ...] = ()
+        # The one «module unavailable» warning per game open (profile without
+        # the module / version ahead), raised deferred like the calendar
+        # corruption box (PR-010 channel — never a nested loop).
+        self._dd_unavailable_box: QMessageBox | None = None
+        # add-dnd-module-foundation (task 2.2): the live-enable trio — the
+        # modeless confirmation between show and answer, the enable task
+        # under the connector's lock (live ref for the collector and tests),
+        # and the modeless failure box of a refused write.
+        self._dd_confirm_box: QMessageBox | None = None
+        self._dd_flow: asyncio.Future | None = None
+        self._dd_error_box: QMessageBox | None = None
         self._first_run_finish: asyncio.Future | None = None
         self._wiring: ApplicationWiring | None = None
         # Character sheets (D6/D4): one service pair per game; the window
@@ -269,6 +487,15 @@ class Application:
         # path finishes through one point with one non-reentrancy guard.
         self._uow = GameSessionUoW(self._session)
         self._image_store = ImageStore(self._session, image_dir)
+        # add-dnd-game-face (task 10.1, design Д6): a monster's picture is a
+        # row of the kernel image store, so the store must know the module
+        # table BEFORE it decides what is unreferenced — registration rides
+        # ahead of the boot scan (the NRI-0022 class of bug, one floor down:
+        # a referrer the scan forgets gets its pictures GC'd under it). The
+        # door checks the table's presence on this file itself, so an
+        # ordinary game keeps the scan byte-for-byte the kernel query, and
+        # the module-less profile never imports app.dd for this at all.
+        await self._register_dd_monster_referrer()
         # The boot storage scan is a write like any other: it finishes through
         # the same unit of work as every user operation (task 5.11 — the store
         # itself no longer commits; its two former commit points live here
@@ -278,6 +505,82 @@ class Application:
         set_image_dir(image_dir)
 
         game_name = Path(db_path).parent.name
+
+        # LLM (nri-0011, design D2): the shared HTTP client resolves FIRST —
+        # it is a process collaborator, not an LLM detail (since task 3.3 the
+        # D&D dataset client below rides the very same AppHttpClient through
+        # DI). The provider factory further down closes over it; presentation
+        # never names the concrete provider class.
+        self._http = self._http_injected if self._http_injected is not None else AppHttpClient()
+
+        # add-dnd-module-foundation (task 1.2, design Д1): the game-system
+        # composition is decided from the game's public flag, read through
+        # the штатный settings repository with one query BEFORE any
+        # composition is built. Absent/disabled/damaged → the no-op stub and
+        # the kernel behaves as if the module did not exist; the damaged row
+        # keeps its bytes and earns the codec's journal entry (never
+        # rewritten here). The unavailable warning rides the deferred channel
+        # below, the same PR-010/W3 path as the calendar corruption box.
+        # Since task 2.1 the concrete module receives its settings service on
+        # THIS unit — the enable/disable writes finish through the very
+        # transaction point every other write of the game shares.
+        dnd_raw = await GameSettingsRepository(self._session).get(DND_MODULE_KEY)
+        dnd_flag = decode_dnd_module_flag(dnd_raw) if dnd_raw is not None else None
+        self._game_system_module, dd_unavailable = _compose_game_system_module(
+            dnd_flag,
+            self._uow,
+            # Task 3.3: the concrete branch receives the global dataset
+            # library — its attach schedules the idempotent SRD bootstrap;
+            # the factory runs only there (no network machinery for a stub).
+            datasets_service_factory=self._make_datasets_service,
+            # Group 5: the same branch gains the «Датасеты D&D…» screen stack
+            # (per-game connections + import flow over the composed library).
+            datasets_screen_factory=self._make_dd_screen_services,
+        )
+        # add-dnd-game-face (task 8.1, design Д6): a game whose flag predates
+        # this version has no module tables yet — the module bootstraps them
+        # additively BEFORE its first window and the first card-tab read (the
+        # live enable needs no such call: its flag write and the DDL share one
+        # transaction). Duck-typed like the toggle load: the no-op stub has no
+        # door, so ordinary games and the module-less profile never reach
+        # through — their schema path is byte-for-byte the old one.
+        await self._ensure_dd_module_schema(self._game_system_module)
+        # The bootstrap may have created ``dd_monster`` THIS session (a game
+        # whose flag predates the bestiary) — the same registration the boot
+        # call performed against a table that already existed (task 10.1;
+        # idempotent and presence-gated, so on every other branch this is a
+        # no-op).
+        await self._register_dd_monster_referrer()
+        # add-dnd-game-face (task 3.3): the reference toggle rides the game's
+        # settings row — read it into the module's holder BEFORE the first
+        # window (and the first search). Duck-typed on purpose: the no-op
+        # stub carries no holder, so the ordinary and module-less branches
+        # stay byte-for-byte the pre-change composition.
+        await self._load_reference_visibility(self._game_system_module)
+        # Task 2.2: the kernel's «Включить D&D-модуль…» entry is the way back
+        # for every game the module does NOT serve right now — absent flag,
+        # damaged flag (it reads as off), or a stored «off». A game whose
+        # module is attached needs no enable entry, and the game asking for a
+        # module this composition cannot give (a version ahead — the row must
+        # stay untouched!) or in the profile without the module (design Д11:
+        # the entry «НЕ SHALL существовать») gets none either.
+        dd_enable_offer = (not _dd_module_disabled_by_profile()) and (
+            dnd_flag is None or not dnd_flag.enabled
+        )
+
+        # add-dnd-game-face (task 2.2, design Д1/Д2): the composition is the
+        # ONLY caller of register_external — the one door through which types
+        # outside the kernel enter the registry, both doors guarded by AST
+        # tests (tests/test_dd_module_isolation.py bars app/dd from calling
+        # it; tests/test_architecture_layers.py bars every other kernel file).
+        # The stub answers with the empty tuple, so the kernel and the
+        # profile without the module register NOTHING: resolve, SEARCH_TYPES
+        # and the icon map keep their pre-change byte-for-byte shape (pinned
+        # in tests/test_dd_module_profile.py).
+        self._external_sources = tuple(self._game_system_module.external_sources)
+        entity_registry.register_external(
+            _external_type_descriptors(self._external_sources)
+        )
 
         # C2 (designs D2/D3): read the game's calendar setting, migrate the
         # legacy ``custom_months`` key once, and make the decoded calendar
@@ -349,6 +652,9 @@ class Application:
             character=char_repo,
             item=item_repo,
             location=loc_repo,
+            # add-dnd-game-face (task 2.2): the external sources ride to the
+            # search service (consulted from group 3.4); empty without one.
+            external_sources=self._external_sources,
         )
 
         # ViewModels
@@ -364,17 +670,21 @@ class Application:
         )
         # NRI-0021 (tasks 5.1–5.2, design Д6): the timeline reads the same VM
         # for the today-outline flag, the «➜ Сейчас» availability/target and
-        # the popover's game-«now» page.
-        timeline_vm = TimelineViewModel(event_service, now_vm=now_date_vm)
+        # the popover's game-«now» page. add-dnd-game-face (task 11.2): the
+        # composition's external sources ride in too — the ladder asks their
+        # sync ``event_marks`` door for its row marks (empty without a
+        # module, the ladder byte-identical to its mark-free shape).
+        timeline_vm = TimelineViewModel(
+            event_service, now_vm=now_date_vm,
+            external_sources=self._external_sources,
+        )
         detail_vm = DetailViewModel(event_service)
         search_vm = SearchViewModel(search_service)
         event_dialog_vm = EventDialogViewModel(event_service)
 
-        # LLM: shared http client (injected in tests) + the ONE provider
-        # factory (nri-0011, design D2): a closure over the client, handed to
-        # both the service and the view model — presentation never names the
-        # concrete provider class.
-        self._http = self._http_injected if self._http_injected is not None else AppHttpClient()
+        # LLM: the ONE provider factory (nri-0011, design D2): a closure over
+        # the shared client resolved above, handed to both the service and
+        # the view model — presentation never names the concrete provider.
         http_client = self._http
 
         def make_provider(config: LlmConfig) -> BaseLlmProvider:
@@ -396,6 +706,10 @@ class Application:
             game_name=game_name,
             theme=self._theme,
             now_date_vm=now_date_vm,
+            dd_module_enable_offer=dd_enable_offer,
+            # add-dnd-game-face (task 2.2): the preview column's VM takes the
+            # composition's external sources (empty without a module).
+            external_sources=self._external_sources,
         )
 
         self._search_service = search_service
@@ -414,17 +728,48 @@ class Application:
             # NRI-0025 (task 5.2, design Д3): the pin-list storage face —
             # the connector reads it at open below and writes every pin/unpin.
             preview_pins_service=self._preview_pins_service,
+            # add-dnd-game-face (task 2.2): the connector is the carrier to
+            # every dialog it builds (event dialog, card factory) — the list
+            # is read at each dialog opening, so the live-enable re-hand-out
+            # below needs no rebuilt connector.
+            external_sources=self._external_sources,
         )
         self._wiring.connect()
+
+        # add-dnd-module-foundation (task 1.1): the game-system module joins
+        # the composition through the one kernel protocol seam — the stub
+        # answers nothing, the concrete module builds its own section from
+        # the window and the connector it is handed here (groups 2+). The
+        # call is unconditional: "module or nothing" must never branch below.
+        #
+        # DENC-LIVE-2 (docs/qa/2026-10-10-dnd-game-face-acceptance.md): the
+        # attach runs BEFORE the pin restore below — that restore is the boot
+        # flow warming the external sources, and a source warms itself only
+        # while attached (the protocol's dark-source silence). Warming before
+        # the attach left the encounter-marks cache empty for the first
+        # load_events() and answered every external pin dead at the visible
+        # door; the live-enable path already keeps this order (attach, then
+        # warm, then the first read of the rows).
+        self._game_system_module.attach(window, self._wiring)
+
         # NRI-0025 (task 5.2, design Д3): the saved pins load right after the
         # connector is live and before the window shows — unavailable pairs
         # are silently dropped there, storage stays untouched (no background
         # rewrite), the restored column paints with the window's first frame.
+        # The module attach above already opened the sources' visible door,
+        # so the warm inside this restore reaches the real caches (DENC-LIVE-2).
         await self._wiring.restore_preview_pins()
 
         # Switch game menu (NRI-0024 task 4.1: the entry opens a sheet, a
         # synchronous show path — no task until a game is actually chosen).
         window.switch_game_requested.connect(self._on_switch_game)
+
+        # add-dnd-module-foundation (task 2.2): the kernel's «Включить
+        # D&D-модуль…» entry — the confirmation is shown here, the flagged
+        # write and the live attach run as the locked task below.
+        window.enable_dd_module_requested.connect(
+            self._on_enable_dd_module_requested
+        )
 
         # Export game menu
         window.export_requested.connect(self._on_export_game)
@@ -542,6 +887,13 @@ class Application:
             asyncio.get_running_loop().call_soon(
                 self._show_calendar_corruption_warning, corruption_body
             )
+        if dd_unavailable is not None:
+            # add-dnd-module-foundation (task 1.4): «D&D-игра открывается как
+            # обычная с предупреждением» — the same deferred channel, so the
+            # startup never nests a modal loop (PR-010).
+            asyncio.get_running_loop().call_soon(
+                self._show_dd_unavailable_warning, dd_unavailable
+            )
         if first_run_wizard:
             # Deferred right after the window is on screen (task 2.4): the
             # next loop pass raises the wizard as a SHEET over the shown
@@ -574,6 +926,372 @@ class Application:
         """Drop the live ref of the closed corruption warning (the box dies
         with its parent window otherwise only until the next game open)."""
         self._calendar_warning = None
+
+    def _show_dd_unavailable_warning(self, body: str) -> None:
+        """add-dnd-module-foundation (tasks 1.2/1.4): the one warning per
+        open telling the player the game asked for the D&D module but the
+        composition cannot give it (profile without the module, design Д11,
+        or a flag version ahead of the supported one).
+
+        Exactly the PR-010 posture of the calendar corruption box: built on
+        the shown window, raised modeless through ``show()`` on the shared
+        loop — never a static modal variant, never a nested event loop. The
+        game itself opened ordinary and its flag/data are untouched; the box
+        only explains why the module's screens are absent.
+        """
+        box = QMessageBox(self._window)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(DD_MODULE_UNAVAILABLE_TITLE)
+        box.setText(body)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        self._dd_unavailable_box = box
+        box.finished.connect(self._dd_unavailable_warning_finished)
+        box.show()
+
+    def _dd_unavailable_warning_finished(self, _result: int) -> None:
+        """Drop the live ref of the closed «module unavailable» warning."""
+        self._dd_unavailable_box = None
+
+    # ── live enable of the D&D module (add-dnd-module-foundation task 2.2) ──
+
+    def _make_datasets_service(self) -> object:
+        """Compose the module's global dataset stack (task 3.3, design Д3/Д6):
+        the file shelf under ``~/.nri_manager/datasets/``, the LSS client over
+        THIS application's shared HTTP client (no own transport), and the
+        library service over both. Lazy imports keep the module package out
+        of every branch that does not compose the module (profile without it,
+        design Д11); nothing here touches the disk or the network — the
+        bootstrap happens when the attached module asks for it.
+
+        Returns the DatasetLibraryService (typed as object so the kernel
+        annotation never names a module class — the sanctioned seam imports
+        live in the function body only)."""
+        from app.dd.application.dataset_library_service import DatasetLibraryService
+        from app.dd.infrastructure.dataset_storage import DatasetStorage
+        from app.dd.infrastructure.lss_datasets_client import LssDatasetsClient
+
+        assert self._http is not None, (
+            "datasets service needs the resolved shared HTTP client"
+        )
+        return DatasetLibraryService(DatasetStorage(), LssDatasetsClient(self._http))
+
+    def _make_dd_screen_services(self, library: object) -> tuple:
+        """Compose the «Датасеты D&D…» screen stack over the module's library
+        (group 5, design Д3): one more file shelf (stateless — the file is the
+        shared truth), the per-game connections on THIS game's unit, the
+        validator over the bundled schemas, and the import/re-check flow over
+        all of it. Since add-dnd-game-face (tasks 3.1–3.3) the same branch
+        grows the reference half: the in-memory index over the connected
+        files (design Д5), the game's reference-toggle holder, and the one
+        source declaring the seven reference types — the source list rides
+        to ``DndModule``, which only DECLARES it (the registration door stays
+        here, guard tests/test_dd_module_isolation.py rule 3). Since task 4.3
+        the branch also composes the grimoire shelf (storage + the game's
+        connection list + its read door) and hands it to the import flow, so
+        the validator's spell dictionary counts the game's own spell file as
+        known. The theme
+        rides along as the sheet chrome's wearer (the frame keeps token
+        fallbacks without it, but the application always has one). Lazy
+        imports keep the module package out of every branch that does not
+        compose the module (design Д11); nothing here touches the disk or the
+        network — the sheet and the index read through their services."""
+        from app.dd.application.dataset_connections_service import (
+            DatasetConnectionsService,
+        )
+        from app.dd.application.dataset_import_service import DatasetImportService
+        from app.dd.application.dataset_index_service import DatasetIndexService
+        from app.dd.application.dataset_validator_service import (
+            DatasetValidatorService,
+        )
+        from app.dd.application.dd_encounter_service import DdEncounterService
+        from app.dd.application.dnd_character_extension_service import (
+            DndCharacterExtensionService,
+        )
+        from app.dd.application.grimoire_connections_service import (
+            GrimoireConnectionsService,
+        )
+        from app.dd.application.grimoire_import_service import GrimoireImportService
+        from app.dd.application.grimoire_index_service import GrimoireIndexService
+        from app.dd.application.monster_service import DdMonsterService
+        from app.dd.application.reference_visibility_service import (
+            ReferenceVisibilityService,
+        )
+        from app.dd.infrastructure.dataset_storage import DatasetStorage
+        from app.dd.infrastructure.grimoire_storage import GrimoireStorage
+        from app.dd.presentation.character_tab_source import DndCharacterTabSource
+        from app.dd.presentation.dd_encounter_source import DndEncounterSource
+        from app.dd.presentation.monster_source import DndMonsterSource
+        from app.dd.presentation.reference_source import DndReferenceSource
+
+        assert self._uow is not None, (
+            "the datasets screen needs the open game's unit of work"
+        )
+        storage = DatasetStorage()
+        connections = DatasetConnectionsService(self._uow, storage)
+        # add-dnd-game-face (task 4.2/4.3/4.5, design Д6/Д8): the grimoire
+        # half of the global library on its own shelf, the game's own
+        # connection list, the read door over both, and the importer behind
+        # the «Гримуары…» sheet. The same dictionary the screen shows is the
+        # validator's door — a slug the game loaded from its own spell file
+        # stops being «слаг вне SRD».
+        grimoire_storage = GrimoireStorage()
+        grimoire_connections = GrimoireConnectionsService(self._uow, grimoire_storage)
+        grimoire_index = GrimoireIndexService(grimoire_connections, grimoire_storage)
+        grimoire_import = GrimoireImportService(grimoire_storage)
+        importer = DatasetImportService(
+            library,  # type: ignore[arg-type]
+            connections,
+            DatasetValidatorService(),
+            storage,
+            grimoire_index,
+        )
+        index = DatasetIndexService(connections, storage)
+        reference_visibility = ReferenceVisibilityService(self._uow)
+        # Task 4.5 closes the group-4 wiring gap: the reference sheet must
+        # show the spells of the game's connected grimoires (spec
+        # dnd-grimoire-import «подключил из списка — заклинания видно»), and
+        # the source's own async reads reconcile the grimoire index per call,
+        # so a fresh connection is visible without any restart or re-warm.
+        reference_source = DndReferenceSource(
+            index, reference_visibility, grimoire_index=grimoire_index
+        )
+        # add-dnd-game-face task 8.1/8.2/8.3: the character-extension service
+        # on the SAME unit every other write of this game shares, and the
+        # module-lifetime source of the character card's «D&D»/«Заклинания»
+        # tabs. It declares no registry types (its type_descriptors is empty)
+        # — adding it to the sources tuple registers nothing new, it only
+        # reaches the card-tab host and the attach/detach propagation.
+        character_service = DndCharacterExtensionService(self._uow)
+        # add-dnd-game-face task 9.3/9.4: the LSS character-import flow on
+        # the SAME unit. Its catalog door is a closure on purpose — this
+        # composition runs BEFORE ``_build_entity_services`` in start(), and
+        # the service only reads the catalog when an import actually runs.
+        from app.dd.application.character_import_service import CharacterImportService
+
+        character_import = CharacterImportService(
+            uow=self._uow,
+            entity_services=lambda: self._entity_services,
+            image_store=self._image_store,
+            dataset_index=index,
+        )
+        character_tab_source = DndCharacterTabSource(
+            character_service=character_service,
+            dataset_index=index,
+            grimoire_index=grimoire_index,
+            character_import=character_import,
+        )
+        # add-dnd-game-face task 10.1/10.2 (design Д6): the bestiary pair on
+        # the SAME unit. The service is the module screens' door (the list,
+        # the card); the source joins the external tuple — its descriptor is
+        # what register_external will find there — and the source flag
+        # ``reference=False`` is precisely spec dnd-bestiary «переключатель
+        # справочных записей… монстров не касается».
+        monster_service = DdMonsterService(self._uow, image_store=self._image_store)
+        monster_source = DndMonsterSource(monster_service)
+        # add-dnd-game-face task 11.1 (design Д9): the event card's «Встреча»
+        # tab and the ladder's encounter marks — the third contributed source,
+        # attached to the KERNEL event, so it declares no type of its own. It
+        # shares the bestiary service (the picker reads the same list the
+        # bestiary screens do).
+        encounter_service = DdEncounterService(self._uow)
+        encounter_source = DndEncounterSource(
+            encounter_service=encounter_service,
+            monster_service=monster_service,
+        )
+        return (
+            connections,
+            importer,
+            self._theme,
+            reference_visibility,
+            (reference_source, character_tab_source, monster_source, encounter_source),
+            character_import,
+            monster_service,
+            (grimoire_storage, grimoire_connections, grimoire_import),
+        )
+
+    async def _ensure_dd_module_schema(self, module: object) -> None:
+        """Give an OPENED D&D game the module tables it may not have yet
+        (add-dnd-game-face task 8.1, design Д6 «bootstrap при старте D&D-
+        игры»): the façade's own door runs the additive create on its unit —
+        present tables skipped, existing rows untouched. Duck-typed on
+        purpose: the no-op stub carries no door, so the ordinary and the
+        module-less profiles never call through (their schema path stays the
+        kernel's alone); a concrete façade composed without a settings
+        service answers the door with silence."""
+        ensure_tables = getattr(module, "ensure_tables", None)
+        if ensure_tables is not None:
+            await ensure_tables()
+
+    async def _register_dd_monster_referrer(self) -> None:
+        """Teach this game's image store about ``dd_monster.image_id``
+        (add-dnd-game-face task 10.1, design Д6): without the registration a
+        replacement or boot GC would delete pictures a monster still shows —
+        the exact NRI-0022 bug the closed kernel list exists to prevent, one
+        floor down. Profile-gated (the module-less build performs no import
+        of app.dd here at all, design Д11); the store's door skips an absent
+        table, so the ordinary game stays on the byte-for-byte kernel scan
+        and this door is idempotent across its three calls (boot, schema
+        bootstrap, live enable)."""
+        if _dd_module_disabled_by_profile():
+            return
+        from app.dd.infrastructure.db.dd_models import DdMonsterModel
+
+        if self._image_store is not None:
+            await self._image_store.add_referring_model(DdMonsterModel)
+
+    async def _load_reference_visibility(self, module: object) -> None:
+        """Read the game's stored reference-toggle state into the module's
+        holder (add-dnd-game-face task 3.3): one settings read on the open
+        game's unit through the module's own service. A module without a
+        holder (the no-op stub — ordinary games and the module-less profile)
+        is the honest no-op branch."""
+        visibility = getattr(module, "reference_visibility", None)
+        if visibility is not None:
+            await visibility.load()
+
+    def _on_enable_dd_module_requested(self) -> None:
+        """The «Игра» group's kernel entry: «Включить D&D-модуль…» first asks
+        (spec «Включение модуля на открытой игре»: «с подтверждением,
+        объясняющим аддитивность»), the answer arrives through ``finished``.
+        Modeless on the shared loop like every live-app box (PR-010 posture);
+        the отвод (No/Esc/close) is the spec's бездействие — no task, no
+        write, the composition stays the stub."""
+        if self._window is None:
+            return
+        box = QMessageBox(self._window)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(DD_MODULE_UNAVAILABLE_TITLE)
+        box.setText(DD_MODULE_ENABLE_BODY)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        self._dd_confirm_box = box
+        box.finished.connect(self._on_enable_dd_module_answered)
+        box.show()
+
+    def _on_enable_dd_module_answered(self, result: int) -> None:
+        """Yes runs the enable under the connector's session lock (the write
+        touches the shared session like every other signal-spawned task);
+        the live task ref rides ``_dd_flow`` so the test contour can await
+        it and the collector never eats it."""
+        self._dd_confirm_box = None
+        if result != QMessageBox.StandardButton.Yes:
+            return
+        if self._wiring is None:
+            return
+        self._dd_flow = self._wiring.run_locked(self._enable_dd_module())
+
+    async def _enable_dd_module(self) -> None:
+        """The confirmed enable, all in the current session (task 2.2):
+
+        1. the flag goes on through the module's settings service — one
+           unit-of-work transaction, one upsert of the ``dnd_module`` row; no
+           existing table or row is touched (spec «Включение НЕ SHALL
+           изменять…»);
+        2. the module is composed on the spot (the lazy, sanctioned import —
+           the profile without the module never reaches this line, design
+           Д11) and attached to the LIVE window and connector — the badge and
+           the «D&D» group appear without a restart;
+        3. the kernel's enable entry steps aside; the module's own
+           «Выключить D&D-модуль…» (and, from group 5, its datasets sheet)
+           answers from here on.
+
+        A failed write leaves everything as it was: the stub still serves,
+        the flag row was never changed (the transaction rolled back), and the
+        master reads the reason in a modeless error box — persistence errors
+        never go silent (coding principle 3)."""
+        from app.dd.application.module_settings_service import ModuleSettingsService
+        from app.dd.module import DndModule
+
+        window = self._window
+        if window is None or self._uow is None or self._wiring is None:
+            return
+        service = ModuleSettingsService(self._uow)
+        try:
+            await service.enable(DND_MODULE_DATA_VERSION)
+        except Exception as exc:  # noqa: BLE001 — the user must see the reason
+            logging.getLogger("app.main").error(
+                "D&D module enable failed: %s", exc, exc_info=True
+            )
+            self._show_dd_error(str(exc))
+            return
+        # The live composition is the startup composition: library + the
+        # datasets screen stack + the theme (group 5) — «Датасеты D&D…» must
+        # answer from the same session the enable happened in.
+        library = self._make_datasets_service()
+        (
+            connections,
+            importer,
+            theme,
+            reference_visibility,
+            reference_sources,
+            character_import,
+            monster_service,
+            (grimoire_storage, grimoire_connections, grimoire_import),
+        ) = self._make_dd_screen_services(library)
+        module = DndModule(
+            service,
+            library,
+            connections,
+            importer,
+            theme,
+            reference_visibility,
+            reference_sources,
+            character_import=character_import,
+            monster_service=monster_service,
+            grimoire_storage=grimoire_storage,
+            grimoire_connections=grimoire_connections,
+            grimoire_import=grimoire_import,
+        )
+        module.attach(window, self._wiring)
+        # The enable's own transaction just created the module tables (task
+        # 8.1) — the image store learns the bestiary's picture column from
+        # now on, or a monster's image would look unreferenced to every
+        # later GC of this session (task 10.1).
+        await self._register_dd_monster_referrer()
+        await self._load_reference_visibility(module)
+        self._game_system_module = module
+        window.set_enable_dd_module_visible(False)
+        # add-dnd-game-face (task 2.2): the module joined the LIVE composition,
+        # so its sources reach the long-lived collaborators in place — the
+        # registry through the same one door (registration replaces the whole
+        # external section, nothing stale can survive), the search service and
+        # the connector through their setters. Dialogs opened afterwards read
+        # the connector's CURRENT list; no connector or window is rebuilt.
+        self._external_sources = tuple(module.external_sources)
+        entity_registry.register_external(
+            _external_type_descriptors(self._external_sources)
+        )
+        self._search_service.set_external_sources(self._external_sources)
+        self._wiring.set_external_sources(self._external_sources)
+        window.entity_preview.vm.set_external_sources(self._external_sources)
+        # add-dnd-game-face (task 11.2): the ladder's marks ride the SYNC
+        # door, so the sources are warmed BEFORE the ladder is handed the
+        # list — the same order as at game open (warm, and only then the
+        # first read of the rows). ``warm`` is a protocol door: every source
+        # carries it, and a source that fails keeps its own silence.
+        for source in self._external_sources:
+            await source.warm()
+        self._wiring.timeline_vm.set_external_sources(self._external_sources)
+
+    def _show_dd_error(self, body: str) -> None:
+        """Modeless error box for the live enable/disable flows — the same
+        non-nesting posture as the «module unavailable» warning."""
+        if self._window is None:
+            return
+        box = QMessageBox(self._window)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(DD_MODULE_UNAVAILABLE_TITLE)
+        box.setText(body)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        self._dd_error_box = box
+        box.finished.connect(self._dd_error_finished)
+        box.show()
+
+    def _dd_error_finished(self, _result: int) -> None:
+        """Drop the live ref of the closed enable/disable error box."""
+        self._dd_error_box = None
 
     def _on_export_game(self) -> None:
         """Export current game as .nri archive.
@@ -630,7 +1348,14 @@ class Application:
         ``game_selected`` contract the first screen carries; :meth:`_on_game_selected`
         owns the guard + rebuild (task 4.2).
         """
-        sheet = GameSwitchSheet(parent=self._window, theme=self._theme)
+        # Task 2.6: the switch sheet is the launcher too, so the system
+        # picker rides the same profile fact as the first-run chooser (design
+        # Д11: no profile, no choice).
+        sheet = GameSwitchSheet(
+            parent=self._window,
+            theme=self._theme,
+            dnd_choice_available=not _dd_module_disabled_by_profile(),
+        )
         sheet.game_selected.connect(
             lambda p: asyncio.ensure_future(self._on_game_selected(p))
         )
@@ -1012,11 +1737,30 @@ class Application:
             )
 
         async def _on_mention_clicked(entity_type, entity_id):
+            # The signal carries the STORED id as text (add-dnd-game-face
+            # design Д4): the kernel services want their ints back at this
+            # boundary; an external key rides on as text. A kernel marker
+            # with a non-numeric id cannot come from the grammar (digits
+            # are admissible for kernel types only) — a hand-forge reaching
+            # this point behaves exactly like a missing row.
             window = self._wiring.window
+            if entity_registry.is_external_key(entity_type):
+                if not await self._wiring.open_external_mention(
+                    entity_type, str(entity_id)
+                ):
+                    QMessageBox.warning(
+                        window, "Упоминание", "Упоминание не найдено.",
+                    )
+                return
+            try:
+                kernel_id = int(entity_id)
+            except (TypeError, ValueError):
+                QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
+                return
             if entity_type == "event":
-                event = await self._wiring.event_service.get_event(entity_id)
+                event = await self._wiring.event_service.get_event(kernel_id)
                 if event:
-                    await self._wiring.open_event_editor(entity_id)
+                    await self._wiring.open_event_editor(kernel_id)
                     return
                 QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
                 return
@@ -1024,11 +1768,11 @@ class Application:
             if svc is None:
                 QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
                 return
-            entity = await svc.get_entity(entity_id)
+            entity = await svc.get_entity(kernel_id)
             if entity is None:
                 QMessageBox.warning(window, "Упоминание", "Упоминание не найдено.")
                 return
-            await on_entity_click_fn(entity_type, entity_id)
+            await on_entity_click_fn(entity_type, kernel_id)
 
         dialog.mention_clicked.connect(
             lambda t, i: self._wiring.run_locked(_on_mention_clicked(t, i))
@@ -1157,6 +1901,17 @@ class Application:
         # game restores the «Стандартный» preset, so the next game can never
         # inherit this one's calendar.
         reset_current_calendar()
+        # add-dnd-module-foundation (task 1.1): the game-system module leaves
+        # the composition with its game (the live switch and the exit share
+        # this teardown); the stub detaching is its contract no-op.
+        self._game_system_module.detach()
+        self._game_system_module = NoopGameSystemModule()
+        # add-dnd-game-face (task 2.2): the external type section leaves with
+        # the game too — the registry is a process singleton and must never
+        # carry one game's module types into the next (registering () is the
+        # documented return to the kernel-only shape, design Д2).
+        entity_registry.register_external(())
+        self._external_sources = ()
         if self._table_host is not None and self._table_host.is_running:
             await self._table_host.stop()
         self._close_sheet_windows()
@@ -1271,8 +2026,12 @@ def main():  # pragma: no cover — entry point: a second QApplication cannot be
 
     # Show launcher. Its content is a QML island (the constructor raises the
     # shared engine, idempotent with Application.start below — the launcher is
-    # shown before start(), so it must set the shell up itself).
-    launcher = GameLauncherDialog(theme=theme)
+    # shown before start(), so it must set the shell up itself). Task 2.6:
+    # the «Обычная/D&D» system picker exists only while the profile carries
+    # the module (design Д11).
+    launcher = GameLauncherDialog(
+        theme=theme, dnd_choice_available=not _dd_module_disabled_by_profile()
+    )
     launcher.exec()
     if not launcher.selected_path:
         sys.exit(0)

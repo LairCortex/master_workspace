@@ -1,6 +1,7 @@
 """Entity card QML island in the stable native dialog facade."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.presentation.card_tab_host import CardTabHost
 from app.presentation.dialog_results import (
     EntityCreateResult,
     EntityEditResult,
@@ -255,7 +257,10 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
 
     saved = Signal(object)  # EntityCreateResult | EntityEditResult (dialog_results)
     create_related_requested = Signal(str, str)
-    mention_clicked = Signal(str, int)
+    # (type key, stored id as text) — str keeps an external composite id
+    # intact (add-dnd-game-face design Д4; kernel ids arrive as the string of
+    # the number and the composition edge converts them back to int)
+    mention_clicked = Signal(str, str)
     image_picked = Signal(bytes)
     open_character_sheet_requested = Signal()
     #: NRI-0024 (task 2.5, design Д7): child-sheet show channel — the viewer
@@ -273,6 +278,8 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         theme=None,
         now_vm=None,
         related_create_enabled: bool = True,
+        external_sources: Sequence[Any] = (),
+        wiring: Any = None,
     ) -> None:
         super().__init__(parent)
         self._vm = entity_vm
@@ -313,6 +320,9 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             # The related-create popup is the only card built with False: its
             # own sections hide «Создать нового» (depth = 1, no receiver).
             related_create_enabled=related_create_enabled,
+            # add-dnd-game-face (design Д1): the composition's external sources
+            # reach every mention host of this card.
+            external_sources=external_sources,
         )
         # NRI-0021 task 4.3 (design Д2/Д5): the read-only age line follows the
         # game's «now» while this card is open. The wiring hands its widget VM
@@ -362,6 +372,15 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.vm.imageOpenRequested.connect(self._open_image_viewer)
         self.vm.musicOpenRequested.connect(self._open_music_url)
         self.vm.characterSheetRequested.connect(self.open_character_sheet_requested)
+
+        # add-dnd-game-face task 7.2 (design Д10): the external sources' extra
+        # tabs ride the grouping strip's tail — collected at populate() (a
+        # fresh card has no record yet, so it shows the kernel groups alone),
+        # overlaid on the body slot the QML page publishes, and released with
+        # the island (the norm «a released island answers NOTHING»).
+        self._card_tabs = CardTabHost(
+            self, self.vm, external_sources, wiring, target_key=self._entity_type
+        )
 
         # P3 (NRI-0015): parent-less — under a chrome-attached ancestor the
         # generic QPushButton chrome rule would accent-fill every day cell
@@ -593,6 +612,13 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.vm.set_music_url(music_url if isinstance(music_url, str) else "")
         for attr, state in self.vm.sections.items():
             state.set_entities(list(getattr(entity, attr, []) or []))
+        # Task 7.2: the record is known from here — the external sources may
+        # now declare their extra tabs for exactly this entity.
+        self._card_tabs.refresh(
+            str(self._populated_entity_id)
+            if self._populated_entity_id is not None
+            else None
+        )
 
     def set_available_entities(self, attr: str, entities: list[Any]) -> None:
         state = self.vm.sections.get(attr)
@@ -755,6 +781,10 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self.sheet_requested.emit(picker)
 
     def _release_island(self) -> None:
+        # add-dnd-game-face task 7.2: the module tabs leave first — their own
+        # subscriptions retire through release_tab while the island still
+        # answers, then the island teardown proceeds (no listener survives).
+        self._card_tabs.release()
         # NRI-0021 task 4.3: the «now» subscription leaves with the card
         # (DEFECT-1 posture — no listener survives its window).
         if self._now_vm is not None:

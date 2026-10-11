@@ -71,3 +71,27 @@ def test_no_second_type_to_icon_dictionary_in_app():
         if _GLYPH_SCAN.search(path.read_text(encoding="utf-8")):
             offenders.append(str(path.relative_to(APP_DIR)))
     assert offenders == []
+
+
+def test_icon_for_answers_for_registered_external_types():
+    """add-dnd-game-face (design Д2): an external key reads its descriptor's
+    icon_key through the same strict door; with the section empty (before and
+    after) the same key is a KeyError — the pre-change answer."""
+    from app.domain import entity_registry
+
+    with pytest.raises(KeyError):
+        icon_for("spell")
+    descriptor = entity_registry.ExternalTypeDescriptor(
+        key="spell", label="Заклинание", plural_label="Заклинания",
+        icon_key="sparkles",
+    )
+    assert descriptor.icon_key in _icons_js_keys()  # same glyph contract
+    try:
+        entity_registry.register_external((descriptor,))
+        assert icon_for("spell") == "sparkles"
+        # kernel keys keep their map answers untouched by the registration
+        assert icon_for("character") == "user-round"
+    finally:
+        entity_registry.register_external(())
+    with pytest.raises(KeyError):
+        icon_for("spell")

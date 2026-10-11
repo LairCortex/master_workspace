@@ -25,6 +25,7 @@ from PySide6.QtCore import QUrl
 
 from app.domain import entity_registry
 from app.domain.game_calendar import InvalidGameDateError
+from app.presentation.modules.protocol import ExternalCardSource
 from app.presentation.utils.date_utils import (
     AGE_ENTITY_TYPES,
     AGE_LABEL,
@@ -34,7 +35,11 @@ from app.presentation.utils.date_utils import (
     format_event_start,
     format_game_date,
 )
-from app.presentation.utils.image_utils import load_entity_preview, resolve_preview_path
+from app.presentation.utils.image_utils import (
+    load_entity_preview,
+    load_preview,
+    resolve_preview_path,
+)
 from app.presentation.utils.mention_html import build_mention_html
 
 #: End-of-dates caption of an open-ended entity (the card's checkbox word).
@@ -68,6 +73,25 @@ _TEXT_FIELDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def external_content_fingerprint(card: ExternalCardSource) -> tuple:
+    """The content stamp of an external card (task 6.1, same reuse discipline
+    as :func:`content_fingerprint`): the whole assembled value rides the stamp
+    — name, origin, every block, every relation row, the picture path. No
+    decode, no I/O: a file that moved on disk but kept its path does NOT
+    re-stamp, the honest posture of a source whose truth is the file (a
+    re-import re-answers through a fresh card construction anyway, since the
+    connector seats fresh ``card_source`` records per gesture)."""
+    return (
+        card.name,
+        card.origin,
+        tuple((block.title, block.text) for block in card.blocks),
+        tuple(
+            (rel.key, rel.source_id, rel.name) for rel in card.relations
+        ),
+        card.picture_path,
+    )
+
+
 def content_fingerprint(entity_type: str, entity: Any) -> tuple:
     """The cheap content stamp behind the column VM's frame reuse (the
     2026-10-03 scroll-reset fix): every value the card renders from, minus
@@ -80,7 +104,11 @@ def content_fingerprint(entity_type: str, entity: Any) -> tuple:
     the very same object arrives in the next frame carrying new values.
     Equal fingerprints ⇒ equal render; the age line is the single
     «now»-dependent field and lives outside the stamp by design
-    (``recount_age`` owns it)."""
+    (``recount_age`` owns it). An external card record (add-dnd-game-face
+    task 6.1) stamps through :func:`external_content_fingerprint` instead —
+    its assembled value, not ORM fields."""
+    if isinstance(entity, ExternalCardSource):
+        return external_content_fingerprint(entity)
     description = getattr(entity, "description", None)
     rating = getattr(entity, "rating", 1)
     music_url = getattr(entity, "music_url", "")
@@ -139,7 +167,18 @@ class EntityCardViewModel:
     ) -> None:
         self.entity_type = entity_type
         self.entity = entity
-        self.entity_id = int(getattr(entity, "id", 0) or 0)
+        # add-dnd-game-face task 6.1 (design Д3): the column carries external
+        # card records through the same slot machinery — the duck type is the
+        # protocol's frozen ``ExternalCardSource``, decided here once; every
+        # render half below follows the flag. The record's identity is the
+        # ``source_id`` the connector stamped at the seat (protocol field),
+        # never a fabricated row number.
+        self.external = isinstance(entity, ExternalCardSource)
+        self.entity_id = (
+            entity.source_id
+            if self.external
+            else int(getattr(entity, "id", 0) or 0)
+        )
         self.pinned = pinned
         self.slot_index = slot_index
         # The slot identity the island carries a pane's scroll across frame
@@ -161,6 +200,17 @@ class EntityCardViewModel:
         # to the four fixed name/tooltip formulations and never counts.
         self.pin_state = pin_state
         self._now_vm = now_vm
+        # «Источник: …» line — exists only on an external card (spec
+        # entity-preview delta «строку источника»); a kernel card has no
+        # origin and the island hides an empty line.
+        self.origin_text = ""
+        if self.external:
+            # no kernel dates exist to age-count against; the «now» broadcast
+            # reaches this card too (one subscription, design Д2) and finds
+            # the age line honestly empty.
+            self._start_bc = self._end_bc = False
+            self._render_external(entity)
+            return
         self.name_text = str(getattr(entity, "name", "") or "")
         # The band never dangles empty off the bat: the type-titled caption is
         # built right away; the plain «Карточка» word belongs to the column's
@@ -236,6 +286,7 @@ class EntityCardViewModel:
             "entityId": self.entity_id,
             "title": self.title,
             "nameText": self.name_text,
+            "originText": self.origin_text,
             "ratingText": self.rating_text,
             "dateText": self.date_text,
             "ageText": self.age_text,
@@ -274,6 +325,77 @@ class EntityCardViewModel:
         except InvalidGameDateError:
             return ""
         return f"{AGE_LABEL}: {age_words}"
+
+    # ── the external-card half (add-dnd-game-face task 6.1, design Д3) ──────
+
+    def _render_external(self, card: ExternalCardSource) -> None:
+        """Render one assembled record (spec «Карточка внешней сущности —
+        приборная отделка только для чтения»): name, «Карточка: <тип>» band
+        (the shared caption rule, the registry names the external type), the
+        origin line, the provider's text blocks and the transition relations.
+        The kernel's rating/dates/age/music lines are NOT invented for a
+        record that owns no such field — the island hides an empty line, the
+        same absence posture the kernel keeps for a missing optional field;
+        an SRD spell's missing text is the source's honest block, never an
+        empty stub (spec dnd-reference-records «SRD-заклинание честно без
+        текста»). No editable control is assembled here or painted by the
+        read-only island («Правка невозможна»)."""
+        self.name_text = card.name
+        self.title = f"{CARD_TITLE_LABEL}: {entity_registry.display_label(self.entity_type)}"
+        self.origin_text = f"Источник: {card.origin}" if card.origin else ""
+        self.rating_text = ""
+        self.date_text = ""
+        self.age_text = ""
+        self.music_url = ""
+        self.image_source = self._external_image_source(card)
+        self.sections = [
+            {
+                "key": f"block-{index}",
+                "label": block.title,
+                # the one text-section renderer of the column: escaping and
+                # mention anchors ride the shared generator, so a «@» inside
+                # a dataset description navigates like anywhere else and a
+                # dead href stays the requestLink channel's silent no-op.
+                "html": build_mention_html(block.text),
+            }
+            for index, block in enumerate(card.blocks)
+            if block.text and block.text.strip()
+        ]
+        self.related_sections = self._external_relations(card)
+
+    @staticmethod
+    def _external_image_source(card: ExternalCardSource) -> str:
+        """The record's picture as the pane URL, or the empty string the
+        island paints as the «Нет изображения» placeholder: a missing path,
+        a vanished file or corrupt bytes degrade exactly like the kernel
+        slot — the source's file stays the truth, the card shows what is
+        readable."""
+        if not card.picture_path:
+            return ""
+        if load_preview(card.picture_path, IMAGE_SLOT_SIZE).isNull():
+            return ""
+        return QUrl.fromLocalFile(card.picture_path).toString()
+
+    def _external_relations(self, card: ExternalCardSource) -> list[dict[str, Any]]:
+        """The card's relations grouped into sections by target type (the
+        kernel section shape, Д3): one block per type in first-appearance
+        order, captioned with the registry's plural name of the external
+        type; each row's (type, source_id) pair is the transition — the
+        island presses it through the one gesture bus, the string id rides
+        the external channel (task 6.1 «связи-переходы кликом в колонку»)."""
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for relation in card.relations:
+            grouped.setdefault(relation.key, []).append(
+                {"name": relation.name, "type": relation.key, "id": relation.source_id}
+            )
+        sections: list[dict[str, Any]] = []
+        for key, rows in grouped.items():
+            descriptor = entity_registry.resolve(key)
+            label = getattr(descriptor, "plural_label", None) or entity_registry.display_label(
+                key
+            )
+            sections.append({"key": key, "label": label, "rows": rows})
+        return sections
 
     # ── the unchanged NRI-0022 render halves ─────────────────────────────────
 

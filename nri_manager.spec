@@ -73,6 +73,13 @@ a = Analysis(
          "app/domain/character_sheets"),
         ("app/domain/character_sheets/mork_borg.json",
          "app/domain/character_sheets"),
+        # Bundled LSS dataset schemas (change add-dnd-module-foundation,
+        # design Д5): the validator loads them from the package directory via
+        # lss_schemas.schema_resource_dir(), which expects them under
+        # app/dd/resources/schemas in the frozen tree (checked by
+        # tests/test_spec_dd_schemas_bundle.py; the whole directory ships —
+        # all artifacts of the fixed bundled set, JSON data never PYZ).
+        ("app/dd/resources/schemas", "app/dd/resources/schemas"),
         ("app/presentation/views/table_host/web",
          "app/presentation/views/table_host/web"),
         ("app/presentation/theme/tokens.json",

@@ -46,7 +46,7 @@ QApplication.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Container, Protocol, Sequence
+from typing import Container, Mapping, Protocol, Sequence
 
 from app.domain.date_era import era_key
 from app.domain.game_calendar import GameCoord, InvalidGameDateError
@@ -289,6 +289,14 @@ class Row:
     child is its own last sibling too), false on top-level rows and stubs —
     the delegate paints the «└» angle instead of a trunk that dangles below
     the elbow, so the branch never promises a child that does not exist.
+
+    ``marks`` (add-dnd-game-face task 11.2, spec event-timeline «Пометки
+    строк от внешних источников»): the data tokens other sources attached to
+    this event (``("encounter",)`` for the module's ladder mark — plain
+    tokens, never captions; the DELEGATE decides what a token paints).
+    Empty by default — rows of a mark-free world are byte-identical to the
+    old ones; a stub never carries marks whatever the mapping holds (it
+    shows no date and interacts as little as possible).
     """
 
     event_id: int
@@ -306,6 +314,7 @@ class Row:
     parent_id: int | None = None
     has_children: bool = False
     is_last_sibling: bool = False
+    marks: tuple[str, ...] = ()
 
 
 def window_contains(
@@ -396,6 +405,7 @@ def build_rows(
     now: GameCoord | None = None,
     now_bc: bool = False,
     expanded: Container[int] = frozenset(),
+    marks_by_event: "Mapping[int, Sequence[str]] | None" = None,
 ) -> list[Row]:
     """Lay ``events`` out as the ladder's tree rows, filtered by ``window``.
 
@@ -428,6 +438,14 @@ def build_rows(
     Д1-seeded real today on a custom calendar) marks nobody either — the
     outline simply stays absent (the group-4 posture: derived lines hide, the
     list never breaks).
+
+    ``marks_by_event`` (add-dnd-game-face task 11.2, spec event-timeline
+    «Пометки строк от внешних источников»): an optional event id → data-token
+    mapping (the ViewModel merges what the external sources answered for the
+    sample's events). Event rows pick their tokens up; stubs and unlisted
+    events keep the empty tuple, so with no marks (``None`` or ``{}``) the
+    output is word-for-word the mark-free list — the defaults keep every
+    older caller byte-identical.
     """
     now_key: int | None = None
     if now is not None:
@@ -515,6 +533,15 @@ def build_rows(
         entries.append((_row_order(parent), group))
     entries.sort(key=lambda entry: entry[0])
     rows = [row for _, group in entries for row in group]
+    if marks_by_event:
+        rows = [
+            (
+                replace(row, marks=tuple(marks_by_event[row.event_id]))
+                if row.kind == ROW_EVENT and row.event_id in marks_by_event
+                else row
+            )
+            for row in rows
+        ]
     if now_key is not None:
         for index, row in enumerate(rows):
             if (

@@ -29,6 +29,8 @@ Usage:
     QT_QPA_PLATFORM=offscreen python run_tests_isolated.py            # whole tests/
     QT_QPA_PLATFORM=offscreen python run_tests_isolated.py tests/presentation -j 8
     python run_tests_isolated.py --no-cov tests/presentation/test_dialogs.py
+    # acceptance profile «ядро» (add-dnd-module-foundation, task 6.4):
+    NRI_DISABLE_DD_MODULE=1 QT_QPA_PLATFORM=offscreen python run_tests_isolated.py
 
 Exit status: 0 only when every module passed AND (unless ``--no-cov``) the
 combined line-coverage report met its configured ``fail_under``.
@@ -47,6 +49,38 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TIMEOUT_S = 1200  # a wedged Qt test must read as a failure, not a hung runner
+
+#: The accept/emergency profile switch (add-dnd-module-foundation, design Д11;
+#: spec ui-testing «Приёмка в двух профилях»). The ONE normative bearer of the
+#: name is ``app.main.DD_MODULE_PROFILE_DISABLE_ENV`` — the runner repeats the
+#: literal because it must boot without importing the application, and
+#: ``tests/test_run_tests_isolated_profile.py`` pins that name and behaviour
+#: can never drift apart.
+DD_MODULE_PROFILE_DISABLE_ENV = "NRI_DISABLE_DD_MODULE"
+
+
+def profile_coverage_omits(env: dict[str, str]) -> list[str]:
+    """Coverage scope of the acceptance profile (task 6.4, spec ui-testing).
+
+    Profile «ядро» (the switch ambient at ``1``, the very value the
+    composition-root switch reads in every child process): the module is not
+    part of the composition, so its package leaves the MEASURED profile and
+    the one 100 % line gate evaluates the kernel composition only (design Д11:
+    «покрытие в этом прогоне меряется по составу профиля (профильный конфиг
+    запуска, не правки exclude_lines)» — no pragma/exclude_lines anywhere).
+    Profile «ядро + модуль» (switch absent): nothing is omitted — the gate
+    stays 100 % over the whole ``app/`` including ``app/dd/``. The omission
+    applies at REPORT time over the combined per-module data; children record
+    whatever their processes executed either way.
+    """
+    if env.get(DD_MODULE_PROFILE_DISABLE_ENV, "") == "1":
+        return ["*/app/dd/*"]
+    return []
+
+
+def coverage_report_cli_args(omits: list[str]) -> list[str]:
+    """The ``coverage report`` flags for a profile scope (empty = full app)."""
+    return [f"--omit={','.join(omits)}"] if omits else []
 
 
 def discover(paths: list[Path]) -> list[Path]:
@@ -120,6 +154,7 @@ def main(argv: list[str]) -> int:
                         help="also measure branch coverage (report-only, mirrors CI run 2: never a gate)")
     args = parser.parse_args(argv)
     extra: list[str] = ["--cov-branch"] if (args.branch and not args.no_cov) else []
+    omits = profile_coverage_omits(os.environ)
 
     raw_paths = [Path(p) for p in (args.paths or ["tests"])]
     modules = discover([ROOT / p if not p.is_absolute() else p for p in raw_paths])
@@ -136,6 +171,8 @@ def main(argv: list[str]) -> int:
         os.environ.pop("COVERAGE_FILE", None)  # children get their own per file
 
     print(f"running {len(modules)} modules, -j {args.j}, coverage={'off' if cov_dir is None else 'on'}")
+    if omits:
+        print(f"profile «ядро»: {DD_MODULE_PROFILE_DISABLE_ENV}=1 — coverage scope omits {', '.join(omits)}")
     failures: list[tuple[Path, int, float]] = []
     wall_start = time.monotonic()
     with ThreadPoolExecutor(max_workers=args.j) as pool:
@@ -185,6 +222,7 @@ def main(argv: list[str]) -> int:
         else:
             report = subprocess.run(
                 [sys.executable, "-m", "coverage", "report",
+                 *coverage_report_cli_args(omits),
                  *(["--fail-under=0"] if args.branch else [])],
                 cwd=ROOT, env={**os.environ, "COVERAGE_FILE": str(cov_dir / ".coverage")})
             coverage_ok = report.returncode == 0

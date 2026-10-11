@@ -3,6 +3,8 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from app.domain import entity_registry
 from app.presentation.viewmodels.search_viewmodel import SearchViewModel
 from tests.presentation.qml_helpers import track
@@ -311,3 +313,104 @@ async def test_time_tail_rides_the_search_row_date():
     assert rows[1]["text"] == "Засека  [02 Январь 1200, 09:05]"
     assert rows[1]["dateText"] == "02 Январь 1200, 09:05"
     assert rows[2]["text"] == "Дозор  [02 Январь 1200]"
+
+
+# ── add-dnd-game-face task 3.4: external rows in the same list ─────────────
+
+
+class _ExtHit:
+    def __init__(self, source_id, name, origin=""):
+        self.source_id = source_id
+        self.name = name
+        self.origin = origin
+
+
+@pytest.fixture()
+def restore_external_section():
+    saved = dict(entity_registry._EXTERNAL)
+    yield
+    entity_registry._EXTERNAL.clear()
+    entity_registry._EXTERNAL.update(saved)
+
+
+def _register_feat_spell():
+    entity_registry.register_external(
+        [
+            entity_registry.ExternalTypeDescriptor(
+                key="dd_feat", label="Черта", plural_label="Черты", icon_key="scroll"
+            ),
+            entity_registry.ExternalTypeDescriptor(
+                key="dd_spell", label="Заклинание", plural_label="Заклинания",
+                icon_key="sparkles",
+            ),
+        ]
+    )
+
+
+async def test_external_group_publishes_signed_clickable_rows(qtbot):
+    """Spec dnd-reference-records «каждая подписана набором-источником» +
+    global-search подпись группы: caption from the registered descriptor,
+    row text «Имя [Набор]», the row's id is the STRING source_id under the
+    descriptor's key; no origin — the name alone; a source_id-less hit is
+    not clickable (there is nothing to open)."""
+    _register_feat_spell()
+    vm, _ = _vm({
+        "dd_feat": [
+            _ExtHit("srd/lucky", "Везучесть", "SRD 5.1"),
+            _ExtHit("hb/lucky", "Везучесть", "Мой набор"),
+            _ExtHit("", "Без набора"),
+        ],
+    })
+
+    await vm.search("вез")
+
+    headers = [r for r in vm.rows if r["kind"] == "sectionHeader"]
+    assert [h["text"] for h in headers] == ["— Черты (3) —"]
+    assert headers[0]["iconName"] == "scroll"  # glyph from the descriptor
+    results = [r for r in vm.rows if r["kind"] == "result"]
+    assert [(r["text"], r["type"], r["id"], r["clickable"]) for r in results] == [
+        ("Везучесть  [SRD 5.1]", "dd_feat", "srd/lucky", True),
+        ("Везучесть  [Мой набор]", "dd_feat", "hb/lucky", True),
+        ("Без набора", "dd_feat", "", False),
+    ]
+
+
+async def test_external_row_gestures_ride_the_string_channel(qtbot):
+    """Дизайн Д4: both result gestures of an external row — select AND
+    activate — ride ``externalResultSelected`` (the record is read-only, the
+    edit gesture has nowhere to go); kernel rows keep their channels intact
+    beside them."""
+    _register_feat_spell()
+    vm, _ = _vm({
+        "dd_spell": [_ExtHit("srd/fire-ball", "Fire ball", "SRD")],
+        "events": [SimpleNamespace(id=7, name="Бой", start_date=date(1200, 1, 1))],
+    })
+    externals = track(vm.externalResultSelected)
+    activated = track(vm.resultActivated)
+    selected = track(vm.resultSelected)
+
+    await vm.search("fire")
+    external_index = next(i for i, r in enumerate(vm.rows) if r["id"] == "srd/fire-ball")
+    vm.select(external_index)
+    assert externals == [("dd_spell", "srd/fire-ball")]
+    assert selected == [] and activated == []
+    assert vm.listVisible is False
+
+    # The SECOND gesture of the same external row (double click) is the same
+    # channel too — the read-only record has no edit route to open.
+    vm._set_list_visible(True)
+    vm.activate(external_index)
+    assert externals == [
+        ("dd_spell", "srd/fire-ball"),
+        ("dd_spell", "srd/fire-ball"),
+    ]
+    assert activated == []
+
+    vm._set_list_visible(True)
+    await vm.search("бой")
+    kernel_index = next(i for i, r in enumerate(vm.rows) if r["id"] == 7)
+    vm.activate(kernel_index)
+    assert activated == [("event", 7)]
+    # external channel untouched by the kernel row's gestures
+    assert all(pair == ("dd_spell", "srd/fire-ball") for pair in externals)
+    assert selected == []

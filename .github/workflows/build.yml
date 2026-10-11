@@ -42,6 +42,18 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: uv run --no-sync python run_tests_isolated.py
 
+      # add-dnd-module-foundation (task 6.4, spec ui-testing): acceptance runs
+      # in TWO profiles and only a mutually green pair passes. This is the
+      # «ядро» profile — the composition switch keeps app/dd out of every
+      # child process, and the runner measures coverage over the profile's
+      # composition (the report omits app/dd; the full run above stays the
+      # 100 %-of-app gate).
+      - name: Run tests (kernel profile, line coverage gate)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          NRI_DISABLE_DD_MODULE: "1"
+        run: uv run --no-sync python run_tests_isolated.py
+
       # Run 2 — branch coverage visibility: report-only, partial branches never
       # fail the build (--branch keeps the line gate off the branch metric).
       - name: Run tests (branch coverage, report only)

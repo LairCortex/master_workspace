@@ -18,6 +18,12 @@ dependencies = [
     "aiohttp>=3.9",
     "segno>=1.6",
     "reportlab>=4.0",
+    # LSS dataset validation against the bundled draft-07 schemas
+    # (add-dnd-module-foundation, task 4.1; design Д7: jsonschema draft-07)
+    "jsonschema>=4.18,<5",
+    # Direct: the modern $ref registry replacing jsonschema's deprecated
+    # RefResolver (its own replacement library, imported by lss_schemas)
+    "referencing>=0.28,<1",
 ]
 
 [project.optional-dependencies]

@@ -32,6 +32,7 @@ chevron riding a scoped repaint); anything else stays the full reset it was.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Container, Sequence
 
 from PySide6.QtCore import (
@@ -76,6 +77,7 @@ class _RowEntry:
     __slots__ = (
         "event_id", "caption", "detail", "token_key", "flags",
         "kind", "depth", "has_children", "expanded", "is_last_sibling",
+        "marks",
     )
 
     def __init__(
@@ -90,6 +92,7 @@ class _RowEntry:
         has_children: bool,
         expanded: bool,
         is_last_sibling: bool,
+        marks: tuple = (),
     ) -> None:
         self.event_id = event_id
         self.caption = caption
@@ -101,6 +104,9 @@ class _RowEntry:
         self.has_children = has_children
         self.expanded = expanded
         self.is_last_sibling = is_last_sibling
+        # add-dnd-game-face task 11.2: the external-source data tokens of the
+        # event (tuple[str, ...], empty = no mark) — delivered, never derived.
+        self.marks = marks
 
     def same_position(self, other: "_RowEntry") -> bool:
         """Whether two delivered records can hold each other's place in the
@@ -113,7 +119,12 @@ class _RowEntry:
         byte-identity would demote every toggle to a reset (design Д6:
         expansion must reach the view as insert/remove) — both moved flags of
         the staying rows are delivered by the scoped repaint
-        :meth:`TimelineRowModel._sync_open_state` emits."""
+        :meth:`TimelineRowModel._sync_open_state` emits. The external-source
+        ``marks`` ride the same moving-scalar channel (add-dnd-game-face task
+        11.2): an encounter saved while the ladder keeps its rows repaints
+        its ring through those scoped ``dataChanged``\\ s, never a model
+        reset — spec «Пометки строк от внешних источников» keeps the read
+        position alive."""
         return (
             self.event_id == other.event_id
             and self.caption == other.caption
@@ -152,6 +163,7 @@ def _entry_of(row: Row, expanded: Container[int] = frozenset()) -> _RowEntry:
         has_children=row.has_children,
         expanded=row.kind == ROW_EVENT and row.event_id in expanded,
         is_last_sibling=row.is_last_sibling,
+        marks=row.marks,
     )
 
 
@@ -187,15 +199,22 @@ class TimelineRowModel(QAbstractListModel):
     HAS_CHILDREN_ROLE = Qt.ItemDataRole.UserRole + 8
     EXPANDED_ROLE = Qt.ItemDataRole.UserRole + 9
     IS_LAST_SIBLING_ROLE = Qt.ItemDataRole.UserRole + 10
+    #: The external-source data tokens of the row (add-dnd-game-face task
+    #: 11.2, spec event-timeline «Пометки строк от внешних источников»): a
+    #: list of plain tokens (``["encounter"]``) the delegate interprets — the
+    #: model delivers, the delegate paints, the kernel names no domain.
+    MARKS_ROLE = Qt.ItemDataRole.UserRole + 11
 
-    #: The scalars that move while a row STAYS (design Д6 + NRI-0023 Д11):
-    #: the open/closed chevron state and the group-closing last-sibling flag.
-    #: ``same_position`` aligns across both, so an expansion arrives as a
-    #: pure insert/remove and every moved flag reaches the kept delegates
+    #: The scalars that move while a row STAYS (design Д6 + NRI-0023 Д11 +
+    #: add-dnd-game-face 11.2): the open/closed chevron state, the
+    #: group-closing last-sibling flag and the external-source marks.
+    #: ``same_position`` aligns across all three, so an expansion arrives as a
+    #: pure insert/remove and every moved scalar reaches the kept delegates
     #: through the scoped repaints :meth:`_emit_flag_repaint` answers with.
     _FLAG_ROLES: tuple[tuple[int, str], ...] = (
         (EXPANDED_ROLE, "expanded"),
         (IS_LAST_SIBLING_ROLE, "is_last_sibling"),
+        (MARKS_ROLE, "marks"),
     )
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -260,8 +279,10 @@ class TimelineRowModel(QAbstractListModel):
                 del self._entries[head: head + removed]
                 self.endRemoveRows()
             # The parent row whose chevron just flipped rode the common head
-            # (same_position ignores the flag) — deliver its new state.
-            self._sync_open_state(entries, head)
+            # (same_position ignores the flag) — deliver its new state, and
+            # the same for any aligned-tail row whose marks moved (an
+            # encounter saved together with a membership change, task 11.2).
+            self._sync_open_state(entries, head, tail)
         else:
             # Content moved inside the common range, or nothing stayed in
             # place (the first feed, an emptied list, a full re-cut) — the
@@ -270,22 +291,34 @@ class TimelineRowModel(QAbstractListModel):
             self._entries = entries
             self.endResetModel()
 
-    def _sync_open_state(self, entries: Sequence["_RowEntry"], head: int) -> None:
-        """Carry the moving scalars into the kept head rows after an
-        insertion/removal delivery and repaint exactly the rows whose flag
-        moved (``same_position`` aligns across the open/closed and the
-        last-sibling flags, so the staying parent's new open state and the
-        newly-demoted former last child's new closing state reach the
-        delegates through these scoped ``dataChanged``\\ s — the one delivery
-        the flipped tree bits need). Flags only ever move on the rows the
-        change toggled, and a parent's children are emitted DIRECTLY under it:
-        the moved rows always sit before the inserted/removed region, inside
-        the common head — the aligned tail cannot carry a flag move."""
+    def _sync_open_state(
+        self, entries: Sequence["_RowEntry"], head: int, tail: int = 0
+    ) -> None:
+        """Carry the moving scalars into the kept rows after an
+        insertion/removal delivery and repaint exactly the rows whose scalar
+        moved (``same_position`` aligns across the open/closed, the
+        last-sibling and the marks scalars, so the staying parent's new open
+        state, the newly-demoted former last child's new closing state and a
+        saved encounter's new mark all reach the delegates through these
+        scoped ``dataChanged``\\ s — the one delivery the moved bits need).
+        The tree flags move only on the rows the toggle touched, and a
+        parent's children are emitted DIRECTLY under it, so they sit inside
+        the common head; the marks scalar has no such structural seat (an
+        encounter save can ride any surviving row while the sample's
+        membership moves at the same time), so the aligned tail is walked
+        too."""
         repaints = []
+        # (kept-row index, fresh-entry index) pairs: the common head shares
+        # its indices by construction; the aligned tail needs its own map —
+        # after an insert/remove the two lists differ in length.
+        positions = [(own, own) for own in range(head)] + [
+            (len(self._entries) - tail + offset, len(entries) - tail + offset)
+            for offset in range(tail)
+        ]
         for role, attr in self._FLAG_ROLES:
             dirty: list[int] = []
-            for own in range(head):
-                entry, fresh = self._entries[own], entries[own]
+            for own, fresh_index in positions:
+                entry, fresh = self._entries[own], entries[fresh_index]
                 if getattr(entry, attr) != getattr(fresh, attr):
                     setattr(entry, attr, getattr(fresh, attr))
                     dirty.append(own)
@@ -350,6 +383,7 @@ class TimelineRowModel(QAbstractListModel):
             "hasChildren": entry.has_children,
             "expanded": entry.expanded,
             "isLastSibling": entry.is_last_sibling,
+            "marks": list(entry.marks),
         }
 
     # ── QAbstractListModel contract ──────────────────────────────────────────
@@ -381,6 +415,10 @@ class TimelineRowModel(QAbstractListModel):
             return entry.expanded
         if role == self.IS_LAST_SIBLING_ROLE:
             return entry.is_last_sibling
+        if role == self.MARKS_ROLE:
+            # A fresh list per read: QML treats it as an array (indexOf), the
+            # entry's tuple stays the model's private immutable record.
+            return list(entry.marks)
         return None
 
     def roleNames(self) -> dict:  # Qt API name
@@ -395,6 +433,7 @@ class TimelineRowModel(QAbstractListModel):
             self.HAS_CHILDREN_ROLE: b"hasChildren",
             self.EXPANDED_ROLE: b"expanded",
             self.IS_LAST_SIBLING_ROLE: b"isLastSibling",
+            self.MARKS_ROLE: b"marks",
         }
 
 
@@ -419,9 +458,17 @@ class TimelineViewModel(QObject):
         event_service,
         now_vm=None,
         parent: QObject | None = None,
+        external_sources: Sequence[Any] = (),
     ) -> None:
         super().__init__(parent)
         self._event_service = event_service
+        # add-dnd-game-face task 11.2 (spec event-timeline «Пометки строк от
+        # внешних источников»): the composition root's registered sources
+        # (design Д9) — read-only here, the ladder only ever asks their sync
+        # ``event_marks`` door. Swapped whole through ``set_external_sources``
+        # when the module world changes; an empty tuple is the mark-free
+        # kernel world, byte-identical to the pre-11.2 ladder.
+        self._external_sources: tuple = tuple(external_sources)
         self._all_events: list[Any] = []
         self.events: list[Any] = []
         self.rows: list[Row] = []
@@ -482,6 +529,13 @@ class TimelineViewModel(QObject):
     def row_model(self) -> TimelineRowModel:
         """The QML list model of the current flat rows."""
         return self._row_model
+
+    @property
+    def external_sources(self) -> tuple:
+        """The mark-answering sources the ladder currently reads (public
+        mirror of the hand-out, the same door the other collaborators expose
+        — the lifecycle tests pin the re-hand-out through it)."""
+        return self._external_sources
 
     # QML-side alias of :attr:`row_model` (the island binds ``model:
     # vm.rowModel``); the Python property above stays the Python contract.
@@ -579,12 +633,52 @@ class TimelineViewModel(QObject):
 
     # ── rows projection (Qt-free core, memoized) ─────────────────────────────
 
+    def set_external_sources(self, sources: Sequence[Any]) -> None:
+        """Swap the mark-answering sources whole (add-dnd-game-face task
+        11.2): the composition root hands the ladder the module world when it
+        becomes live — later than construction, the same list ever after.
+        No version gymnastics: the marks join the memo key, so a swap that
+        changes nobody's marks keeps the fast path and a swap that paints
+        (or hides) marks re-models exactly once."""
+        self._external_sources = tuple(sources)
+        self._rebuild_rows()
+
+    def _marks_by_event(self) -> dict[int, tuple]:
+        """Merge the sources' answers for the WHOLE sample into one map
+        (design Д9: the ladder asks, the sources know). Tolerant surfaces all
+        the way: a source without the door or hidden (module detached — its
+        marks are hidden data, spec «при выключенном модуле … пометки быть
+        НЕ SHALL») contributes nothing; a raising door is journalled and
+        skipped — a broken module must never eat the ladder."""
+        marks: dict[int, list] = {}
+        if not self._external_sources:
+            return {}
+        event_ids = tuple(e.id for e in self._all_events)
+        for source in self._external_sources:
+            if not getattr(source, "visible", True):
+                continue
+            event_marks = getattr(source, "event_marks", None)
+            if event_marks is None:
+                continue
+            try:
+                answered = event_marks(event_ids)
+            except Exception:  # noqa: BLE001 — the ladder outlives any source
+                logging.getLogger(__name__).warning(
+                    "timeline: источник пометок отказал, его строки без меток",
+                    exc_info=True,
+                )
+                continue
+            for event_id, token in (answered or {}).items():
+                marks.setdefault(event_id, []).append(token)
+        return {event_id: tuple(tokens) for event_id, tokens in marks.items()}
+
     @staticmethod
     def _version_of(
         events: Any,
         window: tuple | None,
         now: tuple | None = None,
         expanded: frozenset[int] = frozenset(),
+        marks_by_event: dict[int, tuple] | None = None,
     ) -> tuple:
         """The rebuild key: the ``(id, start, start_bc, end, end_bc, name,
         color, detail, parent, время)`` set of the WHOLE sample plus the
@@ -612,7 +706,11 @@ class TimelineViewModel(QObject):
         events now (a stub quotes the window-excluded parent's name, a time
         move reorders within the day, a re-chain regroups), so anything the
         tree projection reads must invalidate the memo — an identical sample
-        at an identical knob still short-circuits."""
+        at an identical knob still short-circuits. The marks map joins it as
+        of add-dnd-game-face task 11.2: a mark is a delivered row datum, so
+        saving an encounter must re-deliver the row even though no date, name
+        or flag moved (the model-side diff then carries the ring to the
+        delegates as a scoped repaint, never a reset)."""
         return (
             tuple(
                 (
@@ -629,6 +727,7 @@ class TimelineViewModel(QObject):
             window,
             now,
             tuple(sorted(expanded)),
+            tuple(sorted((marks_by_event or {}).items())),
             current_calendar(),
         )
 
@@ -649,9 +748,11 @@ class TimelineViewModel(QObject):
         """
         now = self.now_pair()
         coord, is_bc = now if now is not None else (None, False)
+        marks_by_event = self._marks_by_event()
         version = self._version_of(
             self._all_events, self._window, now,
             frozenset(self._expanded_parent_ids),
+            marks_by_event,
         )
         if version == self._rows_version:
             return  # identical sample at an identical window — same list
@@ -662,6 +763,7 @@ class TimelineViewModel(QObject):
             now=coord,
             now_bc=is_bc,
             expanded=self._expanded_parent_ids,
+            marks_by_event=marks_by_event,
         )
         # The island's model rides every real re-model (a reset or an
         # expansion-shaped insert/remove; the memoized no-op above never

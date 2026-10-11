@@ -76,6 +76,87 @@ def isolated_ui_theme_defaults(tmp_path, monkeypatch):
     theme_package.reset_default_theme()
 
 
+#: The two official SRD shelf ids of the module library (the same constants
+#: the module exposes); the pre-seed below writes them with raw json so the
+#: kernel profile stays app.dd-free (spec ui-testing «профиль ядро»).
+_DD_SRD_SEED = {
+    "srd51": "SRD 5.1 (2014)",
+    "srd52": "SRD 5.2 (2024)",
+}
+
+
+@pytest.fixture(scope="session")
+def dd_srd_seed_shelf(tmp_path_factory):
+    """The throwaway SRD shelf the module's auto-bootstrap finds already
+    stocked — built ONCE per process, OUTSIDE any test's ``tmp_path`` (tests
+    that assert their own tmp_path is empty stay untouched). Nothing in the
+    suite writes here: the seeded state makes every composed attach answer
+    «already present» without a request, so the shelf is read-only in
+    practice (its own idempotency rule, task 3.3)."""
+    import json
+
+    root = tmp_path_factory.mktemp("dd-srd-seed")
+    for dataset_id, title in _DD_SRD_SEED.items():
+        (root / f"{dataset_id}.json").write_text(
+            json.dumps({"id": dataset_id, "title": title}), encoding="utf-8"
+        )
+        (root / f"{dataset_id}.meta.json").write_text(
+            json.dumps(
+                {
+                    "source": "srd",
+                    "imported_at": "2026-01-01",
+                    "sha256": "0" * 64,
+                    "check_errors": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+    return root
+
+
+@pytest.fixture(autouse=True)
+def isolated_dd_datasets_dir(dd_srd_seed_shelf, monkeypatch):
+    """No test may touch the developer's real ``~/.nri_manager/datasets/`` —
+    and no game open may reach the network through the module's auto-bootstrap.
+
+    add-dnd-module-foundation task 3.3 schedules the idempotent SRD download
+    on every attach of the composed module; in the suite that ask must land
+    on the seeded shelf above, so the bootstrap answers «already present»
+    without a request (tests must not require the network — AGENTS) and no
+    result box ever surprises the lifecycle contours. Tests that exercise
+    the bootstrap itself build their own ``DatasetStorage(tmp_path/…)`` or
+    rebind the constant to an empty dir.
+
+    The shelf files are written by hand (not through the module's storage):
+    the kernel-profile run forbids importing ``app/dd`` in the process, and
+    a plain json shelf is exactly what the storage reads back (design Д4).
+    """
+    from app.infrastructure import paths
+
+    monkeypatch.setattr(paths, "DATASETS_DIR", dd_srd_seed_shelf)
+    yield dd_srd_seed_shelf
+
+
+@pytest.fixture(autouse=True)
+def isolated_dd_grimoires_dir(tmp_path, monkeypatch):
+    """No test may touch the developer's real ``~/.nri_manager/grimoires/``
+    (add-dnd-game-face task 4.2, design Д8).
+
+    The composition of a D&D game builds the grimoire shelf on the default
+    root, so the constant — not the caller — must decide where the shelf lives
+    during the suite. Nothing is seeded: an absent directory is the honest
+    «no grimoire imported yet» state, and tests that exercise the storage
+    itself pass their own ``tmp_path`` root. Like the datasets isolation, this
+    touches only the kernel's paths module (the kernel-profile run must not
+    import ``app/dd``).
+    """
+    from app.infrastructure import paths
+
+    root = tmp_path / "isolated-grimoires"
+    monkeypatch.setattr(paths, "GRIMOIRES_DIR", root)
+    yield root
+
+
 @pytest.fixture(autouse=True)
 def isolated_qml_shell():
     """Per-test QML isolation retired in PR-033: the engine lives for the session.

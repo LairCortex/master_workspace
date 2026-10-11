@@ -1,7 +1,9 @@
 """Synchronous state model for the entity-card QML island."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
+from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
@@ -11,6 +13,7 @@ from app.domain.game_calendar import (
     InvalidGameDateError,
     as_game_coord,
 )
+from app.presentation.card_tab_groups import kernel_card_groups
 from app.presentation.entity_icons import icon_for
 from app.presentation.utils.date_utils import (
     AGE_ENTITY_TYPES,
@@ -20,6 +23,7 @@ from app.presentation.utils.date_utils import (
     iso_or_coord,
     worst_case_date_caption,
 )
+from app.presentation.viewmodels.card_tab_view_model import CardTabsMixin
 from app.presentation.viewmodels.event_dialog_island_view_model import (
     AiFieldProxy,
     EntityGenerateProxy,
@@ -29,7 +33,7 @@ from app.presentation.viewmodels.event_dialog_island_view_model import (
 from app.presentation.viewmodels.mention_field_host import MentionFieldHost
 
 
-class EntityCardIslandViewModel(QObject):
+class EntityCardIslandViewModel(CardTabsMixin):
     stateChanged = Signal()
     #: Derived-surface fan-out (NRI-0021 task 4.3): re-raised whenever the
     #: read-only age line must be re-read (dates edited or «now» moved).
@@ -52,11 +56,15 @@ class EntityCardIslandViewModel(QObject):
         parent: QObject | None = None,
         now: tuple[GameCoord, bool] | None = None,
         related_create_enabled: bool = True,
+        external_sources: Sequence[Any] = (),
     ) -> None:
         super().__init__(parent)
         self._entity_type = entity_type
         self._field_specs = list(field_specs)
         self._related_configs = list(related_configs)
+        # add-dnd-game-face (design Д1): carried verbatim to every mention
+        # host of this card (dialog constructor ← connector ← composition).
+        self._external_sources: tuple[Any, ...] = tuple(external_sources)
         self._name = ""
         self._rating = 1
         # Date bridges carry (GameCoord, era) pairs (piece C3a, designs D4/D6,
@@ -103,7 +111,7 @@ class EntityCardIslandViewModel(QObject):
         self._mention_proxies: dict[str, MentionEditProxy] = {}
         self._ai_proxies: dict[str, AiFieldProxy] = {}
         for name, label in mention_specs:
-            host = MentionFieldHost(self)
+            host = MentionFieldHost(self, external_sources=self._external_sources)
             proxy = MentionEditProxy(host, self)
             ai = AiFieldProxy(
                 entity_type,
@@ -139,6 +147,12 @@ class EntityCardIslandViewModel(QObject):
             )
             for cfg in self._related_configs
         }
+        # add-dnd-game-face (task 7.1, design Д10): the «Связи» tab exists
+        # exactly when the type has relation sections (the rating type ships
+        # none), so the kernel strip is the trio or the «Обзор · Тексты» pair.
+        self._init_card_tabs(
+            kernel_card_groups(has_relations=bool(self._related_configs))
+        )
 
     def _set_name(self, value: str) -> None:
         value = value or ""
@@ -406,7 +420,16 @@ class EntityCardIslandViewModel(QObject):
     @Slot()
     def requestSave(self) -> None:  # noqa: N802
         if self.saveEnabled:
+            self.clear_invalidated_field()
             self.saveRequested.emit()
+            return
+        # add-dnd-game-face task 7.1 (spec «Ошибка указывает дорогу»): the
+        # card's only field gate is the name (sheet parity C3 above), so a
+        # refusal over a field can only be the name — and «Обзор», where the
+        # field lives, is revealed with it. A lock or an in-flight save names
+        # no field: not a field problem.
+        if not self._name.strip():
+            self.reveal_field("name")
 
     @Slot()
     def requestCancel(self) -> None:  # noqa: N802

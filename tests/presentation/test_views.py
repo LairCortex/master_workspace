@@ -49,6 +49,53 @@ class TestMainWindow:
         qtbot.addWidget(w)
         assert w.windowTitle() != ""
 
+    # -- «Игра»: kernel's game-system group (add-dnd-module-foundation 2.2) --
+
+    def test_game_group_absent_by_default(self, qtbot):
+        """Обычная композиция (offer не дан) — группа «Игра» и её пункт
+        скрыты: «у обычной игры группа модуля НЕ SHALL существовать»."""
+        w = MainWindow(
+            timeline_vm=MagicMock(),
+            detail_vm=MagicMock(),
+            search_vm=MagicMock(),
+        )
+        qtbot.addWidget(w)
+        w.show()
+        assert not w.enable_dd_module_action.isVisible()
+        game_actions = [
+            a for a in w.menuBar().actions() if a.text() == "Игра"
+        ]
+        assert len(game_actions) == 1
+        assert not game_actions[0].isVisible()
+
+    def test_game_group_offer_shows_and_signals(self, qtbot):
+        """Offer от composition root — группа видна, а триггер пункта даёт
+        сигнал enable_dd_module_requested (дальше отвечает main, не окно)."""
+        w = MainWindow(
+            timeline_vm=MagicMock(),
+            detail_vm=MagicMock(),
+            search_vm=MagicMock(),
+            dd_module_enable_offer=True,
+        )
+        qtbot.addWidget(w)
+        w.show()
+        # '&'-удвоение: семейство меню/действий съедает одиночный '&' как
+        # маркер мнемоники (live-аудит 2026-10-10: пункт печатался «Включить
+        # DD-модуль…»), на экране и в имени доступности читается подпись —
+        # пин сверяет снятое удвоение с канонической подписью.
+        assert w.enable_dd_module_action.text().replace("&&", "&") == "Включить D&D-модуль…"
+        assert w.enable_dd_module_action.isVisible()
+        game_actions = [
+            a for a in w.menuBar().actions() if a.text() == "Игра"
+        ]
+        assert game_actions[0].isVisible()
+        with qtbot.waitSignal(w.enable_dd_module_requested, timeout=1000):
+            w.enable_dd_module_action.trigger()
+        # тот же переключатель назад — поток выключения поднимает пункт
+        w.set_enable_dd_module_visible(False)
+        assert not w.enable_dd_module_action.isVisible()
+        assert not game_actions[0].isVisible()
+
     def test_menu_bar_actions_have_no_native_roles(self, qtbot):
         """NRI-0014 L2 (live audit): the macOS role heuristic must stay off.
 
@@ -846,6 +893,110 @@ class TestGameLauncherDialog:
         w = GameLauncherDialog(theme=runtime)
         qtbot.addWidget(w)
         w.content.vm.createRequested.emit("")
+        assert w.selected_path is None
+
+    # -- система игры при создании (add-dnd-module-foundation task 2.6) ------
+
+    def test_no_profile_no_picker_name_dialog_only(self, qtbot, mocker, runtime):
+        """Профиль без модуля (offer не дан — конструктор по умолчанию):
+        пикера НЕ существует, создание идёт молча как обычное."""
+        get_item = mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getItem",
+        )
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            return_value=("БезВыбора", True),
+        )
+        w = GameLauncherDialog(theme=runtime)
+        qtbot.addWidget(w)
+        w.content.vm.createRequested.emit("")
+        get_item.assert_not_called()
+        assert self._listed_names(w) == ["БезВыбора"]
+        # обычная игра: ключ модуля не записан (spec «при „Обычная“ ключ НЕ
+        # SHALL записываться») — файл остаётся пустым, схем нет вовсе
+        import sqlite3
+
+        conn = sqlite3.connect(w.selected_path)
+        try:
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            assert tables == []  # пустой файл, как и до задачи
+        finally:
+            conn.close()
+
+    def test_picker_dnd_seeds_the_flag(self, qtbot, mocker, runtime):
+        """«D&D» в пикере: пикер идёт ПЕРЕД названием, выбор передаётся в
+        каталог, файл игры рождается с посевом признака."""
+        calls = []
+        order = []
+
+        def fake_get_item(*args, **kwargs):
+            order.append("item")
+            calls.append(args)
+            return ("D&D", True)
+
+        def fake_get_text(*args, **kwargs):
+            order.append("text")
+            return ("Подземелье", True)
+
+        get_item = mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getItem",
+            side_effect=fake_get_item,
+        )
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+            side_effect=fake_get_text,
+        )
+        w = GameLauncherDialog(theme=runtime, dnd_choice_available=True)
+        qtbot.addWidget(w)
+        w.content.vm.createRequested.emit("")
+        get_item.assert_called_once()
+        # порядок: пикер системы раньше диалога названия (spec: «перед диалогом
+        # названия»)
+        assert order == ["item", "text"]
+        # штатный список: «Обычная» первой (предвыбрана), закрытый словарь
+        assert list(calls[0][3]) == ["Обычная", "D&D"]
+        assert calls[0][4] == 0  # currentIndex — «Обычная»
+        assert calls[0][5] is False  # editable=False
+        assert self._listed_names(w) == ["Подземелье"]
+        assert w.content.vm.games[0]["dnd"] is True
+        import json
+        import sqlite3
+
+        from app.infrastructure.repositories.game_settings_repository import (
+            DND_MODULE_DATA_VERSION,
+            DND_MODULE_KEY,
+        )
+
+        conn = sqlite3.connect(w.selected_path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM game_settings WHERE key = ?",
+                (DND_MODULE_KEY,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert json.loads(row[0]) == {
+            "enabled": True,
+            "version": DND_MODULE_DATA_VERSION,
+        }
+
+    def test_picker_cancel_is_the_whole_cancel(self, qtbot, mocker, runtime):
+        """Отмена пикера — отмена создания целиком: диалог названия не
+        достигается, игр как не было."""
+        mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getItem",
+            return_value=("Обычная", False),
+        )
+        get_text = mocker.patch(
+            "app.presentation.views.game_launcher_dialog.QInputDialog.getText",
+        )
+        w = GameLauncherDialog(theme=runtime, dnd_choice_available=True)
+        qtbot.addWidget(w)
+        w.content.vm.createRequested.emit("")
+        get_text.assert_not_called()
+        assert w.content.vm.games == []
         assert w.selected_path is None
 
     # -- delete game -----------------------------------------------------------

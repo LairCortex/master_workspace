@@ -596,7 +596,9 @@ class TestTimelineViewModelIslandModel:
         vm.scrollToEvent(1)
 
         source_ids = {e.id for e in vm.events}
-        allowed = (str, int, bool, type(None), dict)
+        # The marks slot (add-dnd-game-face task 11.2) rides an immutable
+        # tuple of plain token strings — the same delivered-scalar rule.
+        allowed = (str, int, bool, type(None), dict, tuple)
         for entry in vm.row_model.entries:
             for slot in _RowEntry.__slots__:
                 value = getattr(entry, slot)
@@ -604,6 +606,8 @@ class TestTimelineViewModelIslandModel:
                 if isinstance(value, dict):
                     for nested in value.values():
                         assert isinstance(nested, (str, bool))
+                if isinstance(value, tuple):
+                    assert all(isinstance(nested, str) for nested in value)
             assert entry.event_id in source_ids
         # Derived, not stored: the model equals a fresh projection of the SAME
         # single source — never a second maintained copy.
