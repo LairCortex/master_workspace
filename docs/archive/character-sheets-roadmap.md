@@ -1,10 +1,12 @@
 # Дорожная карта: чар-листы
 
+**Архив с 2026-10-12.** Карта закрыта: все семь кусков эпика влиты, стол и телефонный браузер работают. Незакрытые пожелания (софт-АП, пресеты C2+) остаются текстом этой карты и «Незавершённым» в CHANGELOG.
+
 Все куски эпика (A1 → P) реализованы и влиты; их changes лежат в архиве. После D1 отдельными кусками: телефон открывает тот же HTML; софт-AP. В `main` вливаем по кускам: меню видно, в CHANGELOG пометка «незавершено».
 
 NRI-0007 (канвас + PDF скоупом) не воскрешаем.
 
-Архив срезов (порядок apply): [`a1`](../openspec/changes/archive/2026-08-28-add-character-sheet-a1/), [`a-playable`](../openspec/changes/archive/2026-08-28-add-character-sheet-a-playable/), [`a-editor`](../openspec/changes/archive/2026-08-28-add-character-sheet-a-editor/), [`b`](../openspec/changes/archive/2026-08-28-add-character-sheet-b/), [`c`](../openspec/changes/archive/2026-08-28-add-character-sheet-c/), [`d1`](../openspec/changes/archive/2026-08-29-add-character-sheet-d1/), [`p`](../openspec/changes/archive/2026-08-29-add-character-sheet-p/).
+Архив срезов (порядок apply): [`a1`](../../openspec/changes/archive/2026-08-28-add-character-sheet-a1/), [`a-playable`](../../openspec/changes/archive/2026-08-28-add-character-sheet-a-playable/), [`a-editor`](../../openspec/changes/archive/2026-08-28-add-character-sheet-a-editor/), [`b`](../../openspec/changes/archive/2026-08-28-add-character-sheet-b/), [`c`](../../openspec/changes/archive/2026-08-28-add-character-sheet-c/), [`d1`](../../openspec/changes/archive/2026-08-29-add-character-sheet-d1/), [`p`](../../openspec/changes/archive/2026-08-29-add-character-sheet-p/).
 
 ## Куски (порядок)
 
