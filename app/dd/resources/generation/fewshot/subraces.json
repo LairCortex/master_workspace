@@ -1,0 +1,23 @@
+{
+  "label": "Подвиды",
+  "samples": [
+    {
+      "id": "HighElf",
+      "raceId": "Elf",
+      "label": "Высший эльф",
+      "grants": [
+        {"type": "asi-fixed", "values": {"int": 1}},
+        {
+          "type": "spell-fixed",
+          "slug": "mage-hand",
+          "ability": "int"
+        },
+        {"type": "language-fixed", "languages": ["Draconic"]}
+      ],
+      "info": {
+        "tagline": "Знать и магия старших домов",
+        "tags": ["Заговор", "Языки"]
+      }
+    }
+  ]
+}

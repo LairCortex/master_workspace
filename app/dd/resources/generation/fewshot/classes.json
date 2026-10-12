@@ -1,0 +1,43 @@
+{
+  "label": "Классы",
+  "samples": [
+    {
+      "id": "Fighter",
+      "label": "Воин",
+      "grants": [
+        {"type": "hp-die", "die": 10},
+        {"type": "saving-throw", "stats": ["str", "con"]},
+        {
+          "type": "skill-choice",
+          "count": 2,
+          "options": [
+            "acrobatics",
+            "animal handling",
+            "athletics",
+            "history",
+            "insight",
+            "intimidation",
+            "perception",
+            "survival"
+          ]
+        }
+      ],
+      "leveledGrants": [
+        {
+          "level": 2,
+          "grants": [
+            {
+              "type": "trait",
+              "id": "ActionSurge",
+              "name": "Всплеск действий",
+              "description": "На боевом ходу получаете одно дополнительное действие; восстанавливается коротким или длительным отдыхом."
+            }
+          ]
+        }
+      ],
+      "subclassLevel": 3,
+      "likes": "Любит оружие",
+      "info": {"primaryStats": [["str"], ["dex"]], "complexity": 1}
+    }
+  ]
+}

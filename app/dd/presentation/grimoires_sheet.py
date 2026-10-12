@@ -71,6 +71,7 @@ if TYPE_CHECKING:
         GrimoireConnectionsService,
     )
     from app.dd.application.grimoire_import_service import GrimoireImportService
+    from app.dd.application.generation_deps import GenerationDeps
     from app.dd.infrastructure.grimoire_storage import GrimoireStorage
 
 #: Header caption and menu entry of the sheet — one name (the «Датасеты D&D…»
@@ -128,12 +129,19 @@ class DndGrimoiresSheet(SheetFrame):
         run_locked: Callable[[Coroutine], asyncio.Task],
         parent: QWidget | None = None,
         theme=None,
+        generation_open: "Callable[[], None] | None" = None,
+        generation_deps: "GenerationDeps | None" = None,
     ) -> None:
         super().__init__(DD_GRIMOIRES_SHEET_TITLE, parent, theme)
         self._storage = storage
         self._connections = connections
         self._importer = importer
         self._run_locked = run_locked
+        # Вход ИИ-генерации файла заклинаний (add-dnd-lss-generation task 7.2):
+        # opener поднимает лист-задачу, двери несут общий AI-гейт; без
+        # собранной генерации кнопка не печатается (постур «ни мёртвых действий»).
+        self._generation_open = generation_open
+        self._generation_deps = generation_deps
         # The statuses of the last successful frame load (connected ids and
         # the present flags); None until the first frame has arrived.
         self._statuses: list | None = None
@@ -186,6 +194,13 @@ class DndGrimoiresSheet(SheetFrame):
         self._import_button.setObjectName("ddGrimoireImportButton")
         self._import_button.clicked.connect(self._on_import_clicked)
         buttons.addWidget(self._import_button)
+        self._generation_button: QPushButton | None = None
+        if self._generation_open is not None:
+            self._generation_button = QPushButton("Сгенерировать ИИ", content)
+            self._generation_button.setObjectName("ddGrimoireGenerateAiButton")
+            self._generation_button.clicked.connect(self._on_generation_clicked)
+            buttons.addWidget(self._generation_button)
+            self._apply_generation_gate()
         buttons.addStretch(1)
         body.addLayout(buttons)
 
@@ -202,6 +217,29 @@ class DndGrimoiresSheet(SheetFrame):
         if tokens is None:
             return fallback
         return int(tokens[key][self._theme.theme].removesuffix("px"))
+
+    # ── вход генерации (add-dnd-lss-generation task 7.2/7.5) ─────────────────
+
+    def _apply_generation_gate(self) -> None:
+        """Общий AI-гейт: неактивная кнопка несёт ту же русскую подсказку,
+        что AI-кнопки карточек (task 7.5)."""
+        if self._generation_button is None or self._generation_deps is None:
+            return
+        available = bool(self._generation_deps.available())
+        self._generation_button.setEnabled(available)
+        self._generation_button.setToolTip(
+            "" if available else self._generation_deps.hint()
+        )
+
+    def showEvent(self, event) -> None:
+        # Гейт перечитывается на каждом показе: настройка LLM меняется
+        # посреди живой сессии.
+        self._apply_generation_gate()
+        super().showEvent(event)
+
+    def _on_generation_clicked(self) -> None:
+        if self._generation_open is not None:
+            self._generation_open()
 
     # ── frame loading ─────────────────────────────────────────────────────────
 

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Callable
 from app.domain.entity_registry import EntityType
 
 if TYPE_CHECKING:
+    from app.dd.application.character_document_builder import CharacterDocumentBuilder
     from app.dd.application.character_import_service import CharacterImportService
     from app.dd.application.dataset_index_service import DatasetIndexService
     from app.dd.application.dnd_character_extension_service import (
@@ -55,14 +56,18 @@ class DndCharacterTabSource:
         grimoire_index: "GrimoireIndexService | None" = None,
         record_labels: Mapping[str, str] | None = None,
         character_import: "CharacterImportService | None" = None,
+        character_document: "CharacterDocumentBuilder | None" = None,
     ) -> None:
         self._service = character_service
         self._index = dataset_index
         self._grimoire = grimoire_index
-        # The LSS file doors of the «D&D» tab (task 9.4): the overwrite and
-        # save-raw buttons print only when the composition handed the import
-        # service in (the module's no-dead-action posture).
+        # The LSS file doors of the «D&D» tab (task 9.4, export half —
+        # add-dnd-lss-generation task 5.3): the overwrite/save-raw buttons
+        # print only with the import service, the «Экспорт для LSS…» button
+        # only with the document builder (the module's no-dead-action
+        # posture).
         self._character_import = character_import
+        self._character_document = character_document
         if record_labels is None:
             # The captions ride the declared descriptors (one knowledge, one
             # place); importing the table is intra-module and downward-safe.
@@ -78,6 +83,12 @@ class DndCharacterTabSource:
         # модулем»); the composition wires the door once at startup and on
         # every live enable/disable through DndModule.
         self._attached = False
+        # Вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3): façade
+        # передаёт его после attach тем же утиным порядком, что и attach-state
+        # (источник собирается до façade — только façade умеет поднимать
+        # листы на стеке коннектора). Без дверей кнопка не печатается.
+        self._generation_open = None
+        self._generation_deps = None
 
     # ── the module-lifecycle door ────────────────────────────────────────────
 
@@ -86,6 +97,15 @@ class DndCharacterTabSource:
         the module's own classes — see
         :meth:`app.dd.module.DndModule._set_sources_attached`)."""
         self._attached = bool(attached)
+
+    def set_generation(self, opener, deps) -> None:
+        """The façade's door of the AI top-up entry (duck protocol, same
+        posture as :meth:`set_attached`): ``opener(character_id, document)``
+        raises the generation task sheet, ``deps`` carries the shared AI gate
+        and its one hint. ``None``/``None`` (module composed without the
+        generation stack, or detach) prints no button."""
+        self._generation_open = opener if callable(opener) else None
+        self._generation_deps = deps if deps is not None else None
 
     # ── the kernel protocol ──────────────────────────────────────────────────
 
@@ -154,6 +174,9 @@ class DndCharacterTabSource:
             record_labels=self._record_labels,
             run_locked=_require_run_locked(wiring),
             import_service=self._character_import,
+            document_builder=self._character_document,
+            generation_open=self._generation_open,
+            generation_deps=self._generation_deps,
         )
 
     def _build_spells_tab(self, wiring: object, source_id: str):

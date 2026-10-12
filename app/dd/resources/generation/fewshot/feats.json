@@ -1,0 +1,35 @@
+{
+  "label": "Черты",
+  "samples": [
+    {
+      "id": "Alert",
+      "label": "Бдительность",
+      "category": "general",
+      "grants": [
+        {
+          "type": "bonus",
+          "target": "initiative",
+          "mode": "add",
+          "value": 5,
+          "label": "Инициатива"
+        },
+        {"type": "skill-fixed", "skills": ["perception"]}
+      ]
+    },
+    {
+      "id": "SwiftDuelist",
+      "label": "Стремительный дуэлянт",
+      "category": "general",
+      "prerequisite": "Ловкость 13+",
+      "grants": [
+        {
+          "type": "bonus",
+          "target": "ac",
+          "mode": "add",
+          "expr": "[DEX] + [PROF]",
+          "label": "Рефлекс дуэлянта"
+        }
+      ]
+    }
+  ]
+}

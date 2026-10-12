@@ -16,8 +16,9 @@ the mouse. This file pins exactly that, control by control, offscreen:
 * The character's «D&D» tab: every reference picker is a named ComboBox
   (the slot caption — one knowledge with the descriptors), the level and the
   LSS field carry their captions; «Открыть в браузере» is named by its
-  caption and its Press hands the digital sheet URL out; the two LSS file
-  doors are named buttons.
+  caption and its Press hands the digital sheet URL out; the LSS file
+  doors (overwrite/save-raw + «Экспорт для LSS…») are named buttons, and
+  an uncomposed door prints nothing at all.
 * The «Заклинания» tab: the filter is named, «Снять» and «Добавить: …»
   persist through an accessibility Press.
 * «Датасеты D&D…»: the reference switch and the per-row connect boxes are
@@ -68,6 +69,7 @@ from app.dd.presentation.bestiary_sheet import (
     monster_row_caption,
 )
 from app.dd.presentation.character_tab_frames import (
+    EXPORT_FOR_LSS_TEXT,
     IMPORT_OVERWRITE_TEXT,
     SAVE_RAW_TEXT,
     DndCharacterTabFrame,
@@ -314,7 +316,7 @@ def _run_locked(coro):
     return asyncio.ensure_future(coro)
 
 
-async def _make_dnd_frame(qtbot, *, importer=None):
+async def _make_dnd_frame(qtbot, *, importer=None, builder=None):
     frame = DndCharacterTabFrame(
         character_id=1,
         service=_ExtService(),
@@ -322,6 +324,7 @@ async def _make_dnd_frame(qtbot, *, importer=None):
         record_labels={descriptor.key: descriptor.label for _, descriptor in RECORD_TYPES},
         run_locked=_run_locked,
         import_service=importer,
+        document_builder=builder,
     )
     qtbot.addWidget(frame)
     frame.show()
@@ -384,14 +387,28 @@ async def test_dnd_tab_browser_button_press_hands_the_url_out(qtbot, monkeypatch
 
 
 async def test_dnd_tab_file_doors_are_named_buttons(qtbot):
-    frame = await _make_dnd_frame(qtbot, importer=SimpleNamespace())
+    frame = await _make_dnd_frame(qtbot, importer=SimpleNamespace(), builder=SimpleNamespace())
     for object_name, caption in (
         ("ddDndImportOverwrite", IMPORT_OVERWRITE_TEXT),
         ("ddDndSaveRaw", SAVE_RAW_TEXT),
+        ("ddDndExportLss", EXPORT_FOR_LSS_TEXT),
     ):
         button = frame.findChild(QPushButton, object_name)
         assert iface(button).role() == QAccessible.Role.Button, object_name
         assert name_of(button) == button.text() == caption, object_name
+
+
+async def test_dnd_tab_prints_no_door_without_its_service(qtbot):
+    """The no-dead-action posture per door: an uncomposed service prints no
+    button at all — the export half joins the row on its own (task 5.3),
+    the import halves stay behind the import service."""
+    only_export = await _make_dnd_frame(qtbot, builder=SimpleNamespace())
+    assert only_export.findChild(QPushButton, "ddDndExportLss") is not None
+    assert only_export.findChild(QPushButton, "ddDndImportOverwrite") is None
+    assert only_export.findChild(QPushButton, "ddDndSaveRaw") is None
+    no_doors = await _make_dnd_frame(qtbot)
+    for object_name in ("ddDndExportLss", "ddDndImportOverwrite", "ddDndSaveRaw"):
+        assert no_doors.findChild(QPushButton, object_name) is None
 
 
 # ── the «Заклинания» tab: named filter, persisting row doors ────────────────

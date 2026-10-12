@@ -353,3 +353,45 @@ async def test_opened_game_boot_paints_encounter_marks_without_a_save(
     finally:
         window.close()
         await application.shutdown()
+
+
+async def test_generation_closures_read_llm_state_at_click_time(qapp, tmp_path):
+    """Замыкания GenerationBundle (add-dnd-lss-generation, 8.1): гейт,
+    подсказка, мир и ответ читают ТЕКУЩЕЕ состояние LLM в момент клика —
+    снятый vm объясняет «не настроен» и пустой мир, READY без описания мира
+    — вторую подсказку, answer собирается через существующий провайдер."""
+    from types import SimpleNamespace
+
+    from app.application.services.llm_status import LlmStatus
+    from app.dd import MODULE_VERSION
+    from app.presentation.viewmodels.event_dialog_island_view_model import (
+        NOT_CONFIGURED_MESSAGE,
+        NO_WORLD_PROMPT_MESSAGE,
+    )
+
+    db_path = _make_dd_db(
+        tmp_path, json.dumps({"enabled": True, "version": MODULE_VERSION})
+    )
+    application = Application(qapp)
+    window = await application.start(str(db_path))
+    module = application._game_system_module
+    try:
+        deps = module._generation.deps
+        # Снятая половина LLM-композиции — «не настроен» и пустой мир.
+        application._llm_vm = None
+        assert deps.available() is False
+        assert deps.hint() == NOT_CONFIGURED_MESSAGE
+        assert deps.world() == ""
+        # READY-vm: подсказка про мир, мир — из vm, ответ — через провайдер.
+        application._llm_vm = SimpleNamespace(
+            status=LlmStatus.READY,
+            world_prompt="Мир-в-примере",
+            is_generation_available=lambda: True,
+        )
+        assert deps.available() is True
+        assert deps.hint() == NO_WORLD_PROMPT_MESSAGE
+        assert deps.world() == "Мир-в-примере"
+        assert callable(deps.make_answer())
+    finally:
+        window.close()
+        await application.shutdown()

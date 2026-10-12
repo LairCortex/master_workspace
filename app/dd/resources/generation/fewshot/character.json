@@ -1,0 +1,49 @@
+{
+  "label": "Фрагменты персонажа",
+  "samples": [
+    {
+      "name": "Мариссель Тал",
+      "level": 3,
+      "info": {
+        "race": {"id": "Elf", "name": "Эльф"},
+        "subrace": {"id": "HighElf", "name": "Высший эльф"},
+        "charClass": {"id": "Fighter", "name": "Воин"},
+        "subclass": {"id": "BattleMaster", "name": "Боевой мастер"},
+        "background": {"id": "GuildArtisan", "name": "Гильдейский ремесленник"}
+      },
+      "blocks": {
+        "Внешность": "Высокая, прямая спина, седина рано тронула виски; на предплечье — выцветшая татуировка цеха.",
+        "Характер": "Сдержанна в словах, точна в обещаниях; чужую суету переносит плохо."
+      }
+    },
+    {
+      "name": "Безымянный",
+      "info": {
+        "charClass": {"id": "Fighter", "name": "Воин"}
+      }
+    },
+    {
+      "name": "Делла Кроу",
+      "level": 5,
+      "info": {
+        "charClass": {"id": "Fighter", "name": "Воин"},
+        "background": {"id": "GuildArtisan", "name": "Гильдейский ремесленник"}
+      },
+      "blocks": {
+        "Тактика": {
+          "type": "doc",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {"type": "text", "text": "Держу дистанцию и добавляю "},
+                {"type": "formula", "attrs": {"formula": "[PROF]"}},
+                {"type": "text", "text": " к броскам атаки."}
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

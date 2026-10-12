@@ -65,6 +65,11 @@ DD_BESTIARY_ACTION_TEXT = "Бестиарий…"
 #: named «Гримуары…», one caption with the sheet header, the «Справочник…»
 #: precedent).
 DD_GRIMOIRES_ACTION_TEXT = "Гримуары…"
+#: The module's character-generation entry (add-dnd-lss-generation task 7.3,
+#: spec dnd-generation «Генерация персонажа с нуля»: the creation entry of the
+#: generation task sheet — the top-up half lives on the «D&D» tab of an open
+#: card, exactly like the two halves of the import entry above).
+DD_CHARACTER_GENERATION_ACTION_TEXT = "Сгенерировать персонажа…"
 
 
 class DndWindowSection(QObject):
@@ -95,6 +100,11 @@ class DndWindowSection(QObject):
     #: The master picked «Гримуары…» — the façade raises (or builds) the
     #: grimoire sheet on the connector's stack (add-dnd-game-face task 4.5).
     grimoires_requested = Signal()
+    #: The master picked «Сгенерировать персонажа…» — the façade checks the
+    #: dataset gate (spec «Гейт активации генерации»: ≥1 подключённый датасет,
+    #: иначе пояснение) and raises the character generation task sheet
+    #: (add-dnd-lss-generation task 7.3).
+    character_generation_requested = Signal()
 
     def __init__(
         self,
@@ -104,6 +114,7 @@ class DndWindowSection(QObject):
         character_import_available: bool = False,
         bestiary_available: bool = False,
         grimoires_available: bool = False,
+        character_generation_available: bool = False,
     ) -> None:
         super().__init__(window)
         self._window = window
@@ -175,6 +186,24 @@ class DndWindowSection(QObject):
                 self.character_import_requested.emit
             )
             self._menu.addAction(self._character_import_action)
+        self._character_generation_action: QAction | None = None
+        if character_generation_available:
+            # Пункт генерации персонажа (add-dnd-lss-generation task 7.3).
+            # Общий AI-гейт перечитывается façade при каждом срабатывании
+            # (настройка LLM меняется посреди сессии), поэтому действие
+            # печатается активным, а отказ объясняет modeless-боксом; тут
+            # фиксируется только факт собранной генерации.
+            self._character_generation_action = QAction(
+                DD_CHARACTER_GENERATION_ACTION_TEXT, self._menu
+            )
+            self._character_generation_action.setObjectName(
+                "ddCharacterGenerationAction"
+            )
+            self._character_generation_action.setMenuRole(QAction.MenuRole.NoRole)
+            self._character_generation_action.triggered.connect(
+                self.character_generation_requested.emit
+            )
+            self._menu.addAction(self._character_generation_action)
         self._disable_action = QAction(
             button_caption(DD_DISABLE_ACTION_TEXT), self._menu
         )

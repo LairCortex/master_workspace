@@ -40,6 +40,18 @@ LINK_SLOTS: tuple[tuple[str, str, str], ...] = (
     ("background", "backgrounds", "dd_background"),
 )
 
+#: The document key of each reference slot (design Д7 «info.charClass.id
+#: и т.п.» — only «class» disagrees with the slot name). The ONE table the
+#: importer reads and the document builder writes (add-dnd-lss-generation
+#: task 5.1; one knowledge, one place).
+INFO_KEYS: dict[str, str] = {
+    "race": "race",
+    "subrace": "subrace",
+    "class": "charClass",
+    "subclass": "subclass",
+    "background": "background",
+}
+
 
 @dataclass(frozen=True)
 class ReferenceLink:

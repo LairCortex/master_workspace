@@ -65,6 +65,8 @@ FILE_DIALOG_SITES = frozenset({
     ("app/dd/module.py", "_on_character_import_requested"),
     ("app/dd/presentation/character_tab_frames.py", "_on_overwrite_clicked"),
     ("app/dd/presentation/character_tab_frames.py", "_on_save_raw_clicked"),
+    # add-dnd-lss-generation task 5.3: «Экспорт для LSS…» — same non-native door.
+    ("app/dd/presentation/character_tab_frames.py", "_on_export_clicked"),
     # add-dnd-game-face task 10.1: выбор картинки на карточке монстра
     ("app/dd/presentation/monster_card_sheet.py", "_on_pick_image"),
     # add-dnd-game-face task 4.5: импорт файла гримуара на листе «Гримуары…»

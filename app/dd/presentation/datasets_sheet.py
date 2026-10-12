@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     )
     from app.dd.application.dataset_import_service import DatasetImportService
     from app.dd.application.dataset_library_service import DatasetLibraryService
+    from app.dd.application.generation_deps import GenerationDeps
     from app.dd.application.reference_visibility_service import (
         ReferenceVisibilityService,
     )
@@ -155,6 +156,8 @@ class DndDatasetsSheet(SheetFrame):
         parent: QWidget | None = None,
         theme=None,
         reference_visibility: "ReferenceVisibilityService | None" = None,
+        generation_open: "Callable[[], None] | None" = None,
+        generation_deps: "GenerationDeps | None" = None,
     ) -> None:
         super().__init__(DD_DATASETS_SHEET_TITLE, parent, theme)
         self._library = library
@@ -165,6 +168,12 @@ class DndDatasetsSheet(SheetFrame):
         # partial composition) prints no checkbox at all — the sheet never
         # offers a switch nothing would obey.
         self._reference_visibility = reference_visibility
+        # Точка входа генерации (add-dnd-lss-generation task 7.2): opener
+        # поднимает лист-задачу на стеке коннектора (façade держит единственный
+        # экземпляр); без собранной генерации (частичная композиция) кнопка
+        # не печатается — постур модуля «ни мёртвых действий».
+        self._generation_open = generation_open
+        self._generation_deps = generation_deps
         # The statuses of the last successful frame load (connected ids and
         # the missing markers); None until the first frame has arrived.
         self._statuses: list | None = None
@@ -255,6 +264,16 @@ class DndDatasetsSheet(SheetFrame):
         buttons.addWidget(self._srd_button)
         buttons.addWidget(self._import_button)
         buttons.addWidget(self._recheck_button)
+        self._generation_button: QPushButton | None = None
+        if self._generation_open is not None:
+            # Кнопка живёт, только пока собран opener; гейт и подсказка —
+            # общие AI-двери (task 7.5): неактивная кнопка носит ту же
+            # русскую подсказку, что AI-кнопки карточек.
+            self._generation_button = QPushButton("Сгенерировать ИИ", content)
+            self._generation_button.setObjectName("ddGenerateAiButton")
+            self._generation_button.clicked.connect(self._on_generation_clicked)
+            buttons.addWidget(self._generation_button)
+            self._apply_generation_gate()
         buttons.addStretch(1)
         body.addLayout(buttons)
 
@@ -271,6 +290,31 @@ class DndDatasetsSheet(SheetFrame):
         if tokens is None:
             return fallback
         return int(tokens[key][self._theme.theme].removesuffix("px"))
+
+    # ── вход генерации (add-dnd-lss-generation task 7.2/7.5) ─────────────────
+
+    def _apply_generation_gate(self) -> None:
+        """Неактивная кнопка генерации = закрытый общий AI-гейт; подсказка
+        — та же, что у AI-кнопок карточек (дверь несёт façade-тексты)."""
+        if self._generation_button is None:
+            return
+        if self._generation_deps is None:
+            return  # opener без дверей (тестовая композиция) — кнопка живая
+        available = bool(self._generation_deps.available())
+        self._generation_button.setEnabled(available)
+        self._generation_button.setToolTip(
+            "" if available else self._generation_deps.hint()
+        )
+
+    def showEvent(self, event) -> None:
+        # Настройка LLM и описание мира меняются посреди сессии — гейт
+        # перечитывается на каждом показе листа.
+        self._apply_generation_gate()
+        super().showEvent(event)
+
+    def _on_generation_clicked(self) -> None:
+        if self._generation_open is not None:
+            self._generation_open()
 
     # ── frame loading ─────────────────────────────────────────────────────────
 

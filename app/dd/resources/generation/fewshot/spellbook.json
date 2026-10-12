@@ -1,0 +1,44 @@
+{
+  "label": "Заклинания",
+  "samples": [
+    {
+      "name": "Искра праотца",
+      "slug": "ember-of-forebears",
+      "system": {
+        "level": 0,
+        "school": "evocation",
+        "time": [{"value": 1, "unit": "action"}],
+        "components": {"value": ["V", "S"], "v": true, "s": true, "m": false},
+        "range": {"value": 120, "units": "ft"},
+        "duration": {"value": null, "units": ""},
+        "concentration": false,
+        "ritual": false,
+        "description": {
+          "value": "<p>Вы бросаете в существо сгусток пламени на дистанции до 120 футов. Совершите дальнобойную атаку заклинанием; при попадании цель получает 1d10 урона огнём.</p>"
+        },
+        "higherLevel": {"available": false, "text": ""}
+      }
+    },
+    {
+      "name": "Щит верности",
+      "slug": "shield-of-loyalty",
+      "system": {
+        "level": 1,
+        "school": "abjuration",
+        "time": [{"value": 1, "unit": "reaction"}],
+        "components": {"value": ["V", "S"], "v": true, "s": true, "m": false},
+        "range": {"value": 60, "units": "ft"},
+        "duration": {"value": 1, "units": "round"},
+        "concentration": false,
+        "ritual": false,
+        "description": {
+          "value": "<p>Когда существо, которое вы видите в пределах дистанции, получает урон, вы получаете его часть на себя. Формула поглощения: [PROF] + [WIS].</p>"
+        },
+        "higherLevel": {
+          "available": true,
+          "text": "<p>На высших уровнях: за каждую ячейку выше первой поглощаемый урон растёт на [LVL].</p>"
+        }
+      }
+    }
+  ]
+}

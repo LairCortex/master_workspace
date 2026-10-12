@@ -47,6 +47,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.dd.application.character_channel import (
+    TOP_UP_NOTHING_REFUSAL,
+    top_up_missing_fields,
+)
 from app.dd.application.character_import_service import (
     CharacterImportOutcome,
     CharacterImportStatus,
@@ -61,6 +65,7 @@ from app.dd.domain.character import (
 from app.dd.presentation.captions import button_caption
 
 if TYPE_CHECKING:
+    from app.dd.application.character_document_builder import CharacterDocumentBuilder
     from app.dd.application.character_import_service import CharacterImportService
     from app.dd.application.dataset_index_service import (
         DatasetIndexService,
@@ -70,6 +75,7 @@ if TYPE_CHECKING:
         DndCharacterExtensionService,
     )
     from app.dd.application.grimoire_index_service import GrimoireIndexService
+    from app.dd.application.generation_deps import GenerationDeps
     from app.dd.domain.character import DdCharacterExt
 
 #: The caption of the «link unset» item of every reference picker.
@@ -98,6 +104,16 @@ _TAB_TITLE = "D&D-модуль"
 #: and no module tab to hang this row on.
 IMPORT_OVERWRITE_TEXT = "Перезаписать из файла LSS…"
 SAVE_RAW_TEXT = "Сохранить исходный файл…"
+#: The third file door, half of add-dnd-lss-generation task 5.3 (spec
+#: dnd-character-export «Кнопка „Экспорт для LSS…“»): the document is rebuilt
+#: from the CURRENT card state (name, links, level, blocks, spell slugs) —
+#: never a copy of the stored raw file, which is what «Сохранить исходный
+#: файл…» is for. The door works without any AI configuration (the builder
+#: never touches the network).
+EXPORT_FOR_LSS_TEXT = "Экспорт для LSS…"
+#: Вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3): тот же лист
+#: персонажа в режиме дозаполнения, открывается из D&D-таба карточки.
+TOP_UP_AI_TEXT = "Дозаполнить ИИ"
 #: The filter both file dialogs print (the datasets sheet's filter, restated
 #: for the character document). Public: the module façade's creation dialog
 #: prints the same filter (add-dnd-game-face task 9.4).
@@ -204,6 +220,9 @@ class DndCharacterTabFrame(_LockedFrame):
         record_labels: Mapping[str, str],
         run_locked: Callable[[Coroutine], asyncio.Task],
         import_service: "CharacterImportService | None" = None,
+        document_builder: "CharacterDocumentBuilder | None" = None,
+        generation_open: "Callable[[int, str], None] | None" = None,
+        generation_deps: "GenerationDeps | None" = None,
         parent=None,
     ) -> None:
         super().__init__(run_locked, parent)
@@ -211,6 +230,14 @@ class DndCharacterTabFrame(_LockedFrame):
         self._service = service
         self._index = dataset_index
         self._importer = import_service
+        self._document_builder = document_builder
+        # Вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3): opener
+        # даёт façade (он один поднимает лист-задачу на стеке), двери несут
+        # общий AI-гейт с общей подсказкой. Без opener'а (частичная
+        # композиция) кнопка не печатается.
+        self._generation_open = generation_open
+        self._generation_deps = generation_deps
+        self._top_up_button: QPushButton | None = None
         self._loading = False
         self._saved_sheet = ""
         self._slot_combos: dict[str, QComboBox] = {}
@@ -262,23 +289,88 @@ class DndCharacterTabFrame(_LockedFrame):
         sheet_row.addWidget(self._open)
         form.addRow("Лист LSS:", sheet_row)
 
-        if self._importer is not None:
-            # The file doors of task 9.4: without a composed import service
-            # (a partial composition) the tab prints no dead buttons — the
-            # module's no-dead-action posture, one floor lower.
+        if self._importer is not None or self._document_builder is not None or self._generation_open is not None:
+            # The file doors (task 9.4 + add-dnd-lss-generation task 5.3):
+            # without a composed door (a partial composition) the tab prints
+            # no dead buttons — the module's no-dead-action posture, one
+            # floor lower. Each door prints its own button only when its
+            # service arrived.
             file_row = QHBoxLayout()
-            overwrite = QPushButton(IMPORT_OVERWRITE_TEXT, self)
-            overwrite.setObjectName("ddDndImportOverwrite")
-            overwrite.clicked.connect(self._on_overwrite_clicked)
-            file_row.addWidget(overwrite)
-            save_raw = QPushButton(SAVE_RAW_TEXT, self)
-            save_raw.setObjectName("ddDndSaveRaw")
-            save_raw.clicked.connect(self._on_save_raw_clicked)
-            file_row.addWidget(save_raw)
+            if self._importer is not None:
+                overwrite = QPushButton(IMPORT_OVERWRITE_TEXT, self)
+                overwrite.setObjectName("ddDndImportOverwrite")
+                overwrite.clicked.connect(self._on_overwrite_clicked)
+                file_row.addWidget(overwrite)
+                save_raw = QPushButton(SAVE_RAW_TEXT, self)
+                save_raw.setObjectName("ddDndSaveRaw")
+                save_raw.clicked.connect(self._on_save_raw_clicked)
+                file_row.addWidget(save_raw)
+            if self._document_builder is not None:
+                export = QPushButton(EXPORT_FOR_LSS_TEXT, self)
+                export.setObjectName("ddDndExportLss")
+                export.clicked.connect(self._on_export_clicked)
+                file_row.addWidget(export)
+            if (
+                self._generation_open is not None
+                and self._document_builder is not None
+            ):
+                # «Дозаполнить ИИ» (task 7.3): сборка текущего документа —
+                # дверь сборщика, остальное делает лист-задача. Гейт — общий
+                # AI-гейт, неактивная кнопка несёт общую подсказку (task 7.5).
+                top_up = QPushButton(TOP_UP_AI_TEXT, self)
+                top_up.setObjectName("ddDndTopUpAi")
+                top_up.clicked.connect(self._on_top_up_clicked)
+                file_row.addWidget(top_up)
+                self._top_up_button = top_up
+                self._apply_generation_gate()
             file_row.addStretch()
             form.addRow("Файл LSS:", file_row)
 
         self.request_refresh()
+
+    # ── вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3/7.5) ───────────
+
+    def _apply_generation_gate(self) -> None:
+        if self._top_up_button is None or self._generation_deps is None:
+            return
+        available = bool(self._generation_deps.available())
+        self._top_up_button.setEnabled(available)
+        self._top_up_button.setToolTip(
+            "" if available else self._generation_deps.hint()
+        )
+
+    def showEvent(self, event) -> None:
+        # Гейт перечитывается на каждом показе таба: настройка LLM и описание
+        # мира меняются посреди живой сессии.
+        self._apply_generation_gate()
+        super().showEvent(event)
+
+    def _on_top_up_clicked(self) -> None:
+        if self._generation_open is None or self._document_builder is None:
+            return
+        if self._generation_deps is not None and not self._generation_deps.available():
+            return
+        self._start_locked(
+            self._document_builder.build(self._character_id),
+            self._on_top_up_document,
+        )
+
+    def _on_top_up_document(self, task: asyncio.Task) -> None:
+        outcome = self._outcome(task, "сборка документа для дозаполнения ИИ")
+        if outcome is _TASK_FAILED:
+            if not task.cancelled():
+                self._show_notice(
+                    "Не удалось собрать документ персонажа для дозаполнения. "
+                    "Карточка не изменена; подробности — в журнале приложения."
+                )
+            return
+        document = str(outcome)
+        if not top_up_missing_fields(document):
+            # Spec scenario «Пусто дозаполнять»: генерация не запускается,
+            # мастер читает пояснение.
+            self._show_notice(TOP_UP_NOTHING_REFUSAL, QMessageBox.Icon.Information)
+            return
+        self._generation_open(self._character_id, document)
 
     def request_refresh(self) -> None:
         """Load the stored face and the current index through the lock."""
@@ -561,6 +653,45 @@ class DndCharacterTabFrame(_LockedFrame):
             return
         self._show_notice(
             "Исходный файл сохранён на диск байт-в-байт, как он был импортирован.",
+            QMessageBox.Icon.Information,
+        )
+
+    # ── the LSS export door (add-dnd-lss-generation task 5.3) ────────────────
+
+    def _on_export_clicked(self) -> None:
+        """«Экспорт для LSS…»: the document is collected from the CURRENT
+        card state (the builder's door, design Д4) — not from the stored raw
+        file, which is «Сохранить исходный файл…»'s whole subject. The file
+        panel is the system door (DontUseNativeDialog, L1/NRI-0014); the
+        отвод is a no-op: no document is built, nothing on disk or in the
+        card moves (spec scenario «Сохранение отменено»)."""
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            EXPORT_FOR_LSS_TEXT,
+            "character.json",
+            CHARACTER_FILE_FILTER,
+            options=QFileDialog.Option.DontUseNativeDialog,
+        )
+        if not path:
+            return
+        self._start_locked(
+            self._document_builder.export_document(self._character_id, path),
+            self._on_export_done,
+        )
+
+    def _on_export_done(self, task: asyncio.Task) -> None:
+        outcome = self._outcome(task, "экспорт персонажа для LSS")
+        if outcome is _TASK_FAILED:
+            if not task.cancelled():
+                self._show_notice(
+                    "Не удалось собрать и записать файл для LSS. Карточка и "
+                    "сохранённый файл персонажа не изменены; подробности — в "
+                    "журнале приложения; повторите выбор места сохранения."
+                )
+            return
+        self._show_notice(
+            "Файл для LSS записан: документ собран из текущего состояния "
+            "карточки, а не из сохранённого исходного файла.",
             QMessageBox.Icon.Information,
         )
 

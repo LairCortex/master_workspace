@@ -261,12 +261,14 @@ def _compose_game_system_module(
             character_import,
             monster_service,
             grimoires,
+            generation,
         ) = screen if screen is not None else (
             None,
             None,
             None,
             None,
             (),
+            None,
             None,
             None,
             None,
@@ -290,6 +292,7 @@ def _compose_game_system_module(
                 grimoire_storage=grimoire_storage,
                 grimoire_connections=grimoire_connections,
                 grimoire_import=grimoire_import,
+                generation=generation,
             ),
             None,
         )
@@ -1074,11 +1077,25 @@ class Application:
             image_store=self._image_store,
             dataset_index=index,
         )
+        # add-dnd-lss-generation task 5.1/5.3: the «Экспорт для LSS…» door —
+        # the document collector on the SAME unit and the SAME catalog
+        # closure (this composition runs before ``_build_entity_services``;
+        # the collector reads the catalog only when an export actually runs).
+        from app.dd.application.character_document_builder import (
+            CharacterDocumentBuilder,
+        )
+
+        character_document = CharacterDocumentBuilder(
+            uow=self._uow,
+            entity_services=lambda: self._entity_services,
+            dataset_index=index,
+        )
         character_tab_source = DndCharacterTabSource(
             character_service=character_service,
             dataset_index=index,
             grimoire_index=grimoire_index,
             character_import=character_import,
+            character_document=character_document,
         )
         # add-dnd-game-face task 10.1/10.2 (design Д6): the bestiary pair on
         # the SAME unit. The service is the module screens' door (the list,
@@ -1098,6 +1115,62 @@ class Application:
             encounter_service=encounter_service,
             monster_service=monster_service,
         )
+        # add-dnd-lss-generation (группа 7, design Д8): двери ИИ-генерации —
+        # ЛЕНИВЫЕ замыкания на `self`: live LlmViewModel/LlmService живут в
+        # start() ПОСЛЕ этой композиции, а листы читают гейт, текст подсказки,
+        # описание мира и ТЕКУЩЕГО провайдера в момент клика. Подсказки — те
+        # же тексты, что у AI-кнопок карточек (одно знание, одно место).
+        from app.application.services.llm_status import LlmStatus
+        from app.dd.application.dataset_section_channel import (
+            DatasetSectionAcceptanceService,
+        )
+        from app.dd.application.generation_deps import (
+            GenerationBundle,
+            GenerationDeps,
+        )
+        from app.dd.application.generation_inputs import GenerationInputs
+        from app.dd.application.generation_loop import make_llm_answer
+        from app.dd.application.spellbook_channel import SpellbookAcceptanceService
+        from app.presentation.viewmodels.event_dialog_island_view_model import (
+            NOT_CONFIGURED_MESSAGE,
+            NO_WORLD_PROMPT_MESSAGE,
+        )
+
+        def _generation_available() -> bool:
+            vm = self._llm_vm
+            return vm is not None and vm.is_generation_available()
+
+        def _generation_hint() -> str:
+            vm = self._llm_vm
+            if vm is None or vm.status != LlmStatus.READY:
+                return NOT_CONFIGURED_MESSAGE
+            return NO_WORLD_PROMPT_MESSAGE
+
+        def _generation_world() -> str:
+            vm = self._llm_vm
+            return vm.world_prompt if vm is not None else ""
+
+        def _generation_make_answer():
+            assert self._llm_service is not None
+            return make_llm_answer(self._llm_service.provider)
+
+        generation = GenerationBundle(
+            deps=GenerationDeps(
+                available=_generation_available,
+                hint=_generation_hint,
+                world=_generation_world,
+                make_answer=_generation_make_answer,
+            ),
+            inputs=GenerationInputs(
+                index=index, importer=importer, grimoire_index=grimoire_index
+            ),
+            dataset_acceptance=DatasetSectionAcceptanceService(
+                importer, connections
+            ),
+            spellbook_acceptance=SpellbookAcceptanceService(grimoire_import),
+            character_import=character_import,
+            character_document=character_document,
+        )
         return (
             connections,
             importer,
@@ -1107,6 +1180,7 @@ class Application:
             character_import,
             monster_service,
             (grimoire_storage, grimoire_connections, grimoire_import),
+            generation,
         )
 
     async def _ensure_dd_module_schema(self, module: object) -> None:
@@ -1229,6 +1303,7 @@ class Application:
             character_import,
             monster_service,
             (grimoire_storage, grimoire_connections, grimoire_import),
+            generation,
         ) = self._make_dd_screen_services(library)
         module = DndModule(
             service,
@@ -1243,6 +1318,7 @@ class Application:
             grimoire_storage=grimoire_storage,
             grimoire_connections=grimoire_connections,
             grimoire_import=grimoire_import,
+            generation=generation,
         )
         module.attach(window, self._wiring)
         # The enable's own transaction just created the module tables (task

@@ -80,6 +80,12 @@ a = Analysis(
         # tests/test_spec_dd_schemas_bundle.py; the whole directory ships —
         # all artifacts of the fixed bundled set, JSON data never PYZ).
         ("app/dd/resources/schemas", "app/dd/resources/schemas"),
+        # Ресурсы генерации (change add-dnd-lss-generation, design Д3):
+        # скелеты системных промтов и фиксированные few-shot-наборы читает
+        # app/dd/application/prompt_composer.py через generation_resource_dir(),
+        # который ждёт их под app/dd/resources/generation в замороженном
+        # дереве (пинит tests/dd/test_prompt_composer.py; JSON/TXT данные).
+        ("app/dd/resources/generation", "app/dd/resources/generation"),
         ("app/presentation/views/table_host/web",
          "app/presentation/views/table_host/web"),
         ("app/presentation/theme/tokens.json",

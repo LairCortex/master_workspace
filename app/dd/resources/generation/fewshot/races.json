@@ -1,0 +1,23 @@
+{
+  "label": "Виды",
+  "samples": [
+    {
+      "id": "Elf",
+      "label": "Эльф",
+      "size": "medium",
+      "grants": [
+        {"type": "speed", "value": 30},
+        {
+          "type": "trait",
+          "id": "Darkvision",
+          "name": "Тёмное зрение",
+          "description": "В тусклом свете вы видите так, словно светло; в темноте — как при ярком свете, но без цвета.",
+          "params": {"range": 60}
+        },
+        {"type": "skill-fixed", "skills": ["perception"]},
+        {"type": "language-fixed", "languages": ["Common", "Elvish"]}
+      ],
+      "info": {"tags": ["Тёмное зрение", "Долголетие"]}
+    }
+  ]
+}

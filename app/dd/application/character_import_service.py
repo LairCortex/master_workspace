@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.dd.application.character_validator_service import CharacterValidatorService
-from app.dd.domain.character import LINK_SLOTS, ReferenceLink, empty_ext
+from app.dd.domain.character import INFO_KEYS, LINK_SLOTS, ReferenceLink, empty_ext
 from app.dd.domain.character_checks import CODE_CHAR_AVATAR
 from app.dd.domain.character_editor import editor_doc_to_text
 from app.dd.domain.character_render import structural_blocks
@@ -62,16 +62,6 @@ if TYPE_CHECKING:
     from app.dd.application.dataset_index_service import DatasetIndexService
     from app.application.services.entity_service import EntityService
     from app.infrastructure.images.store import ImageStore
-
-#: The envelope key of each reference slot (Д7 «info.charClass.id и т.п.» —
-# only «class» disagrees with the slot name).
-_INFO_KEYS: dict[str, str] = {
-    "race": "race",
-    "subrace": "subrace",
-    "class": "charClass",
-    "subclass": "subclass",
-    "background": "background",
-}
 
 #: The block name an avatar that is not a storable image keeps its text under.
 BLOCK_AVATAR = "Аватар"
@@ -260,7 +250,7 @@ class CharacterImportService:
         snapshot = await self._index.snapshot() if self._index is not None else None
         links: dict[str, ReferenceLink] = {}
         for slot, section, _type_key in LINK_SLOTS:
-            ref = info.get(_INFO_KEYS[slot])
+            ref = info.get(INFO_KEYS[slot])
             if not isinstance(ref, dict):
                 links[slot] = ReferenceLink("", "", "")
                 continue

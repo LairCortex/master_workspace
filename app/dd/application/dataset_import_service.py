@@ -199,6 +199,23 @@ class DatasetImportService:
             self._storage.set_check_errors(dataset_id, len(report.errors))
         return report
 
+    # ── shared reading doors (add-dnd-lss-generation task 7.1) ───────────────
+
+    async def validation_corpus(
+        self, exclude_id: str | None = None
+    ) -> tuple[ConnectedDataset, ...]:
+        """The game's connected shelves, parsed for link resolution — the
+        SAME corpus this service checks imports with, offered as a public
+        door so the generation round validates against exactly the corpus
+        the acceptance door will use (one knowledge, one place)."""
+        return await self._corpus(exclude_id=exclude_id)
+
+    async def slug_dictionary(self) -> tuple[str, ...] | None:
+        """The full known spell-slug dictionary (SRD lists plus the game's
+        connected grimoires) — the same answer the import check gives, for
+        the generation round and its preview (task 7.1)."""
+        return await self._slug_dictionary()
+
     # ── shared reading helpers ────────────────────────────────────────────────
 
     async def _corpus(

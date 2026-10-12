@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     )
     from app.dd.application.dataset_import_service import DatasetImportService
     from app.dd.application.dataset_library_service import DatasetLibraryService
+    from app.dd.application.generation_deps import GenerationBundle
     from app.dd.application.grimoire_connections_service import (
         GrimoireConnectionsService,
     )
@@ -116,6 +117,7 @@ class DndModule:
         grimoire_storage: Optional["GrimoireStorage"] = None,
         grimoire_connections: Optional["GrimoireConnectionsService"] = None,
         grimoire_import: Optional["GrimoireImportService"] = None,
+        generation: Optional["GenerationBundle"] = None,
     ) -> None:
         self._settings = settings_service
         # The global dataset library (task 3.3): attach schedules its
@@ -186,6 +188,19 @@ class DndModule:
         self._grimoire_connections = grimoire_connections
         self._grimoire_import = grimoire_import
         self._grimoires_sheet: DndGrimoiresSheet | None = None
+        # The generation task sheets (add-dnd-lss-generation, группа 7):
+        # the bundle is the composition's whole generation stack (AI-gate
+        # doors, context builder, acceptance doors); without it no entry is
+        # printed (the module's no-dead-action posture). The live sheets
+        # ride the same single-instance discipline as every module screen,
+        # keyed by kind — one dataset task, one spellbook task, one
+        # character task (create or top-up).
+        self._generation = generation
+        self._generation_sheets: dict[str, object] = {}
+        # In-flight dataset gate check and its explanation box (spec «Гейт
+        # активации генерации»: персонаж требует ≥1 подключённый датасет).
+        self._generation_gate_task: asyncio.Task | None = None
+        self._generation_gate_box: QMessageBox | None = None
 
     @property
     def enabled(self) -> bool:
@@ -243,6 +258,17 @@ class DndModule:
             if callable(notify):
                 notify(attached)
 
+    def _set_generation_doors(self) -> None:
+        """Hand the AI top-up doors to the sources that ask for it (duck door
+        ``set_generation``, the module's own protocol, one posture with
+        ``set_attached``). Without a composed generation bundle the doors
+        are ``None``/``None`` — the tab prints no dead button."""
+        deps = self._generation.deps if self._generation is not None else None
+        for source in self._external_sources:
+            notify = getattr(source, "set_generation", None)
+            if callable(notify):
+                notify(self._open_character_top_up, deps)
+
     def attach(self, main_window: MainWindow, wiring: ApplicationWiring) -> None:
         """Bind to THIS game's window and connector and build the section.
 
@@ -266,6 +292,7 @@ class DndModule:
             character_import_available=self._character_import is not None,
             bestiary_available=self._bestiary_screen_ready(),
             grimoires_available=self._grimoires_screen_ready(),
+            character_generation_available=self._generation is not None,
         )
         self._section.disable_requested.connect(self._on_disable_requested)
         self._section.datasets_requested.connect(self._on_datasets_requested)
@@ -275,11 +302,18 @@ class DndModule:
         )
         self._section.bestiary_requested.connect(self._on_bestiary_requested)
         self._section.grimoires_requested.connect(self._on_grimoires_requested)
+        self._section.character_generation_requested.connect(
+            self._on_character_generation_requested
+        )
         # The module-lifetime gate for the sources that ask for it (task 8.2:
         # the character card's tabs live with the module, spec entity-card-tabs
         # «Таб модуля живёт с модулем») — set BEFORE anything can populate a
         # card, so a freshly enabled module answers its tabs at once.
         self._set_sources_attached(True)
+        # Вход ИИ-дозаполнения на D&D-табах (add-dnd-lss-generation task 7.3):
+        # тот же утин порядок, что и attach-state — источник собирается до
+        # façade, а лист умеет поднимать только façade на стеке коннектора.
+        self._set_generation_doors()
         # Task 3.3 (spec «Автозагрузка SRD-наборов»): every attach of a module
         # composed with the dataset library asks the library for the official
         # sets. The ask is idempotent (both sets present — no request at all,
@@ -324,6 +358,17 @@ class DndModule:
             sheet = self._grimoires_sheet
             self._grimoires_sheet = None
             sheet.close()
+        # Задачи генерации — экраны модуля (add-dnd-lss-generation, группа 7):
+        # уход игры снимает их force_close — тихая отмена in-flight без
+        # подтверждения (подтверждение принадлежит клику мастера, а не
+        # снятию окна), свои finished-каналы чистят стек коннектора.
+        for sheet in list(self._generation_sheets.values()):
+            sheet.force_close()
+        self._generation_sheets.clear()
+        if self._generation_gate_task is not None:
+            self._generation_gate_task.cancel()
+            self._generation_gate_task = None
+        self._generation_gate_box = None
         if self._section is not None:
             self._section.remove()
             self._section = None
@@ -333,6 +378,12 @@ class DndModule:
         # sees the gate closed (task 8.2, spec dnd-character-extension:
         # «выключение модуля SHALL гасить табы»).
         self._set_sources_attached(False)
+        # Двери ИИ-генерации гаснут вместе с модулем: табы пересоберутся без
+        # кнопки (add-dnd-lss-generation task 7.3).
+        for source in self._external_sources:
+            notify = getattr(source, "set_generation", None)
+            if callable(notify):
+                notify(None, None)
         self._window = None
         self._wiring = None
         # A confirmation box was parented to the window; when the whole game
@@ -397,6 +448,14 @@ class DndModule:
             parent=self._window,
             theme=self._theme,
             reference_visibility=self._reference_visibility,
+            generation_open=(
+                self._open_dataset_task_sheet
+                if self._generation is not None
+                else None
+            ),
+            generation_deps=(
+                self._generation.deps if self._generation is not None else None
+            ),
         )
         self._datasets_sheet = sheet
         # Default-arg capture: the release must forget THIS sheet even if a
@@ -572,6 +631,14 @@ class DndModule:
             run_locked=self._wiring.run_locked,
             parent=self._window,
             theme=self._theme,
+            generation_open=(
+                self._open_spellbook_task_sheet
+                if self._generation is not None
+                else None
+            ),
+            generation_deps=(
+                self._generation.deps if self._generation is not None else None
+            ),
         )
         self._grimoires_sheet = sheet
         # Default-arg capture (the CR5 pattern): the release forgets THIS
@@ -586,6 +653,193 @@ class DndModule:
         """Drop the live ref only while THIS sheet is still the resident."""
         if self._grimoires_sheet is sheet:
             self._grimoires_sheet = None
+
+    # ── generation task sheets (add-dnd-lss-generation, группа 7) ────────────
+
+    #: Пояснение гейта «≥1 подключённый датасет» (spec «Гейт активации
+    #: генерации», scenario «Персонаж без подключённых датасетов»).
+    GENERATION_NO_DATASET_BODY = (
+        "Для генерации персонажа нужен хотя бы один подключённый к игре "
+        "датасет: включите набор в листе «Датасеты D&D…» и повторите."
+    )
+    #: Заголовок boxes гейта генерации — имя меню модуля.
+    GENERATION_BOX_TITLE = "D&D"
+
+    def _live_generation_sheet(self, kind: str):
+        sheet = self._generation_sheets.get(kind)
+        if sheet is not None:
+            sheet.raise_()
+            sheet.activateWindow()
+            return sheet
+        return None
+
+    def _install_generation_sheet(self, kind: str, sheet) -> None:
+        """Посадить лист-задачу на стек коннектора под единственный
+        экземпляр своего рода (тот же порядок ref'а, что у всех экранов)."""
+        self._generation_sheets[kind] = sheet
+        # Default-arg capture (CR5): finished-канал забывает ИМЕННО этот лист.
+        sheet.finished.connect(
+            lambda _result, _kind=kind, _sheet=sheet: (
+                self._generation_sheet_finished(_kind, _sheet)
+            )
+        )
+        self._wiring.open_sheet(sheet)
+
+    def _generation_sheet_finished(self, kind: str, sheet) -> None:
+        if self._generation_sheets.get(kind) is sheet:
+            self._generation_sheets.pop(kind, None)
+
+    def _open_dataset_task_sheet(self) -> None:
+        """Вход листа-задачи датасетов (кнопка «Сгенерировать ИИ» в листе
+        «Датасеты D&D…»): живой лист поднимается, близнец не штабелируется."""
+        if self._window is None or self._wiring is None:
+            return
+        if self._generation is None or not self._datasets_screen_ready():
+            return
+        if self._live_generation_sheet("dataset") is not None:
+            return
+        from app.dd.presentation.generation.dataset_task_sheet import (
+            DndDatasetTaskSheet,
+        )
+
+        sheet = DndDatasetTaskSheet(
+            deps=self._generation.deps,
+            inputs=self._generation.inputs,
+            acceptance=self._generation.dataset_acceptance,
+            run_locked=self._wiring.run_locked,
+            parent=self._window,
+            theme=self._theme,
+        )
+        self._install_generation_sheet("dataset", sheet)
+
+    def _open_spellbook_task_sheet(self) -> None:
+        """Вход листа заклинаний (кнопка «Сгенерировать ИИ» в листе
+        «Гримуары…»): тот же порядок единственного экземпляра."""
+        if self._window is None or self._wiring is None:
+            return
+        if self._generation is None or not self._grimoires_screen_ready():
+            return
+        if self._live_generation_sheet("spellbook") is not None:
+            return
+        from app.dd.presentation.generation.spellbook_task_sheet import (
+            DndSpellbookTaskSheet,
+        )
+
+        sheet = DndSpellbookTaskSheet(
+            deps=self._generation.deps,
+            inputs=self._generation.inputs,
+            acceptance=self._generation.spellbook_acceptance,
+            run_locked=self._wiring.run_locked,
+            parent=self._window,
+            theme=self._theme,
+        )
+        self._install_generation_sheet("spellbook", sheet)
+
+    def _on_character_generation_requested(self) -> None:
+        """Пункт меню «Сгенерировать персонажа…» (task 7.3): общий AI-гейт
+        перечитывается при каждом срабатывании (неактивная часть — на кнопке
+        таба, меню объясняет боксом), затем гейт «≥1 подключённый датасет» —
+        с русским пояснением и без открытия листа (spec «Гейт активации
+        генерации»)."""
+        if self._window is None or self._wiring is None:
+            return
+        if self._generation is None:  # belt-and-braces (no action printed)
+            return
+        if not self._generation.deps.available():
+            self._show_generation_notice(self._generation.deps.hint())
+            return
+        if self._live_generation_sheet("character") is not None:
+            return
+        self._check_dataset_gate(lambda: self._show_character_sheet(None, None))
+
+    def _open_character_top_up(self, character_id: int, document: str) -> None:
+        """Утина дверь таба «Дозаполнить ИИ» (task 7.3): карточка отдала
+        собранный документ — тот же лист в режиме дозаполнения, за
+        исключением гейтов."""
+        if self._window is None or self._wiring is None:
+            return
+        if self._generation is None:
+            return
+        if not self._generation.deps.available():
+            self._show_generation_notice(self._generation.deps.hint())
+            return
+        if self._live_generation_sheet("character") is not None:
+            return
+        self._check_dataset_gate(
+            lambda: self._show_character_sheet(character_id, document)
+        )
+
+    def _check_dataset_gate(self, then) -> None:
+        """Гейт датасета читает список подключённых (read, под локом — поза
+        остальных загрузок) и либо зовёт ``then``, либо объясняет отказ."""
+        if self._connections is None or self._generation_gate_task is not None:
+            if self._connections is None:
+                self._show_generation_notice(self.GENERATION_NO_DATASET_BODY)
+            return
+        self._generation_gate_task = self._wiring.run_locked(
+            self._connections.connections()
+        )
+        self._generation_gate_task.add_done_callback(
+            lambda task, _then=then: self._on_gate_checked(task, _then)
+        )
+
+    def _on_gate_checked(self, task: asyncio.Task, then) -> None:
+        self._generation_gate_task = None
+        if self._window is None or self._wiring is None:
+            return  # модуль снялся, пока читался список
+        if task.cancelled():
+            return
+        if task.exception() is not None:
+            logging.getLogger("app.dd.module").error(
+                "D&D generation gate check failed: %s", task.exception()
+            )
+            self._show_generation_notice(
+                "Не удалось проверить подключённые датасеты. Подробности — в "
+                "журнале приложения; повторите позже."
+            )
+            return
+        if not task.result():
+            self._show_generation_notice(self.GENERATION_NO_DATASET_BODY)
+            return
+        then()
+
+    def _show_character_sheet(
+        self, character_id: int | None, current_document: str | None
+    ) -> None:
+        if self._window is None or self._wiring is None:
+            return
+        assert self._generation is not None  # callers gate on the bundle
+        if self._live_generation_sheet("character") is not None:
+            return
+        from app.dd.presentation.generation.character_task_sheet import (
+            DndCharacterTaskSheet,
+        )
+
+        sheet = DndCharacterTaskSheet(
+            deps=self._generation.deps,
+            inputs=self._generation.inputs,
+            character_import=self._generation.character_import,
+            run_locked=self._wiring.run_locked,
+            character_id=character_id,
+            current_document=current_document,
+            parent=self._window,
+            theme=self._theme,
+        )
+        self._install_generation_sheet("character", sheet)
+
+    def _show_generation_notice(self, body: str) -> None:
+        """Modeless-пояснение гейта с живой ссылкой (PR-010 поза модуля)."""
+        box = QMessageBox(self._window)
+        box.setWindowTitle(self.GENERATION_BOX_TITLE)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(body)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        self._generation_gate_box = box
+        box.finished.connect(self._generation_notice_finished)
+        box.show()
+
+    def _generation_notice_finished(self, _result: int) -> None:
+        self._generation_gate_box = None
 
     def _open_monster_card(self, monster_id: int | None) -> None:
         """Raise (or first build) the card of one monster — the creation

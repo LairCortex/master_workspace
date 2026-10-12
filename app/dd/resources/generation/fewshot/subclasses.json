@@ -1,0 +1,37 @@
+{
+  "label": "Подклассы",
+  "samples": [
+    {
+      "id": "BattleMaster",
+      "classId": "Fighter",
+      "label": "Боевой мастер",
+      "grants": [
+        {
+          "type": "trait",
+          "id": "SuperiorityCombat",
+          "name": "Превосходство в бою",
+          "description": "Вы получаете кости превосходства d8 и восстанавливаете их коротким или длительным отдыхом.",
+          "params": {"dice-count": 1}
+        }
+      ],
+      "leveledGrants": [
+        {
+          "level": 10,
+          "grants": [
+            {
+              "type": "bonus",
+              "target": "ac",
+              "mode": "add",
+              "value": 1,
+              "label": "Защита мастера боя"
+            }
+          ]
+        }
+      ],
+      "info": {
+        "tagline": "Мастер боевых приёмов",
+        "tags": ["Ближний бой", "Манёвры"]
+      }
+    }
+  ]
+}
