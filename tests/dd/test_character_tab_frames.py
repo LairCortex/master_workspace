@@ -169,6 +169,18 @@ def test_lss_sheet_url_trims_and_fills_the_digital_page():
     )
 
 
+def test_source_unavailable_note_is_the_single_fixed_wording():
+    """fix-dnd-followups 4.2 (spec dnd-character-extension «Снятый датасет не
+    калечит карточку» / dnd-reference-records): пометка недоступного источника
+    — дословно «источник не подключён». Ровно одно сравнение с литералом;
+    обе поверхности модуля, печатающие запись с недоступным источником (пики
+    таба «D&D» и строки таба «Заклинаний» — остальные справочные поверхности
+    по построению недоступных записей не показывают), несут ЭТУ константу:
+    их пины ниже сравнивают текст строки с константой, цепочка
+    «поверхность = константа = литерал» замкнута."""
+    assert SOURCE_UNAVAILABLE_NOTE == "источник не подключён"
+
+
 # ── the «D&D» tab ─────────────────────────────────────────────────────────
 
 
@@ -201,7 +213,14 @@ async def test_dnd_tab_opens_empty_and_builds_pickers_from_the_index(qtbot):
         assert frame.findChild(QComboBox, f"ddDndSlot_{slot}") is not None
     assert race.accessibleName() == "Вид"
     level = frame.findChild(QComboBox, "ddDndLevel")
-    assert level.count() == 21 and level.itemText(7) == "7"
+    # fix-dnd-followups 4.1 (spec dnd-character-extension «Уровень вне полосы
+    # недоступен»): выбор состоит ровно из «не задан» и целых 1…20 — список
+    # запинен целиков (0, 21 и дробное в нём отсутствуют), неотредактируемый
+    # комбо не даёт и ввести что-то мимо списка.
+    assert [level.itemText(i) for i in range(level.count())] == [
+        UNSET_ITEM, *[str(value) for value in range(1, 21)]
+    ]
+    assert not level.isEditable()
     assert frame.findChild(QLineEdit, "ddDndSheetId").text() == ""
     # loading alone never writes: the single ask is the read.
     assert service.asks == [("get_ext", 7)]

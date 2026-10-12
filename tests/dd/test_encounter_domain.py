@@ -52,6 +52,13 @@ def test_count_out_of_band_refuses_in_russian(count):
     assert str(exc.value) == COUNT_REFUSAL
 
 
+def test_count_refusal_is_the_fixed_sentence():
+    """fix-dnd-followups 4.1 (spec dnd-encounters «Количество не выходит из
+    полосы»): доменная отказ-фраза зафиксирована дословно — ровно одно
+    сравнение с литералом, полоса 1…999 в ней тоже запинена."""
+    assert COUNT_REFUSAL == "количество монстра — целое от 1 до 999"
+
+
 def test_normalize_entries_keeps_the_order_and_lets_empty_pass():
     entries = [_entry(mid=2, count=3), _entry(mid=1, count=1)]
     assert normalize_entries(entries) == tuple(entries)

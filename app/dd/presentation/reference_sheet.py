@@ -232,8 +232,11 @@ class DndReferenceSheet(SheetFrame):
 
     def _render_current_tab(self) -> None:
         """Rebuild the visible tab's rows from the loaded list under the
-        current filter (case-insensitive substring of the displayed name —
-        the search's own matching rule). Other tabs stay untouched until
+        current filter (case-insensitive substring of the displayed name OR
+        of the record's identifier/slug, surrounding blanks trimmed — the
+        source's own ``search`` matching rule, restated here so the sheet's
+        local narrowing behaves exactly like the global search). Other tabs
+        stay untouched until
         shown; an empty answer for the whole sheet swaps the explanation
         block in (spec «объяснять и предлагать»); rows for the current tab
         only hide when rows of some other tab still exist."""
@@ -245,7 +248,9 @@ class DndReferenceSheet(SheetFrame):
         hits = [
             hit
             for hit in self._rows.get(key, ())
-            if not needle or needle in hit.name.lower()
+            if not needle
+            or needle in hit.name.lower()
+            or needle in hit.source_id.lower()
         ]
         host = self._list_host(index)
         layout = host.layout()

@@ -1,0 +1,60 @@
+{
+  "id": "qa-sample-grimoire",
+  "name": "Гримуар QA-образца",
+  "encoding": "utf8",
+  "label": "Grimoire",
+  "items": [
+    {
+      "_id": "QaSp000000000001",
+      "name": "Искра углей",
+      "type": "spell",
+      "system": {
+        "description": {
+          "value": "<p>Вы щёлкаете пальцами, и в ладони вспыхивает&nbsp;тёплая искра.</p><ul><li>Урон по одной цели: @Damage[1d8]</li><li>Длительность: 1 минута</li></ul>",
+          "chat": ""
+        },
+        "level": 0,
+        "school": 2
+      },
+      "flags": {
+        "lss": {
+          "slug": "ember-spark"
+        }
+      }
+    },
+    {
+      "_id": "QaSp000000000002",
+      "name": "Пелена пепла",
+      "type": "spell",
+      "system": {
+        "description": {
+          "value": "<p>Пепел застилает глаза существам в сфере 20 футов. Каждое должно пройти <em>спасбросок Телосложения</em>.</p>"
+        },
+        "level": 2,
+        "school": 3
+      },
+      "flags": {
+        "lss": {
+          "slug": "ash-veil"
+        }
+      }
+    },
+    {
+      "_id": "QaSp000000000003",
+      "name": "Шепчущая силка",
+      "type": "spell",
+      "system": {
+        "description": {
+          "value": "<p>Силка шепчет имени жертве и стягивается.</p><p>Спасбросок Ловкости или <strong>скорость 0</strong>.</p>"
+        },
+        "level": 1,
+        "school": 6
+      },
+      "flags": {
+        "lss": {
+          "slug": "whispering-snare"
+        }
+      }
+    }
+  ]
+}

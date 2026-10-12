@@ -22,7 +22,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QPushButton
+from PySide6.QtWidgets import QMainWindow, QMessageBox, QPushButton, QSpinBox
 
 from app.dd.application.dataset_index_service import IndexSnapshot
 from app.dd.application.generation_deps import GenerationBundle
@@ -501,6 +501,48 @@ async def test_dataset_and_spellbook_entries_single_instance(qtbot, monkeypatch)
     assert isinstance(wiring.opened[0], DndDatasetTaskSheet)
     assert isinstance(wiring.opened[1], DndSpellbookTaskSheet)
     module.detach()
+
+
+async def test_generation_count_spinners_gate_one_to_ten_default_five(
+    qtbot, monkeypatch
+):
+    """fix-dnd-followups 4.1 (spec dnd-generation «Внеполосное число
+    недоступно» и «Генерация файла заклинаний»): число сущностей в секции и
+    число заклинаний — полевым контрол со встроенными воротами 1…10 с дефолтом
+    5; внеполосное значение контролом не выражается, а значит и запустить
+    генерацию мимо полосы невозможно (отказов конструктора контекста эти
+    цифры до канала не доносят — ворота живёт в самом контроле)."""
+    from app.dd.infrastructure.grimoire_storage import GrimoireStorage
+
+    storage = GrimoireStorage("/tmp/unused-grimoires-gate-test")  # только реф
+    module, wiring, _ = _attach_module(
+        qtbot,
+        monkeypatch,
+        bundle=_bundle(),
+        connections=_StubConnections(["srd"]),
+        with_library=True,
+    )
+    module._grimoire_storage = storage  # noqa: SLF001
+    module._grimoire_connections = _StubConnections()  # noqa: SLF001
+    module._grimoire_import = object()  # noqa: SLF001
+    module._open_dataset_task_sheet()  # noqa: SLF001
+    module._open_spellbook_task_sheet()  # noqa: SLF001
+    try:
+        dataset_sheet, spellbook_sheet = wiring.opened
+        # Спиннеры на этих двух листах — только счётчики (проверено по
+        # исходнику), так что findChildren и есть выборка ворот.
+        spins = dataset_sheet.findChildren(QSpinBox) + spellbook_sheet.findChildren(
+            QSpinBox
+        )
+        assert spins, "листы собраны без счётчиков"
+        for spin in spins:
+            assert (spin.minimum(), spin.maximum(), spin.value()) == (1, 10, 5)
+            spin.setValue(0)
+            assert spin.value() == 1
+            spin.setValue(11)
+            assert spin.value() == 10
+    finally:
+        module.detach()
 
 
 # ── утина дверь set_generation у источника таба (7.3) ────────────────────────

@@ -25,7 +25,14 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QTableWidget, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QWidget,
+)
 
 from app.dd.application.dataset_connections_service import (
     DatasetConnectionsService,
@@ -361,6 +368,38 @@ async def test_srd_button_failure_and_crash_both_answer(qtbot, harness, monkeypa
     await harness.flush()
     crash = harness.last_box()
     assert crash.text == DD_SRD_UNEXPECTED_BODY
+
+
+async def test_srd_re_run_result_box_is_nonmodal(qtbot, harness, monkeypatch):
+    """fix-dnd-followups Д1 (notes.md 2.1 «тот же дефект с той же причиной»):
+    бокс результата кнопки «Загрузить SRD» — parent сам лист — по умолчанию
+    ApplicationModal и перехватывал Esc на себя. Дельта dnd-dataset-library:
+    «Уведомление результата SHALL быть необязывающим: открытое окно не
+    удерживает остальные окна и листы». Пин настоящим классом (ловушка
+    сверяет тексты, модалность — свойство Qt): бокс сводки носит NonModal,
+    как фасадный ``_show_datasets_box`` (поза PR-012)."""
+    harness.open()
+    await harness.flush()
+    # Ловушка уступает настоящему боксу: модалность живёт только в Qt.
+    monkeypatch.setattr(
+        "app.dd.presentation.datasets_sheet.QMessageBox", QMessageBox
+    )
+
+    async def _failed():
+        return SimpleNamespace(
+            ok=False, all_present=False, summary="SRD 5.1: сеть недоступна."
+        )
+
+    monkeypatch.setattr(harness.library, "download_official_datasets", _failed)
+    _button(harness.sheet, "ddSrdButton").click()
+    await harness.flush()
+
+    box = harness.sheet._notice_box  # noqa: SLF001 - пин окна уведомления
+    assert isinstance(box, QMessageBox) and box.isVisible()
+    qtbot.addWidget(box)
+    assert box.windowModality() == Qt.WindowModality.NonModal
+    assert box.text() == "SRD 5.1: сеть недоступна."
+    box.done(QMessageBox.StandardButton.Ok)
 
 
 def test_srd_button_without_running_loop_is_quiet(qtbot):

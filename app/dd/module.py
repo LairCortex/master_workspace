@@ -32,6 +32,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 if TYPE_CHECKING:
@@ -1069,8 +1070,17 @@ class DndModule:
         closed box drops its ref the way the disable box does. Reached only
         from the done callback, which has already seen a live window — the
         callback is synchronous, so no detach can slip between that check
-        and this box."""
+        and this box.
+
+        fix-dnd-followups (Д1, live repro «evidence/» + notes.md): a
+        QMessageBox is ApplicationModal BY DEFAULT, and on the live cocoa
+        display such a window holds the keyboard — with the offline summary
+        open, Esc never reached the focused sheet until the master clicked
+        «OK». The spec («Уведомление результата SHALL быть необязывающим»)
+        demands the opposite, so the box explicitly wears Qt's NonModal (the
+        PR-012 posture of every window in this app)."""
         box = QMessageBox(self._window)
+        box.setWindowModality(Qt.WindowModality.NonModal)
         box.setIcon(icon)
         box.setWindowTitle(DD_DATASETS_TITLE)
         box.setText(body)

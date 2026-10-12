@@ -153,6 +153,7 @@ def _install_modal_trap(monkeypatch, target: str = "app.main.QMessageBox"):
             self.buttons = None
             self.default_button = None
             self.shown_via = None
+            self.modality = None
             self.finished = _FinishedSignalFake()
 
         def setIcon(self, icon):
@@ -169,6 +170,13 @@ def _install_modal_trap(monkeypatch, target: str = "app.main.QMessageBox"):
 
         def setDefaultButton(self, button):
             self.default_button = button
+
+        def setWindowModality(self, modality):
+            # fix-dnd-followups Д1: modeless notice boxes explicitly wear
+            # NonModal — the trap records the call (the real-class modality
+            # pin lives in tests/dd/test_dd_srd_notice_nonbinding.py and
+            # tests/presentation/test_dd_datasets_sheet.py).
+            self.modality = modality
 
         def show(self):
             self.shown_via = "show"

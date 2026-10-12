@@ -37,6 +37,7 @@ from app.dd.infrastructure.db.dd_models import encode_text_blocks
 from app.dd.infrastructure.db.dd_schema import ensure_dd_tables
 from app.dd.infrastructure.repositories.dd_character_repository import (
     DdCharacterRepository,
+    ext_to_domain,
 )
 from app.domain.entity_registry import EntityType
 from app.infrastructure.db.models import CharacterModel, DescriptionModel
@@ -102,7 +103,10 @@ def test_unset_links_write_no_info_at_all():
     assert "info" not in _data_of(_pure())
 
 
-def test_connected_link_is_pair_disconnected_is_unresolvable_snapshot():
+def test_connected_link_is_pair_disconnected_key_is_omitted():
+    """Неразрешимая привязка — единственная форма: ключ опускается, снимок
+    имени остаётся в карточке (spec «Снятый датасет не калечит документ»,
+    fix-dnd-followups Д5; второго вида «помеченная привязка» нет)."""
     links = empty_ext().links
     links = {
         **links,
@@ -111,9 +115,11 @@ def test_connected_link_is_pair_disconnected_is_unresolvable_snapshot():
     }
     data = _data_of(_pure(links=links))
     assert data["info"]["race"] == {"id": "orc", "name": "Орк"}
-    assert data["info"]["charClass"] == {"id": "", "name": "Волшебник"}
+    assert "charClass" not in data["info"]
     # остальные три слота не заданы — ключей нет вовсе
-    assert set(data["info"]) == {"race", "charClass"}
+    assert set(data["info"]) == {"race"}
+    # и снятая привязка остаётся снимком в самой карточке
+    assert links["class"] == ReferenceLink("gone", "wizard", "Волшебник")
 
 
 def test_snapshot_without_a_name_says_nothing():
@@ -233,9 +239,12 @@ async def test_handcrafted_character_validates_with_every_face(uow):
     assert data["name"] == "Мира"
     assert data["level"] == 4
     assert data["info"]["race"] == {"id": "orc", "name": "Орк"}
-    # снятый источник: снимок имени сохранён, привязка неразрешима (spec)
-    assert data["info"]["charClass"] == {"id": "", "name": "Волшебник"}
-    assert set(data["info"]) == {"race", "charClass"}
+    # снятый источник: ключ привязки опущен (единственная форма), снимок
+    # имени остался в карточке, валидатор ошибок не показал (spec)
+    assert "charClass" not in data["info"]
+    assert set(data["info"]) == {"race"}
+    card = ext_to_domain(await DdCharacterRepository(uow.session).get_ext(char_id))
+    assert card.links["class"] == ReferenceLink("gone", "wizard", "Волшебник")
     read, issues = editor_doc_to_text(data["blocks"]["Внешность"])
     assert issues == []
     assert read == "Шрам над бровью.\nБроня: [AC] крепка."
@@ -280,8 +289,11 @@ async def test_imported_character_validates(uow, tmp_path):
     # его из индекса) — документ читает карточку, потому имя из индекса
     assert data["info"]["race"] == {"id": "orc", "name": "Орк"}
     # запись, которой нет в подключённом наборе, импорт хранит снимком файла;
-    # без подтверждённого источника она уходит неразрешимой с этим снимком
-    assert data["info"]["charClass"] == {"id": "", "name": "Варвар"}
+    # без подтверждённого источника её ключ в документ не попадает, а снимок
+    # остаётся в карточке (fix-dnd-followups Д5)
+    assert "charClass" not in data["info"]
+    card = ext_to_domain(await DdCharacterRepository(uow.session).get_ext(outcome.character_id))
+    assert card.links["class"] == ReferenceLink("", "barbarian", "Варвар")
     read, _issues = editor_doc_to_text(data["blocks"]["Биография"])
     assert read == "Родился в степи."
 
@@ -364,12 +376,19 @@ async def test_catalog_without_characters_is_refused_in_words(uow):
 
 
 async def test_same_link_is_unresolvable_when_source_leaves(uow):
+    """Spec scenario «Снятый датасет не калечит документ»: та же карточка
+    собирается при снятом источнике — сборка не падает, слаговый ключ
+    привязки в документе отсутствует, валидатор ошибок не показывает,
+    снимок имени сохранён в карточке."""
     await ensure_dd_tables(uow)
     char_id = await _make_character(uow, "Мира")
     await DndCharacterExtensionService(uow).set_reference_link(
         char_id, "race", ReferenceLink("srd", "orc", "Орк")
     )
     live = _data_of(await _builder(uow, _CONNECTED_SNAP).collect(char_id))
-    offline = _data_of(await _builder(uow, _EMPTY_SNAP).collect(char_id))
+    # снятая подключённость — обычная сборка настоящим валидатором (без ошибок)
+    offline = await _collect_and_validate(_builder(uow, _EMPTY_SNAP), char_id)
     assert live["info"]["race"] == {"id": "orc", "name": "Орк"}
-    assert offline["info"]["race"] == {"id": "", "name": "Орк"}
+    assert "race" not in offline.get("info", {})
+    card = ext_to_domain(await DdCharacterRepository(uow.session).get_ext(char_id))
+    assert card.links["race"] == ReferenceLink("srd", "orc", "Орк")

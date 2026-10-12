@@ -179,6 +179,47 @@ async def test_filter_narrows_rows_by_name(qtbot):
     sheet.close()
 
 
+async def test_filter_matches_identifier_and_slug_and_blank_is_the_whole_tab(
+    qtbot,
+):
+    """fix-dnd-followups 4.2 (spec dnd-reference-records «Фильтр SHALL быть
+    регистронезависимой подстрокой»): запись попадает в результат, если текст
+    встречается в ИДЕНТИФИКАТОРЕ/СЛОГЕ (source_id), а не только в имени;
+    пустой ввод и ввод из одних пробелов показывают весь список вкладки."""
+    sheet, _ = _make_sheet(qtbot, _Source(_DESCRIPTORS, _rows()))
+    await _loaded(sheet)
+    tabs = sheet.findChild(QTabWidget)
+
+    # Идентификатор записи (латиница в source_id) ищется, когда имя на него
+    # не похожа: «Клейрик» по «cleric» проходит только через id-ветку.
+    sheet._filter.setText("cleric")
+    assert [b.text() for b in _row_buttons(sheet)] == ["Клейрик · SRD 5.1 (2014)"]
+    # ...регистронезависимо и в другую сторону: запрос в верхнем регистре
+    # против идентификатора в нижнем.
+    sheet._filter.setText("CLERIC")
+    assert len(_row_buttons(sheet)) == 1
+    # Обрамляющие пробелы снимаются — тот же hit.
+    sheet._filter.setText("  cleric  ")
+    assert len(_row_buttons(sheet)) == 1
+
+    # Слаг заклинания — тоже идентификатор: на вкладке «Заклинания» имя
+    # «Истинное зрение», слаг «true-sight» — фильтр идёт по слагу.
+    tabs.setCurrentIndex(2)
+    sheet._filter.setText("true-sight")
+    assert [b.text() for b in _row_buttons(sheet)] == ["Истинное зрение"]
+    sheet._filter.setText("SIGHT")
+    assert len(_row_buttons(sheet)) == 1
+
+    # Пустой ввод = весь список вкладки; пробелы = пустой ввод (spec
+    # «пустая строка или только пробелы показывают весь список вкладки»).
+    sheet._filter.setText("")
+    assert len(_row_buttons(sheet)) == 1
+    tabs.setCurrentIndex(1)  # «Черты» — своя строка
+    sheet._filter.setText("   ")
+    assert [b.text() for b in _row_buttons(sheet)] == ["Везучесть · Хоумбрю"]
+    sheet.close()
+
+
 async def test_empty_shelf_explains_and_offers_datasets(qtbot):
     """Ни одной строки (пустые подключения — спека): объяснение + вход в лист
     датасетов; без собранного экрана датасетов кнопка не предлагается вовсе."""

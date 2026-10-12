@@ -43,7 +43,11 @@ from app.dd.domain.dataset import (
     is_valid_dataset_id,
 )
 from app.dd.infrastructure.dataset_storage import DatasetStorage
-from app.dd.infrastructure.lss_datasets_client import DatasetsError
+from app.dd.infrastructure.lss_datasets_client import (
+    SRD_2014_URL,
+    SRD_2024_URL,
+    DatasetsError,
+)
 
 if TYPE_CHECKING:
     from app.dd.infrastructure.lss_datasets_client import LssDatasetsClient
@@ -53,11 +57,15 @@ _LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class OfficialDatasetSpec:
-    """One official set: its id, the caption the user reads, and the two
-    fetches belonging to it (document + spell-slug list, design Д5)."""
+    """One official set: its id, the caption the user reads, the document
+    address the journal names in every issuance record (fix-dnd-followups Д2:
+    the journal is the live-proof channel «the network never touched the set
+    addresses»), and the two fetches belonging to it (document + spell-slug
+    list, design Д5)."""
 
     dataset_id: str
     caption: str
+    document_url: str
     fetch_document: Callable[[], Awaitable[str]]
     fetch_spell_slugs: Callable[[], Awaitable[tuple[str, ...]]]
 
@@ -163,12 +171,14 @@ class DatasetLibraryService:
             OfficialDatasetSpec(
                 dataset_id=SRD_2014_DATASET_ID,
                 caption="SRD 5.1 (2014)",
+                document_url=SRD_2014_URL,
                 fetch_document=self._client.fetch_srd_2014,
                 fetch_spell_slugs=self._client.fetch_spell_slugs_2014,
             ),
             OfficialDatasetSpec(
                 dataset_id=SRD_2024_DATASET_ID,
                 caption="SRD 5.2 (2024)",
+                document_url=SRD_2024_URL,
                 fetch_document=self._client.fetch_srd_2024,
                 fetch_spell_slugs=self._client.fetch_spell_slugs_2024,
             ),
@@ -184,6 +194,15 @@ class DatasetLibraryService:
         that scheduled this must never fail because of the network. The
         spell-slug list is best-effort: without it the validator skips the
         slug checks (design Д5), so its absence does not sink the set itself.
+
+        Every issued request and its outcome is journalled (fix-dnd-followups
+        Д2 / spec: «Каждый выпуск запроса к адресам наборов и его исход SHALL
+        фиксироваться записью журнала приложения»): one issuance record per
+        downloaded set naming the address it went to, the outcome as INFO on
+        success and the existing WARNING on failure. The idempotent branch
+        issues nothing and therefore leaves NOTHING in the journal — the
+        absence of records is the live proof «сеть не обращалась к адресам
+        наборов» («Сохранять логи в файл» is the штатный observer).
         """
         items: list[OfficialDatasetOutcome] = []
         for spec in self._official_specs():
@@ -197,8 +216,14 @@ class DatasetLibraryService:
                     )
                 )
                 continue
+            _LOGGER.info(
+                "SRD: выпуск запроса набора «%s» (%s)",
+                spec.caption,
+                spec.document_url,
+            )
             try:
                 title = await self._fetch_and_save(spec)
+                _LOGGER.info("SRD: набор «%s» загружен: %s", spec.caption, title)
                 items.append(
                     OfficialDatasetOutcome(
                         dataset_id=spec.dataset_id,

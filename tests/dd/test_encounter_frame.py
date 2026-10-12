@@ -208,6 +208,26 @@ async def test_save_of_a_never_read_face_writes_nothing(caplog):
 # ── staged-редактирование ──────────────────────────────────────────────────
 
 
+async def test_count_spin_of_a_fresh_row_is_the_one_to_999_gate():
+    """fix-dnd-followups 4.1 (spec dnd-encounters «Количество не выходит из
+    полосы»): спиннер строки состава имеет те же ворота 1…999 — контрол не
+    выражает внеполосное значение ни клавиатурой, ни колесом; любое
+    присваивание из кода возвращается в границы полосы."""
+    frame, _source = _frame(_Encounters(None))
+    await _drain()
+    frame.findChild(QPushButton, "ddEncounterAdd").click()
+    spin = frame.findChildren(QSpinBox)[0]
+    assert spin.minimum() == 1 and spin.maximum() == 999
+    spin.setValue(0)
+    assert spin.value() == 1
+    spin.setValue(-7)
+    assert spin.value() == 1
+    spin.setValue(1000)
+    assert spin.value() == 999
+    spin.setValue(999)
+    assert spin.value() == 999
+
+
 async def test_add_and_remove_rows_stage_without_writing():
     encounters = _Encounters(None)
     frame, source = _frame(encounters)

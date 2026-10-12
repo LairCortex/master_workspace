@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import pytest
 
@@ -19,7 +20,11 @@ from app.dd.domain.dataset import (
     StoreStatus,
 )
 from app.dd.infrastructure.dataset_storage import DatasetStorage
-from app.dd.infrastructure.lss_datasets_client import DatasetsNetworkError
+from app.dd.infrastructure.lss_datasets_client import (
+    SRD_2014_URL,
+    SRD_2024_URL,
+    DatasetsNetworkError,
+)
 
 
 class FakeClient:
@@ -232,3 +237,77 @@ async def test_download_spell_list_failure_keeps_the_set(tmp_path):
     assert storage.load_content("srd51") is not None
     assert storage.load_spell_slugs("srd51") is None
     assert storage.load_spell_slugs("srd52") == ("fire-bolt",)
+
+
+# ── журнал выпусков SRD-запросов (fix-dnd-followups, задача 2.3; Д2) ─────────
+#
+# Журнал — штатный живой наблюдатель сетевых выходов (spec «Автозагрузка
+# SRD-наборов»: «Каждый выпуск запроса к адресам наборов и его исход SHALL
+# фиксироваться записью журнала приложения»; сценарий «Повторный запуск не
+# качает»: «журнал запуска не содержит записей о выпуске этих запросов»).
+# Канал — семейство `app.dd` (логгер сервиса лежит в нём и через propagate
+# попадает в штатный файл-журнал).
+
+
+def _dd_records(caplog) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records if r.name.startswith("app.dd")
+    ]
+
+
+async def test_idempotent_answer_leaves_no_journal_records(tmp_path, caplog):
+    """Ветка «уже в хранилище» не выпускает запрос и не оставляет НИ ОДНОЙ
+    записи канала app.dd: отсутствие записей и есть проверяемый оффскрин
+    факт «сеть не обращалась к адресам наборов»."""
+    caplog.set_level(logging.INFO)
+    storage, service, client = _service(tmp_path)
+    await service.download_official_datasets()  # первая волна засеивает полки
+    client.calls.clear()
+    caplog.clear()
+    result = await service.download_official_datasets()
+    assert result.all_present
+    assert client.calls == []
+    assert _dd_records(caplog) == []
+
+
+async def test_download_branch_journals_one_issuance_per_set(tmp_path, caplog):
+    """Ветка загрузки: ровно по одной записи о выпуске на набор, в записи —
+    адрес, к которому ушёл запрос (url есть имя набора, Д2), плюс исход
+    загрузки той же веткой журнала."""
+    caplog.set_level(logging.INFO)
+    _storage, service, _client = _service(tmp_path)
+    result = await service.download_official_datasets()
+    assert result.ok and not result.all_present
+    messages = _dd_records(caplog)
+    issued = [m for m in messages if "выпуск запроса" in m]
+    assert len(issued) == 2
+    assert [m for m in issued if SRD_2014_URL in m] == [issued[0]]
+    assert [m for m in issued if SRD_2024_URL in m] == [issued[1]]
+    outcomes = [m for m in messages if "загружен:" in m]
+    assert len(outcomes) == 2
+
+
+async def test_failed_request_is_issued_and_journalled_as_failure(tmp_path, caplog):
+    """Исход «офлайн» тоже записан: выпуск зафиксирован до провала, а
+    провал — записью WARNING (принцип 3: сетевые ошибки не молчат)."""
+    caplog.set_level(logging.INFO)
+    _storage, service, _client = _service(
+        tmp_path,
+        FakeClient(
+            errors={
+                "srd_2014": DatasetsNetworkError(),
+                "srd_2024": DatasetsNetworkError(),
+            }
+        ),
+    )
+    result = await service.download_official_datasets()
+    assert not result.ok
+    messages = _dd_records(caplog)
+    assert sum("выпуск запроса" in m for m in messages) == 2
+    failures = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name.startswith("app.dd")
+    ]
+    assert len(failures) == 2
+    assert all("недоступен" in r.getMessage() for r in failures)

@@ -47,7 +47,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -729,8 +729,16 @@ class DndDatasetsSheet(SheetFrame):
         self, icon: QMessageBox.Icon, title: str, body: str
     ) -> None:
         """Modeless information/warning box (PR-010 posture: show(), live ref
-        until finished, never a nested event loop)."""
+        until finished, never a nested event loop).
+
+        fix-dnd-followups (Д1, notes.md 2.1 «тот же дефект с той же причиной»):
+        a QMessageBox is ApplicationModal BY DEFAULT, and the sheet-parented
+        box held the keyboard — with the SRD result open, Esc closed the box
+        instead of the sheet. The spec («Уведомление результата SHALL быть
+        необязывающим») demands the opposite, so the box explicitly wears
+        Qt's NonModal, exactly like the façade's ``_show_datasets_box``."""
         box = QMessageBox(self)
+        box.setWindowModality(Qt.WindowModality.NonModal)
         box.setIcon(icon)
         box.setWindowTitle(title)
         box.setText(body)

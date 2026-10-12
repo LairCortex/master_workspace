@@ -380,7 +380,7 @@ async def test_top_up_refusal_lives_in_sheet(qtbot, monkeypatch):
     try:
         h.button("Start").click()
         await h.wait_status(STATUS_CHANNEL_ERROR)
-        assert "дозаполнять" in h.label("Report").text()
+        assert TOP_UP_NOTHING_REFUSAL in h.label("Report").text()
         assert h.preview().toPlainText() == ""
         assert not h.boxes
         assert not h.sheet_boxes
