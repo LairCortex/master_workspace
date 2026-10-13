@@ -18,6 +18,7 @@ from app.dd.domain.dataset import (
     DatasetSource,
     DownloadStatus,
     StoreStatus,
+    dataset_title_from_document,
 )
 from app.dd.infrastructure.dataset_storage import DatasetStorage
 from app.dd.infrastructure.lss_datasets_client import (
@@ -43,10 +44,10 @@ class FakeClient:
         return self.bodies.get(name, fallback)
 
     async def fetch_srd_2014(self):
-        return self._fetch("srd_2014", json.dumps({"id": "srd51", "title": "SRD 5.1"}))
+        return self._fetch("srd_2014", json.dumps({"id": "srd-2014", "title": "SRD 5.1"}))
 
     async def fetch_srd_2024(self):
-        return self._fetch("srd_2024", json.dumps({"id": "srd52", "title": "SRD 5.2"}))
+        return self._fetch("srd_2024", json.dumps({"id": "srd-2024", "title": "SRD 5.2"}))
 
     async def fetch_spell_slugs_2014(self):
         return self._slugs(self._fetch("slugs_2014", "fireball\nshield\n"))
@@ -118,13 +119,13 @@ def test_store_srd_protected_even_with_confirmation(tmp_path):
     """Спека «SRD защищён от перезаписи»: подтверждение не покупает замену
     служебного файла — отказ с объяснением, файл не изменён."""
     storage, service, _ = _service(tmp_path)
-    _srd_shelf(storage, "srd51", "SRD 5.1")
+    _srd_shelf(storage, "srd-2014", "SRD 5.1")
     for allow in (False, True):
-        outcome = service.store_dataset(_doc("srd51", "Подмена"), allow_replace=allow)
+        outcome = service.store_dataset(_doc("srd-2014", "Подмена"), allow_replace=allow)
         assert outcome.status is StoreStatus.SRD_PROTECTED
         assert not outcome.stored
         assert "защищён" in outcome.message
-    assert json.loads(storage.load_content("srd51"))["title"] == "SRD 5.1"
+    assert json.loads(storage.load_content("srd-2014"))["title"] == "SRD 5.1"
 
 
 @pytest.mark.parametrize(
@@ -147,6 +148,24 @@ def test_store_refuses_bad_documents_without_touching_shelf(tmp_path, content, r
 # ── автозагрузка SRD: идемпотентность и офлайн (проверка 3.3) ───────────────
 
 
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        # живой формат LSS: заголовок в ``name`` (оба SRD-файла 2026-10-12);
+        ({"id": "x", "name": "D&D 5e SRD (2014)"}, "D&D 5e SRD (2014)"),
+        # ``name`` побеждает ``title``, если чудом попались оба;
+        ({"id": "x", "name": "Первый", "title": "Второй"}, "Первый"),
+        # legacy-читка ``title`` живёт — все прежние хоумбрю-файлы читаются;
+        ({"id": "x", "title": "Хоумбрю"}, "Хоумбрю"),
+        # пустое/не-текстовое имя — прежний откат к id/подписи;
+        ({"id": "x", "name": "  ", "title": 7}, "fb"),
+        ("не словарь", "fb"),
+    ],
+)
+def test_dataset_title_reader_prefers_the_live_name_field(document, expected):
+    assert dataset_title_from_document(document, "fb") == expected
+
+
 async def test_download_missing_fetches_both_sets_with_slugs(tmp_path):
     storage, service, client = _service(tmp_path)
     result = await service.download_official_datasets()
@@ -158,10 +177,10 @@ async def test_download_missing_fetches_both_sets_with_slugs(tmp_path):
     assert "загружены" in result.summary
     # лексикографически slugs_* идут раньше srd_* (l < r)
     assert sorted(client.calls) == ["slugs_2014", "slugs_2024", "srd_2014", "srd_2024"]
-    assert storage.load_content("srd51") is not None
-    assert storage.load_meta("srd51").source.value == "srd"
-    assert storage.load_spell_slugs("srd51") == ("fireball", "shield")
-    assert service.get_spell_slugs("srd52") == ("fire-bolt",)
+    assert storage.load_content("srd-2014") is not None
+    assert storage.load_meta("srd-2014").source.value == "srd"
+    assert storage.load_spell_slugs("srd-2014") == ("fireball", "shield")
+    assert service.get_spell_slugs("srd-2024") == ("fire-bolt",)
 
 
 async def test_download_present_set_never_contacts_network(tmp_path):
@@ -169,19 +188,19 @@ async def test_download_present_set_never_contacts_network(tmp_path):
     ни одного обращения к его адресам, файл не перезаписан."""
     storage, service, client = _service(tmp_path)
     await service.download_official_datasets()
-    first_bytes = storage.load_content("srd51")
+    first_bytes = storage.load_content("srd-2014")
     client.calls.clear()
     client.bodies["srd_2014"] = "ИНОЙ, СВЕРХНОВЫЙ"
     result = await service.download_official_datasets()
     assert client.calls == []
     assert result.all_present and result.ok
     assert "уже в хранилище" in result.summary
-    assert storage.load_content("srd51") == first_bytes
+    assert storage.load_content("srd-2014") == first_bytes
 
 
 async def test_download_partial_missing_touches_only_missing(tmp_path):
     storage, service, client = _service(tmp_path)
-    _srd_shelf(storage, "srd51", "SRD 5.1")
+    _srd_shelf(storage, "srd-2014", "SRD 5.1")
     result = await service.download_official_datasets()
     assert client.calls == ["srd_2024", "slugs_2024"]
     assert [i.status for i in result.items] == [
@@ -234,9 +253,9 @@ async def test_download_spell_list_failure_keeps_the_set(tmp_path):
     result = await service.download_official_datasets()
     assert result.ok
     assert "список слагов не загружен" in result.items[0].message
-    assert storage.load_content("srd51") is not None
-    assert storage.load_spell_slugs("srd51") is None
-    assert storage.load_spell_slugs("srd52") == ("fire-bolt",)
+    assert storage.load_content("srd-2014") is not None
+    assert storage.load_spell_slugs("srd-2014") is None
+    assert storage.load_spell_slugs("srd-2024") == ("fire-bolt",)
 
 
 # ── журнал выпусков SRD-запросов (fix-dnd-followups, задача 2.3; Д2) ─────────

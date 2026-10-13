@@ -77,11 +77,12 @@ def isolated_ui_theme_defaults(tmp_path, monkeypatch):
 
 
 #: The two official SRD shelf ids of the module library (the same constants
-#: the module exposes); the pre-seed below writes them with raw json so the
-#: kernel profile stays app.dd-free (spec ui-testing «профиль ядро»).
+#: the module exposes — the ids the official LSS files carry, design of the
+#: 2026-10-12 artefact move); the pre-seed below writes them with raw json so
+#: the kernel profile stays app.dd-free (spec ui-testing «профиль ядро»).
 _DD_SRD_SEED = {
-    "srd51": "SRD 5.1 (2014)",
-    "srd52": "SRD 5.2 (2024)",
+    "srd-2014": "SRD 5.1 (2014)",
+    "srd-2024": "SRD 5.2 (2024)",
 }
 
 

@@ -27,7 +27,7 @@ class MentionFieldHost(QObject):
     modifiedChanged = Signal()
     searchRequested = Signal(str)
     # (type key, stored id as text) — str keeps an external composite id
-    # ("srd51/Darkvision") intact end to end
+    # ("srd-2014/Darkvision") intact end to end
     mentionClicked = Signal(str, str)
 
     def __init__(

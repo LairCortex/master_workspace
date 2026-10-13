@@ -77,9 +77,9 @@ async def test_clean_document_stored_sidecar_stamped(uow, tmp_path):
     outcome = await importer.import_dataset(content)
 
     assert outcome.status is DatasetImportStatus.STORED
-    # Имя списка — текстовое title самого файла, а живая схема его не
-    # определяет (подпись датасета — name): честный fallback — id.
-    assert (outcome.dataset_id, outcome.title) == ("hb-set", "hb-set")
+    # Имя списка — текстовая подпись самого файла: живые датасеты LSS несут
+    # её в ``name`` (таблица артефактов доков, 2026-10-12), читатель берёт его.
+    assert (outcome.dataset_id, outcome.title) == ("hb-set", "Хоумбрю")
     assert not outcome.replaced
     assert outcome.report is not None and outcome.report.import_allowed
     assert storage.load_content("hb-set") == content
@@ -165,7 +165,7 @@ async def test_existing_id_asks_confirmation_then_replaces(uow, tmp_path):
 
     ask = await importer.import_dataset(second)
     assert ask.status is DatasetImportStatus.NEEDS_CONFIRMATION
-    assert ask.dataset_id == "hb-set" and ask.title == "hb-set"
+    assert ask.dataset_id == "hb-set" and ask.title == "Хоумбрю"
     assert ask.message  # русская фраза для экрана
     assert storage.load_content("hb-set") == first  # полка не тронута
 

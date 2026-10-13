@@ -84,7 +84,7 @@ PREVIEW_PINS_KEY = "preview_pins"
 DND_MODULE_KEY = "dnd_module"
 
 #: Key of the D&D datasets a game connects to (add-dnd-module-foundation,
-#: task 3.4, design Д4): a JSON array of dataset-id strings — ``["srd51",
+#: task 3.4, design Д4): a JSON array of dataset-id strings — ``["srd-2014",
 #: "my-pack"]`` — the ids pointing at the GLOBAL dataset storage
 #: (``~/.nri_manager/datasets/``), never at game rows: connecting a set
 #: writes only this row, disconnecting removes only the link. The key is

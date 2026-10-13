@@ -4,7 +4,7 @@ add-dnd-game-face (design Д4, spec mentions «Единая грамматика
 widens the id slot: the kernel era stored ``\\d+`` only — every text written
 before this change quotes digits for its five kernel types and one event key-
 word — and registered EXTERNAL types add string ids, composite «источник/запись»
-pairs included (``@[Тёмное зрение](feat:srd51/Darkvision)``). Which shape a
+pairs included (``@[Тёмное зрение](feat:srd-2014/Darkvision)``). Which shape a
 marker may carry is decided BY THE TYPE (``is_admissible_id``): kernel types
 stay digits-only — an external-shaped id under a kernel type never parses, so
 no old text is reinterpreted and no forged marker can impersonate a row — and

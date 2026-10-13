@@ -6,7 +6,7 @@ file name must obey, and the frozen outcome contracts the library service
 answers with. The file pair itself (``<id>.json`` + ``<id>.meta.json``) is
 the infrastructure's business; this module only names what the pair carries.
 
-The dataset identifier is the LSS reference namespace (``srd51:Darkvision``
+The dataset identifier is the LSS reference namespace (``srd-2014:Darkvision``
 -style prefixes): the storage file name is DERIVED from it, so the character
 set is validated before any path is built — a file name is never trusted to
 a foreign document (design Д4: «имя файла выводится из id файла после
@@ -18,11 +18,12 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 
-#: Long Story Short ships its SRD exports as datasets with these ids (the
-#: reference prefixes every LSS document uses); the library's auto-download
-#: and the storage's SRD protection key off them.
-SRD_2014_DATASET_ID = "srd51"
-SRD_2024_DATASET_ID = "srd52"
+#: The ids the official SRD export files carry in their own ``id`` field
+#: (the LSS reference prefixes every LSS document uses); the library's
+#: auto-download, its document-id gate and the union of the downloaded
+#: spell-slug lists key off them.
+SRD_2014_DATASET_ID = "srd-2014"
+SRD_2024_DATASET_ID = "srd-2024"
 
 #: The one dataset-id grammar the storage accepts as a file name: lowercase
 #: ASCII alphanumeric plus ``.``, ``-`` and ``_``, starting and ending with a
@@ -180,12 +181,15 @@ class OfficialDatasetsResult:
 
 
 def dataset_title_from_document(data: object, fallback: str) -> str:
-    """The title printed for a document: its own text ``title``, else the
-    fallback (the id / caption). Reading is forgiving on purpose — the title
-    only labels screens; whether the file is importable at all is the
-    validator's decision (group 4), not the reader's."""
+    """The title printed for a document: its own text ``name`` — the field
+    the LSS artefact files and the wizard-dataset example actually carry —
+    else the legacy ``title``, else the fallback (the id / caption). Reading
+    is forgiving on purpose — the title only labels screens; whether the file
+    is importable at all is the validator's decision (group 4), not the
+    reader's."""
     if isinstance(data, dict):
-        title = data.get("title")
-        if isinstance(title, str) and title.strip():
-            return title.strip()
+        for key in ("name", "title"):
+            title = data.get(key)
+            if isinstance(title, str) and title.strip():
+                return title.strip()
     return fallback

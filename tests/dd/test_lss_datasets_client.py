@@ -8,6 +8,8 @@ task 3.2; проверка — «тесты на httpx.MockTransport: успех
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -40,25 +42,34 @@ def _app_client(handler) -> AppHttpClient:
 
 def test_addresses_are_pinned_constants():
     """LSS меняет адреса — правится ровно это место (design Д6); тест держит
-    форму: база gdc.longstoryshort.app и ожидание сервисных спецификаций."""
-    assert client_module.LSS_DATASETS_BASE_URL == "https://gdc.longstoryshort.app/datasets"
-    assert SRD_2014_URL == "https://gdc.longstoryshort.app/datasets/srd51.json"
-    assert SRD_2024_URL == "https://gdc.longstoryshort.app/datasets/srd52.json"
-    assert SPELLS_2014_URL == "https://gdc.longstoryshort.app/datasets/spells-srd51.txt"
-    assert SPELLS_2024_URL == "https://gdc.longstoryshort.app/datasets/spells-srd52.txt"
+    форму таблицы артефактов из «Датасеты» доков LSS (2026-10-12: переезд
+    с gdc-поддомена и переименование файлов) и ожидание сервисных спецификаций."""
+    assert client_module.LSS_DATASETS_BASE_URL == "https://longstoryshort.app/datasets"
+    assert SRD_2014_URL == "https://longstoryshort.app/datasets/srd-2014.json"
+    assert SRD_2024_URL == "https://longstoryshort.app/datasets/srd-2024.json"
+    assert SPELLS_2014_URL == "https://longstoryshort.app/datasets/srd-spell-slugs-2014.json"
+    assert SPELLS_2024_URL == "https://longstoryshort.app/datasets/srd-spell-slugs-2024.json"
 
 
 # ── успех ────────────────────────────────────────────────────────────────────
+
+
+#: Живая форма публичных списков слагов: массив объектов (доки LSS, 2026-10-12).
+_SLUGS_BODY = (
+    '[{"slug": "fireball", "name": "Огненный шар", "level": 3},'
+    ' {"slug": "shield", "name": "Щит", "level": 1}]'
+)
 
 
 async def test_each_fetch_hits_its_constant_and_returns_body():
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(str(request.url))
-        if request.url.path.endswith(".json"):
-            return httpx.Response(200, text='{"id": "x"}')
-        return httpx.Response(200, text="fireball\n\nshield\n")
+        url = str(request.url)
+        seen.append(url)
+        if url in (SPELLS_2014_URL, SPELLS_2024_URL):
+            return httpx.Response(200, text=_SLUGS_BODY)
+        return httpx.Response(200, text='{"id": "x"}')
 
     client = _client(handler)
     assert await client.fetch_srd_2014() == '{"id": "x"}'
@@ -66,6 +77,46 @@ async def test_each_fetch_hits_its_constant_and_returns_body():
     assert await client.fetch_spell_slugs_2014() == ("fireball", "shield")
     assert await client.fetch_spell_slugs_2024() == ("fireball", "shield")
     assert seen == [SRD_2014_URL, SRD_2024_URL, SPELLS_2014_URL, SPELLS_2024_URL]
+
+
+@pytest.mark.parametrize(
+    ("body", "needle"),
+    [
+        ("это не json", "не JSON-список"),
+        ('{"slug": "x"}', "не JSON-массив"),
+    ],
+)
+async def test_slug_list_body_outside_the_contract_refuses_russian(body, needle):
+    """Не JSON и не массив — отказ русской строкой (DatasetsError): вызывающий
+    сервис сохраняет набор, а проверки слагов просто пропускаются (design Д5)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    with pytest.raises(DatasetsError) as caught:
+        await _client(handler).fetch_spell_slugs_2014()
+    assert needle in str(caught.value)
+
+
+async def test_slug_parser_keeps_only_usable_slugs():
+    """Массив живёт своей жизнью (доки LSS): у записей бывают поля besides
+    slug; запись без пригодного слага — шум, её в словаре проверок быть не должно."""
+    body = json.dumps(
+        [
+            {"slug": "aid", "name": "Подмога", "level": 2},
+            {"name": "запись без слага"},
+            {"slug": ""},
+            {"slug": 7},
+            "строка вместо объекта",
+            {"slug": "booming-blade", "level": 3},
+        ],
+        ensure_ascii=False,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    assert await _client(handler).fetch_spell_slugs_2024() == ("aid", "booming-blade")
 
 
 # ── ошибки: 4xx/5xx, сетевая, таймаут — ровно один запрос на каждую ─────────

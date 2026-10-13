@@ -17,23 +17,27 @@ The addresses are module constants — the one edit an LSS address change makes
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from app.infrastructure.http import AppHttpClient
 
 # ── the fixed addresses of the official exports (design Д6) ──────────────────
 
-#: Static dataset artefacts of the Long Story Short game-design compendium.
-LSS_DATASETS_BASE_URL = "https://gdc.longstoryshort.app/datasets"
+#: Static dataset artefacts of the Long Story Short game-design compendium
+#: (the artefact table of «Датасеты» in the LSS developer docs).
+LSS_DATASETS_BASE_URL = "https://longstoryshort.app/datasets"
 
-#: The 2014 SRD 5.1 export (dataset id ``srd51``).
-SRD_2014_URL = f"{LSS_DATASETS_BASE_URL}/srd51.json"
-#: The 2024 SRD 5.2 export (dataset id ``srd52``).
-SRD_2024_URL = f"{LSS_DATASETS_BASE_URL}/srd52.json"
-#: The public spell-slug lists the spell checks validate against; absence of
-#: a list just skips those checks (design Д5).
-SPELLS_2014_URL = f"{LSS_DATASETS_BASE_URL}/spells-srd51.txt"
-SPELLS_2024_URL = f"{LSS_DATASETS_BASE_URL}/spells-srd52.txt"
+#: The 2014 SRD 5.1 export (dataset id ``srd-2014``).
+SRD_2014_URL = f"{LSS_DATASETS_BASE_URL}/srd-2014.json"
+#: The 2024 SRD 5.2 export (dataset id ``srd-2024``).
+SRD_2024_URL = f"{LSS_DATASETS_BASE_URL}/srd-2024.json"
+#: The public spell-slug lists the spell checks validate against (JSON arrays
+#: of ``{"slug", "name", "level"}`` objects); absence of a list just skips
+#: those checks (design Д5).
+SPELLS_2014_URL = f"{LSS_DATASETS_BASE_URL}/srd-spell-slugs-2014.json"
+SPELLS_2024_URL = f"{LSS_DATASETS_BASE_URL}/srd-spell-slugs-2024.json"
 
 
 class DatasetsError(Exception):
@@ -88,11 +92,11 @@ class LssDatasetsClient:
         return await self._get(SRD_2024_URL)
 
     async def fetch_spell_slugs_2014(self) -> tuple[str, ...]:
-        """The 2014 SRD spell-slug list (plain text, one slug per line)."""
+        """The 2014 SRD spell-slug list (a JSON array of spell objects)."""
         return self._parse_slugs(await self._get(SPELLS_2014_URL))
 
     async def fetch_spell_slugs_2024(self) -> tuple[str, ...]:
-        """The 2024 SRD spell-slug list (plain text, one slug per line)."""
+        """The 2024 SRD spell-slug list (a JSON array of spell objects)."""
         return self._parse_slugs(await self._get(SPELLS_2024_URL))
 
     async def _get(self, url: str) -> str:
@@ -111,5 +115,19 @@ class LssDatasetsClient:
 
     @staticmethod
     def _parse_slugs(text: str) -> tuple[str, ...]:
-        """One slug per line; blank space around and between lines is noise."""
-        return tuple(line.strip() for line in text.splitlines() if line.strip())
+        """The public lists are JSON arrays of ``{"slug", "name", "level"}``
+        objects — the checks only ever need the slugs, so entry order is
+        kept and everything else in an entry is ignored. A body that is not
+        that shape refuses as ``DatasetsError`` — the best-effort caller
+        keeps the set on the shelf and lets the slug checks skip (design Д5)."""
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise DatasetsError(f"Сервер вернул не JSON-список слагов: {exc}") from exc
+        if not isinstance(data, list):
+            raise DatasetsError("Список слагов пришёл не JSON-массивом")
+        return tuple(
+            entry["slug"]
+            for entry in data
+            if isinstance(entry, dict) and isinstance(entry.get("slug"), str) and entry["slug"]
+        )

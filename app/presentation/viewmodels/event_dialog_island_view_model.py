@@ -159,7 +159,7 @@ class MentionEditProxy(QObject):
     mention_search_requested = Signal(str)
     # add-dnd-game-face (design Д4): mention ids are textual end to end —
     # kernel digits arrive as the string of the same number, an external
-    # composite id («srd51/Darkvision») survives the relay untouched. The
+    # composite id («srd-2014/Darkvision») survives the relay untouched. The
     # kernel converts back to int at the composition edge (main.py).
     mention_clicked = Signal(str, str)
 
