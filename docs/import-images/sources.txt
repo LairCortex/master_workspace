@@ -1,0 +1,83 @@
+Картинки для демо-файла импорта «Хроники Серого Круга».
+Источник — Wikimedia Commons; все файлы — общественное достояние или
+свободные лицензии. Полные условия — на странице описания каждого файла.
+
+blacksmith.jpg	File:Johann Hamza blacksmiths forge 1900.jpg
+	https://commons.wikimedia.org/wiki/File%3AJohann_Hamza_blacksmiths_forge_1900.jpg
+	лицензия: Public domain
+
+burnt-field.jpg	File:View over fields in a flat landscape - geograph.org.uk - 6443190.jpg
+	https://commons.wikimedia.org/wiki/File%3AView_over_fields_in_a_flat_landscape_-_geograph.org.uk_-_6443190.jpg
+	лицензия: CC BY-SA 2.0
+
+castle-lake.jpg	File:Wincenty Dmochowski - Ruins of the Castle on the Trakai Lake (Lake Galvė) - MNK II-a-118 - National Museum in Kraków.jpg
+	https://commons.wikimedia.org/wiki/File%3AWincenty_Dmochowski_-_Ruins_of_the_Castle_on_the_Trakai_Lake_%28Lake_Galv%C4%97%29_-_MNK_II-a-118_-_National_Museum_in_Krak%C3%B3w.jpg
+	лицензия: Public domain
+
+cave.jpg	File:Lower site on Ramgarh hill, Satmarhia, Ramgarh Caves, Vidisha district, Madhya Pradesh.jpg
+	https://commons.wikimedia.org/wiki/File%3ALower_site_on_Ramgarh_hill%2C_Satmarhia%2C_Ramgarh_Caves%2C_Vidisha_district%2C_Madhya_Pradesh.jpg
+	лицензия: CC0
+
+crown.jpg	File:Corona ferrea, Monza, Tesoro del Duomo.jpg
+	https://commons.wikimedia.org/wiki/File%3ACorona_ferrea%2C_Monza%2C_Tesoro_del_Duomo.jpg
+	лицензия: CC BY-SA 3.0
+
+fisherman.jpg	File:Bazille - Pêcheur à l'épervier.jpg
+	https://commons.wikimedia.org/wiki/File%3ABazille_-_P%C3%AAcheur_%C3%A0_l%27%C3%A9pervier.jpg
+	лицензия: Public domain
+
+fortress.jpg	File:20080413075DR Königstein (Sächsische Schweiz) Festung Appareille.jpg
+	https://commons.wikimedia.org/wiki/File:20080413075DR_K%C3%B6nigstein_(S%C3%A4chsische_Schweiz)_Festung_Appareille.jpg
+	лицензия: CC BY-SA 4.0
+
+king.jpg	File:Portrett av Frederik 5 i kroningsdrakt - Norsk Folkemuseum - NF.01227 - bilde 1 (cropped).jpg
+	https://commons.wikimedia.org/wiki/File:Portrett_av_Frederik_5_i_kroningsdrakt_-_Norsk_Folkemuseum_-_NF.01227_-_bilde_1_(cropped).jpg
+	лицензия: Public domain
+
+knight.jpg	File:Mattia Preti, Portrait of a Knight in Armour.jpg
+	https://commons.wikimedia.org/wiki/File:Mattia_Preti,_Portrait_of_a_Knight_in_Armour.jpg
+	лицензия: Public domain
+
+lake.jpg	File:Landscape with lake and mountains.jpg
+	https://commons.wikimedia.org/wiki/File:Landscape_with_lake_and_mountains.jpg
+	лицензия: Public domain
+
+lighthouse.jpg	File:Cape and Lighthouse of St. Theodore. (15536014985).jpg
+	https://commons.wikimedia.org/wiki/File:Cape_and_Lighthouse_of_St._Theodore._(15536014985).jpg
+	лицензия: No restrictions
+
+market.jpg	File:Eastern Market Scene - George Davidson - ABDAG003147.jpg
+	https://commons.wikimedia.org/wiki/File:Eastern_Market_Scene_-_George_Davidson_-_ABDAG003147.jpg
+	лицензия: Public domain
+
+meadow.jpg	File:Hans Thoma - Wiesenlandschaft - 9327 - Bavarian State Painting Collections.jpg
+	https://commons.wikimedia.org/wiki/File:Hans_Thoma_-_Wiesenlandschaft_-_9327_-_Bavarian_State_Painting_Collections.jpg
+	лицензия: Public domain
+
+merchant.jpg	File:André Derain Portrait du marchand Léopold Zborowski ca 1923 1924.jpg
+	https://commons.wikimedia.org/wiki/File:Andr%C3%A9_Derain_Portrait_du_marchand_L%C3%A9opold_Zborowski_ca_1923_1924.jpg
+	лицензия: Public domain
+
+monk.jpg	File:Palaeography (Quaritch) plate20.jpg
+	https://commons.wikimedia.org/wiki/File:Palaeography_(Quaritch)_plate20.jpg
+	лицензия: Public domain
+
+moor.jpg	File:Fritz Overbeck - Im Moor - 8335 - Bavarian State Painting Collections.jpg
+	https://commons.wikimedia.org/wiki/File:Fritz_Overbeck_-_Im_Moor_-_8335_-_Bavarian_State_Painting_Collections.jpg
+	лицензия: Public domain
+
+noblewoman.jpg	File:Lavinia Fontana - Ritratto di nobildonna (ca. 1580).jpgFXD.jpg
+	https://commons.wikimedia.org/wiki/File:Lavinia_Fontana_-_Ritratto_di_nobildonna_(ca._1580).jpgFXD.jpg
+	лицензия: Public domain
+
+prophet.jpg	File:Michelangelo - Delphic Sibyl.jpg
+	https://commons.wikimedia.org/wiki/File:Michelangelo_-_Delphic_Sibyl.jpg
+	лицензия: Public domain
+
+ships.jpg	File:Antonie Waldorp - Segelschiffe im Hafen.jpg
+	https://commons.wikimedia.org/wiki/File:Antonie_Waldorp_-_Segelschiffe_im_Hafen.jpg
+	лицензия: Public domain
+
+tournament.jpg	File:Wooden jousting targe.jpg
+	https://commons.wikimedia.org/wiki/File:Wooden_jousting_targe.jpg
+	лицензия: CC BY-SA 3.0
