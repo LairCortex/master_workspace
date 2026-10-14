@@ -47,6 +47,7 @@ from app.dd.infrastructure.db.dd_schema import ensure_dd_tables
 from app.dd.infrastructure.grimoire_storage import GrimoireStorage
 from app.dd.infrastructure.repositories.dd_character_repository import (
     DdCharacterRepository,
+    mechanics_from_row,
 )
 from app.domain.entity_registry import EntityType
 from app.infrastructure.db.models import CharacterModel, DescriptionModel
@@ -59,6 +60,7 @@ from app.infrastructure.repositories.character_repository import CharacterReposi
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "docs" / "qa" / "fixtures" / "dnd"
 CHARACTER_INITIAL = FIXTURES_DIR / "character-import-initial.json"
 CHARACTER_UPDATED = FIXTURES_DIR / "character-import-updated.json"
+CHARACTER_FULL = FIXTURES_DIR / "character-import-full.json"
 GRIMOIRE_SAMPLE = FIXTURES_DIR / "grimoire-foundry-sample.json"
 
 D1 = date(1300, 1, 1)
@@ -93,6 +95,11 @@ def _fixture_index() -> IndexSnapshot:
                     DatasetEntry("srd", "soldier", "Солдат набора", {}),
                     DatasetEntry("srd", "outlander", "Чужеземец набора", {}),
                 )
+            },
+            # dd-card-redesign task 6.1: «alert» подключён (живая пара+имя),
+            # «lucky» — нет (снимок имени из файла, Д7 для черты).
+            "feats": {
+                "srd": (DatasetEntry("srd", "alert", "Наблюдательность набора", {}),)
             },
         },
         slugs={},
@@ -177,11 +184,25 @@ async def test_initial_fixture_creates_a_character_with_everything_laid_out(
     )
 
     blocks = decode_text_blocks(ext.text_blocks)
-    # Структурный рендер человекочитаем (spec «Структура читается без LSS»).
-    assert blocks["Характеристики"] == (
-        "Сила: 17\nЛовкость: 12\nТелосложение: 15\nИнтеллект: 10\nМудрость: 11\nХаризма: 8"
-    )
-    assert blocks["Навыки"] == "- Атлетика\n- Восприятие"
+    # dd-card-redesign task 6.1: six whole values, boolean saves and
+    # proficiencies FIT the intake — they arrive as structured fields, not
+    # as blocks («значения стоят в структурированных полях карточки, а не
+    # только текстом»).
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores == {
+        "strength": 17,
+        "dexterity": 12,
+        "constitution": 15,
+        "intelligence": 10,
+        "wisdom": 11,
+        "charisma": 8,
+    }
+    assert mechanics.manual_saving_throws == frozenset({"strength", "constitution"})
+    assert mechanics.skill_proficiencies == frozenset({"athletics", "perception"})
+    assert "Характеристики" not in blocks and "Спасброски" not in blocks
+    assert "Навыки" not in blocks
+    # What did not fit still prints readable (spec « STRUCTURE читается без
+    # LSS»): coins and the converted formatted-editor block included.
     assert blocks["Монеты"] == "gp: 45\nsp: 12\ncp: 7"
     # Форматный документ блока «Черты» сконвертирован, формулы — нотацией.
     assert "Атаки в ближнем бою идут с бонусом [STR] + [PROF]." in blocks["Черты"]
@@ -257,7 +278,18 @@ async def test_updated_fixture_overwrites_fields_snapshot_and_keeps_sheet_id(
         "гильдия наёмников зовёт его Железным Топором."
     )
     assert "Боевое преимущество: урон добивания растёт с [DEX] + [PROF]." in blocks["Черты"]
-    assert blocks["Характеристики"].startswith("Сила: 18")
+    # Второй файл тоже ложится структурой: шесть значений, спасброски и
+    # владения — поля карточки, блоков этих семейств нет.
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores is not None and mechanics.scores["strength"] == 18
+    assert mechanics.manual_saving_throws == frozenset(
+        {"strength", "dexterity", "constitution"}
+    )
+    assert mechanics.skill_proficiencies == frozenset(
+        {"athletics", "intimidation", "perception"}
+    )
+    assert "Характеристики" not in blocks and "Спасброски" not in blocks
+    assert "Навыки" not in blocks
 
 
 # ── 5.2: grimoire-foundry-sample.json ───────────────────────────────────────
@@ -309,7 +341,7 @@ def test_grimoire_sample_fixture_reimport_walks_the_replacement_branch(tmp_path)
 def test_character_fixtures_are_standalone_bundle_documents():
     """Самодостаточность для живого выбора через файловый диалог: конверт
     читается как JSON-объект с гейтами формата, data — JSON-строка."""
-    for path in (CHARACTER_INITIAL, CHARACTER_UPDATED):
+    for path in (CHARACTER_INITIAL, CHARACTER_UPDATED, CHARACTER_FULL):
         envelope = json.loads(_read(path))
         assert envelope["jsonType"] == "character"
         assert envelope["version"] == "2"
@@ -317,3 +349,76 @@ def test_character_fixtures_are_standalone_bundle_documents():
         document = json.loads(envelope["data"])
         assert document["name"]
         assert document["info"]["charClass"]["id"]
+
+
+# ── dd-card-redesign 6.1: character-import-full.json (все разделы) ───────────
+
+
+async def test_full_fixture_lays_every_mechanics_family_structured(
+    uow, tmp_path
+):
+    """Фикстура «всё сразу»: каждое семейство механик ложится полем карточки,
+    его читаемый блок не рисуется, не-механические разделы печатаются как
+    прежде, неизвестный раздел приходит под исходным именем, сырой файл
+    цел побайтово (spec «Раскладывание полное», «Механики легли структурой»)."""
+    content = _read(CHARACTER_FULL)
+    service = await _make_service(uow, tmp_path)
+
+    outcome = await service.import_character(content)
+    assert outcome.status is CharacterImportStatus.CREATED
+    assert outcome.name == "Грог Полного Профиля"
+    codes = {issue.code for issue in outcome.report.issues}
+    assert codes == {CODE_CHAR_DEPRECATED_BONUSES, CODE_CHAR_SERVICE_KEYS}
+
+    ext = await _ext_row(uow.session, outcome.character_id)
+    assert ext.raw_document == content  # побайтово — источник правды цел
+    assert ext.level == 5
+
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores == {
+        "strength": 18,
+        "dexterity": 14,
+        "constitution": 16,
+        "intelligence": 10,
+        "wisdom": 12,
+        "charisma": 8,
+    }
+    assert mechanics.manual_saving_throws == frozenset({"strength", "constitution"})
+    assert mechanics.skill_proficiencies == frozenset(
+        {"athletics", "perception", "survival"}
+    )
+    assert mechanics.speed == 25
+    assert mechanics.alignment == "хаотично-добрый"
+    assert mechanics.spell_slots == {1: 4, 2: 3}
+
+    links = await DdCharacterRepository(uow.session).list_feat_links(
+        outcome.character_id
+    )
+    assert [(lnk.source_key, lnk.ref_id, lnk.snapshot_name) for lnk in links] == [
+        ("srd", "alert", "Наблюдательность набора"),  # живая запись — живое имя
+        ("", "lucky", "Везунчик"),  # записи нет — снимок из файла, Д7
+    ]
+
+    blocks = decode_text_blocks(ext.text_blocks)
+    for fitted in (
+        "Характеристики",
+        "Спасброски",
+        "Навыки",
+        "Ячейки заклинаний",
+        "Скорость",
+        "Мировоззрение",
+    ):
+        assert fitted not in blocks  # легшее структурой не дублируется текстом
+    assert blocks["Монеты"] == "gp: 120\nsp: 3"
+    assert "Атаки в ближнем бою идут с бонусом [STR] + [PROF]." in blocks["Черты"]
+    # Поля «Личности» — обычные именованные блоки, доехали как есть.
+    assert blocks["Внешность"] == "Плетёная борода с медными кольцами, шрам через бровь."
+    assert blocks["Предыстория персонажа"] == (
+        "Служил в городском ополчении, ушёл в вольные наёмники."
+    )
+    # Неизвестный раздел — блок с исходным именем (spec про молчание).
+    assert blocks["hobby"] == "Режет фигурки из мыльного камня."
+    # Слаг-список раздела spells — не дверь импорта: привязок не выросло.
+    assert await DdCharacterRepository(uow.session).list_spell_links(
+        outcome.character_id
+    ) == []

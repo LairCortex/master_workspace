@@ -60,17 +60,18 @@ FILE_DIALOG_SITES = frozenset({
     ("app/presentation/views/character_sheet/editor_dialog.py", "_pick_image"),
     # add-dnd-module-foundation task 5.1: файл-импорт датасета на листе модуля
     ("app/dd/presentation/datasets_sheet.py", "_on_import_clicked"),
-    # add-dnd-game-face task 9.4: два файла-входа импорта персонажа —
-    # создание из меню модуля и «Перезаписать…»/«Сохранить исходный…» на табе
+    # add-dnd-game-face task 9.4: файл-вход импорта персонажа из меню модуля
+    # (его «Перезаписать…»/«Сохранить исходный…» переехали на «Основное» ниже)
     ("app/dd/module.py", "_on_character_import_requested"),
-    ("app/dd/presentation/character_tab_frames.py", "_on_overwrite_clicked"),
-    ("app/dd/presentation/character_tab_frames.py", "_on_save_raw_clicked"),
-    # add-dnd-lss-generation task 5.3: «Экспорт для LSS…» — same non-native door.
-    ("app/dd/presentation/character_tab_frames.py", "_on_export_clicked"),
     # add-dnd-game-face task 10.1: выбор картинки на карточке монстра
     ("app/dd/presentation/monster_card_sheet.py", "_on_pick_image"),
     # add-dnd-game-face task 4.5: импорт файла гримуара на листе «Гримуары…»
     ("app/dd/presentation/grimoires_sheet.py", "_on_import_clicked"),
+    # dd-card-redesign task 4.3: те же три файла-хода переехали на блочный
+    # канал «Основного» — same non-native doors, restated per design Д8.
+    ("app/dd/presentation/character_main_blocks.py", "_door_overwrite"),
+    ("app/dd/presentation/character_main_blocks.py", "_door_save_raw"),
+    ("app/dd/presentation/character_main_blocks.py", "_door_export"),
 })
 FILE_DIALOG_STATICS = frozenset({
     "getOpenFileName",

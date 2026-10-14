@@ -171,9 +171,34 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
         if self._root is not None:
             self._root.setProperty("currentTheme", self._theme.theme)
 
+    def _request_shielded(self) -> bool:
+        """True while a nested system dialog runs above this screen.
+
+        Live-audit 2026-10-13 finding 4: an accessibility press bypasses
+        modality and reached a game row under the «Новая игра» picker — the
+        row activation opened the game INSIDE the nested ``exec()`` loop, the
+        host closed, and the island release ran under the still-live QML
+        handler («Object destroyed while one of its QML signal handlers is in
+        progress»). A real mouse can never reach the screen while a picker is
+        up, so a synthetic press in that state answers as the no-op the
+        modality already promises. A modal that IS this screen's own frame
+        (the first-run ``exec()`` of the chooser) is not a nesting.
+        """
+        # No None-guard on the instance: these handlers run inside a live
+        # application (the same posture as the mixin's _close_is_nested).
+        app = QApplication.instance()
+        top = self.window()
+        modal = app.activeModalWidget()
+        if modal is not None and modal is not top:
+            return True
+        popup = app.activePopupWidget()
+        return popup is not None and popup is not top
+
     # ---- controller handlers (native popups + sync VM calls) ----
 
     def _on_theme_toggle(self) -> None:
+        if self._request_shielded():
+            return  # finding 4: no island request under a nested dialog
         self._theme.toggle()  # no-op with invalid tokens (D7); palette re-syncs
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt API
@@ -192,9 +217,13 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
             self._on_open_requested(path)
 
     def _on_open_requested(self, path: str) -> None:
+        if self._request_shielded():
+            return  # finding 4: a synthetic press under a nested dialog no-ops
         self.gameSelected.emit(path)
 
     def _on_create_requested(self, _name: str) -> None:
+        if self._request_shielded():
+            return  # finding 4: a second nested picker must not stack
         # Task 2.6: the system picker runs FIRST (spec «…перед диалогом
         # названия игра SHALL предлагать выбрать систему…») — its cancel is
         # the whole cancel, the name dialog is never reached. With the
@@ -237,6 +266,8 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
         return system == DD_SYSTEM_CHOICES[DD_SYSTEM_DND_INDEX]
 
     def _on_delete_requested(self, index: int) -> None:
+        if self._request_shielded():
+            return  # finding 4: a second nested confirm must not stack
         game = self.vm.games[index]
         reply = QMessageBox.question(
             self,
@@ -249,6 +280,8 @@ class GameLauncherContent(IslandDialogMixin, QWidget):
             self.vm.remove(game["path"])  # removes + refreshes; launcher stays open
 
     def _on_import_requested(self, _fileName: str) -> None:
+        if self._request_shielded():
+            return  # finding 4: a second nested picker must not stack
         path, _ = QFileDialog.getOpenFileName(
             self, "Импорт игры", "",
             "NRI архив (*.nri);;Все файлы (*)",

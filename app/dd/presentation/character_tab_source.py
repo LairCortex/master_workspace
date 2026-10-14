@@ -1,17 +1,20 @@
-"""The module's character-tab source (add-dnd-game-face tasks 8.2/8.3).
+"""The module's character-tab source (add-dnd-game-face tasks 8.2/8.3; tabs
+and their lineup reworked by dd-card-redesign task 5.5).
 
 A second :class:`ExternalEntitySource` beside the reference source, this one
-declaring NO types of its own — its whole contribution is the two additional
-tabs the character card grows while the module is attached: «D&D» (the five
-reference pickers, level, LSS sheet id) and «Заклинания» (spell bindings).
-Splitting it from the reference source keeps the two visibility rules apart,
-which is exactly what the protocol means by «visible is the source's own
-condition»: the reference records hide behind the game's toggle, the
-character tabs live with the MODULE (spec entity-card-tabs «Таб модуля живёт
-с модулем»; spec dnd-character-extension «выключение модуля SHALL гасить
-табы»). The façade propagates attach/detach through the duck door
-``set_attached`` (:meth:`app.dd.module.DndModule._set_sources_attached`);
-before the first attach a composed-but-unattached source is honestly dark.
+declaring NO types of its own — its whole contribution to the character card
+are the three additional tabs the card grows while the module is attached
+(«Способности», «Личность», «Заклинания») and the declarative «Основное»
+content (:meth:`module_blocks`, task 4.3 — the reference lists, level, the
+mechanics table and the LSS doors ride the kernel's own scroll). Splitting
+it from the reference source keeps the two visibility rules apart, which is
+exactly what the protocol means by «visible is the source's own condition»:
+the reference records hide behind the game's toggle, the character tabs live
+with the MODULE (spec entity-card-tabs «Таб модуля живёт с модулем»; spec
+dnd-character-extension «выключение модуля SHALL гасить табы»). The façade
+propagates attach/detach through the duck door ``set_attached``
+(:meth:`app.dd.module.DndModule._set_sources_attached`); before the first
+attach a composed-but-unattached source is honestly dark.
 
 The character is a KERNEL entity — its id is the numeric row id projected to
 the protocol's string. That projection is this source's whole use of the
@@ -35,18 +38,30 @@ if TYPE_CHECKING:
     )
     from app.dd.application.grimoire_index_service import GrimoireIndexService
     from app.domain.entity_registry import ExternalTypeDescriptor
-    from app.presentation.modules.protocol import CardTabSpec, CardTabTarget
+    from app.presentation.modules.protocol import (
+        CardTabSpec,
+        CardTabTarget,
+        ModuleBlockFrame,
+    )
 
-#: The two tab keys are FOREVER literals (the host keys its widget dict by
-#: them); the captions are the spec's («D&D», «Заклинания»).
-CHARACTER_TAB_KEY = "dnd.sheet"
-CHARACTER_TAB_TITLE = "D&D"
+#: The three module tab keys are FOREVER literals (the host keys its widget
+#: dict by them); the captions are the spec's («Способности», «Личность»,
+#: «Заклинания» — dd-card-redesign task 5.5, spec dnd-character-extension
+#: «Вкладки модуля на карточке персонажа»). The old «D&D» tab key retired
+#: with the tab: its lists and doors live on the kernel «Основное» screen
+#: (the module_blocks door above), its previous-history picker on
+#: «Личность».
+FEATS_TAB_KEY = "dnd.feats"
+FEATS_TAB_TITLE = "Способности"
+PERSONALITY_TAB_KEY = "dnd.personality"
+PERSONALITY_TAB_TITLE = "Личность"
 SPELLS_TAB_KEY = "dnd.spells"
 SPELLS_TAB_TITLE = "Заклинания"
 
 
 class DndCharacterTabSource:
-    """The «D&D» and «Заклинания» tabs of every character card."""
+    """The «Способности», «Личность» and «Заклинания» tabs of every
+    character card, plus the module's declarative «Основное» content."""
 
     def __init__(
         self,
@@ -143,40 +158,158 @@ class DndCharacterTabSource:
         return {}
 
     def card_tabs(self, target: "CardTabTarget") -> "tuple[CardTabSpec, ...]":
-        """The two tabs, for a character only, and only while the module
-        lives (spec: «после выключения модуля карточка того же объекта
-        открывается без него»)."""
+        """The three module tabs, for a character only, and only while the
+        module lives (spec: «после выключения модуля карточка того же объекта
+        открывается без него»). With the kernel's own «Основное» head this
+        is the spec's four-tab lineup (spec dnd-character-extension «Вкладки
+        модуля на карточке персонажа»).
+
+        A FRESH character (the empty id) gets the same lineup: the tabs open
+        with their sections empty and every write refuses until the card is
+        saved once (spec «Новая карточка с пустыми разделами»); the frames
+        read ``None`` as exactly that state."""
         from app.presentation.modules.protocol import CardTabSpec
 
         if not self._attached or target.key != EntityType.CHARACTER.value:
             return ()
         return (
-            CardTabSpec(CHARACTER_TAB_KEY, CHARACTER_TAB_TITLE, self._build_character_tab),
+            CardTabSpec(FEATS_TAB_KEY, FEATS_TAB_TITLE, self._build_feats_tab),
+            CardTabSpec(
+                PERSONALITY_TAB_KEY, PERSONALITY_TAB_TITLE, self._build_personality_tab
+            ),
             CardTabSpec(SPELLS_TAB_KEY, SPELLS_TAB_TITLE, self._build_spells_tab),
+        )
+
+    async def on_entity_created(self, key: str, source_id: str) -> None:
+        """The connector's creation door (dd-card-redesign, checkpoint-2
+        audit; spec dnd-character-extension «Новая карточка с пустыми
+        разделами» — «сохранение создаёт персонажа и расширение»): the new
+        character row gains its extension alongside the kernel creation,
+        through the service's idempotent upsert. Foreign keys and a detached
+        module answer nothing; a refused write raises — the connector puts
+        it in front of the user, the half-done save is never a silence."""
+        if not self._attached or key != EntityType.CHARACTER.value:
+            return
+        await self._service.ensure_ext(int(source_id))
+
+    def module_blocks(self, target: "CardTabTarget") -> "ModuleBlockFrame":
+        """The declarative «Основное» content of a character card
+        (dd-card-redesign task 4.3, design Д2; spec dnd-character-mechanics
+        «Ядреные тексты персонажа при модуле скрыты»).
+
+        * not attached, or not a character card → the honest empty frame
+          (spec «при выключении модуля скрытые поля SHALL снова появиться» —
+          detaching re-opens the card through the same door);
+        * a FRESH character (empty id) → hidden-fields only: the kernel
+          texts are the module's to hide even before the row exists, while
+          no block can address a record that has no id yet;
+        * a stored character → the hidden-fields frame plus the factory the
+          host turns into the controller; the load and every painted value
+          arrive through the controller's first republish (the door itself
+          is sync and reads nothing)."""
+        from app.presentation.modules.protocol import ModuleBlockFrame
+
+        hidden = ("characteristics", "backstory")
+        if not self._attached or target.key != EntityType.CHARACTER.value:
+            return ModuleBlockFrame()
+        if target.source_id == "":
+            return ModuleBlockFrame(hidden_fields=hidden)
+        character_id = self._character_id(target.source_id)
+
+        def factory(wiring: object, dialog: object, republish):
+            from app.dd.presentation.character_main_blocks import (
+                CharacterMainBlockController,
+            )
+
+            return CharacterMainBlockController(
+                character_id=character_id,
+                service=self._service,
+                dataset_index=self._index,
+                record_labels=self._record_labels,
+                run_locked=_require_run_locked(wiring),
+                dialog=dialog,
+                republish=republish,
+                import_service=self._character_import,
+                document_builder=self._character_document,
+                generation_open=self._generation_open,
+                generation_deps=self._generation_deps,
+            )
+
+        return ModuleBlockFrame(hidden_fields=hidden, handler_factory=factory)
+
+    async def module_sections(self, key: str, source_id: str) -> tuple:
+        """The character's read-only mirror for the preview column
+        (dd-card-redesign task 7.1, design Д5; spec entity-preview «Секции
+        модуля зеркалят карточку в предпросмотре»).
+
+        Unlike the card's sync doors this one READS — the mirror is the same
+        stored face the card's blocks print, so the kernel bridge accepts an
+        awaitable here (the protocol docstring's task-7.1 posture) and awaits
+        it inside its session-locked preview task. Dark source, foreign
+        target or a non-whole id answer the empty tuple (the kernel paints
+        kernel fields only); the load itself rides the bridge's tolerance —
+        a raising read is the source's silence there, journalled there.
+        The hidden kernel texts stay the sync ``module_blocks`` answer; this
+        door only adds sections."""
+        if not self._attached or key != EntityType.CHARACTER.value:
+            return ()
+        character_id = int(source_id)  # non-whole raises → the bridge skips
+        # Sequential reads, one session at a time (the frames' posture: the
+        # shared AsyncSession processes a single operation; the dataset
+        # snapshot is last so every row read already rode the same frame).
+        ext = await self._service.get_ext(character_id)
+        mech = await self._service.get_mechanics(character_id)
+        feats = await self._service.get_feat_links(character_id)
+        spells = await self._service.get_spell_links(character_id)
+        blocks = await self._service.get_text_blocks(character_id)
+        snap = await self._index.snapshot()
+        from app.dd.presentation.character_preview_sections import (
+            build_character_sections,
+        )
+
+        return build_character_sections(
+            ext=ext,
+            mech=mech,
+            feats=feats,
+            spells=spells,
+            blocks=blocks,
+            snap=snap,
+            record_labels=self._record_labels,
         )
 
     # ── the tab factories (protocol CardTabSpec.factory: (wiring, id)) ───────
 
-    def _character_id(self, source_id: str) -> int:
-        """The kernel row id behind the protocol string; a non-whole id
-        raises — the host catches, journals and skips the tab (its tolerant
-        door), which is the right verdict for a target this source cannot
-        address."""
+    def _character_id(self, source_id: str) -> int | None:
+        """The kernel row id behind the protocol string; the empty id (a
+        fresh card) reads ``None`` — the frames' unsaved state (empty
+        sections, refusal on write). A non-whole id raises — the host
+        catches, journals and skips the tab (its tolerant door), which is
+        the right verdict for a target this source cannot address."""
+        if source_id == "":
+            return None
         return int(source_id)
 
-    def _build_character_tab(self, wiring: object, source_id: str):
-        from app.dd.presentation.character_tab_frames import DndCharacterTabFrame
+    def _build_feats_tab(self, wiring: object, source_id: str):
+        from app.dd.presentation.character_feats_frame import DndFeatsTabFrame
 
-        return DndCharacterTabFrame(
+        return DndFeatsTabFrame(
+            character_id=self._character_id(source_id),
+            service=self._service,
+            dataset_index=self._index,
+            run_locked=_require_run_locked(wiring),
+        )
+
+    def _build_personality_tab(self, wiring: object, source_id: str):
+        from app.dd.presentation.character_personality_frame import (
+            DndPersonalityTabFrame,
+        )
+
+        return DndPersonalityTabFrame(
             character_id=self._character_id(source_id),
             service=self._service,
             dataset_index=self._index,
             record_labels=self._record_labels,
             run_locked=_require_run_locked(wiring),
-            import_service=self._character_import,
-            document_builder=self._character_document,
-            generation_open=self._generation_open,
-            generation_deps=self._generation_deps,
         )
 
     def _build_spells_tab(self, wiring: object, source_id: str):

@@ -1,5 +1,5 @@
 """Accessibility pins for the card grouping tabs (add-dnd-game-face task 12.1,
-spec entity-card-tabs «Доступность без координат»).
+dd-card-redesign task 3, spec entity-card-tabs «Доступность без координат»).
 
 The strips in EventDialogRoot/EntityCardRoot are bars of stock
 ``ThemeTabButton`` (TabButton): the role reaches the tree as PageTab, the
@@ -9,28 +9,24 @@ re-annotation half is guarded source-side by
 test_qml_accessibility_conventions.py over the whole QML corpus. What this
 file pins is the offscreen-pinnable half, exactly the NRI-0017 F4 pattern:
 ONE ``actionInterface().doAction("Press")`` on each tab is one mouse click —
-the vm strip follows, the visible page follows, and the module tail of
-group 7.2 (the CardTabHost tabs) walks the very same channel: Press on the
-module tab seats its overlay widget over the body.
+the vm strip follows, the visible page follows, and the module tail of the
+host (the CardTabHost tabs) walks the very same channel: Press on the module
+tab seats its overlay widget over the body. dd-card-redesign Д1 adds the
+posture around it: the kernel alone keeps the strip ASLEEP (hidden, the card
+is the single screen), the guest tab wakes it, and the whole strip contract
+above then walks two entries — «Основное» plus the module tail.
 """
 from __future__ import annotations
 
 from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import QApplication, QWidget
 
-from app.presentation.card_tab_groups import (
-    GROUP_OVERVIEW,
-    GROUP_RELATIONS,
-    GROUP_TEXTS,
-)
+from app.presentation.card_tab_groups import GROUP_OVERVIEW
 from app.presentation.card_tab_host import CardTabHost
 from app.presentation.modules.protocol import CardTabSpec
 from app.presentation.views.entity_card_dialog import EntityCardDialog
 from app.presentation.views.event_dialog import EventDialog
 from tests.presentation.qml_helpers import find_item, walk_items
-
-GROUP_KEYS = (GROUP_OVERVIEW, GROUP_TEXTS, GROUP_RELATIONS)
-GROUP_TITLES = ("Обзор", "Тексты", "Связи")
 
 
 def accessible_of(item):
@@ -83,32 +79,52 @@ def _strip_case(qtbot, dialog, strip_name: str, tab_prefix: str, titles, keys):
     assert dialog.vm.active_group_key() == keys[0]
 
 
+def test_kernel_alone_keeps_the_strip_asleep(qtbot):
+    # Д1 «табы приносит модуль»: with no guest the strip is hidden, its
+    # single kernel entry sits in the tree unnamed-yet-contradicting (the
+    # штатно slot), and the card answers the single screen.
+    for dialog, strip in (
+        (EventDialog(None), "eventGroupTabs"),
+        (EntityCardDialog(None, "character"), "entityGroupTabs"),
+    ):
+        qtbot.addWidget(dialog)
+        tabs = strip_tabs(dialog.quick, strip)
+        assert [tab.property("text") for tab in tabs] == ["Основное"]
+        assert find_item(dialog.quick, strip).property("visible") is False
+        assert dialog.vm.active_group_key() == GROUP_OVERVIEW
+
+
 def test_event_dialog_group_tabs_answer_page_tabs_and_press_walks_the_strip(
     qtbot,
 ):
     dialog = EventDialog(None)
     qtbot.addWidget(dialog)
-    _strip_case(
-        qtbot, dialog, "eventGroupTabs", "eventGroupTab_", GROUP_TITLES, GROUP_KEYS
-    )
-
-
-def test_entity_card_group_tabs_press_walks_trio_and_pair(qtbot):
-    card = EntityCardDialog(None, "character")
-    qtbot.addWidget(card)
-    _strip_case(
-        qtbot, card, "entityGroupTabs", "entityGroupTab_", GROUP_TITLES, GROUP_KEYS
-    )
-    # The relation-less type: the pair answers the same contract.
-    rating = EntityCardDialog(None, "rating")
-    qtbot.addWidget(rating)
+    dialog.vm.set_external_groups([{"key": "dnd.sheet", "title": "D&D"}])
+    QApplication.processEvents()
+    assert find_item(dialog.quick, "eventGroupTabs").property("visible") is True
     _strip_case(
         qtbot,
-        rating,
+        dialog,
+        "eventGroupTabs",
+        "eventGroupTab_",
+        ("Основное", "D&D"),
+        (GROUP_OVERVIEW, "dnd.sheet"),
+    )
+
+
+def test_entity_card_group_tabs_press_walks_the_woken_strip(qtbot):
+    card = EntityCardDialog(None, "character")
+    qtbot.addWidget(card)
+    card.vm.set_external_groups([{"key": "dnd.sheet", "title": "D&D"}])
+    QApplication.processEvents()
+    assert find_item(card.quick, "entityGroupTabs").property("visible") is True
+    _strip_case(
+        qtbot,
+        card,
         "entityGroupTabs",
         "entityGroupTab_",
-        ("Обзор", "Тексты"),
-        (GROUP_OVERVIEW, GROUP_TEXTS),
+        ("Основное", "D&D"),
+        (GROUP_OVERVIEW, "dnd.sheet"),
     )
 
 
@@ -139,8 +155,8 @@ def test_module_tab_is_addressable_and_press_seats_its_widget(qtbot):
     QApplication.processEvents()
 
     tabs = strip_tabs(dialog.quick, "eventGroupTabs")
-    assert [tab.property("text") for tab in tabs] == [*GROUP_TITLES, "D&D"]
-    module_tab = tabs[3]
+    assert [tab.property("text") for tab in tabs] == ["Основное", "D&D"]
+    module_tab = tabs[1]
     assert module_tab.objectName() == "eventGroupTab_dnd.sheet"
     assert accessible_of(module_tab).role() == QAccessible.Role.PageTab
 
@@ -151,8 +167,8 @@ def test_module_tab_is_addressable_and_press_seats_its_widget(qtbot):
     assert widget.isVisible() is True
     # Back through the tree: the overlay steps aside again, the kernel tab
     # stays where the reader put it.
-    press_tab(tabs[1])
-    assert dialog.vm.active_group_key() == GROUP_TEXTS
+    press_tab(tabs[0])
+    assert dialog.vm.active_group_key() == GROUP_OVERVIEW
     assert widget.isVisible() is False
     host.release()
     assert dialog.findChildren(_TabWidget) == []

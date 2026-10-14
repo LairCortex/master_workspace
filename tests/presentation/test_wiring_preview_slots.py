@@ -41,6 +41,21 @@ class _EntityService:
         return self.rows.get(entity_id)
 
 
+class _Event(_Entity):
+    """Event duck: same id/name face the slot cache and the frame recorder
+    read; the real ``EventModel`` adds the relation lists the card renders."""
+
+
+class _EventService:
+    """Event-service duck with the one door the preview loader uses."""
+
+    def __init__(self, rows: dict[int, _Event]) -> None:
+        self.rows = rows
+
+    async def get_event(self, event_id: int):
+        return self.rows.get(event_id)
+
+
 class _PinsService:
     """Storage spy with the real service's get/save face."""
 
@@ -58,7 +73,8 @@ class _PinsService:
 class _Frames(list):
     """Records the frames the facade is handed as (type, id) pairs."""
 
-    def show_slots(self, pins, live) -> None:
+    def show_slots(self, pins, live, mirror=None) -> None:
+        self.mirrors = getattr(self, "mirrors", []) + [mirror]
         self.append(
             (
                 [(t, entity.id) for t, entity in pins],
@@ -83,9 +99,12 @@ class _DetailPanel:
 def _make_wiring(
     pins_service: _PinsService | None = None,
     rows: dict[int, _Entity] | None = None,
+    event_rows: dict[int, _Event] | None = None,
 ) -> ApplicationWiring:
     """The connector with exactly what the preview-slot paths touch — the
-    same duck construction the sheet-stack wiring tests use."""
+    same duck construction the sheet-stack wiring tests use. ``event_rows``
+    stands for the composition root's real event service (None keeps the
+    unit-built connector's event-less posture)."""
     entity_service = _EntityService(rows or {})
     app = SimpleNamespace(
         _image_store=None,
@@ -99,7 +118,8 @@ def _make_wiring(
             entity_preview=_Frames(),
             detail_panel=_DetailPanel(),
         ),
-        None, None, None, None, None,
+        None, None, None, None,
+        _EventService(event_rows) if event_rows is not None else None,
         SimpleNamespace(lock=asyncio.Lock()),
         preview_pins_service=pins_service,
     )
@@ -109,17 +129,48 @@ def _make_wiring(
 
 
 async def test_restore_loads_only_resolvable_pairs_and_never_rewrites():
-    service = _PinsService([("character", 1), ("character", 99), ("event", 1)])
+    service = _PinsService([("character", 1), ("character", 99), ("ghost", 1)])
     wiring = _make_wiring(service, rows={1: _Entity(1)})
 
     await wiring.restore_preview_pins()
 
     # The vanished row and the unknown type dropped silently, order kept;
     # storage stays byte-identical — no background repair write (Д3).
+    # (The dropped unknown key used to be ``("event", 1)``: since the
+    # dd-card-redesign audit fix an event resolves through the connector's
+    # event service — pinned by the two tests below.)
     assert wiring._preview_pins == [("character", 1)]
     assert service.saves == []
     # The frame for the restored column: pins with the loaded row, no live.
     assert list(wiring._window.entity_preview) == [([("character", 1)], None)]
+
+
+async def test_restore_seats_event_pairs_through_the_event_loader():
+    # dd-card-redesign audit fix (spec preview-pins «числовой — для сущностей
+    # ядра» + entity-preview «Событие показывает встречу»): a stored event
+    # pin is a resolvable kernel pair — it restores like any entity.
+    service = _PinsService([("event", 5), ("event", 9)])
+    wiring = _make_wiring(service, event_rows={5: _Event(5, "Полоса")})
+
+    await wiring.restore_preview_pins()
+
+    assert wiring._preview_pins == [("event", 5)]
+    assert service.saves == []
+    assert list(wiring._window.entity_preview) == [([("event", 5)], None)]
+
+
+async def test_restore_drops_event_pair_without_the_event_service():
+    # The unit-built connector's event-less posture stays honest: a pair the
+    # connector cannot load is a silent drop, the same vanished-row rule —
+    # storage is still never rewritten behind the user's back.
+    service = _PinsService([("event", 5)])
+    wiring = _make_wiring(service)
+
+    await wiring.restore_preview_pins()
+
+    assert wiring._preview_pins == []
+    assert service.saves == []
+    assert list(wiring._window.entity_preview) == [([], None)]
 
 
 async def test_restore_without_the_storage_face_is_a_no_op():
@@ -265,7 +316,9 @@ class _ExtFrames(list):
     """The same frame recorder, lenient to an external row (protocol Д3
     cards carry a string source_id on the pair, no int id on the record)."""
 
-    def show_slots(self, pins, live) -> None:
+    def show_slots(self, pins, live, mirror=None) -> None:
+        self.mirrors = getattr(self, "mirrors", []) + [mirror]
+
         def label(record):
             # kernel rows stamp with their int id, protocol cards with name
             return getattr(record, "id", None) or getattr(record, "name", None)
@@ -501,3 +554,306 @@ async def test_restore_drops_unresolvable_external_pairs_silently():
     assert wiring._preview_pins == []
     stored_pins, live = frames[-1]
     assert stored_pins == [] and live is None
+
+
+# ── dd-card-redesign task 7.1: the module mirror bridge ──────────────────────
+
+
+from app.presentation.modules.protocol import ModuleBlockFrame, ModuleSection  # noqa: E402
+
+
+def _section(title: str) -> ModuleSection:
+    return ModuleSection(title=title, lines=("строка",))
+
+
+class _MirrorSource:
+    """A duck external source whose preview doors answer; records every ask
+    so the tests can watch the id projection and the tolerance posture."""
+
+    def __init__(
+        self,
+        *,
+        key: str = "character",
+        sections=(),
+        awaitable: bool = False,
+        hidden: tuple[str, ...] = (),
+        raise_sections: bool = False,
+        visible: bool = True,
+    ) -> None:
+        self.key = key
+        self.sections = tuple(sections)
+        self.awaitable = awaitable
+        self.hidden = hidden
+        self.raise_sections = raise_sections
+        self._visible = visible
+        self.asks: list[tuple[str, str]] = []
+
+    async def warm(self) -> None:
+        """Protocol task 6.2: nothing to warm here."""
+
+    @property
+    def visible(self) -> bool:
+        return self._visible
+
+    @property
+    def type_descriptors(self):
+        return ()
+
+    def module_blocks(self, target) -> ModuleBlockFrame:
+        return ModuleBlockFrame(hidden_fields=self.hidden)
+
+    def module_sections(self, key: str, source_id: str):
+        self.asks.append((key, source_id))
+        if self.raise_sections:
+            raise RuntimeError("диск отказал")
+        if key != self.key:
+            return ()
+        if self.awaitable:
+
+            async def answer():
+                return self.sections
+
+            return answer()
+        return self.sections
+
+
+class _DoorlessSource:
+    """A source that never learned the preview doors (the reference source's
+    shape): NEITHER attribute exists, the bridge must getattr past it
+    without a word."""
+
+    @property
+    def visible(self) -> bool:
+        return True
+
+    @property
+    def type_descriptors(self):
+        return ()
+
+    async def warm(self) -> None:
+        return None
+
+
+def _make_mirror_wiring(sources, rows=None, pins_service=None) -> ApplicationWiring:
+    wiring = _make_wiring(pins_service, rows or {1: _Entity(1), 2: _Entity(2)})
+    wiring.set_external_sources(sources)
+    return wiring
+
+
+async def test_live_seat_reads_mirror_and_frames_it_onto_the_pair():
+    """Task 7.1 (design Д5): the new live seat reads the mirror through the
+    doors — the id projected to the protocol string, hidden fields merged
+    from the card's blocks door — and the pushed frame carries it keyed by
+    the kernel pair the slot identity speaks."""
+    source = _MirrorSource(sections=(_section("Происхождение"),), hidden=("characteristics",))
+    wiring = _make_mirror_wiring([source], rows={1: _Entity(1)})
+
+    assert await wiring._show_in_preview("character", 1) is True
+
+    assert source.asks == [("character", "1")]
+    assert wiring._preview_mirror == {
+        ("character", 1): ((_section("Происхождение"),), ("characteristics",))
+    }
+    assert wiring._window.entity_preview.mirrors[-1] == {
+        ("character", 1): ((_section("Происхождение"),), ("characteristics",))
+    }
+
+
+async def test_bridge_awaits_an_async_door_and_skips_a_doorless_source():
+    """The protocol's task-7.1 posture: an awaitable answer is awaited in
+    the same task; a source that implements neither door is passed over
+    without a word (the reference source's shape)."""
+    async_source = _MirrorSource(
+        key="event", sections=(_section("Встреча"),), awaitable=True
+    )
+    silent = _DoorlessSource()
+    wiring = _make_mirror_wiring([async_source, silent])
+
+    await wiring._refresh_preview_mirror(("event", 7))
+
+    assert async_source.asks == [("event", "7")]
+    assert wiring._preview_mirror == {("event", 7): ((_section("Встреча"),), ())}
+
+
+async def test_a_failing_door_is_journalled_silence_not_a_lost_frame():
+    """One source's read failure never eats the frame: the bridge journals,
+    the pair rides without sections (the kernel render stands)."""
+    broken = _MirrorSource(raise_sections=True)
+    wiring = _make_mirror_wiring([broken], rows={1: _Entity(1)})
+
+    assert await wiring._show_in_preview("character", 1) is True
+
+    assert wiring._preview_mirror == {}
+    assert wiring._window.entity_preview.mirrors[-1] == {}
+
+
+async def test_invisible_source_does_not_answer():
+    source = _MirrorSource(sections=(_section("Характеристики"),))
+    source._visible = False
+    wiring = _make_mirror_wiring([source])
+
+    await wiring._refresh_preview_mirror(("character", 1))
+
+    assert source.asks == []
+    assert wiring._preview_mirror == {}
+
+
+async def test_push_prunes_the_mirror_to_the_frame():
+    """A pair that left the column leaves the mirror too — a later frame can
+    never resurrect a stale mirror through the reuse gate."""
+    source = _MirrorSource(sections=(_section("Происхождение"),))
+    wiring = _make_mirror_wiring([source], rows={1: _Entity(1), 2: _Entity(2)})
+
+    await wiring._show_in_preview("character", 1)
+    await wiring._show_in_preview("character", 2)
+
+    assert wiring._preview_mirror == {("character", 2): ((_section("Происхождение"),), ())}
+    assert wiring._window.entity_preview.mirrors[-1] == {
+        ("character", 2): ((_section("Происхождение"),), ())
+    }
+
+
+async def test_module_leaving_the_composition_empties_the_mirrors():
+    """«Без модуля предпросмотр не отличается»: the mirror cache retires with
+    the source list it was read from, so the next frame pushes the pair with
+    no sections and the card's reuse stamp rebuilds it plain."""
+    source = _MirrorSource(sections=(_section("Происхождение"),))
+    wiring = _make_mirror_wiring([source], rows={1: _Entity(1)})
+    await wiring._show_in_preview("character", 1)
+    assert wiring._preview_mirror != {}
+
+    wiring.set_external_sources(())
+
+    assert wiring._preview_mirror == {}
+
+
+# ── dd-card-redesign audit fix: the event seat of the live area ──────────────
+#
+# The deadness of ("event", id) used to be pinned as contract (the QA report
+# docs/qa/2026-10-13-live-preview-mirror.md Finding 1 named the unreachable
+# spec scenario «Событие показывает встречу»). The seat now exists: the pair
+# loads through the connector's event service, the «Встреча» mirror reads
+# through the same awaitable door the character mirror uses, and an event
+# card save repaints the shown pair.
+
+
+def _make_event_wiring(*, rows=None, event_rows=None, source=None):
+    wiring = _make_wiring(
+        _PinsService(), rows=rows or {}, event_rows=event_rows or {}
+    )
+    if source is not None:
+        wiring.set_external_sources([source])
+    return wiring
+
+
+async def test_live_seat_seats_an_event_and_reads_its_encounter_mirror():
+    """The mention anchor of an event inside preview text arrives as
+    ``entity_requested("event", id)`` → this seat: the row loads through the
+    event service, the module's awaitable «Встреча» door answers for the
+    projected string id, the frame carries the pair and its mirror."""
+    encounter = _MirrorSource(
+        key="event", sections=(_section("Встреча"),), awaitable=True
+    )
+    wiring = _make_event_wiring(
+        event_rows={7: _Event(7, "Полоса")}, source=encounter
+    )
+
+    assert await wiring._show_in_preview("event", 7) is True
+
+    assert encounter.asks == [("event", "7")]
+    assert wiring._preview_live == ("event", 7)
+    assert wiring._preview_mirror == {("event", 7): ((_section("Встреча"),), ())}
+    assert list(wiring._window.entity_preview)[-1] == ([], ("event", 7))
+    # The middle column has no event tab, so the facade's sync request for a
+    # seated event is its documented no-op (e2e-pinned in the preview
+    # lifecycle guard).
+
+
+async def test_event_reseat_is_a_silent_no_op():
+    """«Повторный выбор ничего не делает» rides the event seat verbatim: the
+    same live pair reloads nothing and pushes no frame."""
+    wiring = _make_event_wiring(event_rows={7: _Event(7, "Полоса")})
+    assert await wiring._show_in_preview("event", 7) is True
+    frames = len(wiring._window.entity_preview)
+
+    assert await wiring._show_in_preview("event", 7) is True
+
+    assert len(wiring._window.entity_preview) == frames
+
+
+async def test_vanished_event_keeps_the_live_pair_in_place():
+    """The broken-mention posture for events: a pair the event service cannot
+    answer seats nothing and pushes no frame."""
+    wiring = _make_event_wiring(event_rows={})
+
+    assert await wiring._show_in_preview("event", 99) is False
+
+    assert wiring._preview_live is None
+    assert list(wiring._window.entity_preview) == []
+
+
+async def test_event_save_repaints_only_a_shown_pair():
+    """«Обновление показанной сущности … перекрашивать секции» — the event
+    twin of the entity-card save repaint: a shown pair reloads its row and
+    mirror and pushes the frame; an event shown nowhere moves nothing."""
+    source = _MirrorSource(key="event", sections=(_section("Встреча"),))
+    wiring = _make_event_wiring(event_rows={7: _Event(7)}, source=source)
+    await wiring._show_in_preview("event", 7)
+    frames = len(wiring._window.entity_preview)
+    saved = _Event(7, "Полоса-2")
+    wiring._event_service.rows[7] = saved
+
+    await wiring._repaint_event_in_preview(7)
+
+    assert wiring._preview_rows[("event", 7)] is saved
+    assert len(wiring._window.entity_preview) == frames + 1
+
+    # An event shown nowhere: the membership check answers for the save.
+    frames = len(wiring._window.entity_preview)
+    await wiring._repaint_event_in_preview(11)
+    assert len(wiring._window.entity_preview) == frames
+
+
+async def test_event_save_repaint_is_quiet_when_the_row_vanished():
+    """The repaint reads, a vanished row keeps the cached card (the row the
+    column paints is never dropped by a repaint attempt)."""
+    wiring = _make_event_wiring(event_rows={7: _Event(7)})
+    await wiring._show_in_preview("event", 7)
+    frames = len(wiring._window.entity_preview)
+    wiring._event_service.rows.clear()
+
+    await wiring._repaint_event_in_preview(7)
+
+    assert wiring._preview_rows[("event", 7)] is not None
+    assert len(wiring._window.entity_preview) == frames
+
+
+async def test_restore_refreshes_the_pinned_mirrors():
+    pins = _PinsService([("character", 1)])
+    source = _MirrorSource(sections=(_section("Происхождение"),))
+    wiring = _make_mirror_wiring(
+        [source], rows={1: _Entity(1)}, pins_service=pins
+    )
+
+    await wiring.restore_preview_pins()
+
+    assert wiring._preview_pins == [("character", 1)]
+    assert source.asks == [("character", "1")]
+    assert wiring._preview_mirror == {
+        ("character", 1): ((_section("Происхождение"),), ())
+    }
+
+
+async def test_refresh_drops_the_pair_when_the_doors_fall_silent():
+    """The mirror-less re-read (module switched off while the pair stays
+    shown) replaces the entry with nothing — the pop branch of the refresh,
+    the card losing its sections on the next frame."""
+    source = _MirrorSource(sections=(_section("Происхождение"),))
+    wiring = _make_mirror_wiring([source], rows={1: _Entity(1)})
+    await wiring._refresh_preview_mirror(("character", 1))
+    assert wiring._preview_mirror != {}
+
+    source._visible = False
+    await wiring._refresh_preview_mirror(("character", 1))
+
+    assert wiring._preview_mirror == {}

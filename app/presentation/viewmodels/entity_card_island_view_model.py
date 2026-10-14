@@ -147,12 +147,11 @@ class EntityCardIslandViewModel(CardTabsMixin):
             )
             for cfg in self._related_configs
         }
-        # add-dnd-game-face (task 7.1, design Д10): the «Связи» tab exists
-        # exactly when the type has relation sections (the rating type ships
-        # none), so the kernel strip is the trio or the «Обзор · Тексты» pair.
-        self._init_card_tabs(
-            kernel_card_groups(has_relations=bool(self._related_configs))
-        )
+        # dd-card-redesign task 3.1 (design Д1): the kernel declares the ONE
+        # «Основное» group — the whole single-screen 0.19.1 card. The tab
+        # mechanism sleeps until an external source adds a tab (the relation
+        # sections then ride the stitched band instead of the scroll end).
+        self._init_card_tabs(kernel_card_groups())
 
     def _set_name(self, value: str) -> None:
         value = value or ""
@@ -423,11 +422,12 @@ class EntityCardIslandViewModel(CardTabsMixin):
             self.clear_invalidated_field()
             self.saveRequested.emit()
             return
-        # add-dnd-game-face task 7.1 (spec «Ошибка указывает дорогу»): the
-        # card's only field gate is the name (sheet parity C3 above), so a
-        # refusal over a field can only be the name — and «Обзор», where the
-        # field lives, is revealed with it. A lock or an in-flight save names
-        # no field: not a field problem.
+        # add-dnd-game-face task 7.1 (spec «Ошибка указывает дорогу»), with
+        # the dd-card-redesign Д1 screen: the card's only field gate is the
+        # name (sheet parity C3 above), so a refusal over a field can only be
+        # the name — and the single «Основное» group, where the field lives,
+        # is revealed with it (in the one-screen view this is the mark only).
+        # A lock or an in-flight save names no field: not a field problem.
         if not self._name.strip():
             self.reveal_field("name")
 

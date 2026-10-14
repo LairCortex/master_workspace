@@ -45,6 +45,7 @@ from app.dd.infrastructure.db.dd_models import DdCharacterExtModel, decode_text_
 from app.dd.infrastructure.db.dd_schema import ensure_dd_tables
 from app.dd.infrastructure.repositories.dd_character_repository import (
     DdCharacterRepository,
+    mechanics_from_row,
 )
 from app.domain.entity_registry import EntityType
 from app.infrastructure.db.models import CharacterModel, DescriptionModel
@@ -222,8 +223,14 @@ async def test_create_lays_out_everything_and_keeps_the_file_verbatim(uow, tmp_p
 
     blocks = decode_text_blocks(ext.text_blocks)
     # The clash: structural render above, the author's text below (Д7).
+    # The six scores did NOT fit (partial set) — «Характеристики» prints.
     assert blocks["Характеристики"] == "Сила: 17\n\nСила — вся жизнь."
-    assert blocks["Спасброски"] == "Сила: владеет"
+    # The boolean save flag DID fit (dd-card-redesign task 6.1): the saving
+    # throw is stored structure, not painted as a block.
+    assert "Спасброски" not in blocks
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores is None  # one value of six is no set
+    assert mechanics.manual_saving_throws == frozenset({"strength"})
     assert blocks["Биография"] == "Родился в степи."
 
 
@@ -401,3 +408,204 @@ async def test_nameless_block_key_is_dropped_in_silence(uow):
     )
     ext = await _ext_row(uow.session, outcome.character_id)
     assert decode_text_blocks(ext.text_blocks) == {"Живой": "текст"}
+
+
+# ── mechanics intake (dd-card-redesign task 6.1; spec «Механики легли
+# структурой») ───────────────────────────────────────────────────────────────
+
+
+def _full_mechanics_doc(**over) -> dict:
+    """A document whose every mechanics family fits: whole six values,
+    boolean flags, a known alignment, a whole speed, a legal slot grid and
+    well-formed feat references."""
+    data = {
+        "name": "Грог Профиль",
+        "level": 5,
+        "stats": {
+            "str": {"value": 18, "save": True},
+            "dex": {"value": 14},
+            "con": {"value": 16, "save": True},
+            "int": {"value": 10},
+            "wis": {"value": 12},
+            "cha": {"value": 8},
+        },
+        "skills": {
+            "athletics": {"proficient": True},
+            "stealth": {"proficient": False},
+        },
+        "speed": 25,
+        "alignment": "хаотично-добрый",
+        "feats": [
+            {"id": "alert", "name": "Наблюдательность"},
+            {"id": "lucky", "name": "Везунчик"},
+        ],
+        "spells": {
+            "list": ["fire-ball"],
+            "slots": [{"level": 1, "value": 4, "max": 4}],
+        },
+        "coins": {"gp": 5},
+    }
+    data.update(over)
+    return data
+
+
+def _index_with_feats(*, connected: tuple[str, ...] = ("alert",)) -> IndexSnapshot:
+    snap = _connected_index()
+    entries = tuple(
+        DatasetEntry("srd", ref_id, f"Черта {ref_id}", {}) for ref_id in connected
+    )
+    return IndexSnapshot(
+        ids=snap.ids,
+        titles=snap.titles,
+        sections={**snap.sections, "feats": {"srd": entries}},
+        slugs={},
+    )
+
+
+async def test_fitted_mechanics_lay_structured_and_lose_their_blocks(uow):
+    """Spec scenario «Механики легли структурой»: values arrive in the
+    structured fields, their readable blocks are NOT painted, and the
+    sections that never ride the structure (coins) keep their block."""
+    content = _envelope(_full_mechanics_doc())
+    service = await _make_service(uow, index=_index_with_feats())
+    outcome = await service.import_character(content)
+    assert outcome.status is CharacterImportStatus.CREATED
+    ext = await _ext_row(uow.session, outcome.character_id)
+
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores == {
+        "strength": 18,
+        "dexterity": 14,
+        "constitution": 16,
+        "intelligence": 10,
+        "wisdom": 12,
+        "charisma": 8,
+    }
+    assert mechanics.manual_saving_throws == frozenset({"strength", "constitution"})
+    assert mechanics.skill_proficiencies == frozenset({"athletics"})
+    assert mechanics.speed == 25
+    assert mechanics.alignment == "хаотично-добрый"
+    assert mechanics.spell_slots == {1: 4}
+
+    blocks = decode_text_blocks(ext.text_blocks)
+    for fitted in ("Характеристики", "Спасброски", "Навыки", "Ячейки заклинаний"):
+        assert fitted not in blocks
+    assert blocks["Монеты"] == "gp: 5"  # не механика — блок как прежде
+
+    # Feats resolve through the connected index like the face triples:
+    # «alert» answers the set (live pair + live name), «lucky» is absent →
+    # the file's snapshot with an empty source.
+    links = await DdCharacterRepository(uow.session).list_feat_links(
+        outcome.character_id
+    )
+    assert [(lnk.source_key, lnk.ref_id, lnk.snapshot_name) for lnk in links] == [
+        ("srd", "alert", "Черта alert"),
+        ("", "lucky", "Везунчик"),
+    ]
+    # The spell slug list is not the importer's to bind — no spell links.
+    assert await DdCharacterRepository(uow.session).list_spell_links(
+        outcome.character_id
+    ) == []
+
+
+async def test_overwrite_replaces_feat_wall_and_clears_absent_families(uow):
+    """The file replaces the card: an overwrite whose document stops naming
+    feats/speed/alignment un-chooses the stored ones (the same replacement
+    an absent level already obeys)."""
+    service = await _make_service(uow, index=_index_with_feats())
+    first = await service.import_character(_envelope(_full_mechanics_doc()))
+    character_id = first.character_id
+
+    second = await service.import_character(
+        _envelope({"name": "Грог-младший"}), character_id=character_id, confirmed=True
+    )
+    assert second.status is CharacterImportStatus.OVERWRITTEN
+    ext = await _ext_row(uow.session, character_id)
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores is None
+    assert mechanics.speed is None and mechanics.alignment is None
+    assert mechanics.spell_slots == {}
+    assert mechanics.skill_proficiencies == frozenset()
+    assert mechanics.manual_saving_throws == frozenset()
+    assert await DdCharacterRepository(uow.session).list_feat_links(character_id) == []
+
+
+async def test_unreadable_families_keep_their_readable_blocks(uow):
+    """A family the intake refuses is NOT invented away: the numeric save
+    rides the «Спасброски» block, the string speed — «Скорость», the foreign
+    alignment — «Мировоззрение», the valueless slot entry — «Ячейки
+    заклинаний», while the fitting siblings are still stored structured."""
+    content = _envelope(
+        _full_mechanics_doc(
+            stats={
+                "str": {"value": 18, "save": 5},
+                "dex": {"value": 14},
+                "con": {"value": 16},
+                "int": {"value": 10},
+                "wis": {"value": 12},
+                "cha": {"value": 8},
+            },
+            speed="босая быстрые ноги",
+            alignment="нейтралитет как призвание",
+            spells={"slots": [{"level": 1}]},
+        )
+    )
+    service = await _make_service(uow, index=_index_with_feats())
+    outcome = await service.import_character(content)
+    ext = await _ext_row(uow.session, outcome.character_id)
+
+    mechanics = mechanics_from_row(ext)
+    assert mechanics.scores == {
+        "strength": 18,
+        "dexterity": 14,
+        "constitution": 16,
+        "intelligence": 10,
+        "wisdom": 12,
+        "charisma": 8,
+    }  # values fit on their own
+    assert mechanics.manual_saving_throws == frozenset()  # numeric save refused
+    assert mechanics.speed is None and mechanics.alignment is None
+    assert mechanics.spell_slots == {}  # an entry without a count is no grid
+
+    blocks = decode_text_blocks(ext.text_blocks)
+    assert blocks["Спасброски"] == "Сила: +5"
+    assert blocks["Скорость"] == "босая быстрые ноги"
+    assert blocks["Мировоззрение"] == "нейтралитет как призвание"
+    assert blocks["Ячейки заклинаний"] == "- 1-й круг"
+
+
+async def test_alignment_alias_and_garbage_feat_entries_ride_the_tolerances(uow):
+    """English «Chaotic Good» normalizes to the stored nine; a string feat
+    and a dict without an id are refused per entry and print under «Черты»,
+    while the good references still bind."""
+    content = _envelope(
+        _full_mechanics_doc(
+            alignment="Chaotic Good",
+            feats=[{"id": "alert"}, "Удача на верёвочке", {"name": "без id"}],
+        )
+    )
+    service = await _make_service(uow, index=_index_with_feats())
+    outcome = await service.import_character(content)
+    ext = await _ext_row(uow.session, outcome.character_id)
+    assert ext.alignment == "хаотично-добрый"
+    links = await DdCharacterRepository(uow.session).list_feat_links(
+        outcome.character_id
+    )
+    assert [lnk.ref_id for lnk in links] == ["alert"]
+    blocks = decode_text_blocks(ext.text_blocks)
+    assert blocks["Черты"] == '- Удача на верёвочке\n- {"name": "без id"}'
+
+
+async def test_unknown_sections_print_under_their_original_name(uow):
+    """Spec «Ни один текстовый блок документа НЕ SHALL быть потерян молча»:
+    a section the format does not know arrives as a block with its own name,
+    non-string content as its JSON."""
+    content = _envelope(
+        _full_mechanics_doc(hobby="Резная фигурка", customCounter={"left": 3})
+    )
+    service = await _make_service(uow, index=_index_with_feats())
+    outcome = await service.import_character(content)
+    ext = await _ext_row(uow.session, outcome.character_id)
+    blocks = decode_text_blocks(ext.text_blocks)
+    assert blocks["hobby"] == "Резная фигурка"
+    assert blocks["customCounter"] == '{"left": 3}'

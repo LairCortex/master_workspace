@@ -559,6 +559,50 @@ Rectangle {
                                 }
                             }
 
+                            // The module's read-only mirror sections
+                            // (dd-card-redesign task 7.1, design Д5; spec
+                            // «под короткими полями идут секции»): title +
+                            // plain lines, printed between the identity band
+                            // and the kernel's own long fields — the card's
+                            // «after_short_fields» anchor mirrored into the
+                            // column. Plain Text (no RichText): the module
+                            // delivers display lines, mention anchors are
+                            // not generated here. The VM ships the empty
+                            // list whenever no module speaks, so the
+                            // Repeater adds nothing and the kernel render
+                            // stays bit-for-bit (pin task 3.5).
+                            Repeater {
+                                model: previewPane.modelData.moduleSections
+
+                                ColumnLayout {
+                                    id: previewModuleSection
+                                    objectName: "previewModuleSection_" + index
+                                    required property var modelData
+                                    required property int index
+                                    Layout.fillWidth: true
+                                    spacing: Tokens.px(root.islandTokens, "space.xs", 4)
+
+                                    TitleText {
+                                        objectName: "previewModuleSectionTitle"
+                                        Layout.fillWidth: true
+                                        text: previewModuleSection.modelData.title
+                                    }
+
+                                    Repeater {
+                                        model: previewModuleSection.modelData.lines
+
+                                        Text {
+                                            objectName: "previewModuleSectionLine"
+                                            Layout.fillWidth: true
+                                            text: modelData
+                                            wrapMode: Text.WordWrap
+                                            color: root.primaryText
+                                            font.pixelSize: root.bodyFontPixelSize
+                                        }
+                                    }
+                                }
+                            }
+
                             // The text fields (Характеристики / Предыстория /
                             // Личность / Задачи) with clickable @mentions: the
                             // VM delivers each as the mention_html generator's

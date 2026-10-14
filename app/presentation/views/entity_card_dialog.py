@@ -9,7 +9,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 import shiboken6
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.presentation.card_tab_host import CardTabHost
+from app.presentation.module_block_host import ModuleBlockHost
 from app.presentation.dialog_results import (
     EntityCreateResult,
     EntityEditResult,
@@ -251,6 +252,10 @@ class _SectionProxy:
 
 class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     island_context_names = {"entityCardVm": "vm"}
+    # Live-audit 2026-10-13 finding 2: the sheet canvas clears the widget's
+    # framebuffer, so a dropped cocoa render frame below the content shows the
+    # theme surface, never the white OS window canvas.
+    ISLAND_SHEET_CANVAS = True
 
     def island_source(self) -> str:
         return ROOT_QML
@@ -381,6 +386,51 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         self._card_tabs = CardTabHost(
             self, self.vm, external_sources, wiring, target_key=self._entity_type
         )
+        # dd-card-redesign task 4.2 (design Д2): the declarative module blocks
+        # of the «Основное» screen — collected at populate like the tabs, but
+        # a fresh card collects too (the empty-id frame is how the module
+        # hides its kernel texts on a not-yet-created record), painted by the
+        # QML anchors, written back through the source's handler, released
+        # with the island.
+        self._module_blocks = ModuleBlockHost(
+            self, self.vm, external_sources, wiring, target_key=self._entity_type
+        )
+        # A fresh card never sees populate() — the empty-id collection lands
+        # the module's «hide my kernel texts, no blocks yet» answer on the
+        # new record too (spec «Пустой новый персонаж»). populate() re-aims
+        # the channel at the real record moments later for edited cards.
+        self._module_blocks.refresh(None)
+        # dd-card-redesign task 3.4 (spec «Размер окна с табами следует самому
+        # высокому содержимому»): the opening fit ran before populate revealed
+        # any guest tab; when one joins, the scene re-publishes the bigger
+        # natural size (strip + tallest page + stitched relations band +
+        # buttons) and the window re-fits through the very same door. The
+        # single-screen state never refits — its window stays 0.19.1's.
+        self.vm.groupsChanged.connect(self._refit_for_guest_tabs)
+        # Live-audit 2026-10-13 blocker (spec «Размер окна с табами следует
+        # самому высокому содержимому»): a module's blocks are not part of the
+        # construction-time collection — populate() re-aims the channel and the
+        # controller republishes the loaded frame one or more turns later. The
+        # scene's ask then doubles (the live card: 1116 → 1440) while a window
+        # fitted at construction stays where it was: on cocoa the scene sizes
+        # itself to the new implicit height and the stitched relations band
+        # with «Сохранить»/«Отмена» falls off the bottom edge of the window —
+        # unseen on every tab. The frame signals cannot carry this door: they
+        # fire while the Repeater still has the arriving blocks pending polish,
+        # and measuring the ask in that turn reads the OLD height (a live probe
+        # shrank 1116 → 720 on the stale reading). The scene itself is the
+        # source of truth: every grown content row re-publishes the ask through
+        # implicitHeightChanged, and one coalesced re-fit follows it — the same
+        # door as the group change, capped by the screen as always. A
+        # single-screen card returns inside the handler: 0.19.1 stays untouched.
+        self._root.implicitHeightChanged.connect(self._refit_after_module_frame)
+        # Checkpoint-2 audit (spec «Новая карточка с пустыми разделами»):
+        # the tab strip collects at construction too — the module answers
+        # its lineup for the empty id, so a fresh D&D character opens with
+        # its four tabs standing and their sections honestly empty. Edited
+        # cards are re-aimed by populate(); a module that answers nothing
+        # leaves the kernel strip exactly as 0.19.1 drew it.
+        self._card_tabs.refresh(None)
 
         # P3 (NRI-0015): parent-less — under a chrome-attached ancestor the
         # generic QPushButton chrome rule would accent-fill every day cell
@@ -461,6 +511,33 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         super().setWindowTitle(title)
         if getattr(self, "_root", None) is not None:
             self._root.setProperty("sheetTitle", title)
+
+    def _refit_after_module_frame(self) -> None:
+        # Coalesce one polish pass: the Repeater grows row by row and every
+        # added row re-publishes the ask — one re-fit on the next loop turn
+        # measures the settled scene (the context-object form drops the
+        # request if the dialog dies first; live-audit 2026-10-13 blocker).
+        QTimer.singleShot(0, self, self._refit_for_guest_tabs)
+
+    def _refit_for_guest_tabs(self) -> None:
+        # dd-card-redesign task 3.4 (spec «Размер окна с табами следует самому
+        # высокому содержимому плюс полосу связей и кнопки»): the re-fit only
+        # ever runs for the tabbed assembly — while the kernel stands alone
+        # the scene keeps publishing the 0.19.1 ask and the window keeps the
+        # size the constructor's fit gave it (the profile pin: single-screen
+        # cards open exactly as before).
+        root = getattr(self, "_root", None)
+        if root is None or not shiboken6.isValid(root):
+            return  # the island is gone — the emit raced the teardown
+        if not self.vm.moduleGroups:
+            return
+        fit_dialog_to_island(self, root, floor=self._size_floor)
+        # Live-audit 2026-10-13 finding 2: the window grows with the strip; the
+        # cocoa render control can drop the frame of a resize landing while the
+        # native sheet animates. One render request on the next loop turn, when
+        # the geometry has settled (the context-object form drops the request
+        # if the dialog dies first).
+        QTimer.singleShot(0, self, self.quick.update)
 
     def set_sheet_scrim_alpha(self, alpha: float) -> None:
         # NRI-0014 task 4.3 (CR5): the stack owner (ApplicationWiring counts
@@ -615,6 +692,14 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         # Task 7.2: the record is known from here — the external sources may
         # now declare their extra tabs for exactly this entity.
         self._card_tabs.refresh(
+            str(self._populated_entity_id)
+            if self._populated_entity_id is not None
+            else None
+        )
+        # Task 4.2: the module-block channel is collected for this record too
+        # (the fresh-card None maps to the source's empty-id answer — hiding
+        # the replaced kernel texts with the «Основное» sections still empty).
+        self._module_blocks.refresh(
             str(self._populated_entity_id)
             if self._populated_entity_id is not None
             else None
@@ -785,6 +870,9 @@ class EntityCardDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         # subscriptions retire through release_tab while the island still
         # answers, then the island teardown proceeds (no listener survives).
         self._card_tabs.release()
+        # dd-card-redesign task 4.2: the module-block handlers retire the same
+        # way — no module listener may outlive the card.
+        self._module_blocks.release()
         # NRI-0021 task 4.3: the «now» subscription leaves with the card
         # (DEFECT-1 posture — no listener survives its window).
         if self._now_vm is not None:

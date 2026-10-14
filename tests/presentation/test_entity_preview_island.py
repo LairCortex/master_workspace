@@ -1747,3 +1747,69 @@ def test_external_picture_opens_viewer_from_the_record_path(qtbot, monkeypatch):
         assert len(calls) == 1 and len(requested) == 1
     finally:
         restore()
+
+
+# ── dd-card-redesign task 7.1: the mirror sections reach the scene ───────────
+
+
+def test_module_sections_paint_under_the_identity_band_as_plain_lines(qtbot):
+    """The mirror is painted as titled blocks of plain lines between the
+    identity band and the kernel's own text sections (spec «под короткими
+    полями идут секции»), in the read-only set — no control, no RichText
+    anchor, no edit. The kernel «Характеристики»/«Предыстория» hidden by the
+    module are absent from the scene, «Личность»/«Задачи» stay."""
+    from app.presentation.modules.protocol import ModuleSection
+
+    widget = _preview(qtbot)
+    mirror = {
+        ("character", 4): (
+            (
+                ModuleSection("Происхождение", ("Вид: Дворф", "Уровень: 3")),
+                ModuleSection("Черты", ("Бдительность",)),
+            ),
+            ("characteristics", "backstory"),
+        )
+    }
+    widget.show_slots([], ("character", _entity()), mirror)
+    QApplication.processEvents()
+
+    first = find_item(widget.quick, "previewModuleSection_0")
+    assert bool(first.property("visible")) is True
+    assert first.property("modelData")["title"] == "Происхождение"
+    def _ordered(name: str):
+        items = find_items(widget.quick, name)
+        items.sort(key=lambda i: i.mapToScene(QPointF(0, 0)).y())
+        return [item.property("text") for item in items]
+
+    assert _ordered("previewModuleSectionTitle") == ["Происхождение", "Черты"]
+    assert _ordered("previewModuleSectionLine") == [
+        "Вид: Дворф",
+        "Уровень: 3",
+        "Бдительность",
+    ]
+    # Below the identity band, above the kernel sections (one column flow).
+    identity_y = find_item(
+        widget.quick, "previewIdentityRow"
+    ).mapToScene(QPointF(0, 0)).y()
+    assert first.mapToScene(QPointF(0, 0)).y() >= identity_y
+    section = find_item(widget.quick, "previewSection_personality")
+    assert first.mapToScene(QPointF(0, 0)).y() <= section.mapToScene(QPointF(0, 0)).y()
+    # The hidden kernel texts left the scene; the kept ones stand.
+    object_names = {
+        item.objectName() for item in walk_items(widget.quick.rootObject())
+    }
+    assert "previewSection_characteristics" not in object_names
+    assert "previewSection_backstory" not in object_names
+    assert "previewSection_personality" in object_names
+    assert "previewSection_tasks" in object_names
+
+
+def test_without_a_mirror_the_column_paints_no_module_blocks(qtbot):
+    """«Без модуля предпросмотр не отличается»: the empty model adds nothing
+    to the scene — no module object names exist at all."""
+    widget = _preview(qtbot, entity=_entity())
+    names = {
+        item.objectName() for item in walk_items(widget.quick.rootObject())
+    }
+    assert not any(name.startswith("previewModuleSection") for name in names)
+    assert find_item(widget.quick, "previewSection_characteristics") is not None

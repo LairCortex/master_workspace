@@ -13,12 +13,15 @@ the mouse. This file pins exactly that, control by control, offscreen:
   caption as a name (a placeholder paints but never names); a row button is
   named by its visible caption and its accessibility Press seats the card in
   the preview column; the empty-state button names the screen it opens.
-* The character's «D&D» tab: every reference picker is a named ComboBox
-  (the slot caption — one knowledge with the descriptors), the level and the
-  LSS field carry their captions; «Открыть в браузере» is named by its
-  caption and its Press hands the digital sheet URL out; the LSS file
-  doors (overwrite/save-raw + «Экспорт для LSS…») are named buttons, and
-  an uncomposed door prints nothing at all.
+* The character's module tabs (dd-card-redesign task 5.5 replaced the
+  «D&D» tab): on «Личность» the background picker is a ComboBox wearing the
+  descriptor caption through the form's buddy relation, the alignment combo
+  and every text field carry their captions as accessibleName; on
+  «Заклинания» the slot fields of the grid are named one per level; on
+  «Способности» the filter is named and the «Снять»/«Добавить: …» doors
+  persist through an accessibility Press. The «Основное» half (pickers,
+  level, LSS row, file doors) left the widget tree for the module_blocks
+  island — its tree face lives with the island's QML guards.
 * The «Заклинания» tab: the filter is named, «Снять» and «Добавить: …»
   persist through an accessibility Press.
 * «Датасеты D&D…»: the reference switch and the per-row connect boxes are
@@ -61,20 +64,18 @@ from app.dd.application.grimoire_index_service import GrimoireIndexSnapshot
 from app.dd.domain.character import empty_ext
 from app.dd.domain.dataset import DatasetSource
 from app.dd.domain.grimoire import GrimoireSpell
+from app.dd.domain.character_mechanics import CharacterMechanics
 from app.dd.domain.monster import DdMonster
-from app.dd.presentation import character_tab_frames as frames
 from app.dd.presentation.bestiary_sheet import (
     DD_BESTIARY_CREATE_TEXT,
     DndBestiarySheet,
     monster_row_caption,
 )
-from app.dd.presentation.character_tab_frames import (
-    EXPORT_FOR_LSS_TEXT,
-    IMPORT_OVERWRITE_TEXT,
-    SAVE_RAW_TEXT,
-    DndCharacterTabFrame,
-    DndSpellsTabFrame,
+from app.dd.presentation.character_feats_frame import DndFeatsTabFrame
+from app.dd.presentation.character_personality_frame import (
+    DndPersonalityTabFrame,
 )
+from app.dd.presentation.character_tab_frames import DndSpellsTabFrame
 from app.dd.presentation.datasets_sheet import DndDatasetsSheet
 from app.dd.presentation.dd_encounter_frame import ADD_ROW_TEXT, DndEncounterTabFrame
 from app.dd.presentation.monster_card_sheet import (
@@ -258,14 +259,14 @@ async def test_reference_empty_state_button_names_the_screen_it_opens(qtbot):
         sheet.close()
 
 
-# ── the character's «D&D» tab: named pickers and doors ──────────────────────
+# ── the character's module tabs: named fields and persisting doors ─────────
 
 
 class _ExtService:
     def __init__(self) -> None:
         self.ext = empty_ext()
         self.links: list = []
-        self.sheet_links: list = []
+        self.feat_links: list = []
 
     async def get_ext(self, character_id):
         return self.ext
@@ -278,6 +279,31 @@ class _ExtService:
 
     async def set_lss_sheet_id(self, character_id, sheet_id):
         pass
+
+    async def get_mechanics(self, character_id):
+        return CharacterMechanics()
+
+    async def get_text_blocks(self, character_id):
+        return {}
+
+    async def set_text_block(self, character_id, key, text):
+        pass
+
+    async def set_alignment(self, character_id, alignment):
+        pass
+
+    async def get_feat_links(self, character_id):
+        return list(self.feat_links)
+
+    async def add_feat_link(self, character_id, link):
+        self.feat_links.append(link)
+
+    async def remove_feat_link(self, character_id, source_key, ref_id):
+        self.feat_links = [
+            link
+            for link in self.feat_links
+            if (link.source_key, link.ref_id) != (source_key, ref_id)
+        ]
 
     async def get_spell_links(self, character_id):
         return list(self.links)
@@ -316,15 +342,13 @@ def _run_locked(coro):
     return asyncio.ensure_future(coro)
 
 
-async def _make_dnd_frame(qtbot, *, importer=None, builder=None):
-    frame = DndCharacterTabFrame(
+async def _make_personality_frame(qtbot, service):
+    frame = DndPersonalityTabFrame(
         character_id=1,
-        service=_ExtService(),
+        service=service,
         dataset_index=_Index(),
         record_labels={descriptor.key: descriptor.label for _, descriptor in RECORD_TYPES},
         run_locked=_run_locked,
-        import_service=importer,
-        document_builder=builder,
     )
     qtbot.addWidget(frame)
     frame.show()
@@ -332,28 +356,20 @@ async def _make_dnd_frame(qtbot, *, importer=None, builder=None):
     return frame
 
 
-async def test_dnd_tab_pickers_are_named_comboboxes(qtbot):
-    frame = await _make_dnd_frame(qtbot)
-    labels = {descriptor.key: descriptor.label for _, descriptor in RECORD_TYPES}
-    expected = {
-        "ddDndSlot_race": labels["dd_race"],
-        "ddDndSlot_subrace": labels["dd_subrace"],
-        "ddDndSlot_class": labels["dd_class"],
-        "ddDndSlot_subclass": labels["dd_subclass"],
-        "ddDndSlot_background": labels["dd_background"],
-        "ddDndLevel": "Уровень",
-    }
-    # The picker face (Qt's штатно, pinned as fact): role ComboBox; the Name
-    # slot answers the current value (the native popup value-as-title — a
-    # QAccessibleComboBox overrides accessibleName here, offscreen probe
-    # 2026-10-10); the slot's caption reaches the reader through the buddy
-    # LabelOf relation the form's addRow sets up — no coordinates anywhere.
-    for object_name, caption in expected.items():
+async def test_personality_tab_fields_answer_the_tree(qtbot):
+    frame = await _make_personality_frame(qtbot, _ExtService())
+    # The picker face (Qt's штатно, pinned as fact since add-dnd-game-face
+    # 12.1): role ComboBox, the caption reaching the reader through the
+    # buddy LabelOf relation the form's addRow sets up (QAccessibleComboBox
+    # spends the Name slot on the current value — the 2026-10-10 probe).
+    for object_name, caption in (
+        ("ddPersonalityBackground", "Предыстория"),
+        ("ddPersonalityAlignment", "Мировоззрение"),
+    ):
         combo = frame.findChild(QComboBox, object_name)
         assert combo is not None, object_name
-        combo_iface = iface(combo)
-        assert combo_iface.role() == QAccessible.Role.ComboBox, object_name
-        for label_iface, flag in combo_iface.relations():
+        assert iface(combo).role() == QAccessible.Role.ComboBox, object_name
+        for label_iface, flag in iface(combo).relations():
             if flag & QAccessible.RelationFlag.Label:
                 assert label_iface.text(QAccessible.Name).startswith(caption), (
                     object_name
@@ -361,54 +377,71 @@ async def test_dnd_tab_pickers_are_named_comboboxes(qtbot):
                 break
         else:
             pytest.fail(f"{object_name}: no buddy Label relation for «{caption}»")
-    sheet_field = frame.findChild(QLineEdit, "ddDndSheetId")
-    assert iface(sheet_field).role() == QAccessible.Role.EditableText
-    assert name_of(sheet_field) == "Идентификатор листа LSS"
+    # The text fields are named by their captions through accessibleName —
+    # short lines and multi-line editors alike, no coordinates anywhere.
+    height = frame.findChild(QLineEdit, "ddPersonalityShort_height")
+    assert iface(height).role() == QAccessible.Role.EditableText
+    assert name_of(height) == "Рост"
+    traits = frame.findChild(QWidget, "ddPersonalityLong_traits")
+    assert iface(traits).role() == QAccessible.Role.EditableText
+    assert name_of(traits) == "Черты характера"
 
 
-async def test_dnd_tab_browser_button_press_hands_the_url_out(qtbot, monkeypatch):
-    frame = await _make_dnd_frame(qtbot)
-    opened: list[str] = []
-
-    class _Desk:
-        @staticmethod
-        def openUrl(url):
-            opened.append(url.toString())
-
-    monkeypatch.setattr(frames, "QDesktopServices", _Desk)
-    sheet_field = frame.findChild(QLineEdit, "ddDndSheetId")
-    sheet_field.setText("12345")  # a filled id shows the door (spec)
-    button = frame.findChild(QPushButton, "ddDndSheetOpen")
-    assert button.isVisible()
-    assert iface(button).role() == QAccessible.Role.Button
-    assert name_of(button) == "Открыть в браузере"
-    press(button, qtbot)
-    assert opened == ["https://longstoryshort.app/iframe/characters/digital/12345/"]
+async def _make_feats_frame(qtbot, service):
+    frame = DndFeatsTabFrame(
+        character_id=1,
+        service=service,
+        dataset_index=_Index(),
+        run_locked=_run_locked,
+    )
+    qtbot.addWidget(frame)
+    frame.show()
+    await drain()
+    return frame
 
 
-async def test_dnd_tab_file_doors_are_named_buttons(qtbot):
-    frame = await _make_dnd_frame(qtbot, importer=SimpleNamespace(), builder=SimpleNamespace())
-    for object_name, caption in (
-        ("ddDndImportOverwrite", IMPORT_OVERWRITE_TEXT),
-        ("ddDndSaveRaw", SAVE_RAW_TEXT),
-        ("ddDndExportLss", EXPORT_FOR_LSS_TEXT),
-    ):
-        button = frame.findChild(QPushButton, object_name)
-        assert iface(button).role() == QAccessible.Role.Button, object_name
-        assert name_of(button) == button.text() == caption, object_name
+async def test_feats_tab_filter_and_row_doors_persist(qtbot):
+    service = _ExtService()
+    frame = await _make_feats_frame(qtbot, service)
+    box = frame.findChild(QLineEdit, "ddFeatsFilter")
+    assert iface(box).role() == QAccessible.Role.EditableText
+    assert name_of(box) == "Фильтр черт"
+
+    candidates = [
+        b
+        for b in frame.findChildren(QPushButton)
+        if b.objectName() == "ddFeatsCandidate"
+    ]
+    assert candidates, "the connected feats section should offer the entry"
+    candidate = candidates[0]
+    assert iface(candidate).role() == QAccessible.Role.Button
+    assert name_of(candidate) == candidate.text() == "Добавить: Запись feats · SRD 5.1 (2014)"
+    press(candidate, qtbot)
+    await drain()
+    assert [link.ref_id for link in service.feat_links] == ["feats-1"]
+
+    removes = [
+        b for b in frame.findChildren(QPushButton) if b.objectName() == "ddFeatsRemove"
+    ]
+    assert removes
+    remove = removes[0]
+    assert name_of(remove) == "Снять"
+    press(remove, qtbot)
+    await drain()
+    assert service.feat_links == []
 
 
-async def test_dnd_tab_prints_no_door_without_its_service(qtbot):
-    """The no-dead-action posture per door: an uncomposed service prints no
-    button at all — the export half joins the row on its own (task 5.3),
-    the import halves stay behind the import service."""
-    only_export = await _make_dnd_frame(qtbot, builder=SimpleNamespace())
-    assert only_export.findChild(QPushButton, "ddDndExportLss") is not None
-    assert only_export.findChild(QPushButton, "ddDndImportOverwrite") is None
-    assert only_export.findChild(QPushButton, "ddDndSaveRaw") is None
-    no_doors = await _make_dnd_frame(qtbot)
-    for object_name in ("ddDndExportLss", "ddDndImportOverwrite", "ddDndSaveRaw"):
-        assert no_doors.findChild(QPushButton, object_name) is None
+async def test_spells_slot_grid_fields_are_named(qtbot):
+    # The slot rows of the «Заклинания» grid (dd-card-redesign task 5.4):
+    # every level's field names itself, an absent count still answers a
+    # whole editable field («не задано» is the placeholder, not a missing
+    # control).
+    frame = await _make_spells_frame(qtbot, _ExtService())
+    for level in (1, 5, 9):
+        edit = frame.findChild(QLineEdit, f"ddSpellsSlot_{level}")
+        assert edit is not None, level
+        assert iface(edit).role() == QAccessible.Role.EditableText
+        assert name_of(edit) == f"Ячейки {level} уровня"
 
 
 # ── the «Заклинания» tab: named filter, persisting row doors ────────────────

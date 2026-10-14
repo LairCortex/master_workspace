@@ -49,10 +49,9 @@ def test_related_tabs_carry_the_one_map_glyphs(qtbot):
 
     dialog = EntityCardDialog(None, "character")
     qtbot.addWidget(dialog)
-    # add-dnd-game-face task 7.1: the relations strip lives on its «Связи»
-    # grouping tab — the group is opened so the strip (and its glyphs) is
-    # visible; the group order is the kernel declaration.
-    dialog.vm.selectGroup(2)
+    # dd-card-redesign Д1/Д4: the card is the single screen and the relations
+    # sit at its scroll end (no «Связи» tab to open — the strip sleeps until
+    # a module brings one); the strip is visible with its glyphs right here.
     for ref in entity_registry.related_refs_for_key("character"):
         tab = find_item(dialog.quick, "entityRelatedTab_" + ref.attr)
         assert tab.property("iconName") == icon_for(ref.entity_type), ref.attr
@@ -78,10 +77,8 @@ def test_related_create_button_follows_the_sections_can_create_flag(qtbot):
 
     # The current tab is the first related ref (StackLayout hides the rest);
     # the button item survives the walk but reports its own visible False.
-    # add-dnd-game-face task 7.1: the whole strip sits on the «Связи» group,
-    # so both cards are switched there before visibility is judged.
-    dialog.vm.selectGroup(2)
-    popup.vm.selectGroup(2)
+    # dd-card-redesign Д4: the strip rides the single screen for both cards,
+    # nothing to open — visibility is judged where it paints.
     first_attr = entity_registry.related_refs_for_key("character")[0].attr
     create = find_item(dialog.quick, f"entityRelated_{first_attr}CreateButton")
     assert bool(create.property("visible")) is True

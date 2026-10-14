@@ -19,6 +19,7 @@ the card only formats them.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from PySide6.QtCore import QUrl
@@ -152,7 +153,16 @@ class EntityCardViewModel:
     Built fully rendered; the column VM hands it out across frames as long
     as its ``content_fingerprint`` says the row behind it still paints the
     same, and only :meth:`recount_age` runs later (the «now» broadcast must
-    refresh the derived line, never re-read the picture file)."""
+    refresh the derived line, never re-read the picture file).
+
+    Since dd-card-redesign task 7.1 the card also carries the module's
+    read-only mirror (:class:`~app.presentation.modules.protocol.ModuleSection`
+    records printed under the short fields) and the kernel text-field names
+    the module hides («characteristics»/«backstory» — the same flag as the
+    card hides, spec entity-preview «текстовые поля ядра … SHALL
+    скрываться»). The pair rides as the ``mirror`` stamp so the column VM's
+    frame reuse notices a section change (the module data moved under an
+    unchanged row) exactly like it notices a row change."""
 
     def __init__(
         self,
@@ -164,6 +174,8 @@ class EntityCardViewModel:
         slot_index: int = 0,
         pin_state: str,
         rev: int = 0,
+        module_sections: Sequence[Any] = (),
+        hidden_kernel_fields: Sequence[str] = (),
     ) -> None:
         self.entity_type = entity_type
         self.entity = entity
@@ -199,6 +211,24 @@ class EntityCardViewModel:
         # author — "unpin" / "duplicate" / "limit"); the island maps the word
         # to the four fixed name/tooltip formulations and never counts.
         self.pin_state = pin_state
+        # The module mirror (dd-card-redesign task 7.1, design Д5): sections
+        # arrive as frozen ModuleSection records from the connector's bridge
+        # and render as plain dicts under the short fields; the hidden-field
+        # names filter :meth:`_text_sections` exactly like the card filters
+        # its «Основное». The ``mirror`` stamp joins the column VM's reuse
+        # decision (7.2): changed sections or a changed hide-set rebuild the
+        # card with a fresh rev; an unchanged mirror rides the reuse, so the
+        # «сейчас» broadcast (which never touches the mirror) repaints the
+        # age in place and the slot scroll memory survives.
+        self._hidden_kernel_fields = frozenset(hidden_kernel_fields)
+        self.module_sections = [
+            {"title": section.title, "lines": list(section.lines)}
+            for section in module_sections
+        ]
+        self.mirror: tuple[tuple[Any, ...], tuple[str, ...]] = (
+            tuple(module_sections),
+            tuple(hidden_kernel_fields),
+        )
         self._now_vm = now_vm
         # «Источник: …» line — exists only on an external card (spec
         # entity-preview delta «строку источника»); a kernel card has no
@@ -222,10 +252,16 @@ class EntityCardViewModel:
         # pinned entity in the live area is identified by its pin state
         # («Уже закреплена»), never by headline text.
         self.title = f"{CARD_TITLE_LABEL}: {entity_registry.display_label(entity_type)}"
-        rating = getattr(entity, "rating", 1)
-        if not isinstance(rating, int):
-            rating = 1
-        self.rating_text = f"Рейтинг: {rating}/20"
+        # The rating line prints only a rating the row actually carries
+        # (dd-card-redesign audit fix, spec «Поля, отсутствующие у типа
+        # сущности, SHALL не выводиться»): kernel entity types own the
+        # column, the event row does not — its card shows no rating line
+        # (the island hides an empty one), never a fabricated «1/20».
+        rating = getattr(entity, "rating", None)
+        if not isinstance(rating, int) or isinstance(rating, bool):
+            self.rating_text = ""
+        else:
+            self.rating_text = f"Рейтинг: {rating}/20"
 
         start_bc = era_flag(getattr(entity, "start_bc", False))
         end_bc = era_flag(getattr(entity, "end_bc", False))
@@ -293,6 +329,10 @@ class EntityCardViewModel:
             "musicUrl": self.music_url,
             "imageSource": self.image_source,
             "sections": self.sections,
+            # The module mirror under the short fields (task 7.1); empty
+            # while no module speaks — the island's Repeater paints nothing
+            # and the render stays bit-for-bit the pre-change card.
+            "moduleSections": self.module_sections,
             "relatedSections": self.related_sections,
         }
 
@@ -413,6 +453,12 @@ class EntityCardViewModel:
         description = getattr(self.entity, "description", None)
         sections: list[dict[str, str]] = []
         for key, label, attr in _TEXT_FIELDS:
+            if key in self._hidden_kernel_fields:
+                # dd-card-redesign task 7.1 (spec «текстовые поля ядра
+                # „Характеристики" и „Предыстория" в предпросмотре SHALL
+                # скрываться, как в карточке»): the module replaces the text
+                # with its mirror sections; storage keeps the value whole.
+                continue
             if key in ("characteristics", "backstory"):
                 value = getattr(description, attr, "") if description else ""
             else:

@@ -75,11 +75,11 @@ _SOURCE_SAMPLES: list[tuple[str, str, str]] = [
 # moved anchor fails the test instead of silently skipping the proof).
 _INJECTIONS = [
     ("EntityCardRoot.qml",
-     '                                text: "Бессрочно"\n',
-     '                                Accessible.name: ""\n'),
+     '                                        text: "Бессрочно"\n',
+     '                                        Accessible.name: ""\n'),
     ("EntityCardRoot.qml",
-     '                            text: modelData.label\n',
-     '                            Accessible.name: ""\n'),
+     '                        text: modelData.label\n',
+     '                        Accessible.name: ""\n'),
     ("EventTypesRoot.qml",
      '                        text: "Добавить"\n',
      '                        Accessible.name: ""\n'),

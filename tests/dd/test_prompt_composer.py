@@ -59,7 +59,7 @@ VOCABULARY_HEADER = (
 RESOURCE_DIGESTS: dict[str, str] = {
     "skeletons/dataset-section.txt": "a7a57844b0b0b580ae3b47da79eaf0459c33ab05434291e5811497a1cf36bf68",
     "skeletons/spellbook.txt": "c682c95045c29a9be9eafd25b6c5ad59bab1a542f592175e6a557b67653e5985",
-    "skeletons/character.txt": "2d00e7247c5c50843158ebe39b2d747a2dc35fbfef8128d88b93337aae263fac",
+    "skeletons/character.txt": "04257b38d4ae3ee778f1635b0d2f06b087c4d3e2e23e4a5d0fa00a96259636af",
     "fewshot/classes.json": "3f4133c817131fed4758caeaf36e76af049f9159d8574faab1df5a03c10fc967",
     "fewshot/subclasses.json": "027291c7aafbad73c1f32f33ea84738148906018b2be814b3942b47917000085",
     "fewshot/races.json": "0c15d88c6cda15c0aa4dabd867b0295d9bb5983a2916b6ee4e54fb7c126230a8",

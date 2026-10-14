@@ -192,6 +192,8 @@ class EntityPreviewViewModel(QObject):
         self,
         pins: Sequence[tuple[str, Any]],
         live: tuple[str, Any] | None,
+        mirror: dict[tuple[str, Any], tuple[tuple[Any, ...], tuple[str, ...]]]
+        | None = None,
     ) -> None:
         """Paint one full frame: pinned cards in pin order, the live pair (if
         any) last. A re-show replaces the values (spec «Сохранение карточки
@@ -215,9 +217,17 @@ class EntityPreviewViewModel(QObject):
 
         Fullsize relocation (NRI-0028 Д2): the frames stay whole, so the
         expansion key is reconciled against each incoming frame — see
-        :meth:`_relocate_fullsize_key`."""
+        :meth:`_relocate_fullsize_key`.
+
+        The optional ``mirror`` map (dd-card-redesign task 7.1/7.2, design
+        Д5) carries the module's per-pair ``(sections, hidden_fields)`` the
+        connector read through the source doors; a slot whose mirror changed
+        is a changed slot — its card rebuilds with a fresh rev and repaints
+        the sections from the top, while unchanged neighbours keep theirs
+        (the reuse rule applies to the mirror exactly as to the row)."""
         key_before = self._fullsize_key
         self._fullsize_key = self._relocate_fullsize_key(key_before, pins, live)
+        mirror_map = mirror or {}
         previous = {
             (card.pinned, card.entity_type, card.entity_id): card
             for card in self._cards
@@ -226,11 +236,18 @@ class EntityPreviewViewModel(QObject):
         rebuilt = False
         pinned_pairs: set[tuple[str, Any]] = set()
         for index, (entity_type, entity) in enumerate(pins):
+            pair = (entity_type, slot_id_of(entity))
             card, reused = self._slot_card(
-                previous, True, entity_type, entity, index, PIN_STATE_UNPIN
+                previous,
+                True,
+                entity_type,
+                entity,
+                index,
+                PIN_STATE_UNPIN,
+                mirror_map.get(pair),
             )
             rebuilt = rebuilt or not reused
-            pinned_pairs.add((entity_type, card.entity_id))
+            pinned_pairs.add(pair)
             cards.append(card)
         if live is not None:
             live_pair = (live[0], slot_id_of(live[1]))
@@ -241,6 +258,7 @@ class EntityPreviewViewModel(QObject):
                 live[1],
                 len(pins),
                 self._live_pin_state(live_pair, pinned_pairs),
+                mirror_map.get(live_pair),
             )
             rebuilt = rebuilt or not reused
             cards.append(card)
@@ -308,6 +326,7 @@ class EntityPreviewViewModel(QObject):
         entity: Any,
         slot_index: int,
         pin_state: str,
+        mirror_entry: tuple[tuple[Any, ...], tuple[str, ...]] | None = None,
     ) -> tuple[EntityCardViewModel, bool]:
         """The card for one slot: the previous construction when the slot is
         unchanged (same pair, same row object whose rendered fields still
@@ -317,13 +336,24 @@ class EntityPreviewViewModel(QObject):
         path's session identity map mutates the row IN PLACE mid-transaction
         (pinned by the e2e save tests), so the very same object can arrive
         with new values — the fingerprint of the rendered fields is what
-        separates a real edit from a re-presentation."""
+        separates a real edit from a re-presentation.
+
+        ``mirror_entry`` (task 7.2) is the pair's module mirror as the frame
+        carries it — ``(sections, hidden_fields)`` or ``None`` for silence.
+        It joins the reuse gate through the card's own ``mirror`` stamp: a
+        mirror that moved under an unchanged row (a card save with new
+        mechanics, the module switched between frames) is a changed slot and
+        rebuilds with a fresh rev, exactly like changed row values do."""
         pair = (entity_type, slot_id_of(entity))
+        incoming_mirror = (
+            ((), ()) if mirror_entry is None else (tuple(mirror_entry[0]), tuple(mirror_entry[1]))
+        )
         card = previous.get((pinned,) + pair)
         if (
             card is not None
             and card.entity is entity
             and card.pin_state == pin_state
+            and card.mirror == incoming_mirror
             and card.content_fingerprint == content_fingerprint(entity_type, entity)
         ):
             card.slot_index = slot_index
@@ -338,6 +368,8 @@ class EntityPreviewViewModel(QObject):
                 slot_index=slot_index,
                 pin_state=pin_state,
                 rev=self._rev_seq,
+                module_sections=incoming_mirror[0],
+                hidden_kernel_fields=incoming_mirror[1],
             ),
             False,
         )

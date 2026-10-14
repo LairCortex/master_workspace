@@ -129,6 +129,84 @@ _MIGRATIONS = [
 # color_index is a 1-based index into the color.chart.1..8 token palette.
 _DEFAULT_EVENT_TYPES = ("Сюжет", "Побочное", "Слух", "Встреча", "Ров будней", "Находка")
 
+# ── dd-card-redesign (task 2.2, design Д6): the module's mechanics storage ──
+#
+# Design Д6 routes the module's NEW additive schema through this file
+# (список/перестройка, alembic не используется). The migration is DDL-neutral
+# for games that never carried the module tables: the guard is the presence
+# of the module's own ``dd_character_ext`` table — an ordinary game keeps its
+# schema byte-for-byte (the module's own door, ``ensure_dd_tables``, creates
+# the fresh-shape tables when the module is enabled). The hand-written DDL
+# mirrors the module's ORM declarations (the kernel must not import
+# ``app.dd`` — the layers stay one-way); the module's storage tests pin the
+# two shapes against each other.
+_DD_MECHANICS_COLUMNS = [
+    # The six ability values + speed are nullable INTEGERs: «не задано» is
+    # the honest absence and an old row survives untouched (spec dnd-
+    # character-mechanics; derived numbers are never stored).
+    ("strength", "INTEGER"),
+    ("dexterity", "INTEGER"),
+    ("constitution", "INTEGER"),
+    ("intelligence", "INTEGER"),
+    ("wisdom", "INTEGER"),
+    ("charisma", "INTEGER"),
+    ("speed", "INTEGER"),
+    # Alignment: NULL = «не задано», the nine values are the module's own
+    # vocabulary; slots/prof ride the module's JSON codecs as TEXT.
+    ("alignment", "TEXT"),
+    ("slots_json", "TEXT"),
+    ("prof_json", "TEXT"),
+]
+
+#: The feat-link table, column-for-column the module's
+#: ``DdCharacterFeatLinkModel`` (the spell-link form copied, design Д6).
+#: ``CREATE TABLE IF NOT EXISTS`` keeps the statement idempotent on its own.
+_DD_FEAT_LINK_DDL = """
+CREATE TABLE IF NOT EXISTS dd_character_feat_link (
+    id INTEGER NOT NULL,
+    character_id INTEGER NOT NULL,
+    source_key VARCHAR NOT NULL,
+    ref_id VARCHAR NOT NULL,
+    snapshot_name VARCHAR NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY (character_id) REFERENCES characters (id) ON DELETE CASCADE
+)
+"""
+
+
+async def _migrate_dd_character_mechanics(conn) -> None:
+    """Give a pre-redesign module game its mechanics columns and the feat
+    link table — additively and idempotently (task 2.2, design Д6).
+
+    * no ``dd_character_ext`` table → the module was never enabled on this
+      game: nothing to add, its schema stays byte-for-byte the kernel one;
+    * columns are added one by one only when ``PRAGMA table_info`` says they
+      are absent — a second run (or a fresh-shape table from the module's
+      own ``create_all``) skips them, neither failing nor duplicating;
+    * the feat link table appears only when absent (the spec's «повторный
+      запуск идемпотентен»); rows of ``dd_character_ext`` are never touched,
+      so an old character's face reads on without losses."""
+    tables = {
+        row[0]
+        for row in (
+            await conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+    }
+    if "dd_character_ext" not in tables:
+        return
+    existing = {
+        row[1]
+        for row in (await conn.exec_driver_sql("PRAGMA table_info(dd_character_ext)")).fetchall()
+    }
+    for column, col_type in _DD_MECHANICS_COLUMNS:
+        if column in existing:
+            continue
+        await conn.exec_driver_sql(
+            f"ALTER TABLE dd_character_ext ADD COLUMN {column} {col_type}"
+        )
+    if "dd_character_feat_link" not in tables:
+        await conn.exec_driver_sql(_DD_FEAT_LINK_DDL)
+
 
 def _db_file_from_url(database: str | None) -> Path | None:
     """The SQLite file behind an engine URL; ``None`` for memory/temporary DBs."""
@@ -296,6 +374,15 @@ async def init_db(engine, image_dir: Path | str | None = None) -> None:
             await conn.exec_driver_sql(
                 f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
             )
+
+    # dd-card-redesign (task 2.2, design Д6): the module's mechanics columns
+    # and the feat link table. Guarded by the module's own table, so a game
+    # that never carried the module keeps its schema untouched and a second
+    # pass over a migrated file neither fails nor duplicates (the same
+    # PRAGMA-decided idempotence as the loop above). Runs after the kernel
+    # ALTERs and before the data migrations: the DDL phase is over here.
+    async with engine.begin() as conn:
+        await _migrate_dd_character_mechanics(conn)
 
     # Migrate end_date NOT NULL → nullable
     async with engine.begin() as conn:

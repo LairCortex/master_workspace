@@ -4,7 +4,7 @@
 
 Привязки — объектами вида {"id": "...", "name": "..."}: id — slug записи ровно из словаря идентификаторов подключённых источников запроса, name — снимок имени из этого словаря. Заклинания называй только слагами из того же словаря. Если идентификатора нужной сущности в словаре нет — просто не пиши эту привязку.
 
-Числовые механические поля (stats, skills, bonuses, bonusesSkills, bonusesStats, weaponsList, resources, coins, spells.slots) НЕ пиши — их добирает лист Long Story Short.
+Числовые и списочные механические поля (stats, skills, bonuses, bonusesSkills, bonusesStats, weaponsList, resources, coins, spells.slots, speed, alignment, feats) НЕ пиши — их добирает карточка приложения и лист Long Story Short.
 
 Текстовые блоки — объектом blocks: каждое значение либо готовый текст, либо документ форматированного редактора (узлы doc/paragraph/text/formula). HTML и blockquote запрещены. Формулы в тексте — латиницей заглавными переменными ([STR], [PROF]).
 

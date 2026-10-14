@@ -7,6 +7,7 @@ data, call the services, and refresh the panels.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
@@ -179,6 +180,17 @@ class ApplicationWiring(QObject):
         self._preview_pins: list[tuple[str, Any]] = []
         self._preview_live: tuple[str, Any] | None = None
         self._preview_rows: dict[tuple[str, Any], Any] = {}
+        # dd-card-redesign task 7.1 (design Д5): the module mirrors of the
+        # shown pairs, keyed by the same pair grammar — ``(sections,
+        # hidden_fields)`` as the source doors answered them. Rides the
+        # frames into the column VM (its reuse gate), refreshed at the seats
+        # that (re)load a pair (selection, restore, the pair's card save)
+        # and pruned to the frame at every push; the module leaving the live
+        # composition empties it wholesale («без модуля предпросмотр не
+        # отличается»).
+        self._preview_mirror: dict[
+            tuple[str, Any], tuple[tuple[Any, ...], tuple[str, ...]]
+        ] = {}
         # Unified five-sheet import (rework 4.3): writes through the session/
         # ORM in apply_plan, only the image ingest pipeline is a dependency.
         self._xlsx_import = XlsxImportService(image_store=app._image_store)
@@ -192,8 +204,14 @@ class ApplicationWiring(QObject):
     def set_external_sources(self, sources: Sequence[Any]) -> None:
         """Re-hand-out for a module joined to the LIVE composition: dialogs
         are built per opening from the CURRENT list, so updating the carrier
-        here is enough for every dialog opened afterwards."""
+        here is enough for every dialog opened afterwards. The preview
+        mirrors are read through the SAME doors (dd-card-redesign task 7.1),
+        so the whole mirror cache retires with the source list it was read
+        from — a module leaving the composition cannot leave its sections
+        painted («без модуля предпросмотр не отличается»); the next seat
+        reads fresh mirrors from the CURRENT doors."""
         self._external_sources = tuple(sources)
+        self._preview_mirror.clear()
 
     def _spawn(self, coro: Coroutine) -> asyncio.Task:
         """Schedule ``coro`` as a task serialized against the shared session.
@@ -217,8 +235,20 @@ class ApplicationWiring(QObject):
         return self._spawn(coro)
 
     async def _run_locked(self, coro: Coroutine) -> Any:
-        async with self._session_lock:
-            return await coro
+        try:
+            async with self._session_lock:
+                return await coro
+        except asyncio.CancelledError:
+            # A released widget cancels its reads while they still queue for
+            # the lock: the wrapper dies at the acquisition point and the
+            # passed coroutine was never entered — closing it here is the
+            # honest disposal (leaving it for the collector would print a
+            # never-awaited RuntimeWarning for a cancellation the release
+            # asked for on purpose). A cancellation that arrives INSIDE
+            # ``await coro`` already reaches the coroutine itself; there
+            # ``close()`` is a no-op on the finished frame.
+            coro.close()
+            raise
 
     # ── public surface for the composition root (task 6.4, finding B2) ──────
     # The application drives a couple of connector-owned flows (reload after a
@@ -628,7 +658,7 @@ class ApplicationWiring(QObject):
                         # The unit of work is the finish (design D4): it persists on
                         # clean exit, reverts + re-raises on any failure.
                         async with self._uow.transaction():
-                            await entity_service.create_entity(
+                            created = await entity_service.create_entity(
                                 characteristics=result.characteristics,
                                 backstory=result.backstory,
                                 **result.fields,
@@ -644,6 +674,15 @@ class ApplicationWiring(QObject):
                         dialog.finish_saving(False)
                         return
                     dialog.finish_saving(True)
+                    # dd-card-redesign (checkpoint-2 audit, spec «Новая
+                    # карточка с пустыми разделами»: «сохранение создаёт
+                    # персонажа и расширение»): the module extensions of the
+                    # new row join through the sources' optional creation
+                    # door, right after the kernel row landed — the same
+                    # sequential posture as the event save's staged tab hooks.
+                    await self._knock_creation_door(
+                        window, entity_type, created.id
+                    )
 
                 dialog = await self._open_entity_card(
                     entity_type, parent=window, on_saved=on_entity_saved,
@@ -727,6 +766,12 @@ class ApplicationWiring(QObject):
                     # Refresh detail panel
                     await detail_vm.load_details(result.event_id)
                     window.detail_panel.show_event(detail_vm.event)
+                    # dd-card-redesign audit fix: a shown event repaints from
+                    # the just-written state — row AND module mirror, so the
+                    # «Встреча» composition saved through the tab hook above
+                    # reaches the column with this frame (spec entity-preview
+                    # «Обновление показанной сущности … перекрашивать секции»).
+                    await self._repaint_event_in_preview(result.event_id)
                     dialog.finish_saving(True)
 
                 dialog.saved.connect(lambda result: self._spawn(on_event_updated(result)))
@@ -827,7 +872,11 @@ class ApplicationWiring(QObject):
         SYNC doors before any surface performed an async read, and an
         un-warmed cache would honestly answer every external pin dead.
         The restored record is the source's card, stamped with its pair id
-        exactly like the live seat of ``_show_external_in_preview``."""
+        exactly like the live seat of ``_show_external_in_preview``. Kernel
+        numeric ids resolve through the same loader the live seat uses —
+        entity services for entity types, the event service for events
+        (dd-card-redesign audit fix: a pinned event restores and repaints
+        its «Встреча» mirror through the very mirror loop below)."""
         if self._preview_pins_service is None:
             return
         for source in self._external_sources:
@@ -840,15 +889,58 @@ class ApplicationWiring(QObject):
                 self._preview_pins.append((entity_type, entity_id))
                 self._preview_rows[(entity_type, entity_id)] = card
                 continue
-            entity_service = self._app._get_entity_service(entity_type)
-            if entity_service is None:
-                continue
-            entity = await entity_service.get_entity(entity_id)
+            entity = await self._load_preview_row(entity_type, entity_id)
             if entity is None:
                 continue
             self._preview_pins.append((entity_type, entity_id))
             self._preview_rows[(entity_type, entity_id)] = entity
+        # Task 7.1: the restored pins ask for their mirrors too — the
+        # sources are already warmed above, so a dataset-backed mirror reads
+        # from the current caches exactly like the restored card does.
+        for pair in list(self._preview_pins):
+            await self._refresh_preview_mirror(pair)
         self._push_preview_frame()
+
+    async def _external_entity_created(self, entity_type: str, entity_id: int) -> None:
+        """The optional creation door of the external sources
+        (dd-card-redesign, checkpoint-2 audit; spec dnd-character-extension
+        «Новая карточка с пустыми разделами» — «сохранение создаёт персонажа
+        и расширение»): right after the kernel row of a new entity landed,
+        every visible source answering the duck ``on_entity_created(key,
+        source_id)`` gets the pair and may stand its extension up. Awaited
+        results ride this connector task (the same session lock as every
+        other connector write); a refusal raises to the caller's modal —
+        a module that cannot explain itself is the user's news, not a
+        silence. A source without the door decorates nothing (the kernel-
+        only game costs no special casing)."""
+        for source in self._external_sources:
+            if not getattr(source, "visible", True):
+                continue
+            door = getattr(source, "on_entity_created", None)
+            if not callable(door):
+                continue
+            result = door(entity_type, str(entity_id))
+            if inspect.isawaitable(result):
+                await result
+
+    async def _knock_creation_door(
+        self, window, entity_type: str, entity_id: int
+    ) -> None:
+        """The new-row creation knock with the report the save path owes the
+        user (dd-card-redesign, checkpoint-2 audit; spec dnd-character-
+        extension «сохранение создаёт персонажа и расширение»): the kernel row
+        has already landed and the sheet has reported success, so a source
+        whose creation door refuses is a partial-extension news — named in a
+        modal, never a silence. A clean knock reports nothing (the common
+        case)."""
+        try:
+            await self._external_entity_created(entity_type, entity_id)
+        except Exception as exc:  # noqa: BLE001 — the modal names it
+            QMessageBox.critical(
+                window,
+                "Ошибка",
+                "Не удалось создать модульный раздел новой сущности: " f"{exc}",
+            )
 
     def _external_card_for(self, key: str, source_id: str) -> Any:
         """The stamped, read-only card of one external pair (the seat record
@@ -868,18 +960,93 @@ class ApplicationWiring(QObject):
             return replace(card, source_id=source_id)
         return None
 
+    async def _read_mirror_pair(
+        self, entity_type: str, entity_id: Any
+    ) -> tuple[tuple[Any, ...], tuple[str, ...]] | None:
+        """Read one pair's module mirror through the source doors
+        (dd-card-redesign task 7.1, design Д5).
+
+        The connector is the one bridge between the preview column and the
+        protocol: the column VM stays Qt-plain and never names a module,
+        the sources answer the kernel vocabulary. The sections door may
+        answer a tuple or an AWAITABLE of one (the character/encounter rows
+        live behind an async read — the protocol's task-7.1 posture), and
+        awaited inside this task the door rides the same session lock as
+        every other connector read. The hidden kernel-field set rides the
+        card's SYNC blocks door (one knowledge, one place: the flag the
+        card hides is the flag the preview hides). A door that raises is
+        one source's silence — journalled, the other sources still answer;
+        a source that implements neither door is skipped (the getattr
+        posture of the block host, the kernel-only game costs nothing)."""
+        from app.presentation.modules.protocol import CardTabTarget
+
+        sections: list = []
+        hidden: list[str] = []
+        for source in self._external_sources:
+            if not source.visible:
+                continue
+            try:
+                door = getattr(source, "module_sections", None)
+                if door is not None:
+                    answer = door(entity_type, str(entity_id))
+                    if inspect.isawaitable(answer):
+                        answer = await answer
+                    sections.extend(answer or ())
+                blocks_door = getattr(source, "module_blocks", None)
+                if blocks_door is not None:
+                    frame = blocks_door(
+                        CardTabTarget(key=entity_type, source_id=str(entity_id))
+                    )
+                    for name in frame.hidden_fields:
+                        if name not in hidden:
+                            hidden.append(name)
+            except Exception:  # noqa: BLE001 — one source's failure is silence
+                logging.getLogger("app.wiring").warning(
+                    "Не удалось прочитать зеркало модуля для %s/%s — "
+                    "предпросмотр печатает поля ядра",
+                    entity_type,
+                    entity_id,
+                    exc_info=True,
+                )
+        if not sections and not hidden:
+            return None
+        return (tuple(sections), tuple(hidden))
+
+    async def _refresh_preview_mirror(self, pair: tuple[str, Any]) -> None:
+        """Re-read one pair's mirror into the slot state (the write seat of
+        :meth:`_read_mirror_pair`; ``None`` — silence — drops the entry, so
+        the frame pushes the pair without sections and a later frame cannot
+        resurrect a stale mirror)."""
+        entry = await self._read_mirror_pair(*pair)
+        if entry is None:
+            self._preview_mirror.pop(pair, None)
+        else:
+            self._preview_mirror[pair] = entry
+
     def _push_preview_frame(self) -> None:
         """The facade's single write channel (design Д1): the full frame
         derived from the slot state — pinned pairs in pin order with their
         cached rows, the live pair last. Every caller has just established
-        the cache entries this reads."""
+        the cache entries this reads. The module mirrors ride by pair (task
+        7.1): the map carries only the frame's pairs, so a card's reuse
+        stamp sees exactly the mirror its own pair was read with."""
         pins = [(t, self._preview_rows[(t, i)]) for t, i in self._preview_pins]
         live = (
             None
             if self._preview_live is None
             else (self._preview_live[0], self._preview_rows[self._preview_live])
         )
-        self._window.entity_preview.show_slots(pins, live)
+        frame_pairs = set(self._preview_pins)
+        if self._preview_live is not None:
+            frame_pairs.add(self._preview_live)
+        self._preview_mirror = {
+            pair: mirror
+            for pair, mirror in self._preview_mirror.items()
+            if pair in frame_pairs
+        }
+        self._window.entity_preview.show_slots(
+            pins, live, dict(self._preview_mirror)
+        )
 
     async def _save_preview_pins(self) -> None:
         """Persist the current pin list (design Д3: one save per pin/unpin);
@@ -923,24 +1090,63 @@ class ApplicationWiring(QObject):
         await self._save_preview_pins()
         self._push_preview_frame()
 
+    async def _load_preview_row(
+        self, entity_type: str, entity_id: int
+    ) -> Any:
+        """Load one KERNEL preview pair (dd-card-redesign audit fix, spec
+        entity-preview «Событие показывает встречу»): entity types read their
+        ``EntityService`` from the catalog; the ``event`` — a registry type
+        with no EntityService (its write path is ``EventService``) — reads
+        its row through the connector's own event service, so a mention
+        anchor of an event inside preview text seats like any other target
+        and a stored event pin restores (spec preview-pins «числовой — для
+        сущностей ядра»: the event id is a kernel id). A connector built
+        without the event service, any other unknown type key and a vanished
+        row all answer ``None`` honestly — the silent-miss posture."""
+        entity_service = self._app._get_entity_service(entity_type)
+        if entity_service is not None:
+            return await entity_service.get_entity(entity_id)
+        if entity_type == "event" and self._event_service is not None:
+            return await self._event_service.get_event(entity_id)
+        return None
+
+    async def _repaint_event_in_preview(self, event_id: int) -> None:
+        """Repaint the column after an event save (dd-card-redesign audit
+        fix, spec entity-preview «Обновление показанной сущности … SHALL
+        перекрашивать секции с текущего состояния»): the entity-card twin of
+        :meth:`_on_entity_click`'s post-save block — a shown event (pin,
+        live, or both duplicate faces) reloads its row and re-reads the
+        module mirror AFTER the staged tab writes landed (the «Встреча»
+        overlay is saved by the dialog's tab hook just above the call),
+        then pushes the frame; an event shown nowhere never reaches the
+        column (the membership check answers for every other save)."""
+        pair = ("event", event_id)
+        if pair not in self._preview_pins and pair != self._preview_live:
+            return
+        refreshed = await self._event_service.get_event(event_id)
+        if refreshed is None:
+            return
+        self._preview_rows[pair] = refreshed
+        await self._refresh_preview_mirror(pair)
+        self._push_preview_frame()
+
     async def _show_in_preview(self, entity_type: str, entity_id: int) -> bool:
         """Show one entity in the column's LIVE area (NRI-0025 design Д4:
         the old single-card «shown» channel became the live pointer). Load
-        through its entity service, seat the pair as live, push the frame.
-        True when the live area shows that pair afterwards. The pair already
-        live reloads NOTHING and pushes no frame (spec «Повторный выбор
-        ничего не делает», which also swallows the ``entitySelected`` echo
-        of :meth:`DetailPanel.select_entity` below). Matching a PIN is
-        deliberately not checked — re-selecting a pinned entity is the
-        user's conscious duplicate (spec «Дубль закреплённой сущности»).
+        through its kernel service (:meth:`_load_preview_row` — entity
+        service, or the event service for an event), seat the pair as live,
+        push the frame. True when the live area shows that pair afterwards.
+        The pair already live reloads NOTHING and pushes no frame (spec
+        «Повторный выбор ничего не делает», which also swallows the
+        ``entitySelected`` echo of :meth:`DetailPanel.select_entity` below).
+        Matching a PIN is deliberately not checked — re-selecting a pinned
+        entity is the user's conscious duplicate (spec «Дубль закреплённой
+        сущности»).
         A dead type key or a vanished row keeps the live pair in place: the
         broken-mention posture of task 4.5 survives into the wiring."""
         if self._preview_live == (entity_type, entity_id):
             return True
-        entity_service = self._app._get_entity_service(entity_type)
-        if not entity_service:
-            return False
-        entity = await entity_service.get_entity(entity_id)
+        entity = await self._load_preview_row(entity_type, entity_id)
         if entity is None:
             return False
         previous = self._preview_live
@@ -950,6 +1156,10 @@ class ApplicationWiring(QObject):
         # paints that pair (the shared duplicate row).
         if previous is not None and previous not in self._preview_pins:
             self._preview_rows.pop(previous, None)
+        # Task 7.1: the pair's module mirror is read with the row — every
+        # new live seat (and only a real seat: the no-op early return above
+        # keeps «повторный выбор ничего не делает») rides the fresh mirror.
+        await self._refresh_preview_mirror((entity_type, entity_id))
         self._push_preview_frame()
         return True
 
@@ -1541,6 +1751,14 @@ class ApplicationWiring(QObject):
                     refreshed = await entity_service.get_entity(entity_id)
                     if refreshed is not None:
                         self._preview_rows[pair] = refreshed
+                        # Task 7.2: «сохранение карточки» re-reads the
+                        # mirror with the row — the saved character may have
+                        # gained/lost mechanics through the module's write
+                        # handlers on this very card, and the pushed frame
+                        # must carry the sections as they are NOW (an
+                        # unchanged mirror still matches the card's stamp,
+                        # so unchanged copies keep their rev and scroll).
+                        await self._refresh_preview_mirror(pair)
                         self._push_preview_frame()
                 dialog.finish_saving(True)
 

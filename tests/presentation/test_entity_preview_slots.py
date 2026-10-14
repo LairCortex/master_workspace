@@ -904,3 +904,151 @@ def test_an_unchanged_frame_with_active_fullsize_announces_nothing():
     assert [(p["pinned"], p["entityId"], p["fullsize"]) for p in vm.panes] == [
         (False, 9, True)
     ]
+
+
+# ── dd-card-redesign task 7.1/7.2: the mirror rides the frame and the reuse ──
+
+
+from app.presentation.modules.protocol import ModuleSection  # noqa: E402
+
+
+def _section(title: str, *lines: str) -> ModuleSection:
+    return ModuleSection(title=title, lines=lines)
+
+
+def test_a_frame_puts_sections_on_their_pair_and_hides_the_kernel_texts():
+    """Task 7.1: the mirror rides the frame by pair — the pane carries the
+    sections dict-shaped for the Repeater, and the hidden kernel names leave
+    ``sections`` exactly like the card hides its «Основное» texts (storage
+    keeps the values; the render stays — the mirror's own sections speak)."""
+    vm = EntityPreviewViewModel()
+    character = _entity()
+    mirror = {
+        ("character", 4): (
+            (_section("Происхождение", "Вид: Дворф"), _section("Черты", "Бдительность")),
+            ("characteristics", "backstory"),
+        )
+    }
+
+    vm.show_slots([], ("character", character), mirror)
+
+    pane = vm.panes[0]
+    assert pane["moduleSections"] == [
+        {"title": "Происхождение", "lines": ["Вид: Дворф"]},
+        {"title": "Черты", "lines": ["Бдительность"]},
+    ]
+    assert [section["key"] for section in pane["sections"]] == ["personality", "tasks"]
+
+
+def test_a_frame_without_a_mirror_is_the_pre_change_render():
+    """The backward-compatible half of the frame channel: no mirror argument
+    (every pre-change caller) — no sections, no hiding, the keys whole."""
+    vm = EntityPreviewViewModel()
+    character = _entity()
+
+    vm.show_slots([], ("character", character))
+
+    pane = vm.panes[0]
+    assert pane["moduleSections"] == []
+    assert [section["key"] for section in pane["sections"]] == [
+        "characteristics",
+        "backstory",
+        "personality",
+        "tasks",
+    ]
+
+
+def test_the_mirror_lands_on_the_pinned_copy_of_the_same_pair_too():
+    """The map is keyed by pair, not by side — a duplicate pair paints its
+    mirror on both faces (the spec's «перекрашивает все копии» discipline)."""
+    vm = EntityPreviewViewModel()
+    pinned = _entity(id=7)
+    live = _entity(id=7)
+    mirror = {("character", 7): ((_section("Заклинания", "Огненный шар"),), ())}
+
+    vm.show_slots([("character", pinned)], ("character", live), mirror)
+
+    assert [pane["moduleSections"] for pane in vm.panes] == [
+        [{"title": "Заклинания", "lines": ["Огненный шар"]}],
+        [{"title": "Заклинания", "lines": ["Огненный шар"]}],
+    ]
+
+
+def test_a_mirror_change_under_an_unchanged_row_rebuilds_only_that_card():
+    """Task 7.2: the mirror joins the reuse stamp — a section change under
+    the very same row object (the module data moved mid-save) is a changed
+    slot: fresh rev, neighbours and their revs survive."""
+    vm = EntityPreviewViewModel()
+    moved = _entity(id=5)
+    stable = _entity(id=6)
+    first = {("character", 5): ((_section("Черты", "Атлет"),), ())}
+    vm.show_slots([("character", moved)], ("character", stable), first)
+    rev_before = {p["slotKey"]: p["rev"] for p in vm.panes}
+    changed: list[int] = []
+    vm.contentChanged.connect(lambda: changed.append(1))
+
+    # The same mirror re-presented: mute, every rev intact.
+    vm.show_slots([("character", moved)], ("character", stable), dict(first))
+    assert changed == []
+    assert {p["slotKey"]: p["rev"] for p in vm.panes} == rev_before
+
+    # The mirror moved (the save re-read answered another section set):
+    # exactly the mirrored card rebuilds, its frame-mate keeps its rev and
+    # therefore its remembered scroll.
+    second = {
+        ("character", 5): (
+            (_section("Черты", "Атлет"), _section("Заклинания", "Магическая стрела")),
+            (),
+        )
+    }
+    vm.show_slots([("character", moved)], ("character", stable), second)
+
+    after = {p["slotKey"]: p["rev"] for p in vm.panes}
+    pinned_key = next(key for key in after if key.endswith("#pinned"))
+    live_key = next(key for key in after if key.endswith("#live"))
+    assert after[pinned_key] != rev_before[pinned_key]
+    assert after[live_key] == rev_before[live_key]
+    assert changed == [1]
+
+
+def test_the_appearance_and_vanishing_of_a_mirror_both_rebuild():
+    """The gate is symmetric: silence→mirror and mirror→silence (the module
+    switched off under a shown card) both rebuild the card — the sections
+    never survive their own removal."""
+    vm = EntityPreviewViewModel()
+    character = _entity(id=5)
+    mirror = {("character", 5): ((_section("Личность", "Рост: 180"),), ())}
+    vm.show_slots([], ("character", character))
+    first_rev = vm.panes[0]["rev"]
+    vm.show_slots([], ("character", character), mirror)
+    assert vm.panes[0]["rev"] != first_rev
+    assert vm.panes[0]["moduleSections"] == [
+        {"title": "Личность", "lines": ["Рост: 180"]}
+    ]
+    second_rev = vm.panes[0]["rev"]
+
+    vm.show_slots([], ("character", character), {})
+
+    assert vm.panes[0]["rev"] != second_rev
+    assert vm.panes[0]["moduleSections"] == []
+
+
+def test_now_recount_keeps_the_sections_and_the_revs_of_a_mirrored_frame():
+    """Task 7.2 «сейчас» half: the age broadcast recounts in place — the
+    sections of every shown card survive it with their construction (rev),
+    which is exactly what tells the island's scroll memory the content is
+    the same."""
+    now = _NowStub(date(1203, 1, 1))
+    vm = EntityPreviewViewModel(now_vm=now)
+    character = _entity(id=5)
+    mirror = {("character", 5): ((_section("Происхождение", "Уровень: 3"),), ())}
+    vm.show_slots([], ("character", character), mirror)
+    rev_before = vm.panes[0]["rev"]
+
+    now.coord = date(1204, 1, 1)
+    now.nowChanged.emit()
+
+    pane = vm.panes[0]
+    assert pane["rev"] == rev_before
+    assert pane["ageText"] == "Возраст: 4 года"
+    assert pane["moduleSections"] == [{"title": "Происхождение", "lines": ["Уровень: 3"]}]

@@ -9,13 +9,13 @@ Two entry points, one tree of answers:
   the service, and every outcome (success with its warning list, refusal
   with the report lines, crash) gets its modeless box; a detach cancels an
   in-flight import in silence;
-* the «D&D» tab buttons: «Перезаписать из файла LSS…» asks the service for
-  the unconfirmed verdict, shows the Yes/No question ONLY for a clean
-  document, and on Yes re-requests the very bytes of the first read;
-  «Сохранить исходный файл…» prints the truth about a character with no
-  stored snapshot;
-* the no-dead-controls posture: without a composed service neither the
-  menu entry nor the tab buttons exist at all.
+* the card's file doors live on the «Основное» block channel since
+  dd-card-redesign task 5.5 — their flow (unconfirmed verdict, the Yes/No
+  question, the byte-for-byte confirmed re-request, the save-raw truth and
+  every crash belt) is pinned in ``test_character_main_blocks.py``;
+* the no-dead-controls posture: without a composed service the menu entry
+  does not exist at all (the door row's half of this posture is pinned
+  beside the flows above).
 
 The service door is a stub of canned outcomes; the decision tree itself
 belongs to ``test_character_import_service.py`` — what lives here is only
@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import types
 
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QPushButton
+from PySide6.QtWidgets import QMainWindow, QMessageBox
 
 from app.dd import module as dd_module
 from app.dd.application.character_import_service import (
@@ -35,15 +35,8 @@ from app.dd.application.character_import_service import (
     CharacterImportStatus,
 )
 from app.dd.application.dataset_index_service import IndexSnapshot
-from app.dd.domain.character import LINK_SLOTS, empty_ext
 from app.dd.domain.validation_report import CheckIssue, Severity, ValidationReport
 from app.dd.module import DD_CHARACTER_IMPORT_TITLE, DndModule
-from app.dd.presentation import character_tab_frames as frames
-from app.dd.presentation.character_tab_frames import (
-    IMPORT_OVERWRITE_TEXT,
-    SAVE_RAW_TEXT,
-    DndCharacterTabFrame,
-)
 from app.dd.presentation.section import (
     DD_CHARACTER_IMPORT_ACTION_TEXT,
     DndWindowSection,
@@ -70,14 +63,6 @@ def _pick(monkeypatch, target_module, path: str) -> None:
     monkeypatch.setattr(
         target_module.QFileDialog,
         "getOpenFileName",
-        staticmethod(lambda *args, **kwargs: (path, "")),
-    )
-
-
-def _pick_save(monkeypatch, path: str) -> None:
-    monkeypatch.setattr(
-        frames.QFileDialog,
-        "getSaveFileName",
         staticmethod(lambda *args, **kwargs: (path, "")),
     )
 
@@ -331,258 +316,3 @@ def test_unattached_belt_returns_in_silence(qtbot):
     attached.attach(window, types.SimpleNamespace(run_locked=None))  # type: ignore[arg-type]
     attached._on_character_import_requested()  # noqa: SLF001
     attached.detach()
-
-
-# ── the «D&D» tab file doors ───────────────────────────────────────────────
-
-
-class _TabService:
-    def __init__(self) -> None:
-        self.loads = 0
-
-    async def get_ext(self, character_id):
-        self.loads += 1
-        return empty_ext()
-
-    async def set_reference_link(self, character_id, slot, link):
-        pass
-
-    async def set_level(self, character_id, level):
-        pass
-
-    async def set_lss_sheet_id(self, character_id, sheet_id):
-        pass
-
-
-async def _open_tab(qtbot, importer) -> tuple[DndCharacterTabFrame, QMainWindow]:
-    window = QMainWindow()
-    qtbot.addWidget(window)
-    frame = DndCharacterTabFrame(
-        character_id=7,
-        service=_TabService(),  # type: ignore[arg-type]
-        dataset_index=types.SimpleNamespace(snapshot=lambda: _async_value(_EMPTY_SNAP)),
-        record_labels={type_key: type_key for _slot, _s, type_key in LINK_SLOTS},
-        run_locked=lambda coro: asyncio.ensure_future(coro),
-        import_service=importer,
-        parent=window,
-    )
-    await _drain()
-    return frame, window
-
-
-async def _async_value(value):
-    return value
-
-
-def _button(frame, object_name: str) -> QPushButton | None:
-    return frame.findChild(QPushButton, object_name)
-
-
-async def test_tab_without_a_service_prints_no_file_buttons(qtbot):
-    frame, _window = await _open_tab(qtbot, None)
-    assert _button(frame, "ddDndImportOverwrite") is None
-    assert _button(frame, "ddDndSaveRaw") is None
-
-
-async def test_overwrite_flow_question_yes_then_report_with_warnings(
-    qtbot, monkeypatch, tmp_path
-):
-    good = tmp_path / "c.json"
-    good.write_text("{}", encoding="utf-8")
-    importer = _StubImporter(
-        [
-            CharacterImportOutcome(
-                status=CharacterImportStatus.NEEDS_CONFIRMATION,
-                character_id=7,
-                message=OVERWRITE_CONFIRM_BODY,
-            ),
-            CharacterImportOutcome(
-                status=CharacterImportStatus.OVERWRITTEN,
-                character_id=7,
-                name="Грог",
-                message="Персонаж «Грог» перезаписан из файла LSS.",
-                report=ValidationReport.of([_warn("data.avatar", "аватар пропущен")]),
-            ),
-        ]
-    )
-    frame, window = await _open_tab(qtbot, importer)
-    loads_before = frame._service.loads  # noqa: SLF001
-    overwrite_button = _button(frame, "ddDndImportOverwrite")
-    assert overwrite_button.text() == IMPORT_OVERWRITE_TEXT
-    assert _button(frame, "ddDndSaveRaw").text() == SAVE_RAW_TEXT
-    _pick(monkeypatch, frames, str(good))
-    overwrite_button.click()
-    await _drain()
-    questions = [b for b in _boxes(window) if b.icon() == QMessageBox.Icon.Question]
-    assert len(questions) == 1
-    assert questions[0].text() == OVERWRITE_CONFIRM_BODY
-    assert importer.calls == [("{}", 7, False)]
-
-    questions[0].button(QMessageBox.StandardButton.Yes).click()
-    await _drain()
-    assert importer.calls == [("{}", 7, False), ("{}", 7, True)]  # the very bytes
-    boxes = _boxes(window)
-    assert any("перезаписан из файла LSS" in b.text() for b in boxes)
-    assert any("data.avatar — аватар пропущен" in b.text() for b in boxes)
-    assert frame._service.loads > loads_before  # the tab face reloaded  # noqa: SLF001
-
-
-async def test_overwrite_answered_no_requests_nothing(qtbot, monkeypatch, tmp_path):
-    good = tmp_path / "c.json"
-    good.write_text("{}", encoding="utf-8")
-    importer = _StubImporter(
-        [
-            CharacterImportOutcome(
-                status=CharacterImportStatus.NEEDS_CONFIRMATION,
-                character_id=7,
-                message=OVERWRITE_CONFIRM_BODY,
-            )
-        ]
-    )
-    frame, window = await _open_tab(qtbot, importer)
-    _pick(monkeypatch, frames, str(good))
-    _button(frame, "ddDndImportOverwrite").click()
-    await _drain()
-    question = [b for b in _boxes(window) if b.icon() == QMessageBox.Icon.Question][0]
-    question.button(QMessageBox.StandardButton.No).click()
-    await _drain()
-    assert importer.calls == [("{}", 7, False)]  # the бездействие half
-
-
-async def test_tab_refusal_answers_without_a_question_and_read_errors(
-    qtbot, monkeypatch, tmp_path
-):
-    importer = _StubImporter(
-        [
-            CharacterImportOutcome(
-                status=CharacterImportStatus.BLOCKED,
-                report=ValidationReport.of([_err("jsonType", "чужой файл")]),
-            )
-        ]
-    )
-    frame, window = await _open_tab(qtbot, importer)
-    bad = tmp_path / "bad.json"
-    bad.write_text("{{{", encoding="utf-8")
-    _pick(monkeypatch, frames, str(bad))
-    _button(frame, "ddDndImportOverwrite").click()
-    await _drain()
-    boxes = _boxes(window)
-    assert not any(b.icon() == QMessageBox.Icon.Question for b in boxes)
-    assert "Импорт отклонён — отчёт проверки:" in boxes[-1].text()
-    assert "jsonType — чужой файл" in boxes[-1].text()
-
-    broken = tmp_path / "b2.json"
-    broken.write_bytes(b"\xff\xfe")
-    _pick(monkeypatch, frames, str(broken))
-    _button(frame, "ddDndImportOverwrite").click()
-    await _drain()
-    assert "Не удалось прочитать файл" in _boxes(window)[-1].text()
-    # The empty pick stays a no-op even with the buttons on screen.
-    _pick(monkeypatch, frames, "")
-    _button(frame, "ddDndImportOverwrite").click()
-    await _drain()
-    assert importer.calls == [
-        ("{{{", 7, False)
-    ]  # only the refusal read reached the service
-
-
-async def test_tab_save_raw_all_three_answers(qtbot, monkeypatch, tmp_path):
-    class _SaveStub(_StubImporter):
-        def __init__(self, result: object) -> None:
-            super().__init__([])
-            self.result = result
-
-        async def save_raw_document(self, character_id, path):
-            self.calls.append(("save", character_id, path))
-            return self.result
-
-    target = str(tmp_path / "out.json")
-
-    saved = _SaveStub(True)
-    frame, window = await _open_tab(qtbot, saved)
-    _pick_save(monkeypatch, target)
-    _button(frame, "ddDndSaveRaw").click()
-    await _drain()
-    assert "байт-в-байт" in _boxes(window)[-1].text()
-    assert saved.calls == [("save", 7, target)]
-
-    empty = _SaveStub(False)
-    frame2, window2 = await _open_tab(qtbot, empty)
-    _pick_save(monkeypatch, target)
-    _button(frame2, "ddDndSaveRaw").click()
-    await _drain()
-    assert "ещё не импортирован файл LSS" in _boxes(window2)[-1].text()
-
-    class _BoomSave(_SaveStub):
-        async def save_raw_document(self, character_id, path):
-            raise OSError("диск отвалился")
-
-    boom = _BoomSave(False)
-    frame3, window3 = await _open_tab(qtbot, boom)
-    _pick_save(monkeypatch, target)
-    _button(frame3, "ddDndSaveRaw").click()
-    await _drain()
-    assert "Не удалось записать файл на диск" in _boxes(window3)[-1].text()
-
-    refused = _SaveStub(True)
-    frame4, window4 = await _open_tab(qtbot, refused)
-    _pick_save(monkeypatch, "")  # the отвод
-    _button(frame4, "ddDndSaveRaw").click()
-    await _drain()
-    assert refused.calls == []
-    assert _boxes(window4) == []
-
-
-async def test_tab_precheck_crash_answers_a_box(qtbot, monkeypatch, tmp_path):
-    class _Boom(_StubImporter):
-        async def import_character(self, content, **kwargs):  # noqa: ANN002, ANN003
-            raise RuntimeError("сервис лёг")
-
-    good = tmp_path / "c.json"
-    good.write_text("{}", encoding="utf-8")
-    frame, window = await _open_tab(qtbot, _Boom([]))
-    _pick(monkeypatch, frames, str(good))
-    _button(frame, "ddDndImportOverwrite").click()
-    await _drain()
-    assert "Не удалось проверить файл персонажа" in _boxes(window)[-1].text()
-
-
-async def test_tab_confirmed_rerequest_crash_answers_a_box(
-    qtbot, monkeypatch, tmp_path
-):
-    class _BoomSecond(_StubImporter):
-        async def import_character(self, content, *, character_id=None, confirmed=False):
-            self.calls.append((content, character_id, confirmed))
-            if confirmed:
-                raise RuntimeError("запись не прошла")
-            return CharacterImportOutcome(
-                status=CharacterImportStatus.NEEDS_CONFIRMATION,
-                character_id=character_id,
-                message=OVERWRITE_CONFIRM_BODY,
-            )
-
-    good = tmp_path / "c.json"
-    good.write_text("{}", encoding="utf-8")
-    frame, window = await _open_tab(qtbot, _BoomSecond([]))
-    _pick(monkeypatch, frames, str(good))
-    _button(frame, "ddDndImportOverwrite").click()
-    await _drain()
-    question = [b for b in _boxes(window) if b.icon() == QMessageBox.Icon.Question][0]
-    question.button(QMessageBox.StandardButton.Yes).click()
-    await _drain()
-    assert "Импорт персонажа не завершился" in _boxes(window)[-1].text()
-
-
-async def test_tab_report_belt_prints_the_confirmation_answer(qtbot):
-    # The belt of _report_import_outcome: a confirmed request does not ask
-    # twice — the honest message is printed once, as a plain notice.
-    frame, window = await _open_tab(qtbot, _StubImporter([]))
-    frame._report_import_outcome(  # noqa: SLF001 — the belt's own door
-        CharacterImportOutcome(
-            status=CharacterImportStatus.NEEDS_CONFIRMATION,
-            message=OVERWRITE_CONFIRM_BODY,
-        )
-    )
-    boxes = _boxes(window)
-    assert boxes[-1].text() == OVERWRITE_CONFIRM_BODY
-    assert boxes[-1].icon() == QMessageBox.Icon.Warning

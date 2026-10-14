@@ -180,9 +180,10 @@ def test_parse_builds_live_envelope_from_content_part():
 
 
 def test_mechanic_keys_never_reach_the_document_or_the_validator():
-    """Spec «Числовая механика остаётся LSS»: модель протащила все восемь
-    числовых ключей + счётчик spells.slots + служебные ключи — в документ и к
-    валидатору не попадает ничего (ни ошибок, ни предупреждений)."""
+    """Spec «Числовая механика остаётся LSS» + дельта dd-card-redesign:
+    модель протащила все механические ключи (восемь числовых + speed/
+    alignment/feats) + счётчик spells.slots + служебные ключи — в документ и
+    к валидатору не попадает ничего (ни ошибок, ни предупреждений)."""
     smuggled = _content(
         avatar="Портрет кисти мастера",
         stats={"str": {"value": 17}},
@@ -193,11 +194,14 @@ def test_mechanic_keys_never_reach_the_document_or_the_validator():
         weaponsList=[{"name": "Короткий меч"}],
         resources=[{"name": "Стрелы", "value": 12}],
         coins={"gp": 25},
+        speed=40,
+        alignment="хаотично-злой",
+        feats=[{"id": "lucky"}],
         wizardStep=4,
         choices={"feat": "Alert"},
     )
     smuggled["spells"]["slots"] = [{"level": 1, "value": 2}]
-    assert set(MECHANIC_KEYS) <= set(smuggled)  # все восемь действительно были
+    assert set(MECHANIC_KEYS) <= set(smuggled)  # все одиннадцать действительно были
 
     document = CharacterChannel(_context()).parse(
         json.dumps(smuggled, ensure_ascii=False)
@@ -585,3 +589,98 @@ def test_level_preselect_out_of_range_is_refused_in_russian():
         _context(level=42)
     with pytest.raises(ValueError, match=LEVEL_REFUSAL.replace("(", r"\(")):
         _context(level=True)  # булев притворства не проходит доменную гейту
+
+
+# ── дозаполнение и механики (dd-card-redesign task 6.3; spec «Дозаполнение
+# персонажа» — читает механики как состояние, числовых механик не пишет) ─────
+
+
+_MECH_CURRENT = {
+    "stats": {
+        "str": {"value": 18, "save": True},
+        "dex": {"value": 14},
+        "con": {"value": 16},
+        "int": {"value": 10},
+        "wis": {"value": 12},
+        "cha": {"value": 8},
+    },
+    "skills": {"athletics": {"proficient": True}},
+    "speed": 25,
+    "alignment": "хаотично-добрый",
+    "feats": [{"id": "alert", "name": "Наблюдательность"}],
+}
+
+
+def _mech_current_document() -> str:
+    """Документ с механиками из 6.2; одна привязка вырезана — гейт
+    дозаполнения требует хоть одно пустое поле."""
+    data = {
+        "name": "Грог",
+        "level": 5,
+        "info": {
+            "race": {"id": "Elf", "name": "Эльф"},
+            "subrace": {"id": "HighElf", "name": "Высший эльф"},
+            "charClass": {"id": "Fighter", "name": "Воин"},
+            "subclass": {"id": "BattleMaster", "name": "Боевой мастер"},
+        },
+        "blocks": {"Предыстория": "Своими словами мастера."},
+        "spells": {"list": ["fire-ball"], "slots": [{"level": 1, "value": 4}]},
+    }
+    data.update(_MECH_CURRENT)
+    return json.dumps(
+        {
+            "jsonType": "character",
+            "version": "2",
+            "data": json.dumps(data, ensure_ascii=False),
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_top_up_prompt_shows_mechanics_as_part_of_the_state():
+    """Спека «Дозаполнение персонажа»: механики — часть текущего состояния и
+    достаются модели в разобранном текущем документе (сборщик кладёт их в
+    документ с 6.2, дозаполнение читает документ как есть)."""
+    current = _mech_current_document()
+    context = _context(concept="", current_document=current)
+    channel = CharacterChannel(context)
+    _system, user = channel.build_prompt(context)
+    assert '"speed": 25' in user
+    assert "хаотично-добрый" in user
+    assert '"alert"' in user
+    # механики не поля дозаполнения — в список пустых не лезут
+    missing_line = user.split("Дозаполни только пустые поля: ")[1].split(".")[0]
+    assert missing_line == SLOT_CAPTIONS["background"]
+
+
+def test_top_up_keeps_current_mechanics_and_drops_smuggled_numbers():
+    """Spec «Числовая механика остаётся LSS» на пути дозаполнения: ответ
+    модели протаскивает stats/speed/alignment/feats/slots — в склеенный
+    документ попадают ТОЛЬКО текущие значения, числовые ключи ответа
+    отсекаются структурно, валидатор молчит."""
+    current = _mech_current_document()
+    channel = CharacterChannel(_context(current_document=current))
+    addition = json.dumps(
+        {
+            "blocks": {"Характер": "Сдержан в словах."},
+            "stats": {"str": {"value": 3}},
+            "speed": 1,
+            "alignment": "законно-добрый",
+            "feats": [{"id": "great-weapon-master"}],
+            "skills": {"stealth": {"proficient": True}},
+            "spells": {"list": ["mending"], "slots": [{"level": 9, "value": 1}]},
+        },
+        ensure_ascii=False,
+    )
+    data = _data_of(channel.parse(addition))
+    assert data["stats"] == _MECH_CURRENT["stats"]  # только текущие значения
+    assert data["speed"] == 25
+    assert data["alignment"] == "хаотично-добрый"
+    assert data["feats"] == _MECH_CURRENT["feats"]
+    assert data["skills"] == {"athletics": {"proficient": True}}
+    assert data["spells"] == {"list": ["fire-ball"], "slots": [{"level": 1, "value": 4}]}
+    assert data["blocks"]["Характер"] == "Сдержан в словах."  # текст — можно
+    document = channel.parse(addition)
+    report, parsed = CharacterValidatorService().validate(document)
+    assert [f"{i.path}: {i.message}" for i in report.errors] == []
+    assert parsed is not None

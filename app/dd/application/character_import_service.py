@@ -21,13 +21,19 @@ The tree:
    becomes a visible «Аватар» block), the five reference triples resolved
    through the connected-dataset index — snapshot name from the record when
    the set answers, snapshot name from the FILE when it does not (Д7) — the
-   level, the structural render and every text block of the document;
+   level, the structured mechanics the document answers (dd-card-redesign
+   task 6.1: the six scores, the boolean saving throws and skill
+   proficiencies, the speed, the slot grid, a known alignment and the feat
+   references — each family that FITTED is stored as structure and stops
+   printing its readable block; families that did not fit keep their blocks
+   as before), the structural render and every text block of the document;
 4. one ``GameSessionUoW.transaction()`` finishes the write (coding
    principle 3): entity row (create or in-place update), then the module's
-   ext row with the triples, the level, the RAW FILE VERBATIM and the named
-   blocks (structural first; a document block of the same name merges into
-   the same block below the render — nothing silently lost). Spell links
-   and the LSS sheet id are not derived from the file and stay untouched.
+   ext row with the triples, the level, the mechanics columns, the RAW FILE
+   VERBATIM and the named blocks (structural first; a document block of the
+   same name merges into the same block below the render — nothing silently
+   lost), and the feat rows replaced by the file's references. The sheet id
+   and the spell links are not derivable from the file and stay untouched.
 
 The raw snapshot is also the way back out: :meth:`save_raw_document` writes
 the stored bytes verbatim (spec scenario «Файл можно забрать обратно») —
@@ -38,7 +44,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
@@ -46,10 +52,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.dd.application.character_validator_service import CharacterValidatorService
-from app.dd.domain.character import INFO_KEYS, LINK_SLOTS, ReferenceLink, empty_ext
+from app.dd.domain.character import (
+    FEATS_SECTION,
+    INFO_KEYS,
+    LINK_SLOTS,
+    DdFeatLink,
+    ReferenceLink,
+    empty_ext,
+)
 from app.dd.domain.character_checks import CODE_CHAR_AVATAR
 from app.dd.domain.character_editor import editor_doc_to_text
-from app.dd.domain.character_render import structural_blocks
+from app.dd.domain.character_mechanics import ABILITY_KEYS
+from app.dd.domain.character_render import (
+    DocumentMechanics,
+    parse_document_mechanics,
+    structural_blocks,
+)
 from app.dd.domain.validation_report import CheckIssue, Severity, ValidationReport
 from app.dd.infrastructure.db.dd_models import encode_text_blocks
 from app.dd.infrastructure.repositories.dd_character_repository import (
@@ -59,7 +77,7 @@ from app.domain.entity_registry import EntityType
 from app.infrastructure.db.uow import GameSessionUoW
 
 if TYPE_CHECKING:
-    from app.dd.application.dataset_index_service import DatasetIndexService
+    from app.dd.application.dataset_index_service import DatasetIndexService, IndexSnapshot
     from app.application.services.entity_service import EntityService
     from app.infrastructure.images.store import ImageStore
 
@@ -149,11 +167,14 @@ class CharacterImportService:
         name = str(data.get("name") or "").strip()
         image_id, avatar_issues, avatar_block = await self._avatar(data.get("avatar"))
         issues.extend(avatar_issues)
-        blocks, block_issues = self._text_blocks(data)
+        snapshot = await self._index.snapshot() if self._index is not None else None
+        mechanics = parse_document_mechanics(data)
+        blocks, block_issues = self._text_blocks(data, mechanics)
         issues.extend(block_issues)
         if avatar_block is not None:
             blocks = self._merge_block(blocks, BLOCK_AVATAR, avatar_block)
-        links, level = await self._face(data)
+        links, level = self._face(data, snapshot)
+        feat_links = self._feat_links(mechanics, snapshot)
         report = ValidationReport.of(issues)
         async with self._uow.transaction():
             written_id = await self._write(
@@ -164,6 +185,8 @@ class CharacterImportService:
                 level=level,
                 content=content,
                 blocks=blocks,
+                mechanics=mechanics,
+                feat_links=feat_links,
             )
         if character_id is None:
             return CharacterImportOutcome(
@@ -240,14 +263,15 @@ class CharacterImportService:
             return image_id, [], None
         return None, [], text
 
-    async def _face(self, data: dict[str, Any]) -> tuple[dict[str, ReferenceLink], int | None]:
+    def _face(
+        self, data: dict[str, Any], snapshot: "IndexSnapshot | None"
+    ) -> tuple[dict[str, ReferenceLink], int | None]:
         """The five triples + the level. A connected record gives its live
         pair and its live name; a disconnected or absent record keeps the
         file's snapshot with an empty source (Д7 — the tab later annotates
         it, the service never re-resolves)."""
         info = data.get("info")
         info = info if isinstance(info, dict) else {}
-        snapshot = await self._index.snapshot() if self._index is not None else None
         links: dict[str, ReferenceLink] = {}
         for slot, section, _type_key in LINK_SLOTS:
             ref = info.get(INFO_KEYS[slot])
@@ -275,12 +299,39 @@ class CharacterImportService:
             level = None
         return links, level
 
-    def _text_blocks(self, data: dict[str, Any]) -> tuple[dict[str, str], list[CheckIssue]]:
-        """Structural blocks first (the fixed order of the render), then the
-        document's own text blocks in file order; a name clash merges the two
-        halves into one block (render above, the author's text below)."""
+    def _feat_links(
+        self, mechanics: DocumentMechanics, snapshot: "IndexSnapshot | None"
+    ) -> list[DdFeatLink]:
+        """Feat references read through the same resolution rule as the face
+        triples (Д7): a connected record gives its live pair and live name,
+        anything else keeps the file's snapshot with an empty source. The
+        feat wall is the file's to name — the import replaces it wholesale
+        (the card is replaced by the file, unlike the spell links the file
+        cannot speak)."""
+        links: list[DdFeatLink] = []
+        for ref_id, file_name in mechanics.feats:
+            if snapshot is not None:
+                found = None
+                for dataset_id in snapshot.ids:
+                    found = snapshot.entry(FEATS_SECTION, dataset_id, ref_id)
+                    if found is not None:
+                        break
+                if found is not None:
+                    links.append(DdFeatLink(dataset_id, ref_id, found.name))
+                    continue
+            links.append(DdFeatLink("", ref_id, file_name))
+        return links
+
+    def _text_blocks(
+        self, data: dict[str, Any], mechanics: DocumentMechanics
+    ) -> tuple[dict[str, str], list[CheckIssue]]:
+        """Structural blocks first (the fixed order of the render, minus the
+        families the mechanics intake laid out as structure, plus the blocks
+        for unreadable and unknown sections), then the document's own text
+        blocks in file order; a name clash merges the two halves into one
+        block (render above, the author's text below)."""
         blocks: dict[str, str] = {}
-        for name, text in structural_blocks(data):
+        for name, text in structural_blocks(data, mechanics=mechanics):
             blocks[name] = text
         issues: list[CheckIssue] = []
         raw_blocks = data.get("blocks")
@@ -326,6 +377,8 @@ class CharacterImportService:
         level: int | None,
         content: str,
         blocks: Mapping[str, str],
+        mechanics: DocumentMechanics,
+        feat_links: Sequence[DdFeatLink],
     ) -> int:
         catalog = self._entity_services()
         entity_service = catalog.get(EntityType.CHARACTER.value)
@@ -361,4 +414,24 @@ class CharacterImportService:
         # хранится всегда и остаётся источником правды»).
         ext_row.raw_document = content
         ext_row.text_blocks = encode_text_blocks(dict(blocks))
+        # The mechanics families the file answers replace the stored ones;
+        # a family the file does not speak (or does not speak legibly) goes
+        # back to «не задано» — the same replacement the absent level and
+        # the absent reference already obey (the file replaces the card).
+        scores = mechanics.scores
+        for key in ABILITY_KEYS:
+            setattr(ext_row, key, None if scores is None else scores[key])
+        ext_row.speed = mechanics.speed
+        ext_row.alignment = mechanics.alignment
+        repo.write_spell_slots(ext_row, mechanics.spell_slots)
+        repo.write_proficiencies(
+            ext_row,
+            mechanics.skill_proficiencies or frozenset(),
+            mechanics.saving_throws or frozenset(),
+        )
+        await repo.delete_all_feat_links(character_id)
+        for link in feat_links:
+            await repo.insert_feat_link(
+                character_id, link.source_key, link.ref_id, link.snapshot_name
+            )
         return character_id

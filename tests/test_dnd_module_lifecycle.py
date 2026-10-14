@@ -333,6 +333,9 @@ async def test_enable_on_ordinary_game_writes_flag_and_attaches(
         dd_tables, dd_rows = _dd_tables_snapshot(db_path)
         assert dd_tables == [
             "dd_character_ext",
+            # dd-card-redesign (task 2.2, design Д6): the feat-link table
+            # joins the same additive wave as the module's other tables.
+            "dd_character_feat_link",
             "dd_character_spell_link",
             # task 11.1: the encounter overlay joins the same additive wave
             "dd_encounter",

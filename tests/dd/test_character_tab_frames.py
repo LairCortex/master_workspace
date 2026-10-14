@@ -1,20 +1,21 @@
-"""The two module tabs of a character card, offscreen (add-dnd-game-face
-tasks 8.2/8.3).
+"""The shared module-tab doors and the «Заклинания» frame of a character card
+(add-dnd-game-face tasks 8.2/8.3; the slot grid of dd-card-redesign task 5.4;
+the «D&D» tab frame retired by task 5.5 — its pickers, level and sheet field
+are pinned in ``test_character_main_blocks.py``, its history picker moved to
+«Личность»).
 
-The frames are the module's half of the card; the kernel host (task 7.2) is
-tested apart. What is pinned here is the contract the reader gets:
+The frames are the module's half of the card; the kernel host is tested
+apart. What is pinned here is the contract the reader gets:
 
-* the «D&D» tab: five pickers built from the connected index with the stored
-  triple selected — a stored link whose source was disconnected comes back
-  as its snapshot under the «источник не подключён» mark, visible and
-  re-savable verbatim (spec «Снял чекбокs — карточка не немеет»);
-* every field writes on its own change through the injected ``run_locked``,
-  the level is the combo's own 1…20 shape, the «Открыть в браузере» button
-  follows the id's keystrokes and hands the digital LSS address out;
 * the «Заклинания» tab: bindings print their origin through the two read
   doors (SRD slugs, then grimoires), add and remove reload inside the one
   locked coroutine, the candidate list is filterable and capped;
-* failure posture: a failed load or write is one modeless Russian box, the
+* the slot grid under the list (spec dnd-character-mechanics «Ячейки
+  заклинаний — сетка уровней»): nine fields, the stored counts printed,
+  each field commits its level on editingFinished inside one write+reload,
+  an untouched field is no transaction, and a number past the validator's
+  gate is refused in the frame before the service ever sees it;
+* failure posture: a failed load or write is one modeless Russian box;
 * release posture: ``release_tab`` cancels the in-flight work in silence.
 
 The service/index/grimoire doors are stubs — the storage floor belongs to
@@ -25,22 +26,15 @@ from __future__ import annotations
 
 import asyncio
 
-from PySide6.QtWidgets import QComboBox, QLabel, QLineEdit, QMessageBox, QPushButton
+from PySide6.QtGui import QIntValidator
+from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox, QPushButton
 
 from app.dd.application.dataset_index_service import DatasetEntry, IndexSnapshot
 from app.dd.application.grimoire_index_service import GrimoireIndexSnapshot
-from app.dd.domain.character import (
-    LINK_SLOTS,
-    DdCharacterExt,
-    DdSpellLink,
-    ReferenceLink,
-    empty_ext,
-)
-from app.dd.presentation import character_tab_frames as frames
+from app.dd.domain.character import DdSpellLink
+from app.dd.domain.character_mechanics import CharacterMechanics
 from app.dd.presentation.character_tab_frames import (
     SOURCE_UNAVAILABLE_NOTE,
-    UNSET_ITEM,
-    DndCharacterTabFrame,
     DndSpellsTabFrame,
     lss_sheet_url,
 )
@@ -52,47 +46,36 @@ async def _drain(times: int = 8) -> None:
 
 
 class _StubService:
-    """The service door as the frames see it: canned answers, recorded asks."""
+    """The service door as the spells frame sees it: canned answers,
+    recorded asks."""
 
     def __init__(
         self,
-        ext: DdCharacterExt | None = None,
         links: list[DdSpellLink] | None = None,
+        slots: dict[int, int] | None = None,
         fail_load: bool = False,
         fail_write: bool = False,
     ) -> None:
-        self.ext = ext if ext is not None else empty_ext()
         self.links = list(links or [])
+        self.mechanics = CharacterMechanics(spell_slots=dict(slots or {}))
         self.fail_load = fail_load
         self.fail_write = fail_write
         self.asks: list[tuple] = []
 
-    async def get_ext(self, character_id):
-        self.asks.append(("get_ext", character_id))
-        if self.fail_load:
-            raise RuntimeError("диск отказал")
-        return self.ext
-
-    async def set_reference_link(self, character_id, slot, link):
-        self.asks.append(("link", slot, link))
-        if self.fail_write:
-            raise RuntimeError("запись не прошла")
-
-    async def set_level(self, character_id, level):
-        self.asks.append(("level", level))
-        if self.fail_write:
-            raise RuntimeError("запись не прошла")
-
-    async def set_lss_sheet_id(self, character_id, sheet_id):
-        self.asks.append(("sheet", sheet_id))
-        if self.fail_write:
-            raise RuntimeError("запись не прошла")
+    def slots_asks(self) -> list[tuple]:
+        return [ask for ask in self.asks if ask[0] == "slots"]
 
     async def get_spell_links(self, character_id):
         self.asks.append(("get_links", character_id))
         if self.fail_load:
             raise RuntimeError("диск отказал")
         return list(self.links)
+
+    async def get_mechanics(self, character_id):
+        self.asks.append(("get_mechanics", character_id))
+        if self.fail_load:
+            raise RuntimeError("диск отказал")
+        return self.mechanics
 
     async def add_spell_link(self, character_id, link):
         self.asks.append(("add", link))
@@ -110,6 +93,12 @@ class _StubService:
             if (link.source_key, link.slug) != (source_key, slug)
         ]
 
+    async def set_spell_slots(self, character_id, slots):
+        self.asks.append(("slots", dict(slots)))
+        if self.fail_write:
+            raise RuntimeError("запись не прошла")
+        self.mechanics = CharacterMechanics(spell_slots=dict(slots))
+
 
 class _StubIndex:
     def __init__(self, snap: IndexSnapshot) -> None:
@@ -120,8 +109,8 @@ class _StubIndex:
 
 
 def _snapshot_with_entries() -> IndexSnapshot:
-    """One connected set with two races; the spell-slug half is populated
-    for the spells tab's SRD door."""
+    """One connected set; the spell-slug half is the spells tab's SRD door
+    (the races section keeps the snapshot shape honest)."""
     return IndexSnapshot(
         ids=("srd",),
         titles={"srd": "SRD-5.1"},
@@ -173,246 +162,12 @@ def test_source_unavailable_note_is_the_single_fixed_wording():
     """fix-dnd-followups 4.2 (spec dnd-character-extension «Снятый датасет не
     калечит карточку» / dnd-reference-records): пометка недоступного источника
     — дословно «источник не подключён». Ровно одно сравнение с литералом;
-    обе поверхности модуля, печатающие запись с недоступным источником (пики
-    таба «D&D» и строки таба «Заклинаний» — остальные справочные поверхности
-    по построению недоступных записей не показывают), несут ЭТУ константу:
-    их пины ниже сравнивают текст строки с константой, цепочка
-    «поверхность = константа = литерал» замкнута."""
+    поверхности модуля, печатающие запись с недоступным источником (пики
+    блока «Основное», строки табов «Заклинания» и «Способности» — остальные
+    справочные поверхности по построению недоступных записей не показывают),
+    несут ЭТУ константу: их пины ниже сравнивают текст строки с константой,
+    цепочка «поверхность = константа = литерал» замкнута."""
     assert SOURCE_UNAVAILABLE_NOTE == "источник не подключён"
-
-
-# ── the «D&D» tab ─────────────────────────────────────────────────────────
-
-
-async def _open_dnd_tab(qtbot, service, snap=None) -> DndCharacterTabFrame:
-    frame = DndCharacterTabFrame(
-        character_id=7,
-        service=service,
-        dataset_index=_StubIndex(snap or _snapshot_with_entries()),
-        record_labels={key: key for key, _s, _t in LINK_SLOTS} | {
-            "dd_race": "Вид", "dd_subrace": "Подвид", "dd_class": "Класс",
-            "dd_subclass": "Подкласс", "dd_background": "Предыстория",
-        },
-        run_locked=_run_locked,
-    )
-    qtbot.addWidget(frame)
-    await _drain()
-    return frame
-
-
-async def test_dnd_tab_opens_empty_and_builds_pickers_from_the_index(qtbot):
-    service = _StubService()
-    frame = await _open_dnd_tab(qtbot, service)
-    race = frame.findChild(QComboBox, "ddDndSlot_race")
-    captions = [race.itemText(i) for i in range(race.count())]
-    assert captions == [UNSET_ITEM, "Дворф · SRD-5.1", "Эльф · SRD-5.1"]
-    assert race.currentIndex() == 0
-    assert race.currentData() is None
-    # Пять пиков + уровень + лист — captions via accessibleName (штатно).
-    for slot in ("subrace", "class", "subclass", "background"):
-        assert frame.findChild(QComboBox, f"ddDndSlot_{slot}") is not None
-    assert race.accessibleName() == "Вид"
-    level = frame.findChild(QComboBox, "ddDndLevel")
-    # fix-dnd-followups 4.1 (spec dnd-character-extension «Уровень вне полосы
-    # недоступен»): выбор состоит ровно из «не задан» и целых 1…20 — список
-    # запинен целиков (0, 21 и дробное в нём отсутствуют), неотредактируемый
-    # комбо не даёт и ввести что-то мимо списка.
-    assert [level.itemText(i) for i in range(level.count())] == [
-        UNSET_ITEM, *[str(value) for value in range(1, 21)]
-    ]
-    assert not level.isEditable()
-    assert frame.findChild(QLineEdit, "ddDndSheetId").text() == ""
-    # loading alone never writes: the single ask is the read.
-    assert service.asks == [("get_ext", 7)]
-
-
-async def test_dnd_tab_selects_a_live_link_and_the_stored_level(qtbot):
-    ext = DdCharacterExt(
-        links={
-            slot: ReferenceLink("", "", "") for slot, _s, _t in LINK_SLOTS
-        }
-        | {"race": ReferenceLink("srd", "elf", "Эльф")},
-        level=7,
-        lss_sheet_id="abc",
-    )
-    service = _StubService(ext=ext)
-    frame = await _open_dnd_tab(qtbot, service)
-    race = frame.findChild(QComboBox, "ddDndSlot_race")
-    assert race.currentData() == ("srd", "elf", "Эльф")
-    assert race.currentText() == "Эльф · SRD-5.1"
-    assert frame.findChild(QComboBox, "ddDndLevel").currentIndex() == 7
-    sheet = frame.findChild(QLineEdit, "ddDndSheetId")
-    assert sheet.text() == "abc"
-    # isHidden reads the frame's own show/hide decision; isVisible would also
-    # answer False just because the offscreen frame itself is never shown.
-    assert not frame.findChild(QPushButton, "ddDndSheetOpen").isHidden()
-
-
-async def test_dead_source_link_returns_annotated_and_re_savable(qtbot):
-    # spec «Снял чекбокс — карточка не немеет»: the stored triple comes back
-    # under its snapshot + the mark, selected — and touching ANOTHER field
-    # rewrites nothing.
-    dead = ReferenceLink("removed-set", "x-42", "Забытая раса")
-    ext = DdCharacterExt(
-        links={slot: ReferenceLink("", "", "") for slot, _s, _t in LINK_SLOTS}
-        | {"race": dead},
-    )
-    service = _StubService(ext=ext)
-    frame = await _open_dnd_tab(qtbot, service)
-    race = frame.findChild(QComboBox, "ddDndSlot_race")
-    assert race.currentData() == ("removed-set", "x-42", "Забытая раса")
-    assert race.currentText() == f"Забытая раса — {SOURCE_UNAVAILABLE_NOTE}"
-    assert service.asks == [("get_ext", 7)]  # loading never rewrites
-
-    # The annotated item is re-savable verbatim: re-choosing it (via the
-    # other slots' shape — here by direct data) hands the same triple out.
-    level = frame.findChild(QComboBox, "ddDndLevel")
-    level.setCurrentIndex(3)
-    await _drain()
-    assert service.asks == [("get_ext", 7), ("level", 3)]
-
-
-async def test_dnd_tab_writes_each_field_on_its_own_change(qtbot):
-    service = _StubService()
-    frame = await _open_dnd_tab(qtbot, service)
-    race = frame.findChild(QComboBox, "ddDndSlot_race")
-    race.setCurrentIndex(1)  # «Дворф · SRD-5.1»
-    await _drain()
-    assert service.asks[-1] == ("link", "race", ReferenceLink("srd", "dwarf", "Дворф"))
-    race.setCurrentIndex(0)  # «— не выбрано» clears the triple
-    await _drain()
-    assert service.asks[-1] == ("link", "race", ReferenceLink("", "", ""))
-
-    frame.findChild(QComboBox, "ddDndLevel").setCurrentIndex(20)
-    await _drain()
-    assert service.asks[-1] == ("level", 20)
-    frame.findChild(QComboBox, "ddDndLevel").setCurrentIndex(0)
-    await _drain()
-    assert service.asks[-1] == ("level", None)
-
-
-async def test_dnd_tab_sheet_field_writes_once_on_editing_finished(qtbot):
-    service = _StubService()
-    frame = await _open_dnd_tab(qtbot, service)
-    sheet = frame.findChild(QLineEdit, "ddDndSheetId")
-    open_button = frame.findChild(QPushButton, "ddDndSheetOpen")
-    assert open_button.isHidden()  # spec: empty id hides the button
-
-    sheet.setText("abc")  # keystrokes drive the visibility, not the write
-    assert not open_button.isHidden()
-    assert not any(ask[0] == "sheet" for ask in service.asks)
-
-    sheet.editingFinished.emit()  # focus leaves a changed field → one write
-    await _drain()
-    assert [ask for ask in service.asks if ask[0] == "sheet"] == [("sheet", "abc")]
-
-    sheet.editingFinished.emit()  # an untouched field costs no transaction
-    await _drain()
-    assert len([ask for ask in service.asks if ask[0] == "sheet"]) == 1
-
-    sheet.setText("")
-    assert open_button.isHidden()
-    sheet.editingFinished.emit()
-    await _drain()
-    assert [ask for ask in service.asks if ask[0] == "sheet"][-1] == ("sheet", "")
-
-
-async def test_dnd_tab_open_button_hands_the_digital_address_out(qtbot, monkeypatch):
-    seen: list[str] = []
-
-    class _Desktop:
-        @staticmethod
-        def openUrl(url):
-            seen.append(url.toString())
-            return True
-
-    monkeypatch.setattr(frames, "QDesktopServices", _Desktop)
-    service = _StubService(ext=DdCharacterExt(
-        links={slot: ReferenceLink("", "", "") for slot, _s, _t in LINK_SLOTS},
-        lss_sheet_id="abc",
-    ))
-    frame = await _open_dnd_tab(qtbot, service)
-    frame.findChild(QPushButton, "ddDndSheetOpen").click()
-    assert seen == [
-        "https://longstoryshort.app/iframe/characters/digital/abc/"
-    ]
-
-
-async def test_dnd_tab_load_failure_is_one_modeless_box(qtbot):
-    service = _StubService(fail_load=True)
-    frame = await _open_dnd_tab(qtbot, service)
-    boxes = _boxes(frame)
-    assert len(boxes) == 1
-    assert "Не удалось загрузить D&D-поля" in boxes[0].text()
-    boxes[0].button(QMessageBox.StandardButton.Ok).click()
-    assert frame._notice_box is None
-
-
-async def test_dnd_tab_write_failure_keeps_the_field_and_tells_once(qtbot):
-    service = _StubService(fail_write=True)
-    frame = await _open_dnd_tab(qtbot, service)
-    assert _boxes(frame) == []  # the load itself succeeded
-
-    frame.findChild(QComboBox, "ddDndLevel").setCurrentIndex(5)
-    await _drain()
-    boxes = _boxes(frame)
-    assert len(boxes) == 1
-    assert "Не удалось сохранить поле «уровень»" in boxes[0].text()
-    # the value stays in the field (the reader repeats the change)
-    assert frame.findChild(QComboBox, "ddDndLevel").currentIndex() == 5
-
-
-async def test_release_tab_cancels_in_flight_load_in_silence(qtbot):
-    gate = asyncio.Event()
-
-    class _SlowService(_StubService):
-        async def get_ext(self, character_id):
-            await gate.wait()
-            return empty_ext()
-
-        async def get_spell_links(self, character_id):
-            await gate.wait()
-            return []
-
-    for factory in (DndCharacterTabFrame, DndSpellsTabFrame):
-        service = _SlowService()
-        kwargs = {
-            "character_id": 7,
-            "service": service,
-            "dataset_index": _StubIndex(_snapshot_with_entries()),
-            "run_locked": _run_locked,
-        }
-        if factory is DndCharacterTabFrame:
-            kwargs["record_labels"] = {
-                "dd_race": "Вид", "dd_subrace": "Подвид", "dd_class": "Класс",
-                "dd_subclass": "Подкласс", "dd_background": "Предыстория",
-            }
-        else:
-            kwargs["grimoire_index"] = None
-        frame = factory(**kwargs)
-        qtbot.addWidget(frame)
-        await asyncio.sleep(0)
-        frame.release_tab()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert _boxes(frame) == []  # cancellation is silent
-
-
-async def test_sheet_guard_ignores_focus_leaves_during_fill(qtbot):
-    # The defensive half of «loading never rewrites»: the guard itself —
-    # editingFinished cannot fire through signals while _fill runs, so the
-    # guard is pinned directly: an edit landing mid-fill costs no transaction.
-    service = _StubService()
-    frame = await _open_dnd_tab(qtbot, service)
-    frame._sheet.setText("abc")
-    frame._loading = True
-    try:
-        frame._on_sheet_edited()
-    finally:
-        frame._loading = False
-    await _drain()
-    assert not any(ask[0] == "sheet" for ask in service.asks)
-    assert frame._saved_sheet == ""
 
 
 # ── the «Заклинания» tab ──────────────────────────────────────────────────
@@ -512,9 +267,15 @@ async def test_spells_tab_add_click_binds_and_reloads_in_one_wave(qtbot):
     add_buttons[0].click()  # «Mage hand · SRD-5.1»
     await _drain()
     mage = DdSpellLink("srd", "mage-hand", "Mage hand")
-    # the write and the reload are ONE coroutine: exactly one get_links
+    # the write and the reload are ONE coroutine: exactly one read pair
     # followed the add — no second refresh rides the done-callback.
-    assert service.asks == [("get_links", 7), ("add", mage), ("get_links", 7)]
+    assert service.asks == [
+        ("get_links", 7),
+        ("get_mechanics", 7),
+        ("add", mage),
+        ("get_links", 7),
+        ("get_mechanics", 7),
+    ]
     names = [label.text() for label in frame.findChildren(QLabel, "ddSpellsRowName")]
     assert "Mage hand · SRD-5.1" in names
     # the filter also crosses the grimoire half: «hand» matches neither the
@@ -529,7 +290,7 @@ async def test_spells_tab_remove_click_unbinds_and_reloads(qtbot):
     frame.findChildren(QPushButton, "ddSpellsRemove")[1].click()  # Ведьмин глаз
     await _drain()
     assert ("remove", "grim", "witch-sight") in service.asks
-    assert service.asks[-1] == ("get_links", 7)  # reload rode the same wave
+    assert service.asks[-1] == ("get_mechanics", 7)  # reload rode the same wave
     names = [label.text() for label in frame.findChildren(QLabel, "ddSpellsRowName")]
     assert "Ведьмин глаз · Гримуар А" not in names
 
@@ -589,3 +350,215 @@ async def test_spells_tab_failures_are_modeless_boxes(qtbot):
     boxes = _boxes(frame)
     assert len(boxes) == 1
     assert "Не удалось выполнить действие" in boxes[0].text()
+
+
+# ── the slot grid (dd-card-redesign task 5.4; spec «Ячейки заклинаний —
+# сетка уровней», «Ячейки под списком», «„не задано“») ────────────────────
+
+
+async def test_slot_grid_prints_nine_fields_the_stored_counts_and_the_gate(qtbot):
+    service = _StubService(slots={1: 4, 9: 0})
+    frame = await _open_spells_tab(qtbot, service)
+    for level in range(1, 10):
+        edit = frame.findChild(QLineEdit, f"ddSpellsSlot_{level}")
+        assert edit is not None
+        assert edit.accessibleName() == f"Ячейки {level} уровня"
+        assert edit.placeholderText() == "не задано"
+        # the interactive gate: only whole 0…99 can be typed (spec «0…99»)
+        validator = edit.validator()
+        assert isinstance(validator, QIntValidator)
+        assert (validator.bottom(), validator.top()) == (0, 99)
+    # stored counts print verbatim — including the stored ZERO (0 slots is
+    # a fact, «не задано» is the ABSENT level); absent levels print empty.
+    assert frame.findChild(QLineEdit, "ddSpellsSlot_1").text() == "4"
+    assert frame.findChild(QLineEdit, "ddSpellsSlot_9").text() == "0"
+    assert frame.findChild(QLineEdit, "ddSpellsSlot_5").text() == ""
+    # the grid stands under the binding list («под списком» verbatim): the
+    # header sequence in the tab is bindings → slots → candidates.
+    headers = [label.text() for label in frame.findChildren(QLabel, "ddSpellsHeader")]
+    assert headers == [
+        "Привязанные заклинания",
+        "Ячейки заклинаний",
+        "Добавить из подключённых словарей",
+    ]
+
+
+async def test_slot_edit_commits_its_level_and_repaints(qtbot):
+    service = _StubService(slots={1: 4})
+    frame = await _open_spells_tab(qtbot, service)
+    third = frame.findChild(QLineEdit, "ddSpellsSlot_3")
+    third.setText("2")
+    third.editingFinished.emit()  # focus leaves a changed field → one write
+    await _drain()
+    # the whole map rides with the one edited level (the service door stores
+    # the map; the frame merges its level into what it believes is stored)
+    assert service.slots_asks() == [("slots", {1: 4, 3: 2})]
+    assert frame.findChild(QLineEdit, "ddSpellsSlot_3").text() == "2"
+    # the write reloaded inside its own wave: one read pair followed it
+    assert service.asks[-2:] == [("get_links", 7), ("get_mechanics", 7)]
+
+
+async def test_slot_cleared_back_to_unset_drops_the_level(qtbot):
+    service = _StubService(slots={1: 4, 2: 3})
+    frame = await _open_spells_tab(qtbot, service)
+    second = frame.findChild(QLineEdit, "ddSpellsSlot_2")
+    second.setText("")
+    second.editingFinished.emit()
+    await _drain()
+    assert service.slots_asks() == [("slots", {1: 4})]
+    assert frame.findChild(QLineEdit, "ddSpellsSlot_2").text() == ""
+
+
+async def test_untouched_slot_field_losing_focus_saves_nothing(qtbot):
+    service = _StubService(slots={1: 4})
+    frame = await _open_spells_tab(qtbot, service)
+    first = frame.findChild(QLineEdit, "ddSpellsSlot_1")
+    first.editingFinished.emit()  # the belt: focus left an untouched field
+    await _drain()
+    assert service.slots_asks() == []
+
+
+async def test_slot_value_past_the_gate_is_refused_before_the_service(qtbot):
+    # setText rides past the QIntValidator (the gate is interactive), so the
+    # commit repeats it: the belt refuses without asking the service.
+    service = _StubService(slots={1: 4})
+    frame = await _open_spells_tab(qtbot, service)
+    first = frame.findChild(QLineEdit, "ddSpellsSlot_1")
+    first.setText("150")
+    first.editingFinished.emit()
+    await _drain()
+    assert service.slots_asks() == []
+    boxes = _boxes(frame)
+    assert len(boxes) == 1
+    assert "от 0 до 99" in boxes[0].text()
+    # the refusal leaves the frame's belief (and the next honest commit)
+    # untouched: committing a real number still merges with the STORED 4.
+    first.setText("5")
+    first.editingFinished.emit()
+    await _drain()
+    assert service.slots_asks() == [("slots", {1: 5})]
+    boxes[0].button(QMessageBox.StandardButton.Ok).click()
+
+    # non-numeric garbage gets the same single box
+    first.setText("abc")
+    first.editingFinished.emit()
+    await _drain()
+    assert len(_boxes(frame)) == 1
+    assert "от 0 до 99" in _boxes(frame)[0].text()
+
+
+async def test_slot_write_failure_notices_once(qtbot):
+    service = _StubService(slots={1: 4}, fail_write=True)
+    frame = await _open_spells_tab(qtbot, service)
+    first = frame.findChild(QLineEdit, "ddSpellsSlot_1")
+    first.setText("7")
+    first.editingFinished.emit()
+    await _drain()
+    boxes = _boxes(frame)
+    assert len(boxes) == 1
+    assert "Не удалось выполнить действие" in boxes[0].text()
+    assert "ячеек" in boxes[0].text()
+
+
+async def test_release_tab_cancels_in_flight_load_in_silence(qtbot):
+    gate = asyncio.Event()
+
+    class _SlowService(_StubService):
+        async def get_spell_links(self, character_id):
+            await gate.wait()
+            return []
+
+    service = _SlowService()
+    frame = await _open_spells_tab(qtbot, service)
+    frame.request_refresh()
+    await asyncio.sleep(0)
+    frame.release_tab()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert _boxes(frame) == []  # cancellation is silent
+    gate.set()
+
+
+async def test_fresh_spells_tab_refuses_every_write(qtbot):
+    # The unsaved-character rule of the feats tab, same posture on every
+    # write door the «Заклинания» tab owns: choosing a candidate, editing a
+    # slot field, removing a spell. Each refusal names the save; none of
+    # them reaches the service (checkpoint-2 lineage, spec «Новая карточка с
+    # пустыми разделами»).
+    service = _StubService()
+    frame = DndSpellsTabFrame(
+        character_id=None,
+        service=service,
+        dataset_index=_StubIndex(_snapshot_with_entries()),
+        grimoire_index=None,
+        run_locked=_run_locked,
+    )
+    qtbot.addWidget(frame)
+    await _drain()
+    assert service.asks == []  # the unsaved face is painted, never read
+
+    add_buttons = frame.findChildren(QPushButton, "ddSpellsCandidate")
+    assert add_buttons
+    add_buttons[0].click()
+    await _drain()
+    boxes = _boxes(frame)
+    assert len(boxes) == 1 and "не сохранён" in boxes[0].text()
+    boxes[0].button(QMessageBox.StandardButton.Ok).click()
+
+    # A slot field commits through the same gate; the row is a QLineEdit
+    # the reader can type into on the fresh face, but the handler itself is
+    # the door — a stale commit aimed at no record refuses, not pretends.
+    frame._on_slot_edited(1, "3")
+    await _drain()
+    boxes = _boxes(frame)
+    assert len(boxes) == 1 and "не сохранён" in boxes[0].text()
+    boxes[0].button(QMessageBox.StandardButton.Ok).click()
+
+    # A remove of a link the fresh face never shows (no reads, no rows)
+    # still answers the gate, should a stale row ever aim one.
+    frame._on_remove(DdSpellLink("srd", "fire-bolt", "Fire bolt"))
+    await _drain()
+    boxes = _boxes(frame)
+    assert len(boxes) == 1 and "не сохранён" in boxes[0].text()
+    boxes[0].button(QMessageBox.StandardButton.Ok).click()
+
+    assert service.asks == []  # three refusals, zero writes
+
+
+async def test_release_tab_disposes_finished_and_detached_tasks(qtbot):
+    # The release loop answers three task shapes: a finished task is left
+    # alone (its coroutine disposed itself), a task whose loop is gone —
+    # the teardown race the loop check exists for — gets the direct cancel,
+    # and the bookkeeping empties either way.
+    frame = DndSpellsTabFrame(
+        character_id=None,
+        service=_StubService(),
+        dataset_index=_StubIndex(_snapshot_with_entries()),
+        grimoire_index=None,
+        run_locked=_run_locked,
+    )
+    qtbot.addWidget(frame)
+    await _drain()
+
+    class _Stub:
+        def __init__(self, *, done: bool, loop) -> None:
+            self._done = done
+            self._loop = loop
+            self.cancelled = 0
+
+        def done(self) -> bool:
+            return self._done
+
+        def get_loop(self):
+            return self._loop
+
+        def cancel(self) -> None:
+            self.cancelled += 1
+
+    finished = _Stub(done=True, loop=None)
+    detached = _Stub(done=False, loop=None)
+    frame._tasks.update((finished, detached))
+    frame.release_tab()
+    assert finished.cancelled == 0  # done: nothing to cancel
+    assert detached.cancelled == 1  # loop gone: the direct cancel
+    assert not frame._tasks

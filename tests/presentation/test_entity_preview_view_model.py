@@ -194,6 +194,62 @@ class TestComposition:
         keys = [section["key"] for section in pane["sections"]]
         assert keys == ["characteristics", "backstory"]
 
+    def test_an_event_row_prints_its_own_fields_only(self):
+        # dd-card-redesign audit fix (spec «Событие показывает встречу», the
+        # seat behind it): the card renders the event row as «Карточка:
+        # Событие» — no rating line (the event owns no column, «Поля,
+        # отсутствующие у типа сущности, SHALL не выводиться»), the date line
+        # through the same shared helper with the «, HH:MM» tail, no music,
+        # no «Личность»/«Задачи», the age stays absent (age-free type), the
+        # relations are the four event lists, and the module mirror rides
+        # under the kernel texts.
+        from app.domain.time_of_day import TimeOfDay
+        from app.presentation.modules.protocol import ModuleSection
+
+        vm = EntityPreviewViewModel(now_vm=_NowStub(date(1203, 1, 1)))
+        event = SimpleNamespace(
+            id=7,
+            name="Полоса",
+            start_date=date(1200, 6, 1),
+            end_date=date(1200, 6, 3),
+            start_bc=False,
+            end_bc=False,
+            start_time=TimeOfDay(10, 10),
+            description=_desc("Сводка", "Заметка хрониста"),
+            organizations=[],
+            characters=[SimpleNamespace(id=1, name="Банн")],
+            items=[],
+            locations=[SimpleNamespace(id=2, name="Грот")],
+        )
+        vm.show_slots(
+            [],
+            ("event", event),
+            {
+                ("event", 7): (
+                    (ModuleSection("Встреча", ("Гоблин × 3", "Заметка: у моста")),),
+                    (),
+                )
+            },
+        )
+        pane = _pane(vm)
+        assert pane["title"] == "Карточка: Событие"
+        assert pane["nameText"] == "Полоса"
+        assert pane["ratingText"] == ""
+        assert pane["dateText"] == "01 Июнь 1200, 10:10 — 03 Июнь 1200"
+        assert pane["ageText"] == ""
+        assert pane["musicUrl"] == ""
+        keys = [section["key"] for section in pane["sections"]]
+        assert keys == ["characteristics", "backstory"]
+        assert pane["moduleSections"] == [
+            {"title": "Встреча", "lines": ["Гоблин × 3", "Заметка: у моста"]}
+        ]
+        assert [s["label"] for s in pane["relatedSections"]] == [
+            "Персонажи", "Локации",
+        ]
+        assert pane["relatedSections"][0]["rows"] == [
+            {"name": "Банн", "type": "character", "id": 1}
+        ]
+
     @pytest.mark.parametrize(
         "type_key, expect_personality",
         [("character", True), ("organization", False), ("item", False), ("location", False)],
@@ -226,12 +282,16 @@ class TestComposition:
         pane = _show(vm, "character", entity)
         assert pane["musicUrl"] == ""
 
-    def test_rating_defaults_and_survives_a_foreign_value(self):
+    def test_a_foreign_rating_value_leaves_the_line_out(self):
+        # dd-card-redesign audit fix: the line prints only a rating the row
+        # actually carries. A non-int payload is as absent as an event row's
+        # missing column — the card hides the line (the island hides an
+        # empty one) instead of fabricating «1/20».
         vm = EntityPreviewViewModel()
         entity = _entity()
-        entity.rating = "восемь"  # a duck payload the summary posture floors to 1
+        entity.rating = "восемь"
         pane = _show(vm, "character", entity)
-        assert pane["ratingText"] == "Рейтинг: 1/20"
+        assert pane["ratingText"] == ""
 
     def test_named_dates_and_the_era_flags_ride_the_shared_formatter(self):
         vm = EntityPreviewViewModel()

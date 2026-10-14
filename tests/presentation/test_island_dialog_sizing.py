@@ -23,6 +23,7 @@ from app.presentation.qml import island_size
 from app.presentation.qml.island_size import SCREEN_COVER_LIMIT, fit_dialog_to_island
 from app.presentation.views.character_sheet.list_dialog import CharacterSheetListDialog
 from app.presentation.views.entity_card_dialog import EntityCardDialog
+from app.presentation.views.event_dialog import EventDialog
 from tests.presentation.qml_helpers import find_item
 
 _LIST_BUTTONS = (
@@ -294,3 +295,113 @@ def test_sheet_list_buttons_keep_their_own_width_on_both_tabs(qtbot, service):
             assert button.width() >= button.implicitWidth() - 1, name
             origin = button.mapToScene(QPointF(0, 0))
             assert origin.x() + button.width() <= dialog.quick.width() + 1, name
+
+
+# ── dd-card-redesign task 3.4: the window follows the tabbed assembly ───────
+
+
+def _natural(root) -> tuple[int, int]:
+    return (int(round(root.implicitWidth())), int(round(root.implicitHeight())))
+
+
+def test_event_dialog_alone_keeps_the_pinned_019_size(qtbot):
+    # Spec «Одноэкранный вид не меняет размеров карточек»: the single screen
+    # opens exactly at the pinned pair — no fit call touches that state.
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    assert dialog.size().width() == 720
+    assert dialog.size().height() >= 620
+
+
+def test_event_dialog_with_a_guest_tab_refits_to_the_taller_scene(qtbot):
+    # Spec «Размер окна с табами следует самому высокому содержимому плюс
+    # полосу связей и кнопки»: the guest tab adds the strip and the stitched
+    # band to the ask, and the re-fit mirrors that bigger ask onto the window
+    # through the same sizer (screen-capped, floored at the pinned pair).
+    cap = _screen_cap()
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    root = dialog._root
+    alone = _natural(root)
+    dialog.vm.set_external_groups([{"key": "dnd.sheet", "title": "Лист"}])
+    QApplication.processEvents()
+    tabbed = _natural(root)
+    assert tabbed[1] > alone[1]  # strip + band joined the ask
+    expected = _opened((720, 620), tabbed, cap)
+    # The floor in ``_opened`` is the window's own Qt minimum, so the size
+    # the sizer answers is the size the window wears on any test screen.
+    assert dialog.size() == expected
+
+
+def test_card_with_a_guest_tab_grows_the_window_to_the_scene(qtbot):
+    # The card half of the same rule: the band + strip raise the ask and the
+    # facade's groupsChanged hook re-fits, never below the card's own floor.
+    cap = _screen_cap()
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    root = dialog._root
+    dialog.vm.set_external_groups([{"key": "dnd.sheet", "title": "Лист"}])
+    QApplication.processEvents()
+    tabbed = _natural(root)
+    expected = _opened(dialog._size_floor, tabbed, cap)
+    assert dialog.size() == expected
+    # The stitched band is inside that window, capped at a third of it, and
+    # the action row stands below the band (spec «кнопки под полосой»).
+    band = find_item(dialog.quick, "entityRelationsBand")
+    assert band.property("active") is True
+    assert band.height() <= root.height() / 3 + 1
+    save = find_item(dialog.quick, "entitySaveButton")
+    band_bottom = band.mapToScene(QPointF(0, band.height())).y()
+    save_top = save.mapToScene(QPointF(0, 0)).y()
+    assert save_top >= band_bottom - 1
+
+
+# ── dd-card-redesign task 3.4: the re-fit door guards its two no-op states ──
+
+
+def _tabbed(dialog) -> None:
+    dialog.vm.set_external_groups([{"key": "dnd.sheet", "title": "Лист"}])
+    QApplication.processEvents()
+
+
+def test_card_refit_survives_the_dead_island(qtbot):
+    # The island-gone half of the guard: ``groupsChanged`` can race the
+    # teardown — the dialog outlives its island by design (the release runs
+    # one loop turn after the close), and a late emit must read the invalid
+    # root wrapper and answer nothing. Without the guard the same emit
+    # raises through ``fit_dialog_to_island`` on a deleted QQuickItem.
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    _tabbed(dialog)  # a non-empty tail: the door rides past the module check
+    opened = dialog.size()
+    dialog.close()
+    QApplication.processEvents()  # the deferred island release has run
+    dialog.vm.groupsChanged.emit()  # the re-fit emit raced the teardown
+    assert dialog.size() == opened
+
+
+def test_event_refit_survives_the_dead_island(qtbot):
+    # The event half of the same race — the same guard line, its own facade.
+    dialog = EventDialog(None)
+    qtbot.addWidget(dialog)
+    _tabbed(dialog)
+    opened = dialog.size()
+    dialog.close()
+    QApplication.processEvents()
+    dialog.vm.groupsChanged.emit()
+    assert dialog.size() == opened
+
+
+def test_card_refit_is_quiet_when_the_guest_tabs_leave(qtbot):
+    # The empty-tail half of the guard: with the module tail emptied the
+    # re-fit door answers nothing — a retracted strip never drags the window
+    # back to the single-screen ask mid-session (the module leaves with the
+    # game, not while a card is open; the 0.19.1 posture is a constructor
+    # fact, not a mid-session resize).
+    dialog = EntityCardDialog(None, "character")
+    qtbot.addWidget(dialog)
+    _tabbed(dialog)
+    tabbed = dialog.size()
+    dialog.vm.set_external_groups([])  # the tail empties → groupsChanged
+    QApplication.processEvents()
+    assert dialog.size() == tabbed

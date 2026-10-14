@@ -1,25 +1,27 @@
-"""The ONE declaration of the card grouping tabs (add-dnd-game-face Д10).
+"""The ONE declaration of the card grouping tabs (dd-card-redesign Д1).
 
-Design Д10: the card of an event and the card of every entity type lay their
-fields out over grouping tabs; the composition of the groups is declared in
-ONE place of the presentation layer, and this module is that place. The
-groups themselves (design reference 2026-10-10, «Табы карточек»):
+Owner norm («ядро 0.19.1 неизменно, табы приносит модуль»): the kernel card —
+the event dialog and every entity-card type — is the single-screen 0.19.1
+view, so the kernel declares EXACTLY ONE group, «Основное», carrying that
+whole screen. The tab mechanism stays in the card dormant: the strip shows
+only when an external source (protocol ``CardTabSpec``) adds a tab, and those
+join AFTER the kernel entry, in source order — a disabled module contributes
+nothing and the card returns to the one-screen view with no strip at all
+(spec entity-card-tabs «Ядро рисует карточки одним экраном, табы приносит
+модуль»).
 
-* «Обзор»    — the short fields: image, name, rating, dates + «Бессрочно»,
-  age, music; for an event also the hour, minute, type and parent;
-* «Тексты»   — every mention field with its AI button (characteristics,
-  backstory, and the type's extra fields ride here as a group by construction);
-* «Связи»    — the whole existing relations strip, only where the type has
-  relations at all (the rating type has none, so its strip has no such tab).
-
-Additional tabs registered by external sources (protocol ``CardTabSpec``)
-join AFTER the kernel ones, in source order — a disabled module simply
-contributes nothing and never shifts the kernel strip (spec entity-card-tabs
-«Таб модуля живёт с модулем»).
+``GROUP_TEXTS``/``GROUP_RELATIONS`` stay declared as reserved seats of the
+grouping mechanism (a future external source may claim them); the kernel
+itself never puts either on a strip — in the single-screen view the texts
+ride the one grid and the relations sit at the scroll end (or, with external
+tabs, in the stitched bottom band).
 
 Validation reveal: when a save is refused because of a field, the group of
-that field opens itself (spec «Ошибка указывает дорогу»). The field→group
-map lives here, beside the groups; a field name unknown to it opens nothing.
+that field opens itself (spec «Ошибка указывает дорогу»). Every kernel field
+lives in the single group, so the reveal lands on the kernel tab and marks
+the field — and for a field owned by an external tab the map answers None:
+the external mechanism reveals its own seat. A field name unknown to the map
+opens nothing (absent-safe by construction).
 """
 from __future__ import annotations
 
@@ -29,19 +31,21 @@ GROUP_TEXTS = "texts"
 GROUP_RELATIONS = "relations"
 
 #: The one place the group captions are written (design reference: no icons,
-#: the caption and the underline carry the meaning).
+#: the caption and the underline carry the meaning). Only «Основное» reaches
+#: a strip today; the other two are the reserved seats' captions.
 GROUP_TITLES: dict[str, str] = {
-    GROUP_OVERVIEW: "Обзор",
+    GROUP_OVERVIEW: "Основное",
     GROUP_TEXTS: "Тексты",
     GROUP_RELATIONS: "Связи",
 }
 
 #: Kernel field name → the group that hosts it. The keys are the VM-facing
 #: field names used by the reveal rule (the names the validation checks and
-#: the highlight bindings read), not the QML object names. Extra mention
-#: fields of a type never appear here: the event dialog validates no extra
-#: field, and the card's only validated field is the name — an unknown name
-#: simply reveals no group (the rule is absent-safe by construction).
+#: the highlight bindings read), not the QML object names. The single screen
+#: hosts every kernel field, so every entry names the one group. Extra
+#: mention fields of a type never appear here: the event dialog validates no
+#: extra field, and the card's only validated field is the name — an unknown
+#: name simply reveals no group (the rule is absent-safe by construction).
 FIELD_GROUP_BY_NAME: dict[str, str] = {
     "name": GROUP_OVERVIEW,
     "rating": GROUP_OVERVIEW,
@@ -55,21 +59,19 @@ FIELD_GROUP_BY_NAME: dict[str, str] = {
     "minute": GROUP_OVERVIEW,
     "event_type": GROUP_OVERVIEW,
     "parent": GROUP_OVERVIEW,
-    "characteristics": GROUP_TEXTS,
-    "backstory": GROUP_TEXTS,
+    "characteristics": GROUP_OVERVIEW,
+    "backstory": GROUP_OVERVIEW,
 }
 
 
-def kernel_card_groups(*, has_relations: bool) -> list[dict[str, str]]:
-    """The kernel entries «Обзор · Тексты [· Связи]» as QML-ready rows.
+def kernel_card_groups() -> list[dict[str, str]]:
+    """The kernel's single «Основное» entry as a QML-ready row (Д1).
 
-    One composition for every card type (design reference, «общая тройка»);
-    the relations tab exists exactly when the card has relation sections.
+    One declaration for every card type and the event: the whole 0.19.1
+    screen is this one group, so the kernel strip alone never shows a strip
+    (a single tab hides it).
     """
-    keys = [GROUP_OVERVIEW, GROUP_TEXTS]
-    if has_relations:
-        keys.append(GROUP_RELATIONS)
-    return [{"key": key, "title": GROUP_TITLES[key]} for key in keys]
+    return [{"key": GROUP_OVERVIEW, "title": GROUP_TITLES[GROUP_OVERVIEW]}]
 
 
 def group_key_for_field(field: str) -> str | None:

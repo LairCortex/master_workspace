@@ -1,42 +1,45 @@
-"""The two module tabs of a character card (add-dnd-game-face tasks 8.2/8.3).
+"""The module tab plumbing and the «Заклинания» frame of a character card
+(add-dnd-game-face tasks 8.2/8.3; the «D&D» tab frame retired by
+dd-card-redesign task 5.5 — its lists, level and doors moved to the kernel
+«Основное» screen through the block channel, its history picker to
+«Личность»).
 
-Design Д10: the kernel draws the strip and owns the lifecycle; the module
-paints inside. These are plain Qt widgets (the card body is a QML island; a
-module tab is a native widget the host overlays on the body slot), so their
+What survives here is shared by every module tab of every source:
+
+* :class:`_LockedFrame` — the base the module tabs grow from (the encounter
+  tab, «Способности», «Личность», «Заклинания»): reads and writes ride the
+  connector's session lock through the injected ``run_locked`` (a second
+  ``run_locked`` from inside a locked task would deadlock, so a flow that
+  writes and reloads does both INSIDE one coroutine and renders from its
+  result), a failed load or write is a modeless Russian box (never a nested
+  loop, the PR-010 posture of every live box in this codebase), and a
+  released tab answers nothing (``release_tab`` cancels the in-flight tasks);
+* the shared captions and doors (the LSS file row, the browser door, the
+  dead-source mark, the file filter) — printed today by the «Основное» block
+  controller and the spell/feats tabs, one place each;
+* :class:`DndSpellsTabFrame` — the «Заклинания» tab: bindings, manual add
+  from the connected dictionaries, removal, and the spell-slot grid
+  (dd-card-redesign task 5.4).
+
+The tabs are plain Qt widgets (the card body is a QML island; a module tab
+is a native widget the host overlays on the body slot), so their
 accessibility follows the kernel's contract through Qt's own widget bridges:
 every control is штатный (QComboBox/QLineEdit/QPushButton), a control whose
 caption is not its own text carries that caption as ``accessibleName``, and
-object names (``ddDndSlot_*`` etc.) give the offscreen tests their addresses —
+object names (``ddSpells*`` etc.) give the offscreen tests their addresses —
 the same posture the module's sheets keep.
-
-Both frames read and write through the injected service and the index; the
-service owns the transactions, the frames never touch a session. Reads and
-writes ride the connector's session lock through the injected ``run_locked``
-(the datasets sheet's discipline): a second ``run_locked`` from inside a
-locked task would deadlock the lock, so a flow that writes and reloads does
-both INSIDE one coroutine and renders from its result.
-
-Failure posture: a failed load or write is a modeless Russian box (never a
-nested loop, the PR-010 posture of every live box in this codebase) — the
-card around the tab keeps working. A released tab answers nothing:
-:meth:`_LockedFrame.release_tab` cancels the frame's in-flight tasks (the
-host calls it before the widget leaves the window).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Coroutine
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
-    QComboBox,
-    QFileDialog,
-    QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -47,26 +50,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.dd.application.character_channel import (
-    TOP_UP_NOTHING_REFUSAL,
-    top_up_missing_fields,
-)
-from app.dd.application.character_import_service import (
-    CharacterImportOutcome,
-    CharacterImportStatus,
-)
 from app.dd.application.grimoire_index_service import GrimoireIndexSnapshot
-from app.dd.domain.character import (
-    LEVEL_MAX,
-    LINK_SLOTS,
-    DdSpellLink,
-    ReferenceLink,
+from app.dd.domain.character import DdSpellLink
+from app.dd.domain.character_mechanics import (
+    SLOT_COUNT_MAX,
+    SLOT_COUNT_MIN,
+    SLOT_LEVEL_MAX,
+    SLOT_LEVEL_MIN,
 )
 from app.dd.presentation.captions import button_caption
 
 if TYPE_CHECKING:
-    from app.dd.application.character_document_builder import CharacterDocumentBuilder
-    from app.dd.application.character_import_service import CharacterImportService
     from app.dd.application.dataset_index_service import (
         DatasetIndexService,
         IndexSnapshot,
@@ -75,11 +69,17 @@ if TYPE_CHECKING:
         DndCharacterExtensionService,
     )
     from app.dd.application.grimoire_index_service import GrimoireIndexService
-    from app.dd.application.generation_deps import GenerationDeps
-    from app.dd.domain.character import DdCharacterExt
 
 #: The caption of the «link unset» item of every reference picker.
 UNSET_ITEM = "— не выбрано"
+
+#: The three character tabs' shared refusal of the unsaved record (dd-card-
+#: redesign, checkpoint-2 audit; spec «Новая карточка с пустыми разделами»):
+#: the tabs stand on a fresh card, their sections are honestly empty, and
+#: every write names the save that must happen first.
+UNSAVED_CHARACTER_REFUSAL = (
+    "Персонаж ещё не сохранён — раздел заработает после сохранения карточки."
+)
 
 #: The spec's exact wording of a dead source, shared by both tabs (spec
 #: «Снятый датасет не калечит карточку» / «недоступный источник — снимок
@@ -96,14 +96,20 @@ _FRAME_LOGGER = "app.dd.character_tab"
 #: Caption of the frame failure boxes (the module's standing caption).
 _TAB_TITLE = "D&D-модуль"
 
-#: The two file doors of the «D&D» tab (task 9.4; spec dnd-character-import
-#: «Перезаписать из файла LSS…» из карточки). Captions name the action and
+#: The two file doors of the LSS row (task 9.4; spec dnd-character-import
+#: «Перезаписать из файла LSS…» из карточки) — printed since dd-card-redesign
+#: by the «Основное» doors block. Captions name the action and
 #: the format; the creation half of the spec's two entries lives on the
 #: module's menu (:attr:`app.dd.presentation.section.
 #: DndWindowSection.character_import_requested`) — a fresh card has no id
 #: and no module tab to hang this row on.
 IMPORT_OVERWRITE_TEXT = "Перезаписать из файла LSS…"
 SAVE_RAW_TEXT = "Сохранить исходный файл…"
+#: The browser door (spec dnd-character-extension «пустой идентификатор
+#: скрывает кнопку браузера»): shown while the stored sheet id says one.
+#: Public: since dd-card-redesign the «Основное» doors row of the block
+#: controller prints it, the old «D&D» tab is retired.
+OPEN_IN_BROWSER_TEXT = "Открыть в браузере"
 #: The third file door, half of add-dnd-lss-generation task 5.3 (spec
 #: dnd-character-export «Кнопка „Экспорт для LSS…“»): the document is rebuilt
 #: from the CURRENT card state (name, links, level, blocks, spell slugs) —
@@ -112,7 +118,7 @@ SAVE_RAW_TEXT = "Сохранить исходный файл…"
 #: never touches the network).
 EXPORT_FOR_LSS_TEXT = "Экспорт для LSS…"
 #: Вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3): тот же лист
-#: персонажа в режиме дозаполнения, открывается из D&D-таба карточки.
+#: персонажа в режиме дозаполнения, открывается с «Основного» карточки.
 TOP_UP_AI_TEXT = "Дозаполнить ИИ"
 #: The filter both file dialogs print (the datasets sheet's filter, restated
 #: for the character document). Public: the module façade's creation dialog
@@ -160,9 +166,28 @@ class _LockedFrame(QWidget):
         task.add_done_callback(on_done)
 
     def release_tab(self) -> None:
-        """The host's release door (task 7.2): no callback survives the tab."""
+        """The host's release door (task 7.2): no callback survives the tab.
+
+        The cancel rides one ``call_soon`` tick: a read that has not taken
+        its first step yet would otherwise be cancelled as a never-started
+        task, orphaning its coroutine object — the collector then prints a
+        never-awaited RuntimeWarning for a cancellation this release asked
+        for on purpose. One tick later the task has started (and the wrapper
+        disposes of the coroutine honestly, see ``ApplicationWiring
+        ._run_locked``) or has finished whole. A loop that is no longer
+        running (teardown races) gets the direct cancel — the previous
+        posture, nothing left to schedule onto."""
         for task in list(self._tasks):
-            task.cancel()
+            if task.done():
+                continue
+            try:
+                loop = task.get_loop()
+            except NotImplementedError:  # pragma: no cover — taskless future
+                loop = None
+            if loop is not None and loop.is_running():
+                loop.call_soon(task.cancel)
+            else:
+                task.cancel()
         self._tasks.clear()
 
     def _show_notice(
@@ -200,502 +225,6 @@ class _LockedFrame(QWidget):
             return _TASK_FAILED
 
 
-class DndCharacterTabFrame(_LockedFrame):
-    """The «D&D» tab: five reference pickers, the level, the LSS sheet id.
-
-    Each field writes the moment it changes — the module's tab has no save
-    button and a half-edited field must not be a trap. A stored link whose
-    source has been disconnected is re-shown as its snapshot with the
-    «источник не подключён» mark and re-saves the same triple verbatim:
-    reading never rewrites, losing the source never drops the value (spec
-    «Снял чекбокс — карточка не немеет»).
-    """
-
-    def __init__(
-        self,
-        *,
-        character_id: int,
-        service: "DndCharacterExtensionService",
-        dataset_index: "DatasetIndexService",
-        record_labels: Mapping[str, str],
-        run_locked: Callable[[Coroutine], asyncio.Task],
-        import_service: "CharacterImportService | None" = None,
-        document_builder: "CharacterDocumentBuilder | None" = None,
-        generation_open: "Callable[[int, str], None] | None" = None,
-        generation_deps: "GenerationDeps | None" = None,
-        parent=None,
-    ) -> None:
-        super().__init__(run_locked, parent)
-        self._character_id = character_id
-        self._service = service
-        self._index = dataset_index
-        self._importer = import_service
-        self._document_builder = document_builder
-        # Вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3): opener
-        # даёт façade (он один поднимает лист-задачу на стеке), двери несут
-        # общий AI-гейт с общей подсказкой. Без opener'а (частичная
-        # композиция) кнопка не печатается.
-        self._generation_open = generation_open
-        self._generation_deps = generation_deps
-        self._top_up_button: QPushButton | None = None
-        self._loading = False
-        self._saved_sheet = ""
-        self._slot_combos: dict[str, QComboBox] = {}
-        # Live refs of the import flow's boxes (PR-010 posture: until
-        # ``finished`` Qt's garbage must not take a shown box away).
-        self._overwrite_confirm_box: QMessageBox | None = None
-        self._report_box: QMessageBox | None = None
-        #: slot → the Russian caption (the same descriptor labels the rows
-        #: print — one knowledge, one place).
-        self._slot_labels = {
-            slot: record_labels[type_key] for slot, _s, type_key in LINK_SLOTS
-        }
-
-        form = QFormLayout(self)
-        for slot, _section, _type_key in LINK_SLOTS:
-            label = self._slot_labels[slot]
-            combo = QComboBox(self)
-            combo.setObjectName(f"ddDndSlot_{slot}")
-            combo.setAccessibleName(label)
-            combo.currentIndexChanged.connect(
-                lambda _index, _slot=slot: self._on_slot_changed(_slot)
-            )
-            self._slot_combos[slot] = combo
-            form.addRow(label + ":", combo)
-
-        self._level = QComboBox(self)
-        self._level.setObjectName("ddDndLevel")
-        self._level.setAccessibleName("Уровень")
-        # index 0 = unset, index N shows N (1…20) — the combo itself is the
-        # 1…20 gate, the service validates again at the door.
-        self._level.addItem(UNSET_ITEM)
-        for value in range(1, LEVEL_MAX + 1):
-            self._level.addItem(str(value))
-        self._level.currentIndexChanged.connect(self._on_level_changed)
-        form.addRow("Уровень:", self._level)
-
-        sheet_row = QHBoxLayout()
-        self._sheet = QLineEdit(self)
-        self._sheet.setObjectName("ddDndSheetId")
-        self._sheet.setAccessibleName("Идентификатор листа LSS")
-        self._sheet.setPlaceholderText("id цифрового листа Long Story Short")
-        self._sheet.textChanged.connect(self._on_sheet_text_changed)
-        self._sheet.editingFinished.connect(self._on_sheet_edited)
-        sheet_row.addWidget(self._sheet)
-        self._open = QPushButton("Открыть в браузере", self)
-        self._open.setObjectName("ddDndSheetOpen")
-        self._open.clicked.connect(self._on_open_sheet)
-        self._open.setVisible(False)  # until a stored/typed value proves one
-        sheet_row.addWidget(self._open)
-        form.addRow("Лист LSS:", sheet_row)
-
-        if self._importer is not None or self._document_builder is not None or self._generation_open is not None:
-            # The file doors (task 9.4 + add-dnd-lss-generation task 5.3):
-            # without a composed door (a partial composition) the tab prints
-            # no dead buttons — the module's no-dead-action posture, one
-            # floor lower. Each door prints its own button only when its
-            # service arrived.
-            file_row = QHBoxLayout()
-            if self._importer is not None:
-                overwrite = QPushButton(IMPORT_OVERWRITE_TEXT, self)
-                overwrite.setObjectName("ddDndImportOverwrite")
-                overwrite.clicked.connect(self._on_overwrite_clicked)
-                file_row.addWidget(overwrite)
-                save_raw = QPushButton(SAVE_RAW_TEXT, self)
-                save_raw.setObjectName("ddDndSaveRaw")
-                save_raw.clicked.connect(self._on_save_raw_clicked)
-                file_row.addWidget(save_raw)
-            if self._document_builder is not None:
-                export = QPushButton(EXPORT_FOR_LSS_TEXT, self)
-                export.setObjectName("ddDndExportLss")
-                export.clicked.connect(self._on_export_clicked)
-                file_row.addWidget(export)
-            if (
-                self._generation_open is not None
-                and self._document_builder is not None
-            ):
-                # «Дозаполнить ИИ» (task 7.3): сборка текущего документа —
-                # дверь сборщика, остальное делает лист-задача. Гейт — общий
-                # AI-гейт, неактивная кнопка несёт общую подсказку (task 7.5).
-                top_up = QPushButton(TOP_UP_AI_TEXT, self)
-                top_up.setObjectName("ddDndTopUpAi")
-                top_up.clicked.connect(self._on_top_up_clicked)
-                file_row.addWidget(top_up)
-                self._top_up_button = top_up
-                self._apply_generation_gate()
-            file_row.addStretch()
-            form.addRow("Файл LSS:", file_row)
-
-        self.request_refresh()
-
-    # ── вход ИИ-дозаполнения (add-dnd-lss-generation task 7.3/7.5) ───────────
-
-    def _apply_generation_gate(self) -> None:
-        if self._top_up_button is None or self._generation_deps is None:
-            return
-        available = bool(self._generation_deps.available())
-        self._top_up_button.setEnabled(available)
-        self._top_up_button.setToolTip(
-            "" if available else self._generation_deps.hint()
-        )
-
-    def showEvent(self, event) -> None:
-        # Гейт перечитывается на каждом показе таба: настройка LLM и описание
-        # мира меняются посреди живой сессии.
-        self._apply_generation_gate()
-        super().showEvent(event)
-
-    def _on_top_up_clicked(self) -> None:
-        if self._generation_open is None or self._document_builder is None:
-            return
-        if self._generation_deps is not None and not self._generation_deps.available():
-            return
-        self._start_locked(
-            self._document_builder.build(self._character_id),
-            self._on_top_up_document,
-        )
-
-    def _on_top_up_document(self, task: asyncio.Task) -> None:
-        outcome = self._outcome(task, "сборка документа для дозаполнения ИИ")
-        if outcome is _TASK_FAILED:
-            if not task.cancelled():
-                self._show_notice(
-                    "Не удалось собрать документ персонажа для дозаполнения. "
-                    "Карточка не изменена; подробности — в журнале приложения."
-                )
-            return
-        document = str(outcome)
-        if not top_up_missing_fields(document):
-            # Spec scenario «Пусто дозаполнять»: генерация не запускается,
-            # мастер читает пояснение.
-            self._show_notice(TOP_UP_NOTHING_REFUSAL, QMessageBox.Icon.Information)
-            return
-        self._generation_open(self._character_id, document)
-
-    def request_refresh(self) -> None:
-        """Load the stored face and the current index through the lock."""
-        self._start_locked(self._load(), self._on_loaded)
-
-    async def _load(self):
-        ext = await self._service.get_ext(self._character_id)
-        snap = await self._index.snapshot()
-        return ext, snap
-
-    def _on_loaded(self, task: asyncio.Task) -> None:
-        outcome = self._outcome(task, "загрузка D&D-полей")
-        if outcome is _TASK_FAILED:
-            if task.cancelled():
-                return  # the released tab answers nothing
-            self._show_notice(
-                "Не удалось загрузить D&D-поля персонажа. Подробности — в "
-                "журнале приложения; повторите, закрыв и открыв карточку."
-            )
-            return
-        ext, snap = outcome
-        self._fill(ext, snap)
-
-    def _fill(self, ext: "DdCharacterExt", snap: "IndexSnapshot") -> None:
-        """Publish the frame: every picker rebuilt, the stored link selected
-        — its unavailable form appended, never dropped."""
-        self._loading = True
-        try:
-            for slot, section, _type_key in LINK_SLOTS:
-                combo = self._slot_combos[slot]
-                combo.clear()
-                combo.addItem(UNSET_ITEM, None)
-                for dataset_id in snap.ids:
-                    title = snap.titles.get(dataset_id, dataset_id)
-                    for entry in snap.entries(section, dataset_id):
-                        combo.addItem(
-                            f"{entry.name} · {title}",
-                            (dataset_id, entry.entry_id, entry.name),
-                        )
-                link = ext.links[slot]
-                if link.is_set:
-                    wanted = (link.source_key, link.ref_id, link.snapshot_name)
-                    # Not ``findData``: its QVariant round-trip does not
-                    # compare Python tuples reliably (verified on this Qt —
-                    # equal ``itemData`` values, ``findData`` answers −1).
-                    # The honest scan compares the objects as they are.
-                    index = next(
-                        (
-                            i
-                            for i in range(combo.count())
-                            if combo.itemData(i) == wanted
-                        ),
-                        -1,
-                    )
-                    if index < 0:
-                        # The source is gone (or the record is): the stored
-                        # triple re-enters the picker as the annotated item —
-                        # visible AND re-savable verbatim.
-                        combo.addItem(
-                            f"{link.snapshot_name} — {SOURCE_UNAVAILABLE_NOTE}",
-                            wanted,
-                        )
-                        index = combo.count() - 1
-                    combo.setCurrentIndex(index)
-                else:
-                    combo.setCurrentIndex(0)
-            level = ext.level
-            self._level.setCurrentIndex(
-                0 if level is None or not 1 <= level <= LEVEL_MAX else level
-            )
-            self._saved_sheet = ext.lss_sheet_id
-            self._sheet.setText(ext.lss_sheet_id)
-        finally:
-            self._loading = False
-
-    # ── writes (each change is one locked operation) ─────────────────────────
-
-    def _on_slot_changed(self, slot: str) -> None:
-        if self._loading:
-            return
-        data = self._slot_combos[slot].currentData()
-        link: ReferenceLink = (
-            ReferenceLink(*data) if data is not None else ReferenceLink("", "", "")
-        )
-        self._start_locked(
-            self._service.set_reference_link(self._character_id, slot, link),
-            lambda task, what=self._slot_labels[slot]: self._on_write_done(task, what),
-        )
-
-    def _on_level_changed(self) -> None:
-        if self._loading:
-            return
-        index = self._level.currentIndex()
-        level = None if index <= 0 else index
-        self._start_locked(
-            self._service.set_level(self._character_id, level),
-            lambda task: self._on_write_done(task, "уровень"),
-        )
-
-    def _on_sheet_text_changed(self, text: str) -> None:
-        # The button shows only while the id is filled (spec «Пустой
-        # идентификатор листа SHALL скрывать кнопку») — the visibility
-        # follows the keystrokes, the WRITE waits for editingFinished.
-        self._open.setVisible(bool(text.strip()))
-
-    def _on_sheet_edited(self) -> None:
-        if self._loading:
-            return
-        sheet_id = self._sheet.text().strip()
-        if sheet_id == self._saved_sheet:
-            return  # focus left an untouched field — no transaction
-        self._saved_sheet = sheet_id
-        self._start_locked(
-            self._service.set_lss_sheet_id(self._character_id, sheet_id),
-            lambda task: self._on_write_done(task, "идентификатор листа LSS"),
-        )
-
-    def _on_open_sheet(self) -> None:
-        QDesktopServices.openUrl(QUrl(lss_sheet_url(self._sheet.text())))
-
-    def _on_write_done(self, task: asyncio.Task, what: str) -> None:
-        if self._outcome(task, f"сохранение поля «{what}»") is _TASK_FAILED and (
-            not task.cancelled()
-        ):
-            self._show_notice(
-                f"Не удалось сохранить поле «{what}». Значение в поле осталось, "
-                "повторите изменение; подробности — в журнале приложения."
-            )
-
-    # ── the LSS file doors (task 9.4; spec dnd-character-import) ─────────────
-
-    def _on_overwrite_clicked(self) -> None:
-        """«Перезаписать из файла LSS…»: pick the file, then the target is
-        THIS card's character — the explicit person, never a name match
-        (spec «сопоставления по имени нет»). The service answers
-        NEEDS_CONFIRMATION for the question box; the re-request carries the
-        very bytes of the first read, not a re-read of a file the master may
-        have edited in between (the datasets importer's discipline)."""
-        path, _selected = QFileDialog.getOpenFileName(
-            self,
-            IMPORT_OVERWRITE_TEXT,
-            "",
-            CHARACTER_FILE_FILTER,
-            # L1 (NRI-0014): always the Russian Qt panel, never the native one.
-            options=QFileDialog.Option.DontUseNativeDialog,
-        )
-        if not path:
-            return  # the отвод is a no-op — the service was never approached
-        try:
-            content = Path(path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            self._show_notice(f"Не удалось прочитать файл «{path}»: {exc}")
-            return
-        self._start_locked(
-            self._importer.import_character(content, character_id=self._character_id),
-            lambda task, _bytes=content: self._on_precheck_done(task, _bytes),
-        )
-
-    def _on_precheck_done(self, task: asyncio.Task, content: str) -> None:
-        """The unconfirmed request answered: the report's errors refuse
-        first, only a clean document earns the question box (the master is
-        never asked to confirm an import that would fail anyway)."""
-        outcome = self._outcome(task, "предпроверка импорта персонажа")
-        if outcome is _TASK_FAILED:
-            if not task.cancelled():
-                self._show_notice(
-                    "Не удалось проверить файл персонажа. Подробности — в "
-                    "журнале приложения; повторите выбор файла."
-                )
-            return
-        if outcome.status is CharacterImportStatus.NEEDS_CONFIRMATION:
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Question)
-            box.setWindowTitle(IMPORT_OVERWRITE_TEXT)
-            box.setText(outcome.message)
-            box.setStandardButtons(
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            box.setDefaultButton(QMessageBox.StandardButton.No)
-            self._overwrite_confirm_box = box
-            box.finished.connect(
-                lambda result, _bytes=content: self._on_overwrite_answered(result, _bytes)
-            )
-            box.show()
-            return
-        # Unreachable by contract (an unconfirmed target never gets past the
-        # gate) — but the honest answer is printed, not swallowed.
-        self._report_import_outcome(outcome)
-
-    def _on_overwrite_answered(self, result: int, content: str) -> None:
-        """Yes re-requests the very bytes under confirmation; any other
-        answer is the spec's бездействие (scenario «Перезапись требует
-        подтверждения» already held its promise: nothing was touched)."""
-        self._overwrite_confirm_box = None
-        if result != QMessageBox.StandardButton.Yes:
-            return
-        self._start_locked(
-            self._importer.import_character(
-                content, character_id=self._character_id, confirmed=True
-            ),
-            self._on_import_done,
-        )
-
-    def _on_import_done(self, task: asyncio.Task) -> None:
-        outcome = self._outcome(task, "импорт персонажа из файла LSS")
-        if outcome is _TASK_FAILED:
-            if not task.cancelled():
-                self._show_notice(
-                    "Импорт персонажа не завершился. Подробности — в журнале "
-                    "приложения; поля карточки остались как были."
-                )
-            return
-        self._report_import_outcome(outcome)
-
-    def _report_import_outcome(self, outcome: "CharacterImportOutcome") -> None:
-        """Every branch gets its box (the datasets sheet's tree, restated
-        for the card): refusal with the report lines, success with the
-        warnings that accompanied it, the reload of the tab after a write."""
-        # Lazy: the refusal box is the only branch that needs the sheet's
-        # rendering helper; the tab must not drag the sheet module in to open.
-        from app.dd.presentation.datasets_sheet import report_lines
-
-        if outcome.status is CharacterImportStatus.BLOCKED:
-            lines = (
-                "\n".join(report_lines(outcome.report))
-                if outcome.report is not None
-                else ""
-            )
-            body = f"Импорт отклонён — отчёт проверки:\n{lines}" if lines else outcome.message
-            self._show_notice(body)
-            return
-        if outcome.status is CharacterImportStatus.NEEDS_CONFIRMATION:
-            # The same belt as above: a confirmed request does not ask twice.
-            self._show_notice(outcome.message)
-            return
-        body = outcome.message
-        warnings = outcome.report.warnings if outcome.report is not None else ()
-        if warnings:
-            body += "\nПредупреждения:\n" + "\n".join(
-                f"{issue.path} — {issue.message}" for issue in warnings
-            )
-        self._show_notice(body, QMessageBox.Icon.Information)
-        # The tab's own face just changed wholesale (fields, level, blocks) —
-        # reload it through the lock; the kernel card body repaints on reopen
-        # (its fields are the kernel's, not this tab's surface).
-        self.request_refresh()
-
-    def _on_save_raw_clicked(self) -> None:
-        """«Сохранить исходный файл…»: the stored snapshot goes back to disk
-        byte-for-byte (spec scenario «Файл можно забрать обратно») — never a
-        reassembly from our fields."""
-        path, _selected = QFileDialog.getSaveFileName(
-            self,
-            SAVE_RAW_TEXT,
-            "character.json",
-            CHARACTER_FILE_FILTER,
-            options=QFileDialog.Option.DontUseNativeDialog,
-        )
-        if not path:
-            return
-        self._start_locked(
-            self._importer.save_raw_document(self._character_id, path),
-            self._on_save_raw_done,
-        )
-
-    def _on_save_raw_done(self, task: asyncio.Task) -> None:
-        outcome = self._outcome(task, "сохранение исходного файла персонажа")
-        if outcome is _TASK_FAILED:
-            if not task.cancelled():
-                self._show_notice(
-                    "Не удалось записать файл на диск. Подробности — в журнале "
-                    "приложения; повторите выбор места сохранения."
-                )
-            return
-        if outcome is False:
-            self._show_notice(
-                "Для этого персонажа ещё не импортирован файл LSS — сохранить "
-                "нечего; импортируйте файл через «Перезаписать из файла LSS…»."
-            )
-            return
-        self._show_notice(
-            "Исходный файл сохранён на диск байт-в-байт, как он был импортирован.",
-            QMessageBox.Icon.Information,
-        )
-
-    # ── the LSS export door (add-dnd-lss-generation task 5.3) ────────────────
-
-    def _on_export_clicked(self) -> None:
-        """«Экспорт для LSS…»: the document is collected from the CURRENT
-        card state (the builder's door, design Д4) — not from the stored raw
-        file, which is «Сохранить исходный файл…»'s whole subject. The file
-        panel is the system door (DontUseNativeDialog, L1/NRI-0014); the
-        отвод is a no-op: no document is built, nothing on disk or in the
-        card moves (spec scenario «Сохранение отменено»)."""
-        path, _selected = QFileDialog.getSaveFileName(
-            self,
-            EXPORT_FOR_LSS_TEXT,
-            "character.json",
-            CHARACTER_FILE_FILTER,
-            options=QFileDialog.Option.DontUseNativeDialog,
-        )
-        if not path:
-            return
-        self._start_locked(
-            self._document_builder.export_document(self._character_id, path),
-            self._on_export_done,
-        )
-
-    def _on_export_done(self, task: asyncio.Task) -> None:
-        outcome = self._outcome(task, "экспорт персонажа для LSS")
-        if outcome is _TASK_FAILED:
-            if not task.cancelled():
-                self._show_notice(
-                    "Не удалось собрать и записать файл для LSS. Карточка и "
-                    "сохранённый файл персонажа не изменены; подробности — в "
-                    "журнале приложения; повторите выбор места сохранения."
-                )
-            return
-        self._show_notice(
-            "Файл для LSS записан: документ собран из текущего состояния "
-            "карточки, а не из сохранённого исходного файла.",
-            QMessageBox.Icon.Information,
-        )
-
-
 @dataclass(frozen=True)
 class _SpellCandidate:
     """One spell the «Заклинания» tab can bind right now: the pair it will
@@ -709,7 +238,10 @@ class _SpellCandidate:
 
 class DndSpellsTabFrame(_LockedFrame):
     """The «Заклинания» tab: bindings, manual add from the connected
-    dictionaries, removal (task 8.3; spec «Таб “Заклинания” с привязками»).
+    dictionaries, removal (task 8.3; spec «Таб “Заклинания” с привязками»)
+    and, under the binding list, the spell-slot grid of levels 1…9
+    (dd-card-redesign task 5.4; spec dnd-character-mechanics «Ячейки
+    заклинаний — сетка уровней»).
 
     A binding is the pair «source + slug» plus the name snapshot — the row
     resolves its origin label through the two read doors (the SRD sets'
@@ -717,7 +249,9 @@ class DndSpellsTabFrame(_LockedFrame):
     «источник не подключён» when neither answers (spec: the same mark as the
     D&D-tab links). The candidate list is capped and filterable: an SRD set
     alone carries hundreds of slugs, and a wall of buttons is not a working
-    surface."""
+    surface. The slot counts commit per field on editingFinished (the same
+    immediate module-tab posture as every other module write; the numbers
+    ride the mechanics column), the empty field is «не задано»."""
 
     #: Rows rendered from the candidate list before the filter is asked for.
     CANDIDATE_ROW_LIMIT = 50
@@ -725,7 +259,7 @@ class DndSpellsTabFrame(_LockedFrame):
     def __init__(
         self,
         *,
-        character_id: int,
+        character_id: int | None,
         service: "DndCharacterExtensionService",
         dataset_index: "DatasetIndexService",
         grimoire_index: "GrimoireIndexService | None",
@@ -741,6 +275,9 @@ class DndSpellsTabFrame(_LockedFrame):
         self._snap: "IndexSnapshot | None" = None
         self._gsnap = _empty_grimoire_snapshot()
         self._candidates: tuple[_SpellCandidate, ...] = ()
+        #: stored slot counts (level → count), the commit compares against
+        self._slots: dict[int, int] = {}
+        self._slot_edits: dict[int, QLineEdit] = {}
 
         outer = QVBoxLayout(self)
         scroll = QScrollArea(self)
@@ -760,6 +297,33 @@ class DndSpellsTabFrame(_LockedFrame):
         self._links_layout = QVBoxLayout(self._links_host)
         self._links_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.addWidget(self._links_host)
+
+        # The slot grid, «под списком» verbatim (spec scenario «Ячейки под
+        # списком»): nine rows, an editable 0…99 per level, the empty field
+        # reads «не задано». The QIntValidator is the interactive gate; the
+        # commit below is the belt for anything pasted around it.
+        content_layout.addWidget(self._header("Ячейки заклинаний"))
+        slots_grid = QGridLayout()
+        slots_grid.setObjectName("ddSpellsSlotsGrid")
+        for row, level in enumerate(range(SLOT_LEVEL_MIN, SLOT_LEVEL_MAX + 1)):
+            caption = QLabel(f"{level}-й уровень")
+            caption.setObjectName(f"ddSpellsSlotLabel_{level}")
+            slots_grid.addWidget(caption, row, 0)
+            edit = QLineEdit(content)
+            edit.setObjectName(f"ddSpellsSlot_{level}")
+            edit.setAccessibleName(f"Ячейки {level} уровня")
+            edit.setPlaceholderText("не задано")
+            edit.setValidator(
+                QIntValidator(SLOT_COUNT_MIN, SLOT_COUNT_MAX, edit)
+            )
+            edit.editingFinished.connect(
+                lambda _level=level, _edit=edit: self._on_slot_edited(
+                    _level, _edit.text()
+                )
+            )
+            self._slot_edits[level] = edit
+            slots_grid.addWidget(edit, row, 1)
+        content_layout.addLayout(slots_grid)
 
         content_layout.addWidget(self._header("Добавить из подключённых словарей"))
         self._filter = QLineEdit(content)
@@ -781,19 +345,32 @@ class DndSpellsTabFrame(_LockedFrame):
         self.request_refresh()
 
     def request_refresh(self) -> None:
+        # The character half of the read rides the id; the unsaved card (the
+        # empty id, checkpoint-2 audit) reads the dictionary doors alone so
+        # the candidate wall and the slot ladder are honestly alive, while
+        # no binding and no slot exists yet. No service door is knocked.
         self._start_locked(self._read_state(), self._on_loaded)
 
     # ── state (one locked read: links + both dictionary doors) ──────────────
 
     async def _read_state(self):
+        if self._character_id is None:
+            snap = await self._index.snapshot()
+            gsnap = (
+                await self._grimoire.snapshot()
+                if self._grimoire is not None
+                else _empty_grimoire_snapshot()
+            )
+            return (), {}, snap, gsnap
         links = await self._service.get_spell_links(self._character_id)
+        mechanics = await self._service.get_mechanics(self._character_id)
         snap = await self._index.snapshot()
         gsnap = (
             await self._grimoire.snapshot()
             if self._grimoire is not None
             else _empty_grimoire_snapshot()
         )
-        return tuple(links), snap, gsnap
+        return tuple(links), dict(mechanics.spell_slots), snap, gsnap
 
     def _on_loaded(self, task: asyncio.Task) -> None:
         outcome = self._outcome(task, "загрузка привязок заклинаний")
@@ -805,7 +382,8 @@ class DndSpellsTabFrame(_LockedFrame):
                 "журнале приложения; повторите, закрыв и открыв карточку."
             )
             return
-        self._links, self._snap, self._gsnap = outcome
+        self._links, self._slots, self._snap, self._gsnap = outcome
+        self._render_slots()
         self._render()
 
     # ── rendering ────────────────────────────────────────────────────────────
@@ -838,6 +416,49 @@ class DndSpellsTabFrame(_LockedFrame):
             hint.setWordWrap(True)
             self._links_layout.addWidget(hint)
         self._render_candidates()
+
+    def _render_slots(self) -> None:
+        """Print the stored counts (setText fires no editingFinished — the
+        commit channel is user gestures only); an absent level prints the
+        empty field, the placeholder says «не задано»."""
+        for level, edit in self._slot_edits.items():
+            count = self._slots.get(level)
+            edit.setText("" if count is None else str(count))
+
+    def _on_slot_edited(self, level: int, text: str) -> None:
+        """One field's commit: the whole map is rewritten with this level's
+        new value (empty drops it — «не задано»); an untouched field is no
+        transaction, a number past the validator's 0…99 is refused here,
+        the belt under the interactive gate (the service gates once more)."""
+        if self._character_id is None:
+            self._show_notice(UNSAVED_CHARACTER_REFUSAL)
+            return
+        stripped = text.strip()
+        updated = dict(self._slots)
+        if stripped == "":
+            updated.pop(level, None)
+        else:
+            try:
+                count = int(stripped)
+            except ValueError:
+                count = -1
+            if not SLOT_COUNT_MIN <= count <= SLOT_COUNT_MAX:
+                self._show_notice(
+                    "Ячейки заклинаний — целое число от 0 до 99 (или пусто). "
+                    "Значение не сохранено."
+                )
+                return
+            updated[level] = count
+        if updated == dict(self._slots):
+            return
+        self._start_locked(
+            self._set_slots(updated),
+            lambda task: self._on_write(task, "сохранение ячеек заклинаний"),
+        )
+
+    async def _set_slots(self, slots: dict[int, int]):
+        await self._service.set_spell_slots(self._character_id, slots)
+        return await self._read_state()
 
     def _link_row(self, link: "DdSpellLink") -> QWidget:
         """One binding: name + origin (or the dead-source mark) + «Снять»."""
@@ -947,6 +568,9 @@ class DndSpellsTabFrame(_LockedFrame):
     # ── writes (write + reload inside ONE locked coroutine) ──────────────────
 
     def _on_add(self, candidate: _SpellCandidate) -> None:
+        if self._character_id is None:
+            self._show_notice(UNSAVED_CHARACTER_REFUSAL)
+            return
         link: DdSpellLink = DdSpellLink(
             source_key=candidate.source_key,
             slug=candidate.slug,
@@ -962,6 +586,9 @@ class DndSpellsTabFrame(_LockedFrame):
         return await self._read_state()
 
     def _on_remove(self, link: "DdSpellLink") -> None:
+        if self._character_id is None:
+            self._show_notice(UNSAVED_CHARACTER_REFUSAL)
+            return
         self._start_locked(
             self._remove_link(link),
             lambda task: self._on_write(task, "снятие привязки заклинания"),
@@ -982,5 +609,6 @@ class DndSpellsTabFrame(_LockedFrame):
                     "подробности — в журнале приложения."
                 )
             return
-        self._links, self._snap, self._gsnap = outcome
+        self._links, self._slots, self._snap, self._gsnap = outcome
+        self._render_slots()
         self._render()

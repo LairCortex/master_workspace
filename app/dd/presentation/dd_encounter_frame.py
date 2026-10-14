@@ -76,7 +76,7 @@ class DndEncounterTabFrame(_LockedFrame):
     def __init__(
         self,
         *,
-        event_id: int,
+        event_id: int | None,
         encounter_service: "DdEncounterService",
         monster_service: "DdMonsterService",
         source: "DndEncounterSource",
@@ -142,6 +142,18 @@ class DndEncounterTabFrame(_LockedFrame):
         scroll.setWidget(content)
         outer.addWidget(scroll)
 
+        if event_id is None:
+            # A not-yet-saved event carries the tab with an empty editor
+            # (spec «Пустое событие тоже с двумя табами») and no staging
+            # door: the create path never runs the staged hooks, so the
+            # controls say so instead of eating the edits (checkpoint-2).
+            self._empty_hint.setText(
+                "Событие ещё не сохранено — состав встречи и заметка "
+                "откроются после сохранения карточки."
+            )
+            self._add.setEnabled(False)
+            self._note.setReadOnly(True)
+
         self.request_refresh()
 
     @staticmethod
@@ -157,6 +169,8 @@ class DndEncounterTabFrame(_LockedFrame):
 
     def request_refresh(self) -> None:
         """Read the stored overlay and the bestiary through the lock."""
+        if self._event_id is None:
+            return  # a fresh event stores nothing — the honest empty face
         self._start_locked(self._load(), self._on_loaded)
 
     async def _load(self):
@@ -213,6 +227,16 @@ class DndEncounterTabFrame(_LockedFrame):
     # ── staged row editing (no write before the card's Save) ─────────────────
 
     def _on_add_row(self) -> None:
+        if self._event_id is None:
+            # A not-yet-saved event: the create path never runs the staged
+            # tab hooks, so staging here would be a silent loss — the tab
+            # stands with its empty editor (spec «Пустое событие тоже с
+            # двумя табами») and the refusal names the save (checkpoint-2).
+            self._show_notice(
+                "Событие ещё не сохранено — состав встречи открывается "
+                "после сохранения карточки."
+            )
+            return
         self._append_row()
         self._update_empty_hint()
 

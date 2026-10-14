@@ -33,11 +33,25 @@ class CardTabsMixin(QObject):
     #: The QML body slot the module-tab overlay is placed over; the island
     #: republishes it whenever the scene geometry moves (task 7.2).
     bodyRectChanged = Signal(float, float, float, float)
+    #: The declarative module blocks of the «Основное» screen (dd-card-redesign
+    #: task 4.2, design Д2): the host pushes serialized frames in, the QML
+    #: anchors paint them at the declared positions.
+    moduleBlocksChanged = Signal()
+    #: Kernel field names the attached module hides («characteristics»,
+    #: «backstory») — the rows leave the scroll, the stored data survives
+    #: (spec «Ядреные тексты персонажа при модуле скрыты»).
+    hiddenFieldsChanged = Signal()
+    #: One control edit inside a module block: ``(block id, field, value)``.
+    #: The host routes it to the owning source's handler; the VM is the
+    #: single QML→Python door, it interprets nothing (design Д2).
+    moduleBlockWriteRequested = Signal(str, str, object)
 
     def _init_card_tabs(self, kernel_groups: list[dict[str, str]]) -> None:
-        """Set the kernel strip; called from each ViewModel's ``__init__``
-        once its type/relation shape is known (the full «Обзор · Тексты ·
-        Связи» trio, or the pair for a relations-less type)."""
+        """Set the kernel strip; called from each ViewModel's ``__init__``.
+        Since dd-card-redesign Д1 every card passes the single «Основное»
+        group (:func:`app.presentation.card_tab_groups.kernel_card_groups`) —
+        the one-screen 0.19.1 view; external sources may later add tabs and
+        wake the strip."""
         self._groups = CardGroupState(kernel_groups)
         self._invalidated_field = ""
         #: Last body rect the QML page published (DND-LIVE-1): the island
@@ -45,11 +59,31 @@ class CardTabsMixin(QObject):
         #: listens — the host replays this stamp when it subscribes late and
         #: a sheet opening at its final size never republishes.
         self._last_body_rect: tuple[float, float, float, float] | None = None
+        # Task 4.2: the module-block channel starts empty — while no source
+        # has collected anything the card is bit-for-bit the 0.19.1 screen
+        # (the anchors paint nothing, nothing is hidden).
+        self._module_blocks: list[dict] = []
+        self._hidden_fields: list[str] = []
 
     # ── QML-facing face ──────────────────────────────────────────────────────
 
     groups = Property(
         "QVariant", lambda self: self._groups.entries(), notify=groupsChanged
+    )
+    #: The external tail alone (entries past the kernel head). The islands
+    #: build their module placeholder pages from this, so no usage site needs
+    #: to know which keys the kernel declared (dd-card-redesign Д1: the kernel
+    #: is the single «Основное» screen, everything after it is a guest).
+    moduleGroups = Property(
+        "QVariant",
+        lambda self: self._groups.entries()[self._groups.kernel_count():],
+        notify=groupsChanged,
+    )
+    #: How many entries the kernel declared — 1 since dd-card-redesign Д1.
+    #: ``groups.length > kernelCount`` is the islands' «a guest brought tabs»
+    #: condition: the strip shows and the relations band stitches only then.
+    kernelCount = Property(
+        int, lambda self: self._groups.kernel_count(), notify=groupsChanged
     )
     activeGroup = Property(
         int, lambda self: self._groups.active, notify=activeGroupChanged
@@ -68,11 +102,30 @@ class CardTabsMixin(QObject):
     invalidatedField = Property(
         str, lambda self: self._invalidated_field, notify=invalidatedFieldChanged
     )
+    #: The serialized module blocks (design Д2 ``ModuleBlock.to_dict`` data)
+    #: for the two anchors; the QML filters by ``anchor``. Empty list = the
+    #: kernel screen unchanged (the empty-channel pin).
+    moduleBlocks = Property(
+        "QVariant", lambda self: self._module_blocks, notify=moduleBlocksChanged
+    )
+    #: Kernel field names hidden by the attached module (the rows' visibility
+    #: bindings read it); empty = nothing hidden, the 0.19.1 posture.
+    hiddenFields = Property(
+        "QStringList", lambda self: self._hidden_fields, notify=hiddenFieldsChanged
+    )
 
     @Slot(int)
     def selectGroup(self, index: int) -> None:  # noqa: N802
         if self._groups.set_active(index):
             self.activeGroupChanged.emit()
+
+    @Slot(str, str, "QVariant")
+    def writeModuleBlock(  # noqa: N802
+        self, block: str, field: str, value: object
+    ) -> None:
+        """One control commit inside a module block; relayed verbatim to the
+        host's handler (the VM owns no block semantics, design Д2)."""
+        self.moduleBlockWriteRequested.emit(block, field, value)
 
     @Slot(float, float, float, float)
     def reportBodyRect(  # noqa: N802
@@ -104,6 +157,20 @@ class CardTabsMixin(QObject):
             self.groupsChanged.emit()
         if active_changed:
             self.activeGroupChanged.emit()
+
+    def set_module_frame(self, blocks: list[dict], hidden_fields: list[str]) -> None:
+        """Replace the module-block channel (task 4.2, host-only door). Both
+        halves are diffed: a frame identical to the current one emits
+        nothing, so a republish after a write moves only what changed (the
+        QML bindings re-evaluate exactly where a signal fired)."""
+        blocks_changed = list(blocks) != self._module_blocks
+        hidden_changed = list(hidden_fields) != self._hidden_fields
+        self._module_blocks = list(blocks)
+        self._hidden_fields = list(hidden_fields)
+        if blocks_changed:
+            self.moduleBlocksChanged.emit()
+        if hidden_changed:
+            self.hiddenFieldsChanged.emit()
 
     def reveal_field(self, field: str) -> None:
         """Open the tab hosting ``field`` and mark it (a field no group owns

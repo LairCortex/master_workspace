@@ -185,3 +185,80 @@ async def test_factory_refuses_a_foreign_id(qtbot):
     source = _attached([])
     with pytest.raises(ValueError):
         source._build_tab(_WiringWithLock(), "не-число")
+
+
+# ── the preview mirror door (dd-card-redesign task 7.1, design Д5) ──────────
+
+
+class _EncounterRow:
+    def __init__(self, name_snapshot, count):
+        self.name_snapshot = name_snapshot
+        self.count = count
+
+
+class _Encounter:
+    def __init__(self, entries, note=""):
+        self.entries = tuple(entries)
+        self.note = note
+
+
+class _EncountersWithRows(_Encounters):
+    def __init__(self, encounter):
+        super().__init__([])
+        self.encounter = encounter
+        self.reads = []
+
+    async def get_encounter(self, event_id):
+        self.reads.append(event_id)
+        return self.encounter
+
+
+async def test_mirror_dark_or_foreign_answers_empty():
+    """Тёмный источник и чужой тип не печатают зеркало (spec «без модуля
+    предпросмотр не отличается»); дверь читает только своё событие."""
+    source = DndEncounterSource(
+        encounter_service=_EncountersWithRows(_Encounter([])),
+        monster_service=_Monsters(),
+    )
+    assert await source.module_sections("event", "7") == ()
+    source.set_attached(True)
+    assert await source.module_sections("character", "3") == ()
+
+
+async def test_mirror_no_encounter_prints_no_section():
+    source = _attached([])
+    source._encounters = _EncountersWithRows(None)
+    assert await source.module_sections("event", "7") == ()
+    assert source._encounters.reads == [7]  # str id projected to the row id
+
+
+async def test_mirror_answers_the_encounter_section():
+    source = _attached([])
+    source._encounters = _EncountersWithRows(
+        _Encounter([_EncounterRow("Гоблин", 4)], "Засада")
+    )
+    (section,) = await source.module_sections("event", "7")
+    assert section.title == "Встреча"
+    assert section.lines == ("Гоблин × 4", "Заметка: Засада")
+
+
+async def test_mirror_refuses_a_foreign_id():
+    source = _attached([])
+    with pytest.raises(ValueError):
+        await source.module_sections("event", "не-число")
+
+
+def test_fresh_event_gets_the_tab_on_the_empty_id():
+    # spec «Пустое событие тоже с двумя табами» (checkpoint-2 audit): the
+    # lineup never depends on the record existing — the empty id stands the
+    # «Встреча» tab too, its emptiness lives in the frame, not in the strip.
+    source = _attached()
+    tabs = source.card_tabs(_target(row_id=""))
+    assert [(tab.key, tab.title) for tab in tabs] == [
+        (ENCOUNTER_TAB_KEY, ENCOUNTER_TAB_TITLE)
+    ]
+    assert source.card_tabs(_target(key="character", row_id="")) == ()
+    detached = DndEncounterSource(
+        encounter_service=_Encounters(), monster_service=_Monsters()
+    )
+    assert detached.card_tabs(_target(row_id="")) == ()

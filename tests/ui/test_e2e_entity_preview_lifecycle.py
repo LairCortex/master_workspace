@@ -373,10 +373,13 @@ async def test_card_save_refreshes_only_the_shown_entity(
 async def test_preview_bus_guards_unknown_types_and_vanished_rows(app, wait_for):
     application, window = app
     # A dead type key and a vanished id on both faces of the bus: silent
-    # no-ops — the preview keeps its empty state, no card opens.
+    # no-ops — the preview keeps its empty state, no card opens. (The event
+    # id here is VANISHED, not a dead key: since the dd-card-redesign audit
+    # fix ``("event", id)`` is a live bus entry — the seat is pinned by the
+    # two event tests below, the dead-key half is the unknown type.)
     window.detail_panel.entity_selected.emit("no-such-type", 1)
     window.detail_panel.entity_selected.emit("character", 999999)
-    window.entity_preview.entity_requested.emit("event", 1)
+    window.entity_preview.entity_requested.emit("event", 999999)
     window.entity_preview.entity_requested.emit("character", 999999)
     await helpers.wait_until_settled()
     assert _live_pane(window) is None

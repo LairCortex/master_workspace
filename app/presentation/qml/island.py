@@ -103,6 +103,21 @@ class IslandDialogMixin:
         """
         return {"islandPalette": self._palette}
 
+    #: Live-audit 2026-10-13 (finding 2): sheet facades opt in and their
+    #: ``QQuickWidget`` then wears the SHEET canvas as its framebuffer clear
+    #: color — the surface the scene itself paints — so a dropped cocoa
+    #: render frame (``QQuickRenderControl beginFrame/endFrame`` hiccup on a
+    #: resize under the native sheet) can never expose the white OS window
+    #: canvas below the content. The contract reads «the sheet's canvas is
+    #: the SHEET surface from the very first pixel of the window»: with the
+    #: clear color on the widget that holds, even while the scene itself
+    #: failed to paint. Non-sheet islands (the main-window preview pane)
+    #: stay on the window canvas.
+    ISLAND_SHEET_CANVAS: bool = False
+
+    _sheet_canvas_listener = None
+    _sheet_canvas_color = None
+
     def setup_island(self) -> None:
         """Create the widget, private context and root scene.
 
@@ -120,6 +135,12 @@ class IslandDialogMixin:
             quick = QQuickWidget(engine, self)
             quick.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
             setattr(self, widget_name, quick)
+        if self.ISLAND_SHEET_CANVAS:
+            self.sync_island_sheet_canvas()
+            theme = getattr(self, "_qml_theme", None) or self._theme
+            self._sheet_canvas_listener = theme.add_listener(
+                self.sync_island_sheet_canvas
+            )
         if getattr(self, "_palette", None) is None:
             palette_theme = getattr(self, "_qml_theme", None) or self._theme
             self._palette = QmlPalette(palette_theme, parent=self)
@@ -202,7 +223,44 @@ class IslandDialogMixin:
         palette = getattr(self, "_palette", None)
         if palette is not None:
             palette.detach()
+        theme = getattr(self, "_qml_theme", None) or getattr(self, "_theme", None)
+        if theme is not None and self._sheet_canvas_listener is not None:
+            # The clear-color subscription retires with the island (NRI-0016
+            # AB5/AB6: a released island never paints again — and never gets
+            # painted-at).
+            theme.remove_listener(self._sheet_canvas_listener)
+        self._sheet_canvas_listener = None
         release_island(getattr(self, self.island_attribute, None))
+
+    def sync_island_sheet_canvas(self) -> None:
+        """Paint the widget's framebuffer clear color from ``color.bg.surface``.
+
+        The token is the same one the island root Rectangle paints with (the
+        compiler's reader, D7: no tokens → the QML-side fallback color). Called
+        at setup and from the theme runtime on every switch; the framebuffer
+        clear follows the skin so the safety net never freezes a stale color.
+        """
+        from PySide6.QtGui import QColor
+        from PySide6.QtCore import Qt
+
+        from app.presentation.theme.compiler import token_rgb
+
+        # No liveness guard: the door to this method is setup_island (the
+        # widget was just built) or the theme subscription, which retires in
+        # _release_island — a released island is never painted-at.
+        quick = getattr(self, self.island_attribute)
+        color = QColor(Qt.GlobalColor.white)  # the QML-side fallback (D7)
+        theme = getattr(self, "_qml_theme", None) or self._theme
+        tokens = theme.tokens
+        if tokens is not None:
+            rgb = token_rgb(tokens, theme.theme, "color.bg.surface")
+            if rgb is not None:
+                color = QColor(*rgb)
+        quick.setClearColor(color)
+        # PySide6 exposes no clearColor() getter — the mirror is what the
+        # contract's readers (and the tests) read; the pixel contract
+        # (test_island_sheet_canvas) proves the framebuffer itself.
+        self._sheet_canvas_color = color
 
     def _schedule_island_release(self) -> None:
         if self.island_release_deferred:

@@ -266,6 +266,40 @@ async def test_profile_registers_no_external_types(qapp, tmp_path, monkeypatch,
         assert reg.resolve("character") is EntityType.CHARACTER
         assert reg.resolve("spell") is None
         assert reg.display_label("spell") == "spell"
+        # dd-card-redesign task 3.5 (spec entity-card-tabs «карточки без
+        # модуля неотличимы от 0.19.1»): пустые источники — вся карточная
+        # история этого профиля. С нулём внешних источников каждый открываемый
+        # экран — одноэкранный вид 0.19.1: одна группа «Основное», полоса
+        # спит, пришитой полосы связей нет — для всех ядерных типов и события.
+        # Половина предпросмотра закрыта парой пинов: здесь — нуль источников
+        # (секций неоткуда взять), в test_entity_preview_island — ядровая
+        # карточка не печатает внешнюю секцию.
+        from app.presentation.views.entity_card_dialog import EntityCardDialog
+        from app.presentation.views.event_dialog import EventDialog
+        from tests.presentation.qml_helpers import find_item
+
+        screens = []
+        for entity_type in sorted(t.value for t in EntityType):
+            screens.append(EntityCardDialog(None, entity_type))
+        screens.append(EventDialog(None))
+        try:
+            for dialog in screens:
+                assert [e["key"] for e in dialog.vm.groups] == ["overview"]
+                assert dialog.vm.moduleGroups == []
+                strip_name = (
+                    "eventGroupTabs"
+                    if isinstance(dialog, EventDialog)
+                    else "entityGroupTabs"
+                )
+                strip = find_item(dialog.quick, strip_name)
+                assert strip.property("visible") is False
+                if isinstance(dialog, EntityCardDialog):
+                    band = find_item(dialog.quick, "entityRelationsBand")
+                    assert band.property("active") is False
+        finally:
+            for dialog in screens:
+                dialog.close()
+                dialog.deleteLater()
     finally:
         window.close()
         await application.shutdown()

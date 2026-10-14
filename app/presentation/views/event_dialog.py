@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 import shiboken6
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QVBoxLayout, QWidget
 
 from app.domain import entity_registry
 from app.domain.enums.entity_type import EntityType
 from app.presentation.card_tab_host import CardTabHost
+from app.presentation.module_block_host import ModuleBlockHost
 from app.presentation.dialog_results import (
     EventCreateResult,
     EventDialogResult,
@@ -22,6 +23,7 @@ from app.presentation.dialog_results import (
 from app.presentation.qml import setup_qml_shell
 from app.presentation.qml.engine import QML_IMPORT_PATH
 from app.presentation.qml.island import IslandDialogMixin
+from app.presentation.qml.island_size import fit_dialog_to_island
 from app.presentation.theme import get_default_theme
 from app.presentation.utils.date_utils import era_flag, event_start_time, split_date_era
 from app.presentation.viewmodels.event_dialog_island_view_model import (
@@ -224,6 +226,10 @@ class _TabsProxy:
 
 class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
     island_context_names = {"eventDialogVm": "vm"}
+    # Live-audit 2026-10-13 finding 2: the sheet canvas clears the widget's
+    # framebuffer, so a dropped cocoa render frame below the content shows the
+    # theme surface, never the white OS window canvas.
+    ISLAND_SHEET_CANVAS = True
 
     def island_source(self) -> str:
         return ROOT_QML
@@ -317,6 +323,43 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
             wiring,
             target_key=EntityType.EVENT.value,
         )
+        # dd-card-redesign task 4.2 (design Д2): the same declarative block
+        # channel as the entity card — the event screen grows module blocks at
+        # the two anchors through the very same kernel mechanism (the event
+        # has no music field, its «after_music» anchor is the form's tail).
+        self._module_blocks = ModuleBlockHost(
+            self,
+            self.vm,
+            external_sources,
+            wiring,
+            target_key=EntityType.EVENT.value,
+        )
+        # A fresh event never sees populate() — the empty-id collection is
+        # the fresh-record answer of the channel (the same rule as the card).
+        self._module_blocks.refresh(None)
+        # dd-card-redesign task 3.2/3.4 (spec «Размер окна с табами следует
+        # самому высокому содержимому»): the single screen opens at the pinned
+        # 720×620 exactly as 0.19.1 did — no fit call touches that state. When
+        # a guest tab joins, the scene re-publishes the bigger natural size
+        # (strip + tallest page + stitched band + buttons) and the window
+        # re-fits through the shared island sizer, floored at the pinned pair.
+        self.vm.groupsChanged.connect(self._refit_for_guest_tabs)
+        # Live-audit 2026-10-13 blocker (spec «Размер окна с табами следует
+        # самому высокому содержимому»): a module frame can also arrive after
+        # the opening fit — populate() re-aims the channel and the controller
+        # republishes the loaded frame later than the constructor measured.
+        # The ask then grows while the window stands still and the stitched
+        # band with the buttons rides the scene below the bottom edge (the
+        # card's live failure). The scene publishes the grown ask through
+        # implicitHeightChanged — one coalesced re-fit follows it; the frame
+        # signals themselves measure too early (the Repeater is still under
+        # construction). The single-screen dialog returns inside the handler.
+        self._root.implicitHeightChanged.connect(self._refit_after_module_frame)
+        # Checkpoint-2 audit (spec dnd-encounters «Пустое событие тоже с
+        # двумя табами»): the strip collects at construction too — a fresh
+        # event opens with «Встреча» standing and honestly empty (staging
+        # unlocks with the saved record). populate() re-aims edited cards.
+        self._card_tabs.refresh(None)
 
         # NRI-0014 task 4.2 (E1): the scene only exists from here, so replay
         # the window title the constructor set before the island loaded. The
@@ -364,6 +407,31 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         super().setWindowTitle(title)
         if getattr(self, "_root", None) is not None:
             self._root.setProperty("sheetTitle", title)
+
+    def _refit_after_module_frame(self) -> None:
+        # Coalesce one polish pass: the Repeater grows row by row and every
+        # added row re-publishes the ask — one re-fit on the next loop turn
+        # measures the settled scene (the entity card's facade carries the
+        # long comment; live-audit 2026-10-13 blocker).
+        QTimer.singleShot(0, self, self._refit_for_guest_tabs)
+
+    def _refit_for_guest_tabs(self) -> None:
+        # dd-card-redesign task 3.4: the re-fit door for the tabbed assembly
+        # only — the single-screen dialog keeps the 720×620 the constructor
+        # pinned, so the «ядро неотличимо от 0.19.1» profile pin holds without
+        # a resize. The floor is that pinned pair: down the window never goes.
+        root = getattr(self, "_root", None)
+        if root is None or not shiboken6.isValid(root):
+            return  # the island is gone — the emit raced the teardown
+        if not self.vm.moduleGroups:
+            return
+        fit_dialog_to_island(self, root, floor=(720, 620))
+        # Live-audit 2026-10-13 finding 2: the window grows with the strip; the
+        # cocoa render control can drop the frame of a resize landing while the
+        # native sheet animates. One render request on the next loop turn, when
+        # the geometry has settled (the context-object form drops the request
+        # if the dialog dies first).
+        QTimer.singleShot(0, self, self.quick.update)
 
     def set_sheet_scrim_alpha(self, alpha: float) -> None:
         # NRI-0014 task 4.3 (CR5): the stack owner (ApplicationWiring counts
@@ -437,6 +505,10 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         # Task 7.2: the record is known from here — the external sources may
         # now declare their extra tabs for exactly this event.
         self._card_tabs.refresh(
+            str(self._event_id) if self._event_id is not None else None
+        )
+        # Task 4.2: the module-block channel is collected the same way.
+        self._module_blocks.refresh(
             str(self._event_id) if self._event_id is not None else None
         )
 
@@ -631,6 +703,9 @@ class EventDialog(AiCapableDialogBase, IslandDialogMixin, QDialog):
         # subscriptions retire through release_tab while the island still
         # answers, then the island teardown proceeds (no listener survives).
         self._card_tabs.release()
+        # dd-card-redesign task 4.2: the module-block handlers retire the same
+        # way — no module listener may outlive the dialog.
+        self._module_blocks.release()
         # NRI-0021 task 4.4: the «now» subscription leaves with the dialog
         # (DEFECT-1 posture — no listener survives its window).
         if self._now_vm is not None:

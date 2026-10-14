@@ -125,11 +125,14 @@ class EntityPreviewWidget(IslandDialogMixin, QWidget):
         self,
         pins: Sequence[tuple[str, Any]],
         live: tuple[str, Any] | None,
+        mirror: dict | None = None,
     ) -> None:
         """Paint one full frame (the wiring's single write channel, design
         Д1): pinned entities in pin order plus the live entity (``None`` =
-        empty live area)."""
-        self.vm.show_slots(pins, live)
+        empty live area). ``mirror`` is the optional per-pair module mirror
+        map the connector read through the source doors (dd-card-redesign
+        task 7.1); the VM feeds it to the cards and gates reuse with it."""
+        self.vm.show_slots(pins, live, mirror)
 
     def clear(self) -> None:
         """Back to the self-explaining empty state."""

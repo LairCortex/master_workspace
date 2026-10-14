@@ -31,7 +31,13 @@ from app.dd.application.dataset_index_service import DatasetEntry, IndexSnapshot
 from app.dd.application.dnd_character_extension_service import (
     DndCharacterExtensionService,
 )
-from app.dd.domain.character import DdSpellLink, ReferenceLink, empty_ext
+from app.dd.domain.character import (
+    DdFeatLink,
+    DdSpellLink,
+    ReferenceLink,
+    empty_ext,
+)
+from app.dd.domain.character_mechanics import CharacterMechanics
 from app.dd.domain.character_editor import editor_doc_to_text
 from app.dd.infrastructure.db.dd_models import encode_text_blocks
 from app.dd.infrastructure.db.dd_schema import ensure_dd_tables
@@ -392,3 +398,136 @@ async def test_same_link_is_unresolvable_when_source_leaves(uow):
     assert "race" not in offline.get("info", {})
     card = ext_to_domain(await DdCharacterRepository(uow.session).get_ext(char_id))
     assert card.links["race"] == ReferenceLink("srd", "orc", "Орк")
+
+
+# ── механики в документе (dd-card-redesign task 6.2; spec
+# dnd-character-export «Механики едут в документе») ──────────────────────────
+
+
+def _mech(**over):
+    kwargs = dict(
+        scores={
+            "strength": 18,
+            "dexterity": 14,
+            "constitution": 16,
+            "intelligence": 10,
+            "wisdom": 12,
+            "charisma": 8,
+        },
+        speed=25,
+        alignment="хаотично-добрый",
+        spell_slots={1: 4, 2: 3},
+        skill_proficiencies=frozenset({"athletics", "stealth"}),
+        manual_saving_throws=frozenset(),
+    )
+    kwargs.update(over)
+    return CharacterMechanics(**kwargs)
+
+
+def _feats(*links):
+    return dict(
+        mechanics=_mech(),
+        saving_throw_profs=frozenset({"strength"}),
+        feat_links=links,
+    )
+
+
+def test_mechanics_ride_the_document_sections():
+    """Spec scenario «Механики едут в документе»: значения, спасброски,
+    владения, скорость, мировоззрение, сетка ячеек и подключённая черта —
+    все своими штатными ключами живого формата."""
+    link = DdFeatLink("srd", "alert", "Наблюдательность")
+    data = _data_of(_pure(**_feats(link, DdFeatLink("gone", "lucky", "Везунчик"))))
+    assert data["stats"] == {
+        "str": {"value": 18, "save": True},
+        "dex": {"value": 14},
+        "con": {"value": 16},
+        "int": {"value": 10},
+        "wis": {"value": 12},
+        "cha": {"value": 8},
+    }
+    # «save» — только у владеемого, у прочих ключа нет (живой файл так же).
+    assert data["skills"] == {
+        "athletics": {"proficient": True},
+        "stealth": {"proficient": True},
+    }
+    assert data["speed"] == 25
+    assert data["alignment"] == "хаотично-добрый"
+    assert data["spells"]["slots"] == [
+        {"level": 1, "value": 4, "max": 4},
+        {"level": 2, "value": 3, "max": 3},
+    ]
+    # неподключённая черта в документ не попадает (правило «info»-привязок)
+    assert data["feats"] == [{"id": "alert", "name": "Наблюдательность"}]
+
+
+def test_no_mechanics_no_sections():
+    """«Пустое не выдумывается»: карточка без механик не получает ни одного
+    из новых ключей (round-trip пустой карточки остаётся прежним)."""
+    data = _data_of(_pure())
+    for key in ("stats", "skills", "speed", "alignment", "feats"):
+        assert key not in data
+    assert "slots" not in data.get("spells", {})
+
+
+def test_partial_scores_export_nothing_and_saves_survive_alone():
+    """Частичный набор в хранилище не живёт (гейт Д6) — в документе нет
+    ``stats.values``, но ручные спасброски едут и без значений: ``save``
+    не зависит от того, заданы ли цифры."""
+    mech = _mech(scores=None)
+    data = _data_of(_pure(mechanics=mech, saving_throw_profs=frozenset({"wisdom"})))
+    assert data["stats"] == {"wis": {"save": True}}
+
+
+async def test_card_mechanics_export_validates_and_round_trips(uow):
+    """Spec «import → правка → export → import»: карточка, набранная через
+    сервисы, собирается в документ, проходит настоящим валидатором без
+    ошибок, а повторный импорт этого документа кладёт то же состояние."""
+    await ensure_dd_tables(uow)
+    char_id = await _make_character(uow, "Грог")
+    ext = DndCharacterExtensionService(uow)
+    await ext.set_ability_scores(
+        char_id,
+        {"strength": 18, "dexterity": 14, "constitution": 16,
+         "intelligence": 10, "wisdom": 12, "charisma": 8},
+    )
+    await ext.set_speed(char_id, 25)
+    await ext.set_alignment(char_id, "хаотично-добрый")
+    await ext.set_spell_slots(char_id, {1: 4})
+    await ext.set_skill_proficiencies(char_id, ["athletics"])
+    await ext.set_saving_throw_proficiencies(char_id, ["strength"])
+    await ext.add_feat_link(char_id, DdFeatLink("srd", "alert", "Наблюдательность"))
+
+    snap = IndexSnapshot(
+        ids=("srd",),
+        titles={"srd": "SRD-5.1"},
+        sections={
+            "races": {"srd": (DatasetEntry("srd", "orc", "Орк", {}),)},
+            "feats": {"srd": (DatasetEntry("srd", "alert", "Наблюдательность", {}),)},
+        },
+        slugs={},
+    )
+    builder = _builder(uow, snap)
+    text = await builder.build(char_id)
+    report, parsed = CharacterValidatorService().validate(text)
+    assert [f"{i.path}: {i.message}" for i in report.errors] == []
+
+    entity_services = _entity_services(uow)
+    importer = CharacterImportService(
+        uow=uow,
+        entity_services=lambda: entity_services,
+        image_store=None,
+        dataset_index=_StubIndex(snap),
+        now=lambda: D1,
+    )
+    outcome = await importer.import_character(text, character_id=char_id, confirmed=True)
+    assert outcome.status is not None
+    after = await DndCharacterExtensionService(uow).get_mechanics(char_id)
+    before = await ext.get_mechanics(char_id)
+    assert after.scores == before.scores
+    assert after.speed == 25 and after.alignment == "хаотично-добрый"
+    assert after.spell_slots == {1: 4}
+    assert after.skill_proficiencies == frozenset({"athletics"})
+    assert after.manual_saving_throws == frozenset({"strength"})
+    links = await DdCharacterRepository(uow.session).list_feat_links(char_id)
+    assert [(lnk.source_key, lnk.ref_id) for lnk in links] == [("srd", "alert")]

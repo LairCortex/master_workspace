@@ -125,15 +125,11 @@ def _title_texts(widget):
 
 
 def _open_field_group(dialog, field_object_name: str) -> None:
-    """add-dnd-game-face task 7.1: the fields live on grouping-tab pages and
-    the pages overlap in one body rect — the row probe measures what the
-    reader sees, so the tab hosting the field is opened first. The mention
-    texts (characteristics, backstory, the type's extra fields) sit on
-    «Тексты», everything else on «Обзор» — the kernel map's own division."""
-    if any(part in field_object_name for part in ("Characteristics", "Backstory", "ExtraField")):
-        dialog.vm.selectGroup(1)  # «Тексты»
-    else:
-        dialog.vm.selectGroup(0)  # «Обзор»
+    """dd-card-redesign Д1: the card is the single screen — every field is on
+    it and the strip sleeps until a module brings tabs, so there is nothing
+    to open. The call sites keep knocking (a future tabbed assembly will
+    again owe the probe a page switch); today the door stands open."""
+    return None
 
 
 def _row_label(widget, field_object_name: str) -> str:

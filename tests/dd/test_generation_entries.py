@@ -6,8 +6,10 @@
   генерации и поднимает сигнал (гейты перечитывает façade при срабатывании);
 * кнопки «Сгенерировать ИИ» в листах датасетов/гримуаров живут только с
   opener'ом, неактивны при закрытом AI-гейте с общей русской подсказкой;
-* «Дозаполнить ИИ» на D&D-табе собирает документ дверью и зовёт opener,
-  а «пусто дозаполнять» — отказ Information-боксом без запуска;
+* дверь «Дозаполнить ИИ» живёт на блоках «Основного» (dd-card-redesign
+  5.5 снял D&D-таб): утина дверь set_generation доходит до контроллера и
+  печатает опцию; сам поток (сборка, «пусто дозаполнять», отказ) пинят
+  ``test_character_main_blocks.py``;
 * façade: закрытый гейт и пустое подключение объясняются modeless-боксом
   без открытия листа; живой лист-задача поднимается, близнец не штабелируется;
   detach снимает лист тихо (force_close).
@@ -22,15 +24,13 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QPushButton, QSpinBox
+from PySide6.QtWidgets import QMainWindow, QPushButton, QSpinBox
 
 from app.dd.application.dataset_index_service import IndexSnapshot
 from app.dd.application.generation_deps import GenerationBundle
-from app.dd.application.character_channel import TOP_UP_NOTHING_REFUSAL
 from app.dd.domain.character import LINK_SLOTS
 from app.dd import module as dd_module
 from app.dd.module import DndModule
-from app.dd.presentation.character_tab_frames import DndCharacterTabFrame
 from app.dd.presentation.section import (
     DD_CHARACTER_GENERATION_ACTION_TEXT,
     DndWindowSection,
@@ -282,6 +282,11 @@ class _StubService:
             links={slot: ReferenceLink("", "", "") for slot, _s, _t in LINK_SLOTS}
         )
 
+    async def get_mechanics(self, character_id):
+        from app.dd.domain.character_mechanics import CharacterMechanics
+
+        return CharacterMechanics()
+
 
 class _StubIndex:
     def __init__(self) -> None:
@@ -304,21 +309,6 @@ class _Builder:
         if self.boom:
             raise RuntimeError("диск кончился")
         return self.document
-
-
-def _top_up_frame(qtbot, builder, opener, deps):
-    frame = DndCharacterTabFrame(
-        character_id=7,
-        service=_StubService(),
-        dataset_index=_StubIndex(),
-        record_labels={type_key: type_key for _slot, _s, type_key in LINK_SLOTS},
-        run_locked=lambda coro: asyncio.ensure_future(coro),
-        document_builder=builder,
-        generation_open=opener,
-        generation_deps=deps,
-    )
-    qtbot.addWidget(frame)
-    return frame
 
 
 def _lss_document(data: dict) -> str:
@@ -350,36 +340,6 @@ FULL = _lss_document(
         "spells": {"list": ["fire-ball"]},
     }
 )
-
-
-async def test_top_up_button_opens_sheet_with_document(qtbot):
-    opened: list[tuple] = []
-    frame = _top_up_frame(qtbot, _Builder(PARTIAL), lambda cid, doc: opened.append((cid, doc)), _Deps(True))
-    await _drain()
-    button = frame.findChild(QPushButton, "ddDndTopUpAi")
-    assert button is not None
-    button.click()
-    await _drain()
-    assert opened == [(7, PARTIAL)]
-
-
-async def test_top_up_refuses_when_nothing_missing(qtbot):
-    opened: list[tuple] = []
-    frame = _top_up_frame(qtbot, _Builder(FULL), lambda *a: opened.append(a), _Deps(True))
-    await _drain()
-    frame.findChild(QPushButton, "ddDndTopUpAi").click()
-    await _drain()
-    assert opened == []  # генерация не запускается (spec «Пусто дозаполнять»)
-    visible = [box for box in frame.findChildren(QMessageBox) if not box.isHidden()]
-    assert any(TOP_UP_NOTHING_REFUSAL in box.text() for box in visible)
-
-
-async def test_top_up_button_disabled_without_open_opener_gate(qtbot):
-    frame = _top_up_frame(qtbot, _Builder(PARTIAL), lambda *a: None, _Deps(False))
-    await _drain()
-    button = frame.findChild(QPushButton, "ddDndTopUpAi")
-    assert not button.isEnabled()
-    assert button.toolTip() == HINT
 
 
 # ── façade: гейты, единственный экземпляр, detach (7.3/7.4) ──────────────────
@@ -548,26 +508,47 @@ async def test_generation_count_spinners_gate_one_to_ten_default_five(
 # ── утина дверь set_generation у источника таба (7.3) ────────────────────────
 
 
-async def test_source_generation_door_travels_into_tab(qtbot):
+async def test_source_generation_door_travels_into_block_frame(qtbot):
+    # dd-card-redesign 5.5: the tab is gone, the door travels into the
+    # «Основное» controller the frame's factory builds — the option prints
+    # only while the façade has pushed opener+deps into the source.
+    from PySide6.QtWidgets import QWidget
+
+    from app.dd.presentation.character_main_blocks import DOORS_BLOCK_ID
     from app.dd.presentation.character_tab_source import DndCharacterTabSource
+    from app.presentation.modules.protocol import CardTabTarget
 
     source = DndCharacterTabSource(
         character_service=_StubService(),
         dataset_index=_StubIndex(),
         character_document=_Builder(PARTIAL),
     )
+    source.set_attached(True)
     wiring = SimpleNamespace(run_locked=lambda coro: asyncio.ensure_future(coro))
-    before = source._build_character_tab(wiring, "7")  # noqa: SLF001
-    qtbot.addWidget(before)
-    assert before.findChild(QPushButton, "ddDndTopUpAi") is None
+    target = CardTabTarget(key="character", source_id="7")
+
+    async def door_ids() -> list[str]:
+        published: list = []
+        dialog = QWidget()
+        qtbot.addWidget(dialog)
+        frame = source.module_blocks(target)
+        controller = frame.handler_factory(
+            wiring, dialog, lambda entries, hidden: published.append(entries)
+        )
+        await _drain()
+        del controller  # the load rode to its end; the frame is what we read
+        for entries in reversed(published):
+            for block in entries:
+                if block.id == DOORS_BLOCK_ID:
+                    return [option.id for option in block.actions]
+        return []
+
+    # только экспорт: без двери façade опция «Дозаполнить ИИ» не печатается
+    assert await door_ids() == ["export"]
     source.set_generation(lambda cid, doc: None, _Deps(True))
-    after = source._build_character_tab(wiring, "7")  # noqa: SLF001
-    qtbot.addWidget(after)
-    assert after.findChild(QPushButton, "ddDndTopUpAi") is not None
+    assert "top_up" in await door_ids()
     source.set_generation(None, None)  # detach-поза: дверь гаснет
-    off = source._build_character_tab(wiring, "7")  # noqa: SLF001
-    qtbot.addWidget(off)
-    assert off.findChild(QPushButton, "ddDndTopUpAi") is None
+    assert await door_ids() == ["export"]
 
 
 async def test_façade_pushes_generation_door_into_sources(qtbot, monkeypatch):
@@ -742,42 +723,3 @@ async def test_gate_notice_box_forgets_itself_on_close(qtbot, monkeypatch):
 
 
 # ── молчаливые гейты двери дозаполнения на табе (8.1) ────────────────────────
-
-
-async def test_top_up_click_inert_without_door_builder_or_gate(qtbot):
-    # Прямой тычок в обработчик: нет двери или сборщика — молчание; закрытый
-    # гейт — молчание (объяснение живёт на кнопке, не в клике).
-    opened: list[tuple] = []
-    frame = _top_up_frame(qtbot, _Builder(PARTIAL), lambda *a: opened.append(a), _Deps(True))
-    await _drain()
-    frame._generation_open = None  # noqa: SLF001
-    frame._on_top_up_clicked()  # noqa: SLF001
-    await _drain()
-    assert opened == []
-    frame2 = _top_up_frame(qtbot, None, lambda *a: opened.append(a), _Deps(True))
-    await _drain()
-    frame2._on_top_up_clicked()  # noqa: SLF001
-    await _drain()
-    assert opened == []
-    frame3 = _top_up_frame(qtbot, _Builder(PARTIAL), lambda *a: opened.append(a), _Deps(False))
-    await _drain()
-    frame3._on_top_up_clicked()  # noqa: SLF001
-    await _drain()
-    assert opened == []
-
-
-async def test_top_up_document_build_failure_explains_in_russian(qtbot):
-    # Сборка документа упала: русский бокс, карточка не изменена, дверь не
-    # вызвана.
-    opened: list[tuple] = []
-    frame = _top_up_frame(qtbot, _Builder(PARTIAL, boom=True), lambda *a: opened.append(a), _Deps(True))
-    await _drain()
-    frame.findChild(QPushButton, "ddDndTopUpAi").click()
-    await _drain()
-    visible = [
-        box
-        for box in frame.findChildren(QMessageBox)
-        if not box.isHidden() and "Не удалось собрать документ" in box.text()
-    ]
-    assert visible
-    assert opened == []

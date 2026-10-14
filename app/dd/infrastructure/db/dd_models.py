@@ -27,10 +27,19 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Iterable
 
 from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.dd.domain.character_mechanics import (
+    ABILITY_KEYS,
+    SLOT_COUNT_MAX,
+    SLOT_COUNT_MIN,
+    SLOT_LEVEL_MAX,
+    SLOT_LEVEL_MIN,
+    SKILL_ABILITIES,
+)
 from app.infrastructure.db.models import Base
 
 #: The dd subset :func:`app.dd.infrastructure.db.dd_schema.ensure_dd_tables`
@@ -93,6 +102,34 @@ class DdCharacterExtModel(Base):
     # the import flow is what fills them, the codec below is their wrapper.
     raw_document: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     text_blocks: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # dd-card-redesign (task 2.2, design Д6): the structured mechanics block.
+    # Every column is nullable — «не задано» is the honest absence, and an
+    # old row that never carried mechanics keeps reading as the empty value.
+    # The six ability values: the ONLY manually typed numbers of the block
+    # (spec «шесть значений характеристик … в полосе 1…30 каждое»), stored
+    # all-or-nothing by the service gate — a partial set never lands here.
+    # Derived numbers (modifiers, saves, skills, passives, jumps, carry) are
+    # NEVER stored: they are the pure functions of app/dd/domain/
+    # character_mechanics.py (Д6 «Производные значения НЕ хранятся»).
+    strength: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    dexterity: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    constitution: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    intelligence: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    wisdom: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    charisma: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # Speed in feet — the master's editable figure (the tab prefills 30, the
+    # import fills it when the document carries one); jumps and carry are
+    # computed and never depend on it (spec «от скорости НЕ SHALL зависеть»).
+    speed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    # One of the fixed nine alignments (domain ALIGNMENTS) or NULL = «не задано».
+    alignment: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Spell slots «уровень 1…9 → количество 0…99» in the slots codec's JSON
+    # body; NULL and an unparsable body both read as «не задано».
+    slots_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    # Proficiencies (skill set + the master's manual saving-throw set) in the
+    # prof codec's JSON body; design Д8 stores the manual set — the class's
+    # saves are re-resolved from the dataset at every read, never cached.
+    prof_json: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
 
 class DdCharacterSpellLinkModel(Base):
@@ -112,6 +149,28 @@ class DdCharacterSpellLinkModel(Base):
     )
     source_key: Mapped[str] = mapped_column(String, nullable=False)
     slug: Mapped[str] = mapped_column(String, nullable=False)
+    snapshot_name: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+
+class DdCharacterFeatLinkModel(Base):
+    """One feat choice of one character (dd-card-redesign task 2.2, design
+    Д6): «a copy of the spell link's form» — the pair «источник + id» plus
+    the name snapshot, a REFERENCE into the connected datasets' records of
+    type «черта» (spec «Черты — связи с записями датасетов»). A snapshot
+    whose source was disconnected keeps its name verbatim; the annotation is
+    the tab's reading rule (spec scenario «Датасет сняли — имена целы»)."""
+
+    __tablename__ = "dd_character_feat_link"
+    # Reload-safe over a module-purging import — see DdCharacterExtModel's
+    # __table_args__ comment (one Table per name on the shared kernel Base).
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    character_id: Mapped[int] = mapped_column(
+        ForeignKey("characters.id", ondelete="CASCADE"), nullable=False
+    )
+    source_key: Mapped[str] = mapped_column(String, nullable=False)
+    ref_id: Mapped[str] = mapped_column(String, nullable=False)
     snapshot_name: Mapped[str] = mapped_column(String, nullable=False, default="")
 
 
@@ -175,6 +234,7 @@ class DdEncounterModel(Base):
 
 DD_TABLES.append(DdCharacterExtModel.__table__)
 DD_TABLES.append(DdCharacterSpellLinkModel.__table__)
+DD_TABLES.append(DdCharacterFeatLinkModel.__table__)
 DD_TABLES.append(DdMonsterModel.__table__)
 DD_TABLES.append(DdEncounterModel.__table__)
 
@@ -261,3 +321,104 @@ def decode_composition(raw: str | None) -> list[dict]:
             continue
         entries.append({"monster_id": monster_id, "count": count, "name": name})
     return entries
+
+
+# ── the dd_character_ext.slots_json codec (dd-card-redesign task 2.2) ──────
+
+
+def encode_spell_slots(slots: dict[int, int]) -> str:
+    """The slots grid («уровень 1…9 → количество») as the column's JSON
+    body — the service hands values already through the domain gate, levels
+    printed in ascending order so a stored body is deterministic."""
+    return json.dumps({str(level): slots[level] for level in sorted(slots)}, ensure_ascii=False)
+
+
+def decode_spell_slots(raw: str | None) -> dict[int, int]:
+    """The stored grid, tolerant the way every module codec is: an absent
+    value reads as «не задано»; unparsable bytes and a non-object body read
+    as empty with one journal line — the stored row is never rewritten by a
+    read. A pair that left the domain band (level outside 1…9, count outside
+    0…99, a bool posing as a number) is dropped as the garbage it is."""
+    if not raw:
+        return {}
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError:
+        logging.getLogger(_CODEC_LOGGER).warning(
+            "dd slots_json: сохранённое значение не разобрано — читаем как пусто"
+        )
+        return {}
+    if not isinstance(document, dict):
+        logging.getLogger(_CODEC_LOGGER).warning(
+            "dd slots_json: значение — не объект, читаем как пусто"
+        )
+        return {}
+    slots: dict[int, int] = {}
+    for key, value in document.items():
+        if not key.isdigit():
+            continue
+        level = int(key)
+        if not SLOT_LEVEL_MIN <= level <= SLOT_LEVEL_MAX:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if not SLOT_COUNT_MIN <= value <= SLOT_COUNT_MAX:
+            continue
+        slots[level] = value
+    return {level: slots[level] for level in sorted(slots)}
+
+
+# ── the dd_character_ext.prof_json codec (dd-card-redesign task 2.2, Д8) ───
+
+
+def encode_proficiencies(skills: Iterable[str], saving_throws: Iterable[str]) -> str:
+    """The two proficiency sets as the column's JSON body, printed in the
+    domain's canonical key order so a stored body is deterministic; the
+    manual saving-throw set rides even while a class owns the saves — design
+    Д8 stores the manual set so a dataset swap destroys no master's choice."""
+    skill_set = set(skills)
+    save_set = set(saving_throws)
+    return json.dumps(
+        {
+            "skills": [key for key in SKILL_ABILITIES if key in skill_set],
+            "saving_throws": [key for key in ABILITY_KEYS if key in save_set],
+        },
+        ensure_ascii=False,
+    )
+
+
+def decode_proficiencies(raw: str | None) -> tuple[frozenset[str], frozenset[str]]:
+    """The stored (skills, manual saving throws), tolerant the module way:
+    an absent value reads as two empty sets; unparsable bytes and a
+    non-object body read as empty with one journal line — the stored row is
+    never rewritten by a read. Keys outside the штатнy lists (a skill the
+    domain does not know, a «saving throw» that is not an ability) and
+    non-list halves are dropped: the reader sees only proficiencies it can
+    honestly print."""
+    if not raw:
+        return frozenset(), frozenset()
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError:
+        logging.getLogger(_CODEC_LOGGER).warning(
+            "dd prof_json: сохранённое значение не разобрано — читаем как пусто"
+        )
+        return frozenset(), frozenset()
+    if not isinstance(document, dict):
+        logging.getLogger(_CODEC_LOGGER).warning(
+            "dd prof_json: значение — не объект, читаем как пусто"
+        )
+        return frozenset(), frozenset()
+    raw_skills = document.get("skills")
+    raw_saves = document.get("saving_throws")
+    skills = frozenset(
+        key
+        for key in (raw_skills if isinstance(raw_skills, list) else [])
+        if isinstance(key, str) and key in SKILL_ABILITIES
+    )
+    saving_throws = frozenset(
+        key
+        for key in (raw_saves if isinstance(raw_saves, list) else [])
+        if isinstance(key, str) and key in ABILITY_KEYS
+    )
+    return skills, saving_throws

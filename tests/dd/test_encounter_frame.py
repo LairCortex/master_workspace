@@ -317,3 +317,30 @@ async def test_release_tab_cancels_the_load_in_silence():
     frame.release_tab()
     await _drain()
     assert _boxes(frame) == []
+
+
+# ── the fresh event (checkpoint-2 audit; spec «Пустое событие тоже с двумя
+#    табами») ────────────────────────────────────────────────────────────────
+
+
+async def test_fresh_event_stands_with_a_locked_empty_editor():
+    # The tab is on the strip even without a stored record, but its staging
+    # door is honestly closed: the create path never runs the staged hooks,
+    # so the controls refuse instead of eating the edits (checkpoint-2).
+    encounters = _Encounters(None)
+    frame, _source = _frame(encounters, event_id=None)
+    await _drain()
+    assert frame.findChild(QPushButton, "ddEncounterAdd").isEnabled() is False
+    assert frame.findChild(QPlainTextEdit).isReadOnly() is True
+    hint = _empty_hint(frame)
+    assert "не сохранено" in hint.text()
+    # nothing was staged, nothing was saved (the load was skipped whole)
+    assert encounters.saved is None
+    # The refusal is double-locked: even a programmatic call names the save
+    # rather than silently dropping a row no save will ever carry.
+    frame._on_add_row()
+    await _drain()
+    boxes = _boxes(frame)
+    assert len(boxes) == 1
+    assert "не сохранено" in boxes[0].text()
+    assert frame.findChildren(QComboBox) == []  # no row was appended

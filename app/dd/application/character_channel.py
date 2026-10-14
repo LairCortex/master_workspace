@@ -61,10 +61,12 @@ from app.dd.domain.character_editor import editor_doc_to_text
 from app.dd.domain.validation_report import CheckIssue, Severity, ValidationReport
 from app.dd.infrastructure.lss_schemas import CHARACTER_FORMAT_VERSION, CHARACTER_JSON_TYPE
 
-#: Числовые механические ключи документа, которые генерация не пишет никогда
-#: (spec «Числовая механика остаётся LSS»): содержательная часть собирается
-#: whitelist'ом из :data:`_CONTENT_DATA`-полей, поэтому ни один из этих ключей
-#: не доходит до валидатора — их добирает лист/построитель LSS.
+#: Механические ключи документа, которые генерация не пишет никогда
+#: (spec «Числовая механика остаётся LSS», дельта dd-card-redesign: к
+#: числовым восьми добавлены ``speed``/``alignment``/``feats`` — механики
+#: карточки, не содержательная часть генерации): содержательная часть
+#: собирается whitelist'ом из :data:`_CONTENT_DATA`-полей, поэтому ни один
+#: из этих ключей не доходит до валидатора — их добирает карточка/построитель.
 MECHANIC_KEYS: tuple[str, ...] = (
     "stats",
     "skills",
@@ -74,6 +76,9 @@ MECHANIC_KEYS: tuple[str, ...] = (
     "weaponsList",
     "resources",
     "coins",
+    "speed",
+    "alignment",
+    "feats",
 )
 
 #: Коды разрешения ссылок канала (стабильный машинный контракт, поза кодов

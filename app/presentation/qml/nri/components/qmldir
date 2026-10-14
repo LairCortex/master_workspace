@@ -44,3 +44,6 @@ ThemeSheetHeader ThemeSheetHeader.qml
 ThemeIconButton ThemeIconButton.qml
 # User request 2026-09-30: the Lucide glyph brush (icons.js path data).
 ThemeIcon ThemeIcon.qml
+# dd-card-redesign task 4.2: the declarative module block of the kernel card
+# scroll (design Д2 — the kernel paints module blocks with штатные controls).
+ModuleBlockDelegate ModuleBlockDelegate.qml

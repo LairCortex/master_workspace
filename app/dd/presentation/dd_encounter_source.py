@@ -131,6 +131,25 @@ class DndEncounterSource:
             CardTabSpec(ENCOUNTER_TAB_KEY, ENCOUNTER_TAB_TITLE, self._build_tab),
         )
 
+    async def module_sections(self, key: str, source_id: str) -> tuple:
+        """The event's one «Встреча» mirror section for the preview column
+        (dd-card-redesign task 7.1, design Д5; spec entity-preview «Событие
+        показывает встречу»).
+
+        Like the character door, this one READS and may be awaited — the
+        kernel bridge accepts the awaitable (protocol task-7.1 posture).
+        Dark source, foreign target or a non-whole id answer the empty
+        tuple; an event without an overlay («встречи нет») prints no section
+        — the honest absence, the same posture as an unmarked ladder row."""
+        if not self._attached or key != EntityType.EVENT.value:
+            return ()
+        encounter = await self._encounters.get_encounter(int(source_id))
+        from app.dd.presentation.character_preview_sections import (
+            build_encounter_sections,
+        )
+
+        return build_encounter_sections(encounter)
+
     def event_marks(self, event_ids: Sequence[int]) -> dict[int, str]:
         """The ladder marks from the cache — while the module is attached
         (spec «при выключенном модуле … пометки быть НЕ SHALL»); events
@@ -145,11 +164,15 @@ class DndEncounterSource:
 
     # ── the tab factory (protocol CardTabSpec.factory: (wiring, id)) ─────────
 
-    def _event_id(self, source_id: str) -> int:
-        """The kernel row id behind the protocol string; a non-whole id
-        raises — the host catches, journals and skips the tab (a foreign
-        target could only be a composition bug; guessing an id is not on the
-        table)."""
+    def _event_id(self, source_id: str) -> int | None:
+        """The kernel row id behind the protocol string; the empty id (a
+        fresh event) reads ``None`` — the tab's unsaved state: empty editor,
+        staging refused (spec «Пустое событие тоже с двумя табами»). A
+        non-whole id raises — the host catches, journals and skips the tab
+        (a foreign target could only be a composition bug; guessing an id is
+        not on the table)."""
+        if source_id == "":
+            return None
         return int(source_id)
 
     def _build_tab(self, wiring: object, source_id: str):

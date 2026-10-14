@@ -14,13 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dd.domain.character import (
     LINK_SLOTS,
     DdCharacterExt,
+    DdFeatLink,
     DdSpellLink,
     ReferenceLink,
     empty_ext,
 )
+from app.dd.domain.character_mechanics import (
+    ABILITY_KEYS,
+    CharacterMechanics,
+    empty_mechanics,
+)
 from app.dd.infrastructure.db.dd_models import (
     DdCharacterExtModel,
+    DdCharacterFeatLinkModel,
     DdCharacterSpellLinkModel,
+    decode_proficiencies,
+    decode_spell_slots,
+    encode_proficiencies,
+    encode_spell_slots,
 )
 
 
@@ -37,6 +48,28 @@ def ext_to_domain(row: DdCharacterExtModel | None) -> DdCharacterExt:
         for slot, _, _ in LINK_SLOTS
     }
     return DdCharacterExt(links=links, level=row.level, lss_sheet_id=row.lss_sheet_id or "")
+
+
+def mechanics_from_row(row: DdCharacterExtModel | None) -> CharacterMechanics:
+    """Row → the mechanics value (dd-card-redesign task 2.3). ``None`` (no
+    row yet) reads as the empty block. The six ability columns are the
+    spec's all-or-nothing set: unless ALL six carry a value the block reads
+    as no set — «частичный набор не показывает полусчитанных строк» (a
+    half-written row can only be storage corruption; the service never
+    writes one). The JSON columns decode through the module codecs."""
+    if row is None:
+        return empty_mechanics()
+    values = {key: getattr(row, key) for key in ABILITY_KEYS}
+    scores = values if all(value is not None for value in values.values()) else None
+    skill_profs, saving_throw_profs = decode_proficiencies(row.prof_json)
+    return CharacterMechanics(
+        scores=scores,
+        speed=row.speed,
+        alignment=row.alignment,
+        spell_slots=decode_spell_slots(row.slots_json),
+        skill_proficiencies=skill_profs,
+        manual_saving_throws=saving_throw_profs,
+    )
 
 
 class DdCharacterRepository:
@@ -110,5 +143,96 @@ class DdCharacterRepository:
                 DdCharacterSpellLinkModel.character_id == character_id,
                 DdCharacterSpellLinkModel.source_key == source_key,
                 DdCharacterSpellLinkModel.slug == slug,
+            )
+        )
+
+    # ── the mechanics columns (dd-card-redesign task 2.3, design Д6/Д8) ─────
+
+    def write_spell_slots(
+        self, row: DdCharacterExtModel, slots: dict[int, int] | None
+    ) -> None:
+        """Encode through the module codec at the storage boundary (the
+        application layer never imports the ORM module — the codecs ride
+        this repository's door). Empty stores NULL: «не задано»."""
+        row.slots_json = encode_spell_slots(slots) if slots else None
+
+    def write_proficiencies(
+        self,
+        row: DdCharacterExtModel,
+        skills: frozenset[str],
+        saving_throws: frozenset[str],
+    ) -> None:
+        """Store the whole prof body (skills + the manual saving-throw set)
+        — design Д8 keeps the manual set in storage even while a class owns
+        the saves, so a dataset swap destroys no master's choice."""
+        row.prof_json = encode_proficiencies(skills, saving_throws)
+
+    # ── feat links (dd-card-redesign task 2.3, spec «Черты — ссылки…») ──────
+
+    async def list_feat_links(self, character_id: int) -> list[DdFeatLink]:
+        rows = (
+            await self._session.execute(
+                select(DdCharacterFeatLinkModel)
+                .where(DdCharacterFeatLinkModel.character_id == character_id)
+                .order_by(DdCharacterFeatLinkModel.id)
+            )
+        ).scalars().all()
+        return [
+            DdFeatLink(
+                source_key=row.source_key,
+                ref_id=row.ref_id,
+                snapshot_name=row.snapshot_name,
+            )
+            for row in rows
+        ]
+
+    async def has_feat_link(
+        self, character_id: int, source_key: str, ref_id: str
+    ) -> bool:
+        row = (
+            await self._session.execute(
+                select(DdCharacterFeatLinkModel)
+                .where(
+                    DdCharacterFeatLinkModel.character_id == character_id,
+                    DdCharacterFeatLinkModel.source_key == source_key,
+                    DdCharacterFeatLinkModel.ref_id == ref_id,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        return row is not None
+
+    async def insert_feat_link(
+        self, character_id: int, source_key: str, ref_id: str, snapshot_name: str
+    ) -> None:
+        self._session.add(
+            DdCharacterFeatLinkModel(
+                character_id=character_id,
+                source_key=source_key,
+                ref_id=ref_id,
+                snapshot_name=snapshot_name,
+            )
+        )
+        await self._session.flush()
+
+    async def delete_feat_link(
+        self, character_id: int, source_key: str, ref_id: str
+    ) -> None:
+        await self._session.execute(
+            delete(DdCharacterFeatLinkModel).where(
+                DdCharacterFeatLinkModel.character_id == character_id,
+                DdCharacterFeatLinkModel.source_key == source_key,
+                DdCharacterFeatLinkModel.ref_id == ref_id,
+            )
+        )
+
+    async def delete_all_feat_links(self, character_id: int) -> None:
+        """Take the whole feat wall down (dd-card-redesign task 6.1): the
+        import replaces the card with the file's contents, and the feats are
+        the file's to name — the rows it does not speak are un-chosen in the
+        same one transaction the rest of the replacement rides."""
+        await self._session.execute(
+            delete(DdCharacterFeatLinkModel).where(
+                DdCharacterFeatLinkModel.character_id == character_id
             )
         )

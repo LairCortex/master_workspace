@@ -492,10 +492,11 @@ class EventDialogIslandViewModel(CardTabsMixin):
         self.characters = self.sections["characters"]
         self.items = self.sections["items"]
         self.locations = self.sections["locations"]
-        # add-dnd-game-face (task 7.1, design Д10): the dialog always carries
-        # the relations strip, so the kernel group is the full «Обзор · Тексты
-        # · Связи» trio; module tabs join later through set_external_groups.
-        self._init_card_tabs(kernel_card_groups(has_relations=True))
+        # dd-card-redesign task 3.2 (design Д1): the dialog declares the ONE
+        # «Основное» group — the whole single-screen 0.19.1 event form (the
+        # relations strip rides the scroll, not a tab); module tabs join later
+        # through set_external_groups and wake the strip.
+        self._init_card_tabs(kernel_card_groups())
 
     characteristicsMentionHost = Property(
         QObject, lambda self: self.characteristicsHost, constant=True

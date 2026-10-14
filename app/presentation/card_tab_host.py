@@ -6,8 +6,9 @@ content and returns the widget the strip hosts. A module tab is therefore a
 native widget this host:
 
 * collects from the registered external sources whenever the card's target
-  id becomes known (populate) — a card without an id (fresh creation) and a
-  source that declares nothing both leave the kernel strip untouched;
+  id becomes known (populate) — and on a fresh card with the empty id, so a
+  module may stand its tabs up before the record exists (a source that
+  cannot live without one simply answers nothing for the empty id);
 * overlays the widget on the body slot the QML page publishes through the
   view model (the strip, the header and the action row stay visible around
   it — spec: the module tab switches like any other tab);
@@ -75,30 +76,34 @@ class CardTabHost(QObject):
     def refresh(self, target_id: str | None) -> None:
         """Rebuild the module tail of the strip for one target record.
 
-        ``None`` (a card that edits nothing yet) empties it — the kernel
-        groups stand alone, so the «module off ⇒ no module tabs» route needs
-        no special casing at the dialog."""
+        A fresh card (``None`` → the empty id) is collected too: a new
+        character card opens with the module tabs already standing and their
+        sections empty (spec dnd-character-extension «Новая карточка с
+        пустыми разделами»), and so does a new event («Пустое событие тоже
+        с двумя табами»). Whether the empty id gets tabs at all is each
+        source's own answer; a module that is off (its «visible» gate) or
+        answers nothing leaves the kernel strip standing alone — the
+        «module off ⇒ no module tabs» route needs no special casing here."""
         self._release_widgets(release_tab=True)
         self._target_id = target_id or ""
         entries: list[dict[str, str]] = []
-        if self._target_id:
-            target = CardTabTarget(key=self._target_key, source_id=self._target_id)
-            for source in self._sources:
-                # The source's own visibility condition (the reference toggle,
-                # protocol «visible») gates its records everywhere else, so a
-                # hidden source's tabs must not surface on the card either.
-                if not getattr(source, "visible", True):
+        target = CardTabTarget(key=self._target_key, source_id=self._target_id)
+        for source in self._sources:
+            # The source's own visibility condition (the reference toggle,
+            # protocol «visible») gates its records everywhere else, so a
+            # hidden source's tabs must not surface on the card either.
+            if not getattr(source, "visible", True):
+                continue
+            for spec in self._source_tabs(source, target):
+                if spec.key in self._widgets:
+                    continue  # first source wins a duplicated key
+                widget = self._build(spec)
+                if widget is None:
                     continue
-                for spec in self._source_tabs(source, target):
-                    if spec.key in self._widgets:
-                        continue  # first source wins a duplicated key
-                    widget = self._build(spec)
-                    if widget is None:
-                        continue
-                    widget.setParent(self._dialog)
-                    widget.setVisible(False)
-                    self._widgets[spec.key] = widget
-                    entries.append({"key": spec.key, "title": spec.title})
+                widget.setParent(self._dialog)
+                widget.setVisible(False)
+                self._widgets[spec.key] = widget
+                entries.append({"key": spec.key, "title": spec.title})
         self._vm.set_external_groups(entries)
         self._sync()
 

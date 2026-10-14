@@ -40,6 +40,11 @@ LINK_SLOTS: tuple[tuple[str, str, str], ...] = (
     ("background", "backgrounds", "dd_background"),
 )
 
+#: The dataset section holding feat records (dd-card-redesign task 6.1: the
+#: importer resolves feat references through it, the feats frame lists its
+#: picker from it — one name for the section, one place).
+FEATS_SECTION = "feats"
+
 #: The document key of each reference slot (design Д7 «info.charClass.id
 #: и т.п.» — only «class» disagrees with the slot name). The ONE table the
 #: importer reads and the document builder writes (add-dnd-lss-generation
@@ -90,6 +95,21 @@ class DdSpellLink:
 
     source_key: str
     slug: str
+    snapshot_name: str
+
+
+@dataclass(frozen=True)
+class DdFeatLink:
+    """One feat choice (dd-card-redesign task 2.1/2.3, spec
+    dnd-character-mechanics «Черты — ссылки на записи датасетов»): the pair
+    «source + id» plus the name snapshot — the spell link's form copied to
+    the feat, a REFERENCE into the connected datasets' records of type
+    «черта». A disconnected source keeps the snapshot verbatim (spec
+    scenario «Датасет сняли — имена целы»); the annotation «источник не
+    подключён» is the tab's reading rule, not a stored mark."""
+
+    source_key: str
+    ref_id: str
     snapshot_name: str
 
 

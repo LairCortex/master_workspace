@@ -204,3 +204,91 @@ def test_full_document_lays_the_eight_blocks_in_the_fixed_order():
         "Монеты",
         "Ячейки заклинаний",
     ]
+
+
+# ── механический приём документа (dd-card-redesign 6.1; каждый отказ — своя
+# ветка «не легло», spec «Что не легло, читается блоком») ────────────────────
+
+from app.dd.domain.character_render import parse_document_mechanics  # noqa: E402
+
+
+def _six(**over):
+    stats = {
+        k: {"value": 10}
+        for k in ("str", "dex", "con", "int", "wis", "cha")
+    }
+    stats.update(over)
+    return stats
+
+
+def test_scores_family_refuses_non_dict_and_out_of_band():
+    assert parse_document_mechanics({"stats": _six(str="плечо")}).scores is None
+    assert (
+        parse_document_mechanics({"stats": _six(str={"value": 33})}).scores is None
+    )
+    assert (
+        parse_document_mechanics({"stats": _six(dex={"value": 12.5})}).scores is None
+    )
+
+
+def test_saves_refuse_foreign_stat_key_as_sheets_arithmetic():
+    doc = {"stats": _six(sp={"save": True})}
+    parsed = parse_document_mechanics(doc)
+    assert parsed.saving_throws is None  # седьмой ключ — не наш
+    assert parsed.scores is None
+
+
+def test_skills_refuse_foreign_entry_and_non_boolean_flag():
+    assert parse_document_mechanics(
+        {"skills": {"stealth": "да"}}
+    ).skill_proficiencies is None
+    assert parse_document_mechanics(
+        {"skills": {"stealth": {"proficient": 2}}}
+    ).skill_proficiencies is None
+    # ключ вне штатного списка — то же «не легло»
+    assert parse_document_mechanics(
+        {"skills": {"carousing": {"proficient": True}}}
+    ).skill_proficiencies is None
+
+
+def test_slots_refuse_non_list_non_dict_duplicate_and_bad_count():
+    assert parse_document_mechanics(
+        {"spells": {"slots": {"1": 4}}}
+    ).spell_slots is None
+    assert parse_document_mechanics(
+        {"spells": {"slots": ["раз"]}}
+    ).spell_slots is None
+    assert parse_document_mechanics(
+        {"spells": {"slots": [{"level": 1, "max": 2}, {"level": 1, "max": 3}]}}
+    ).spell_slots is None
+    assert parse_document_mechanics(
+        {"spells": {"slots": [{"level": 1, "max": 100}]}}
+    ).spell_slots is None
+    assert parse_document_mechanics(
+        {"spells": {"slots": [{"level": 10, "max": 1}]}}
+    ).spell_slots is None
+
+
+def test_speed_absent_and_empty_strip_to_honest_absence():
+    assert parse_document_mechanics({}).speed is None
+    assert parse_document_mechanics({}).speed_text == ""
+    assert parse_document_mechanics({"speed": ""}).speed is None
+    assert parse_document_mechanics({"speed": ""}).speed_text == ""
+    assert parse_document_mechanics({"speed": 0}).speed == 0
+    assert parse_document_mechanics({"speed": -1}).speed_text == "-1"
+    assert parse_document_mechanics({"speed": 1001}).speed_text == "1001"
+
+
+def test_alignment_absent_empty_and_non_string_shapes():
+    assert parse_document_mechanics({}).alignment is None
+    assert parse_document_mechanics({"alignment": "  "}).alignment is None
+    assert parse_document_mechanics({"alignment": "  "}).alignment_text == ""
+    # не-строка не роняет разбор: номер мировоззрения текстом в блок
+    parsed = parse_document_mechanics({"alignment": 5})
+    assert parsed.alignment is None and parsed.alignment_text == "5"
+
+
+def test_feats_non_list_rides_the_garbage_block():
+    parsed = parse_document_mechanics({"feats": "просто строка"})
+    assert parsed.feats == () and parsed.feat_garbage == ("просто строка",)
+    assert parse_document_mechanics({}).feats == ()

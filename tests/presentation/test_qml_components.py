@@ -193,6 +193,10 @@ def test_qmldir_declares_module_and_future_component_entries():
             # User request 2026-09-30: the Lucide glyph brush (its path data
             # lives in the generated icons.js, scripts/vendor_lucide.py).
             "ThemeIcon",
+            # dd-card-redesign task 4.2: the declarative module-block
+            # renderer (design Д2 — one delegate paints every block kind
+            # the module protocol names at the card's two anchors).
+            "ModuleBlockDelegate",
         )
     ]
     assert TOKENS_JS.is_file()
