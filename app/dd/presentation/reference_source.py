@@ -25,6 +25,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, TYPE_CHECKING
 
 from app.dd.application.dataset_index_service import DatasetIndexService, IndexSnapshot
+from app.dd.domain.grant_render import MECHANICS_BLOCK_TITLE, render_record_mechanics
 from app.domain.entity_registry import ExternalTypeDescriptor
 from app.presentation.modules.protocol import (
     CardTabSpec,
@@ -359,12 +360,19 @@ class DndReferenceSource:
 
     @staticmethod
     def _record_blocks(record: object) -> tuple[ExternalTextBlock, ...]:
-        """The record's text as it is: an LSS record may carry a ``desc``
-        string — it prints as the card's text block; a record without one
-        shows its identity fields only (name, type, source — the honest
-        minimum the spec allows; the decorative assembly is task 6.1)."""
+        """The record's text as it is (``dd-reference-mechanics-text``): a
+        ``desc`` string — if a future format ever lets one through — prints
+        first as the «Текст» block, then the readable mechanics assembled
+        from the record's own fields (grants, prerequisites, info) print as
+        «Механика». A record with neither shows its identity fields only —
+        the honest minimum the spec allows; nothing is invented here, the
+        assembly lives in ``grant_render``."""
+        blocks: list[ExternalTextBlock] = []
         if isinstance(record, dict):
             desc = record.get("desc")
             if isinstance(desc, str) and desc.strip():
-                return (ExternalTextBlock("Текст", desc.strip()),)
-        return ()
+                blocks.append(ExternalTextBlock("Текст", desc.strip()))
+            mechanics = render_record_mechanics(record)
+            if mechanics:
+                blocks.append(ExternalTextBlock(MECHANICS_BLOCK_TITLE, mechanics))
+        return tuple(blocks)

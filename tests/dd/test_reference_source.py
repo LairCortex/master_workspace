@@ -480,3 +480,109 @@ async def test_child_card_relation_to_parent_in_same_dataset(uow, tmp_path):
     assert orphan is not None and orphan.relations == ()
     classless = harness.source.card_source("dd_subclass", "kids/classless")
     assert classless is not None and classless.relations == ()
+
+
+async def test_card_mechanics_block_assembled_from_fields(uow, tmp_path):
+    """Карточка записи собирает «Механику» из её полей (спека
+    «Карточка справочной записи печатает читаемую механику»,
+    dd-reference-mechanics-text): класс — кость хитов/спасброски/трейты по
+    уровням, вид — размер/скорость/языки, черта — требование и признаки;
+    пустая запись остаётся без блоков (пин выше: ``srd51/cleric``),
+    ``desc`` если будет — печатается раньше механики."""
+    harness = _Harness(uow, tmp_path)
+    await harness.connect_all()
+    harness.storage.save(
+        "mech",
+        json.dumps(
+            {
+                "id": "mech",
+                "title": "Механика",
+                "classes": [
+                    {
+                        "id": "barbarian",
+                        "label": "Варвар",
+                        "grants": [
+                            {"type": "hp-die", "die": 12},
+                            {"type": "saving-throw", "stats": ["str", "con"]},
+                        ],
+                        "leveledGrants": [
+                            {
+                                "level": 2,
+                                "grants": [
+                                    {
+                                        "type": "trait",
+                                        "id": "danger-sense",
+                                        "name": "Чувство опасности",
+                                        "description": "С преимуществом.",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    dict(
+                        {"id": "scribe", "label": "Писец",
+                         "grants": [{"type": "speed", "value": 30}]},
+                        desc="Сначала текст.",
+                    ),
+                ],
+                "races": [
+                    {
+                        "id": "human",
+                        "label": "Человек",
+                        "size": "medium",
+                        "grants": [
+                            {"type": "speed", "value": 30},
+                            {"type": "language-fixed", "languages": ["Общий"]},
+                        ],
+                    }
+                ],
+                "feats": [
+                    {
+                        "id": "grappler",
+                        "label": "Борец",
+                        "prerequisite": "Сила 13 или выше",
+                        "grants": [
+                            {"type": "trait", "name": "Захват", "description": "Тело."}
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        DatasetMeta(
+            source=DatasetSource.HOMEBREW,
+            imported_at="2026-10-14",
+            sha256="9" * 64,
+        ),
+    )
+    await harness.connections.connect("mech")
+    for section in ("classes", "races", "feats"):
+        await harness.index.entries(section)  # освежает снимок под sync-дверь
+    klass = harness.source.card_source("dd_class", "mech/barbarian")
+    assert klass is not None
+    assert [b.title for b in klass.blocks] == ["Механика"]
+    text = klass.blocks[0].text
+    assert "Кость хитов: к12" in text
+    assert "Владение спасбросками: Сила, Телосложение" in text
+    assert "На уровне 2:" in text
+    assert "«Чувство опасности»" in text and "С преимуществом." in text
+    race = harness.source.card_source("dd_race", "mech/human")
+    assert race is not None and [b.title for b in race.blocks] == ["Механика"]
+    assert race.blocks[0].text.splitlines() == [
+        "Размер: Средний",
+        "Скорость: 30 фт.",
+        "Языки: Общий",
+    ]
+    feat = harness.source.card_source("dd_feat", "mech/grappler")
+    assert feat is not None
+    assert feat.blocks[0].text.splitlines()[0] == "Требование: Сила 13 или выше"
+    # desc (если пройдёт) — первым блоком, механика — следом
+    scribe = harness.source.card_source("dd_class", "mech/scribe")
+    assert scribe is not None
+    assert [(b.title, b.text) for b in scribe.blocks] == [
+        ("Текст", "Сначала текст."),
+        ("Механика", "Скорость: 30 фт."),
+    ]
+    # SRD-заклинание по-прежнему честно без механики (постулат не тронут)
+    spell = harness.source.card_source("dd_spell", "srd51/fire-ball")
+    assert spell is not None and [b.title for b in spell.blocks] == ["Текст"]
