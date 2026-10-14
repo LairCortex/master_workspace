@@ -58,6 +58,16 @@ a = Analysis(
         # what the frozen resolver's layout scan expects).
         ("docs/README.md", "docs"),
         ("docs/CHANGELOG.md", "docs"),
+        # Licensing notices ship with the release (docs/licensing.md, §6): the
+        # Apache-2.0 code license, the content licence, the third-party/Qt
+        # notice and the LGPL-3.0 text PySide6 is distributed under. Qt's LGPL
+        # requires the licence text to travel with the shipped binaries, so the
+        # whole LICENSES/ directory goes in as data (pinned by
+        # tests/test_spec_license_bundle.py).
+        ("LICENSE", "licenses"),
+        ("LICENSE.DATA.md", "licenses"),
+        ("NOTICE.md", "licenses"),
+        ("LICENSES", "licenses/LICENSES"),
         # Qt translation catalogs for the Russian standard chrome (see
         # QT_TRANSLATIONS_DIR above): destination = the PySide6/Qt/translations
         # dir the frozen QLibraryInfo derives from its own prefix.
@@ -198,6 +208,10 @@ a = Analysis(
         ("app/presentation/qml/nri/components/HintText.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/RowItem.qml",
+         "app/presentation/qml/nri/components"),
+        # dd-card-redesign task 4.2: the declarative module-block renderer
+        # (design Д2) — every component of the library directory is data.
+        ("app/presentation/qml/nri/components/ModuleBlockDelegate.qml",
          "app/presentation/qml/nri/components"),
         ("app/presentation/qml/nri/components/ThemeSheetHeader.qml",
          "app/presentation/qml/nri/components"),
